@@ -13,7 +13,8 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json",
+    "build": "tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json",
+    "build:clean": "rm -rf dist && pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
