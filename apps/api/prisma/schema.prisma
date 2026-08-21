@@ -1,0 +1,65 @@
+// Phase 0 scope: identity, roles, permissions, ERP SSO mapping (§15).
+// The timetabling domain tables (§3) arrive with Phase 1 migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  schoolId    Int              @map("school_id")
+  name        String           @db.VarChar(50)
+  isSystem    Boolean          @default(false) @map("is_system")
+  permissions RolePermission[]
+  users       User[]
+  erpMappings ErpRoleMapping[]
+
+  @@unique([schoolId, name])
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId     Int    @map("role_id")
+  permission String @db.VarChar(40)
+  role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permission])
+  @@map("role_permissions")
+}
+
+model User {
+  id          Int       @id @default(autoincrement())
+  schoolId    Int       @map("school_id")
+  erpUserId   String    @map("erp_user_id") @db.VarChar(50)
+  name        String    @db.VarChar(100)
+  email       String    @db.VarChar(120)
+  // FK to teachers arrives in Phase 1; kept as a plain nullable column until then.
+  teacherId   Int?      @map("teacher_id")
+  roleId      Int       @map("role_id")
+  role        Role      @relation(fields: [roleId], references: [id])
+  isActive    Boolean   @default(true) @map("is_active")
+  /// set by an Admin override on the Roles & Responsibility page; when true,
+  /// sync-on-login must NOT reset the role from the ERP mapping (§15.1)
+  roleOverridden Boolean @default(false) @map("role_overridden")
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([schoolId, erpUserId])
+  @@map("users")
+}
+
+model ErpRoleMapping {
+  id       Int    @id @default(autoincrement())
+  schoolId Int    @map("school_id")
+  erpRole  String @map("erp_role") @db.VarChar(50)
+  roleId   Int    @map("role_id")
+  role     Role   @relation(fields: [roleId], references: [id])
+
+  @@unique([schoolId, erpRole])
+  @@map("erp_role_mappings")
+}

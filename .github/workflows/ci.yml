@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      # Everything runs inside the same Docker images used for dev/prod
+      # (CLAUDE.md Docker-only rule) — no host Node/MySQL/Redis.
+      - name: Start backing services
+        run: docker compose up -d mysql redis --wait
+
+      - name: Lint, typecheck, unit tests (in api dev image)
+        run: |
+          docker compose run --rm --no-deps api sh -c "
+            pnpm install &&
+            pnpm --filter @edutimetable/shared build &&
+            pnpm --filter @edutimetable/api exec prisma generate &&
+            pnpm lint &&
+            pnpm typecheck &&
+            pnpm --filter @edutimetable/api test"
+
+      - name: Migration check (applies cleanly to a fresh MySQL)
+        run: |
+          docker compose run --rm api sh -c "
+            pnpm install &&
+            pnpm --filter @edutimetable/api exec prisma migrate deploy &&
+            pnpm --filter @edutimetable/shared build &&
+            pnpm --filter @edutimetable/api run seed"
+
+      - name: Build production images
+        run: docker compose -f docker-compose.yml build api web

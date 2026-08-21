@@ -26,7 +26,7 @@ When implementation starts, follow the phased roadmap in §12 of the architectur
 
 The application is developed, tested, and run **exclusively inside Docker** — never on the host:
 
-- The Docker Compose stack (`docker-compose.yml` + `docker-compose.dev.yml`) defines every service: `api` (NestJS), `web` (React/Vite), `worker` (solver, BullMQ consumer), `mysql` (MySQL 8), `redis`. `docker compose up` is the only supported way to start the app.
+- The Docker Compose stack (`docker-compose.yml` + `docker-compose.override.yml` dev overrides, auto-loaded) defines every service: `api` (NestJS), `web` (React/Vite), `worker` (solver, BullMQ consumer), `mysql` (MySQL 8), `redis`. `docker compose up` is the only supported way to start the app (production: `docker compose -f docker-compose.yml up`). Host ports: api **3001**, web **5174** — 3000/5173 are occupied by an unrelated SSH tunnel on the primary dev machine; inside the network it's always `api:3000`.
 - **Never install or run Node, MySQL, or Redis on the host, and never suggest doing so.** All commands — dependency install, migrations, seeds, tests, lint, one-off scripts — run inside containers: `docker compose exec api pnpm test`, `docker compose exec api pnpm migrate`, etc. If the stack isn't running, use `docker compose run --rm <service> <cmd>`.
 - Dev and production share the same multi-stage Dockerfiles; dev overrides add bind mounts and hot reload. CI builds and tests the same images. A change that only works outside Docker is broken by definition.
 - Connection config comes from compose environment variables (service names as hosts: `mysql`, `redis`) — never `localhost` hardcoded in app code.

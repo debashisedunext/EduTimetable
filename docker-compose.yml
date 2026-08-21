@@ -1,0 +1,80 @@
+name: edutimetable
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-edutimetable_dev}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-edutimetable}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-edutimetable_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: prod
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${MYSQL_DATABASE:-edutimetable}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_prod}
+      WEB_APP_URL: ${WEB_APP_URL:-http://localhost:5174}
+      ERP_PUBLIC_KEY: ${ERP_PUBLIC_KEY:-}
+    ports:
+      # Host 3001/5174 (3000/5173 are commonly taken on dev machines); inside
+      # the Docker network the api is always api:3000.
+      - "3001:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: prod
+    command: ["node", "apps/api/dist/worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${MYSQL_DATABASE:-edutimetable}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      target: prod
+    ports:
+      - "5174:80"
+    depends_on:
+      - api
+
+volumes:
+  mysql-data:
+  redis-data:

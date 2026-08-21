@@ -1,0 +1,67 @@
+# Dev overrides — auto-loaded by `docker compose up`, so plain `docker compose up`
+# is always the dev stack. Production uses `docker compose -f docker-compose.yml up`.
+services:
+  api:
+    build:
+      target: dev
+    command: >
+      sh -c "pnpm install &&
+             pnpm --filter @edutimetable/shared build &&
+             pnpm --filter @edutimetable/api exec prisma generate &&
+             pnpm --filter @edutimetable/api exec prisma migrate deploy &&
+             pnpm --filter @edutimetable/api run seed &&
+             pnpm --filter @edutimetable/api run start:dev"
+    environment:
+      NODE_ENV: development
+    volumes:
+      - .:/app
+      - node-modules:/app/node_modules
+      - api-node-modules:/app/apps/api/node_modules
+      - web-node-modules:/app/apps/web/node_modules
+      - shared-node-modules:/app/packages/shared/node_modules
+      - pnpm-store:/root/.local/share/pnpm/store
+
+  worker:
+    build:
+      target: dev
+    command: >
+      sh -c "pnpm install &&
+             pnpm --filter @edutimetable/shared build &&
+             pnpm --filter @edutimetable/api exec prisma generate &&
+             pnpm --filter @edutimetable/api run start:worker:dev"
+    environment:
+      NODE_ENV: development
+    volumes:
+      - .:/app
+      - node-modules:/app/node_modules
+      - api-node-modules:/app/apps/api/node_modules
+      - web-node-modules:/app/apps/web/node_modules
+      - shared-node-modules:/app/packages/shared/node_modules
+      - pnpm-store:/root/.local/share/pnpm/store
+    depends_on:
+      api:
+        condition: service_started
+
+  web:
+    build:
+      target: dev
+    command: >
+      sh -c "pnpm install &&
+             pnpm --filter @edutimetable/shared build &&
+             pnpm --filter @edutimetable/web run dev"
+    ports: !override
+      - "5174:5173"
+    volumes:
+      - .:/app
+      - node-modules:/app/node_modules
+      - api-node-modules:/app/apps/api/node_modules
+      - web-node-modules:/app/apps/web/node_modules
+      - shared-node-modules:/app/packages/shared/node_modules
+      - pnpm-store:/root/.local/share/pnpm/store
+
+volumes:
+  node-modules:
+  api-node-modules:
+  web-node-modules:
+  shared-node-modules:
+  pnpm-store:

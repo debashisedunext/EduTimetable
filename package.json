@@ -1,0 +1,16 @@
+{
+  "name": "edutimetable",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^9.18.0",
+    "typescript-eslint": "^8.20.0",
+    "@eslint/js": "^9.18.0"
+  }
+}
