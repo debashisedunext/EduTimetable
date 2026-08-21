@@ -174,8 +174,9 @@ export function StepTeacherMapping() {
   const { data: teachers } = useApi<any[]>("/teachers");
   const { data: mappings, refetch: refetchMappings } = useApi<any[]>("/mappings");
   const { data: subjects } = useApi<any[]>("/subjects");
-  const [form, setForm] = useState({ teacherId: "", subjectId: "", periodsPerWeek: "5" });
-  const [selectedSections, setSelectedSections] = useState<Set<number>>(new Set());
+  const { data: rooms } = useApi<any[]>("/rooms");
+  const [view, setView] = useState<"list" | "form">("list");
+  const [editing, setEditing] = useState<any | null>(null); // a mappings row when editing
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -185,38 +186,35 @@ export function StepTeacherMapping() {
       setError(null); refetchSections();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-  const toggleSection = (id: number) => {
-    setSelectedSections((prev) => {
-      const s = new Set(prev);
-      if (s.has(id)) s.delete(id); else s.add(id);
-      return s;
-    });
-  };
-  // Bulk add (task 1.8): one teacher + subject across every selected section in one go.
-  const addMapping = async () => {
-    try {
-      const res = await api<{ created: number; skipped: string[] }>("/mappings", {
-        method: "POST",
-        body: JSON.stringify({
-          teacherId: Number(form.teacherId), subjectId: Number(form.subjectId),
-          classSectionIds: [...selectedSections], periodsPerWeek: Number(form.periodsPerWeek),
-        }),
-      });
-      setError(null);
-      setNote(
-        `Added ${res.created} mapping${res.created === 1 ? "" : "s"}` +
-          (res.skipped.length > 0 ? ` · skipped: ${res.skipped.join(", ")}` : ""),
-      );
-      setSelectedSections(new Set());
-      refetchMappings();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setNote(null); }
-  };
-  const removeMapping = async (id: number) => {
-    await api(`/mappings/${id}`, { method: "DELETE" });
+  const removeMapping = async (row: any) => {
+    await api(row.type === "merged" ? `/merged-groups/${row.id}` : `/mappings/${row.id}`, { method: "DELETE" });
     refetchMappings();
   };
-
   const teacherRule = (id: number | null) => (teachers ?? []).find((t) => t.id === id)?.classTeacherPeriodRule ?? null;
+
+  const openAdd = () => { setEditing(null); setNote(null); setError(null); setView("form"); };
+  const openEdit = (row: any) => { setEditing(row); setNote(null); setError(null); setView("form"); };
+
+  if (view === "form") {
+    return (
+      <MappingForm
+        editing={editing}
+        teachers={teachers ?? []}
+        subjects={subjects ?? []}
+        sections={sections ?? []}
+        rooms={rooms ?? []}
+        note={note}
+        error={error}
+        onBack={() => { setView("list"); setNote(null); setError(null); refetchMappings(); }}
+        onSaved={(msg, stay) => {
+          setNote(msg); setError(null); refetchMappings();
+          if (!stay) setView("list");
+          else setEditing(null);
+        }}
+        onError={(msg) => { setError(msg); }}
+      />
+    );
+  }
 
   return (
     <>
@@ -238,44 +236,150 @@ export function StepTeacherMapping() {
         />
       </Card>
 
-      <Card title="Subject Mapping" sub="Who teaches what, where — the rows the solver builds variables from.">
-        <DataTable
-          headers={["Teacher", "Subject", "Class-Section", "Periods/wk", ""]}
-          rows={(mappings ?? []).map((m) => [
-            m.teacherName, m.subjectName, m.classSectionLabel, m.periodsPerWeek,
-            <button key="d" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11 }} onClick={() => removeMapping(m.id)}>✕</button>,
-          ])}
-        />
+      <Card
+        title="Subject Mapping"
+        sub="Who teaches what, where — the core mapping the solver builds variables from."
+        actions={<button className="btn btn-primary" onClick={openAdd}>＋ Add Mapping</button>}
+      >
         {note && (
-          <div style={{ background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginTop: 12, fontWeight: 600 }}>
+          <div style={{ background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 12, fontWeight: 600 }}>
             ✓ {note}
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 14 }}>
-          <Field label="Teacher">
-            <select style={inputStyle} value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })}>
-              <option value="">—</option>
-              {(teachers ?? []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Subject">
-            <select style={inputStyle} value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}>
-              <option value="">—</option>
-              {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Periods/wk (each section)"><input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} /></Field>
+        <DataTable
+          headers={["Teacher", "Subject", "Class-Section", "Periods/Week", "Room", "", ""]}
+          rows={(mappings ?? []).map((m) => [
+            m.teacherName,
+            m.subjectName,
+            <span key="cs">
+              {m.classSectionLabel}{" "}
+              {m.type === "merged" && <span className="chip mono" style={{ marginLeft: 4 }}>merged</span>}
+            </span>,
+            m.periodsPerWeek,
+            m.roomLabel,
+            <button key="e" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 11px", fontSize: 11.5 }} onClick={() => openEdit(m)}>Edit</button>,
+            <button key="d" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11, color: "var(--signal)" }} onClick={() => removeMapping(m)}>✕</button>,
+          ])}
+        />
+      </Card>
+    </>
+  );
+}
+
+/** Add/Edit Mapping form (§8.1b, mockup pattern): multi-select sections; the
+ *  merged checkbox turns the selection into ONE merged group (§4.9) instead of
+ *  N independent mappings. */
+function MappingForm({
+  editing, teachers, subjects, sections, rooms, note, error, onBack, onSaved, onError,
+}: {
+  editing: any | null;
+  teachers: any[]; subjects: any[]; sections: any[]; rooms: any[];
+  note: string | null; error: string | null;
+  onBack: () => void;
+  onSaved: (msg: string, stayOnForm: boolean) => void;
+  onError: (msg: string) => void;
+}) {
+  const [form, setForm] = useState({
+    teacherId: editing ? String(editing.teacherId) : "",
+    subjectId: editing ? String(editing.subjectId) : "",
+    periodsPerWeek: editing ? String(editing.periodsPerWeek) : "5",
+    roomId: editing?.roomId ? String(editing.roomId) : "",
+    merged: editing?.type === "merged",
+  });
+  const [selected, setSelected] = useState<Set<number>>(new Set(editing?.classSectionIds ?? []));
+
+  const isEdit = editing !== null;
+  const sectionLocked = isEdit && editing.type === "single"; // a plain mapping's section is its identity
+  const toggleSection = (id: number) => {
+    if (sectionLocked) return;
+    setSelected((prev) => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      return s;
+    });
+  };
+
+  const save = async (stayOnForm: boolean) => {
+    try {
+      if (!form.teacherId || !form.subjectId) throw new Error("Pick a teacher and a subject");
+      if (selected.size === 0) throw new Error("Select at least one class-section");
+      const roomId = form.roomId ? Number(form.roomId) : null;
+      const base = {
+        teacherId: Number(form.teacherId),
+        subjectId: Number(form.subjectId),
+        periodsPerWeek: Number(form.periodsPerWeek),
+      };
+      let msg: string;
+      if (isEdit && editing.type === "merged") {
+        await api(`/merged-groups/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ ...base, roomId, classSectionIds: [...selected] }),
+        });
+        msg = "Merged group updated";
+      } else if (isEdit) {
+        await api(`/mappings/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ teacherId: base.teacherId, periodsPerWeek: base.periodsPerWeek, preferredRoomId: roomId }),
+        });
+        msg = "Mapping updated";
+      } else if (form.merged) {
+        if (selected.size < 2) throw new Error("A merged group needs at least 2 class-sections");
+        await api("/merged-groups", {
+          method: "POST",
+          body: JSON.stringify({ ...base, roomId, classSectionIds: [...selected] }),
+        });
+        msg = `Merged group created for ${selected.size} sections`;
+      } else {
+        const res = await api<{ created: number; skipped: string[] }>("/mappings", {
+          method: "POST",
+          body: JSON.stringify({ ...base, preferredRoomId: roomId, classSectionIds: [...selected] }),
+        });
+        msg =
+          `Added ${res.created} mapping${res.created === 1 ? "" : "s"}` +
+          (res.skipped.length > 0 ? ` · skipped: ${res.skipped.join(", ")}` : "");
+      }
+      if (stayOnForm) setSelected(new Set());
+      onSaved(msg, stayOnForm);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <Card
+      title={isEdit ? `Edit ${editing.type === "merged" ? "Merged " : ""}Mapping — ${editing.teacherName} · ${editing.subjectName}` : "Add Subject Mapping"}
+      sub="Assign one teacher to teach one subject in one or more class-sections."
+    >
+      <ErrorNote message={error} />
+      {note && (
+        <div style={{ background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 12, fontWeight: 600 }}>
+          ✓ {note}
         </div>
-        <Field label={`Class-Sections — pick every section this teacher takes for this subject (${selectedSections.size} selected)`}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 7 }}>
-            {(sections ?? []).map((cs) => {
-              const on = selectedSections.has(cs.id);
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Field label="Teacher">
+          <select style={inputStyle} value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })}>
+            <option value="">—</option>
+            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Subject">
+          <select style={inputStyle} value={form.subjectId} disabled={isEdit} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}>
+            <option value="">—</option>
+            {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+        <Field label={sectionLocked ? "Class-Section (fixed for this mapping)" : `Class-Section — select one or more (${selected.size} selected)`}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 7 }}>
+            {sections.map((cs) => {
+              const on = selected.has(cs.id);
               return (
-                <button key={cs.id} onClick={() => toggleSection(cs.id)} style={{
+                <button key={cs.id} onClick={() => toggleSection(cs.id)} disabled={sectionLocked && !on} style={{
                   padding: "8px 10px", borderRadius: 8, fontSize: 12.5, fontWeight: 600,
                   border: `1px solid ${on ? "var(--brand)" : "var(--line)"}`,
                   background: on ? "var(--steel-pale)" : "var(--paper)",
-                  color: on ? "var(--brand)" : "var(--ink)",
+                  color: on ? "var(--brand)" : sectionLocked ? "var(--ink-faint)" : "var(--ink)",
+                  opacity: sectionLocked && !on ? 0.45 : 1,
                 }}>
                   {on ? "☑" : "☐"} {cs.label}
                 </button>
@@ -283,15 +387,44 @@ export function StepTeacherMapping() {
             })}
           </div>
         </Field>
-        <button
-          className="btn btn-primary"
-          onClick={addMapping}
-          disabled={!form.teacherId || !form.subjectId || selectedSections.size === 0}
-        >
-          ＋ Add {selectedSections.size > 0 ? `${selectedSections.size} mapping${selectedSections.size === 1 ? "" : "s"}` : "mappings"}
-        </button>
-      </Card>
-    </>
+        <Field label="Periods / Week (each section)">
+          <input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} />
+        </Field>
+      </div>
+      <Field label="Room">
+        <select style={inputStyle} value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })}>
+          <option value="">Use class-section's home room</option>
+          {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      </Field>
+
+      <label style={{
+        display: "flex", gap: 10, alignItems: "flex-start", padding: "11px 14px",
+        border: `1px solid ${form.merged ? "var(--brand)" : "var(--line)"}`, borderRadius: 9,
+        background: form.merged ? "var(--steel-pale)" : "var(--paper)", cursor: isEdit ? "not-allowed" : "pointer",
+        marginBottom: 18, opacity: isEdit ? 0.6 : 1,
+      }}>
+        <input type="checkbox" checked={form.merged} disabled={isEdit} style={{ marginTop: 3 }} onChange={(e) => setForm({ ...form, merged: e.target.checked })} />
+        <span>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>Merged teaching — same teacher, same slot, all selected class-sections</span>
+          <br />
+          <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+            E.g. one Biology period taught to 10-A and 10-B at once. Every selected section's timetable shows the period; the teacher is counted as occupied only once (§4.9).
+            Unchecked, each selected section gets its own independent mapping.
+          </span>
+        </span>
+      </label>
+
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={onBack}>← Back to Mapping List</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          {!isEdit && (
+            <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={() => save(true)}>Save &amp; Add Another</button>
+          )}
+          <button className="btn btn-primary" onClick={() => save(false)}>Save Mapping</button>
+        </div>
+      </div>
+    </Card>
   );
 }
 

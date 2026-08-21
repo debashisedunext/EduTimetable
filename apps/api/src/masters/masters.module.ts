@@ -5,7 +5,7 @@ import { RoomsController } from "./rooms.controller";
 import { SubjectsController } from "./subjects.controller";
 import { TeachersController } from "./teachers.controller";
 import { CurriculumController } from "./curriculum.controller";
-import { MappingsController } from "./mappings.controller";
+import { MappingsController, MergedGroupsController } from "./mappings.controller";
 import { TimetableConfigsController } from "./timetable-configs.controller";
 import { ReadinessService } from "../readiness/readiness.service";
 
@@ -24,6 +24,7 @@ import { ReadinessService } from "../readiness/readiness.service";
     TeachersController,
     CurriculumController,
     MappingsController,
+    MergedGroupsController,
     TimetableConfigsController,
   ],
   providers: [ReadinessService],

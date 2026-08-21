@@ -30,6 +30,7 @@ The application is developed, tested, and run **exclusively inside Docker** — 
 - **Never install or run Node, MySQL, or Redis on the host, and never suggest doing so.** All commands — dependency install, migrations, seeds, tests, lint, one-off scripts — run inside containers: `docker compose exec api pnpm test`, `docker compose exec api pnpm migrate`, etc. If the stack isn't running, use `docker compose run --rm <service> <cmd>`.
 - Dev and production share the same multi-stage Dockerfiles; dev overrides add bind mounts and hot reload. CI builds and tests the same images. A change that only works outside Docker is broken by definition.
 - Connection config comes from compose environment variables (service names as hosts: `mysql`, `redis`) — never `localhost` hardcoded in app code.
+- **Watcher caveat:** bind-mount file events don't reach the containers on macOS; Vite polls (reliable), but Nest's tsc watcher can still miss edits — after changing api code, if behavior looks stale, `docker compose restart api` (30s) is the fix. Never debug "my change has no effect" without first ruling this out.
 
 ## Tech stack (as specified — do not substitute without discussion)
 
