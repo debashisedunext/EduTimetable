@@ -1,6 +1,7 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { PERMISSIONS, type MeResponse, type Permission } from "@edutimetable/shared";
 import { clearToken } from "./api";
+import { useConfigCtx } from "./hooks";
 
 interface NavEntry {
   label: string;
@@ -21,44 +22,59 @@ const NAV: NavGroup[] = [
       { label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
-      { label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
-    ],
-  },
-  {
-    label: "Manage",
-    items: [
-      { label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
-      { label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
-      { label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
-      { label: "Substitutes", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
-    ],
-  },
-  {
-    label: "My Timetable",
-    items: [
-      { label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN },
-      { label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS },
-    ],
-  },
-  {
-    label: "Intelligence",
-    items: [
-      { label: "Ask AI", to: "/ask-ai", requires: PERMISSIONS.AI_CHAT },
-      { label: "AI Settings", to: "/ai-settings", requires: PERMISSIONS.AI_CONFIGURE },
-    ],
-  },
-  {
-    label: "Reference",
-    items: [
-      { label: "Reports", to: "/reports", requires: PERMISSIONS.REPORTS_VIEW },
-      { label: "Notifications", to: "/notifications", requires: PERMISSIONS.NOTIFICATIONS_VIEW },
     ],
   },
   {
     label: "Administration",
     items: [{ label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE }],
   },
+  {
+    label: "System",
+    items: [{ label: "Status & Jobs", to: "/system" }],
+  },
+  // Manage / My Timetable / Intelligence / Reference groups arrive with Phases 2-7.
 ];
+
+const TITLES: Record<string, [string, string]> = {
+  "/": ["Build", "Timetables"],
+  "/setup": ["Build", "Setup Wizard"],
+  "/readiness": ["Build", "Readiness Dashboard"],
+  "/roles": ["Administration", "Roles & Access"],
+  "/system": ["System", "Status & Jobs"],
+};
+
+function Topbar() {
+  const { pathname } = useLocation();
+  const { configs, current, setCurrentId } = useConfigCtx();
+  const [eyebrow, title] = TITLES[pathname] ?? ["", "Timetable AI"];
+  return (
+    <div className="topbar">
+      <div>
+        <div className="topbar-eyebrow">{eyebrow}</div>
+        <div className="topbar-title">{title}</div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {configs.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+            <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", fontWeight: 700, marginBottom: 2 }}>
+              Viewing timetable
+            </span>
+            <select
+              value={current?.id ?? ""}
+              onChange={(e) => setCurrentId(Number(e.target.value))}
+              style={{ fontWeight: 700, fontSize: 13, color: "var(--forest)", border: "1px solid var(--sage-pale)", background: "var(--sage-pale)", borderRadius: 7, padding: "5px 9px" }}
+            >
+              {configs.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <span className="badge badge-ok">● Live</span>
+      </div>
+    </div>
+  );
+}
 
 export function Shell({ me }: { me: MeResponse }) {
   const held = new Set(me.permissions);
@@ -115,13 +131,7 @@ export function Shell({ me }: { me: MeResponse }) {
         </div>
       </nav>
       <div className="main">
-        <div className="topbar">
-          <div>
-            <div className="topbar-eyebrow">Phase 0</div>
-            <div className="topbar-title">Foundation</div>
-          </div>
-          <span className="badge badge-ok">● Docker stack</span>
-        </div>
+        <Topbar />
         <div className="content">
           <Outlet />
         </div>

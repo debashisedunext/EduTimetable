@@ -11,6 +11,10 @@ import { HealthController } from "./health/health.controller";
 import { MeController } from "./me/me.controller";
 import { DemoModule } from "./demo/demo.module";
 import { EventsModule } from "./events/events.module";
+import { MastersModule } from "./masters/masters.module";
+import { RolesAdminController } from "./admin/roles-admin.controller";
+import { SampleDataController } from "./dev/sample-data.controller";
+import { ReadinessService } from "./readiness/readiness.service";
 
 @Module({
   imports: [
@@ -26,9 +30,11 @@ import { EventsModule } from "./events/events.module";
     AuthModule,
     DemoModule,
     EventsModule,
+    MastersModule,
   ],
-  controllers: [HealthController, MeController],
+  controllers: [HealthController, MeController, RolesAdminController, SampleDataController],
   providers: [
+    ReadinessService,
     // Order matters: authentication first, then permission checks.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },

@@ -81,6 +81,9 @@ export type ViewScope =
   | { level: "own"; teacherId: number }
   | { level: "none" };
 
+export * from "./feasibility/types";
+export { runFeasibility, teacherWeeklyCapacity } from "./feasibility/engine";
+
 export interface MeResponse {
   id: number;
   name: string;
