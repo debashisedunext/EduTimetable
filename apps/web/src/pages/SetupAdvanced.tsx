@@ -85,13 +85,17 @@ export function StepCurriculum() {
   );
 }
 
-/** Step 6 — Teacher Directory (§8.1a): list first, form second, §4.7 rules. */
-export function StepTeachers() {
+/** Step 6 — Teacher Directory (§8.1a): list first, form second, §4.7 rules.
+ *  Layout mirrors mockup step 5a/5b exactly. */
+export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const { data, refetch } = useApi<any[]>("/teachers");
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const save = async (form: any) => {
+  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [] });
+
+  /** returns true when the save landed, so the form can chain add-another/next */
+  const save = async (form: any): Promise<boolean> => {
     try {
       const body = {
         name: form.name, employeeCode: form.employeeCode,
@@ -101,86 +105,164 @@ export function StepTeachers() {
       };
       if (form.id) await api(`/teachers/${form.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/teachers", { method: "POST", body: JSON.stringify(body) });
-      setEditing(null); setError(null); refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      setError(null); refetch();
+      return true;
+    } catch (e) { setError(asMessage(e)); return false; }
   };
+  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [] }); };
 
-  if (editing) return <TeacherForm initial={editing} onSave={save} onCancel={() => setEditing(null)} error={error} />;
+  if (editing) {
+    return (
+      <TeacherForm
+        initial={editing}
+        error={error}
+        onBack={() => { setEditing(null); setError(null); }}
+        onSaveAnother={async (f) => { if (await save(f)) setEditing(blankTeacher()); }}
+        onSaveNext={async (f) => {
+          if (await save(f)) { setEditing(null); onNext?.(); }
+        }}
+      />
+    );
+  }
 
   return (
     <Card
       title="Teachers"
-      sub="Placement rules here are HARD constraints — the solver can never override them (§4.7)."
-      actions={<button className="btn btn-primary" onClick={() => setEditing({ name: "", employeeCode: "", maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [] })}>＋ Add Teacher</button>}
+      sub={`${data?.length ?? 0} teacher(s) added so far — click any row to view or edit. Placement rules are HARD constraints (§4.7).`}
+      actions={<button className="btn btn-primary" onClick={() => { setError(null); setEditing(blankTeacher()); }}>+ Add New Teacher</button>}
     >
       <ErrorNote message={error} />
       <DataTable
-        headers={["Teacher", "Subjects", "Sections", "Load", "P1 Rule", "Pattern", ""]}
+        headers={["Teacher", "Subjects", "Sections", "Load", "Class-Teacher Rule", "Period Pattern", ""]}
+        onRowClick={(i) => { const t = (data ?? [])[i]; if (t) openEdit(t); }}
         rows={(data ?? []).map((t) => [
           <span key="n"><b>{t.name}</b><br /><span style={{ fontSize: 11, color: "var(--ink-faint)" }}>{t.employeeCode}</span></span>,
           t.subjects.join(", ") || "—",
           t.sectionsMapped,
-          <span key="l" style={{ color: t.weeklyLoad > t.maxPeriodsPerWeek ? "var(--signal)" : undefined, fontWeight: t.weeklyLoad > t.maxPeriodsPerWeek ? 700 : 400 }}>
+          <span key="l" className={`badge ${t.weeklyLoad > t.maxPeriodsPerWeek ? "badge-error" : "badge-ok"}`}>
             {t.weeklyLoad} / {t.maxPeriodsPerWeek}
           </span>,
-          <span key="r" className="chip mono">{t.classTeacherPeriodRule}</span>,
-          <span key="p" className="chip mono">{t.periodPattern}</span>,
-          <button key="e" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 10px", fontSize: 11.5 }} onClick={() => setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [] })}>Edit</button>,
+          <span key="r" className="chip">{t.classTeacherPeriodRule}</span>,
+          <span key="p" className="chip">{t.periodPattern}</span>,
+          <button key="e" className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: 11.5 }}
+            onClick={(e) => { e.stopPropagation(); openEdit(t); }}>Edit</button>,
         ])}
       />
     </Card>
   );
 }
 
-function TeacherForm({ initial, onSave, onCancel, error }: { initial: any; onSave: (f: any) => void; onCancel: () => void; error: string | null }) {
+/** Radio-card option (mockup .radio-opt): title + explanatory description. */
+function RadioOpt({ group, selected, title, desc, onSelect, children }: {
+  group: string; selected: boolean; title: string; desc: string;
+  onSelect: () => void; children?: React.ReactNode;
+}) {
+  return (
+    <label className={`radio-opt${selected ? " selected" : ""}`}>
+      <input type="radio" name={group} checked={selected} onChange={onSelect} />
+      <div>
+        <div className="radio-opt-title">{title}</div>
+        <div className="radio-opt-desc">{desc}</div>
+        {children}
+      </div>
+    </label>
+  );
+}
+
+/** Step 5b of the mockup — Add / Edit Teacher, replicated 1:1. */
+function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
+  initial: any; error: string | null;
+  onBack: () => void; onSaveAnother: (f: any) => void; onSaveNext: (f: any) => void;
+}) {
   const [form, setForm] = useState(initial);
+  useEffect(() => setForm(initial), [initial]);
+  const first = (form.name || "This teacher").split(" ")[0];
   const toggleDay = (d: number) => {
     const set = new Set<number>(form.alternateDaySet);
     if (set.has(d)) set.delete(d); else set.add(d);
-    setForm({ ...form, alternateDaySet: [...set].sort() });
+    setForm({ ...form, periodPattern: "alternate_day", alternateDaySet: [...set].sort() });
   };
+  const valid = form.name && form.employeeCode;
+
   return (
-    <Card title={form.id ? `Edit Teacher — ${initial.name}` : "Add New Teacher"}>
+    <div className="card" style={{ padding: 26, marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 600, marginBottom: 0 }}>Add / Edit Teacher</h2>
+          <div className="screen-sub" style={{ marginBottom: 0 }}>
+            {form.id ? `${form.name} · Employee code ${form.employeeCode}` : "New teacher for this school"}
+          </div>
+        </div>
+        {form.id != null && <span className="badge badge-neutral">{form.sectionsMapped ?? 0} sections mapped</span>}
+      </div>
+
       <ErrorNote message={error} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+
+      <div className="form-grid">
         <Field label="Full name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Employee code"><input style={inputStyle} value={form.employeeCode} onChange={(e) => setForm({ ...form, employeeCode: e.target.value })} /></Field>
         <Field label="Max periods / day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Max periods / week"><input type="number" style={inputStyle} value={form.maxPeriodsPerWeek} onChange={(e) => setForm({ ...form, maxPeriodsPerWeek: e.target.value })} /></Field>
-        <Field label="Class-teacher Period-1 rule" hint="Applies only where they ARE class teacher (Teacher Mapping step).">
-          <select style={inputStyle} value={form.classTeacherPeriodRule} onChange={(e) => setForm({ ...form, classTeacherPeriodRule: e.target.value })}>
-            <option value="none">none</option>
-            <option value="always_first_period">always first period (hard)</option>
-            <option value="random">random</option>
-          </select>
-        </Field>
-        <Field label="Period pattern" hint="alternate = hard gaps, never bypassed by the solver.">
-          <select style={inputStyle} value={form.periodPattern} onChange={(e) => setForm({ ...form, periodPattern: e.target.value })}>
-            <option value="every_period">every period</option>
-            <option value="alternate_period">alternate periods (no adjacent)</option>
-            <option value="alternate_day">alternate days</option>
-          </select>
-        </Field>
       </div>
-      {form.periodPattern === "alternate_day" && (
-        <Field label="Alternate day-set (leave empty to auto-pick, confirmed at generation)">
-          <div style={{ display: "flex", gap: 7 }}>
-            {[1, 2, 3, 4, 5, 6].map((d) => (
-              <button key={d} onClick={() => toggleDay(d)} style={{
-                width: 44, height: 34, borderRadius: 8, fontWeight: 700, fontSize: 12,
-                border: "1px solid var(--line)",
-                background: form.alternateDaySet.includes(d) ? "var(--brand)" : "var(--paper)",
-                color: form.alternateDaySet.includes(d) ? "#fff" : "var(--ink-faint)",
-              }}>{DAY_NAMES[d]}</button>
-            ))}
+
+      <div style={{ height: 1, background: "var(--line)", margin: "6px 0 22px" }} />
+      <div className="section-label" style={{ display: "block", marginBottom: 18 }}>
+        Placement configuration — never bypassed by the solver
+      </div>
+
+      <div className="grid2">
+        <div className="field">
+          <label>Class-teacher period rule</label>
+          <div className="radio-row">
+            <RadioOpt group="ctpr" selected={form.classTeacherPeriodRule === "always_first_period"}
+              title="Always first period"
+              desc={`${first} teaches Period 1 of their own class-section every day, and is never placed in Period 1 of any other section.`}
+              onSelect={() => setForm({ ...form, classTeacherPeriodRule: "always_first_period" })} />
+            <RadioOpt group="ctpr" selected={form.classTeacherPeriodRule === "random"}
+              title="Random"
+              desc="Their own class's Period 1 is unrestricted — solver places normally."
+              onSelect={() => setForm({ ...form, classTeacherPeriodRule: "random" })} />
+            <RadioOpt group="ctpr" selected={form.classTeacherPeriodRule === "none"}
+              title="None"
+              desc="Class-teacher status has no bearing on period placement."
+              onSelect={() => setForm({ ...form, classTeacherPeriodRule: "none" })} />
           </div>
-        </Field>
-      )}
-      <div style={{ display: "flex", gap: 10 }}>
-        <button className="btn btn-primary" onClick={() => onSave(form)} disabled={!form.name || !form.employeeCode}>Save Teacher</button>
-        <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={onCancel}>← Back to directory</button>
+        </div>
+
+        <div className="field">
+          <label>Period pattern</label>
+          <div className="radio-row">
+            <RadioOpt group="pp" selected={form.periodPattern === "every_period"}
+              title="Every period" desc="No gap restriction (default)."
+              onSelect={() => setForm({ ...form, periodPattern: "every_period" })} />
+            <RadioOpt group="pp" selected={form.periodPattern === "alternate_period"}
+              title="Alternate period" desc="Never two adjacent periods on the same day — hard constraint."
+              onSelect={() => setForm({ ...form, periodPattern: "alternate_period" })} />
+            <RadioOpt group="pp" selected={form.periodPattern === "alternate_day"}
+              title="Alternate day" desc="Restrict to specific days:"
+              onSelect={() => setForm({ ...form, periodPattern: "alternate_day" })}>
+              <div className="day-picker">
+                {[1, 2, 3, 4, 5].map((d) => (
+                  <button key={d} type="button"
+                    className={`day-toggle${form.periodPattern === "alternate_day" && form.alternateDaySet.includes(d) ? " on" : ""}`}
+                    onClick={(e) => { e.preventDefault(); toggleDay(d); }}>
+                    {DAY_NAMES[d]}
+                  </button>
+                ))}
+              </div>
+            </RadioOpt>
+          </div>
+        </div>
       </div>
-    </Card>
+
+      <div className="wizard-foot">
+        <button className="btn btn-secondary" onClick={onBack}>← Back to Teacher List</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button className="btn btn-secondary" disabled={!valid} onClick={() => onSaveAnother(form)}>Save &amp; Add Another</button>
+          <button className="btn btn-primary" disabled={!valid} onClick={() => onSaveNext(form)}>Save &amp; Next: Teacher Mapping →</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

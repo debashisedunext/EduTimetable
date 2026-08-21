@@ -163,3 +163,19 @@ button { font-family: inherit; cursor: pointer; }
 .board-toast.err { background: #fdf0ef; border: 1px solid var(--signal); color: var(--signal); }
 .board-toast.ok { background: #eefaf2; border: 1px solid #34a06a; color: #1d6b45; }
 @keyframes toastin { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---- mockup form patterns (Setup Wizard §8.1a) ---- */
+.section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; color: var(--steel); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.radio-row { display: flex; flex-direction: column; gap: 9px; }
+.radio-opt { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
+.radio-opt.selected { border-color: var(--brand); background: var(--steel-pale); }
+.radio-opt input { margin-top: 3px; }
+.radio-opt-title { font-size: 13px; font-weight: 600; }
+.radio-opt-desc { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; }
+.day-picker { display: flex; gap: 7px; margin-top: 10px; }
+.day-toggle { width: 40px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--paper); font-size: 12px; font-weight: 700; color: var(--ink-faint); cursor: pointer; }
+.day-toggle.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.wizard-foot { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.btn-secondary { border: 1px solid var(--line); background: var(--paper); }

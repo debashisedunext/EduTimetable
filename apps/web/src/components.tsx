@@ -15,7 +15,7 @@ export function Card({ title, sub, children, actions }: { title?: string; sub?: 
   );
 }
 
-export function DataTable({ headers, rows, empty }: { headers: string[]; rows: ReactNode[][]; empty?: string }) {
+export function DataTable({ headers, rows, empty, onRowClick }: { headers: string[]; rows: ReactNode[][]; empty?: string; onRowClick?: (index: number) => void }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
@@ -31,7 +31,9 @@ export function DataTable({ headers, rows, empty }: { headers: string[]; rows: R
             <tr><td colSpan={headers.length} style={{ ...tdStyle, color: "var(--ink-faint)" }}>{empty ?? "Nothing here yet."}</td></tr>
           ) : (
             rows.map((r, i) => (
-              <tr key={i}>{r.map((c, j) => <td key={j} style={tdStyle}>{c}</td>)}</tr>
+              <tr key={i} onClick={onRowClick ? () => onRowClick(i) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>
+                {r.map((c, j) => <td key={j} style={tdStyle}>{c}</td>)}
+              </tr>
             ))
           )}
         </tbody>

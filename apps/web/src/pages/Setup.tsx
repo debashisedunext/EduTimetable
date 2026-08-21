@@ -54,7 +54,7 @@ export function Setup() {
       {step === 2 && <StepRooms />}
       {step === 3 && <StepSubjects />}
       {step === 4 && <StepCurriculum />}
-      {step === 5 && <StepTeachers />}
+      {step === 5 && <StepTeachers onNext={() => setStep(6)} />}
       {step === 6 && <StepTeacherMapping />}
       {step === 7 && <StepConfig />}
 
