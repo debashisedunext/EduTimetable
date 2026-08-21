@@ -19,6 +19,7 @@ import type { SessionTokenPayload } from "@edutimetable/shared";
 export class EventsGateway implements OnGatewayConnection, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EventsGateway.name);
   private queueEvents!: QueueEvents;
+  private solverEvents!: QueueEvents;
 
   @WebSocketServer()
   server!: Server;
@@ -49,10 +50,26 @@ export class EventsGateway implements OnGatewayConnection, OnModuleInit, OnModul
     this.queueEvents.on("completed", ({ jobId }) => {
       this.server.emit("demo:completed", { jobId });
     });
-    this.logger.log("Forwarding demo queue events to Socket.IO clients");
+    this.solverEvents = new QueueEvents("solver", {
+      connection: {
+        host: process.env.REDIS_HOST ?? "redis",
+        port: Number(process.env.REDIS_PORT ?? 6379),
+      },
+    });
+    this.solverEvents.on("progress", ({ jobId, data }) => {
+      this.server.emit("solver:progress", { jobId, ...(data as object) });
+    });
+    this.solverEvents.on("completed", ({ jobId, returnvalue }) => {
+      this.server.emit("solver:completed", { jobId, result: returnvalue });
+    });
+    this.solverEvents.on("failed", ({ jobId, failedReason }) => {
+      this.server.emit("solver:failed", { jobId, reason: failedReason });
+    });
+    this.logger.log("Forwarding demo + solver queue events to Socket.IO clients");
   }
 
   async onModuleDestroy() {
     await this.queueEvents?.close();
+    await this.solverEvents?.close();
   }
 }

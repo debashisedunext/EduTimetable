@@ -166,6 +166,27 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  // ---------- Check 6e — block subject taught by an alternate-period teacher ----------
+  // A consecutive block is internally adjacent, which the alternate_period hard
+  // rule forbids (§4.7) — contradictory configuration, caught before solving.
+  const teacherById2 = new Map(snap.teachers.map((t) => [t.id, t]));
+  for (const m of snap.mappings) {
+    const cs = snap.classSections.find((c) => c.id === m.classSectionId);
+    const req = cs
+      ? snap.subjectRequirements.find((r) => r.classId === cs.classId && r.subjectId === m.subjectId)
+      : undefined;
+    const t = teacherById2.get(m.teacherId);
+    if (req && req.consecutiveBlockSize > 1 && t?.periodPattern === "alternate_period") {
+      issues.push({
+        code: "BLOCK_TEACHER_PATTERN",
+        severity: "blocker",
+        message: `${t.name} teaches ${m.subjectName} in ${m.classSectionLabel} as ${req.consecutiveBlockSize}-period blocks, but their alternate-period pattern forbids adjacent periods — contradictory configuration.`,
+        entity: { type: "mapping", id: m.id, label: `${m.classSectionLabel} · ${m.subjectName}` },
+        fix: `Assign a different teacher for ${m.subjectName} in ${m.classSectionLabel}, or remove the block/pattern rule.`,
+      });
+    }
+  }
+
   // ---------- Check 6d — mapping coverage per section (§4.6) ----------
   for (const cs of snap.classSections) {
     for (const r of reqsByClass.get(cs.classId) ?? []) {

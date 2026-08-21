@@ -373,3 +373,45 @@ model AuditLog {
 
   @@map("audit_log")
 }
+
+// ===================== PHASE 2: THE TIMETABLE ITSELF (§3, §4.9) =====================
+
+enum SlotStatus {
+  draft
+  published
+}
+
+enum SlotSource {
+  auto
+  manual
+  substitute
+}
+
+// One row per (class-section, day, period). Merged groups (§4.9) produce one
+// row per member section, but ONLY the primary row carries teacher_occupancy_key
+// and room_id — echo rows keep them NULL so the unique keys below stay the
+// absolute DB-level guarantee: a teacher/room can hold one occupancy event per
+// (config, status, day, period), while a merged group legitimately spans
+// several sections. The occupancy key is written by the single slot-writer
+// service (T-{teacherId} / MG-{groupId}), never by callers.
+model TimetableSlot {
+  id                  BigInt     @id @default(autoincrement())
+  timetableConfigId   Int        @map("timetable_config_id")
+  status              SlotStatus @default(draft)
+  classSectionId      Int        @map("class_section_id")
+  dayOfWeek           Int        @map("day_of_week") @db.TinyInt
+  periodNumber        Int        @map("period_number")
+  subjectId           Int?       @map("subject_id")
+  teacherId           Int?       @map("teacher_id")
+  roomId              Int?       @map("room_id")
+  mergedGroupId       Int?       @map("merged_group_id")
+  teacherOccupancyKey String?    @map("teacher_occupancy_key") @db.VarChar(30)
+  isLocked            Boolean    @default(false) @map("is_locked")
+  source              SlotSource @default(auto)
+
+  @@unique([timetableConfigId, status, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
+  @@unique([timetableConfigId, status, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
+  @@unique([timetableConfigId, status, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
+  @@index([timetableConfigId, status, teacherId])
+  @@map("timetable_slots")
+}

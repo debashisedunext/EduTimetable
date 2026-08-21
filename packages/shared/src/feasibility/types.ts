@@ -18,6 +18,7 @@ export type IssueCode =
   | "BLOCK_EXCEEDS_DAILY_MAX"
   | "BLOCK_FRAGMENTED"
   | "BLOCK_MATH_INVALID"
+  | "BLOCK_TEACHER_PATTERN"
   // Check 4 — cross-section daily overlap / tightness (§4.4)
   | "DAILY_PIGEONHOLE"
   | "TEACHER_TIGHT"

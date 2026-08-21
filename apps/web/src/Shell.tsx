@@ -22,6 +22,13 @@ const NAV: NavGroup[] = [
       { label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
+      { label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
+    ],
+  },
+  {
+    label: "Manage",
+    items: [
+      { label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
     ],
   },
   {
@@ -39,6 +46,8 @@ const TITLES: Record<string, [string, string]> = {
   "/": ["Build", "Timetables"],
   "/setup": ["Build", "Setup Wizard"],
   "/readiness": ["Build", "Readiness Dashboard"],
+  "/generate": ["Build", "Generate Timetable"],
+  "/matrix": ["Manage", "Full Allocation Matrix"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };
