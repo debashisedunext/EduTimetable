@@ -12,6 +12,8 @@ import { Readiness } from "./pages/Readiness";
 import { Roles } from "./pages/Roles";
 import { Generate } from "./pages/Generate";
 import { Matrix } from "./pages/Matrix";
+import { Board } from "./pages/Board";
+import { Publish } from "./pages/Publish";
 
 /** Captures the session token from the SSO redirect fragment (§15.1). */
 function SsoCapture() {
@@ -103,6 +105,8 @@ export default function App() {
           <Route path="/readiness" element={<Readiness />} />
           <Route path="/generate" element={<Generate />} />
           <Route path="/matrix" element={<Matrix />} />
+          <Route path="/board" element={<Board />} />
+          <Route path="/publish" element={<Publish />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />

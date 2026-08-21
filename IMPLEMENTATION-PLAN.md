@@ -15,6 +15,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 0 — Project Foundation (2 weeks)
 
+> **Status: ✅ complete** (branch `phase0/foundation`). Ports note: host api **3001** / web **5174**.
+
 **Objective:** A running skeleton with auth, database, and CI so every later phase ships into a working app.
 **Dependencies:** none.
 
@@ -35,6 +37,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 ---
 
 ## Phase 1 — Masters, Config & Feasibility Engine (6 weeks)
+
+> **Status: ✅ complete** (branch `phase1/masters-feasibility`). Deferred: teacher-unavailability entry UI (API exists), elective-block setup screen (schema exists).
 
 **Objective:** All master-data entry + the live Readiness Score (§4) — the product feels intelligent before any solver exists.
 **Dependencies:** Phase 0.
@@ -81,6 +85,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 2 — CSP Solver & Draft Generation (5 weeks)
 
+> **Status: ✅ complete** (branch `phase2/solver-generation`, commit `ad4fa55`). Deferred from 2.11: grid virtualization + k6 perf suite in CI (compact cached endpoint shipped).
+
 **Objective:** One click generates a complete, conflict-free draft for a config that passes feasibility (§5).
 **Dependencies:** Phase 1 (esp. 1.10 — the solver trusts feasibility's guarantee).
 
@@ -103,6 +109,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 ---
 
 ## Phase 3 — Drag-and-Drop Editing & Publish (4 weeks)
+
+> **Status: ✅ complete** (branch `phase3/dragdrop-publish`). Shared `BoardEngine` (client legality + server revalidation, one rules engine), Draft Board with @dnd-kit + legal-destination glow + swap/lock/tray, publish diff/preview + one-transaction flip + `timetable_publications` version log, `scripts/board-smoke.sh` (18 live checks: RBAC negatives, stale 409s, lock conflicts, publish-during-edit). Notes: By-Teacher board view is read-only; merged-group cards move/lock but don't swap or remove (regenerate covers them).
 
 **Objective:** Manual adjustment with live legality, and the draft→publish lifecycle (§7, §6 of screens list).
 **Dependencies:** Phase 2 (reuses `ConstraintChecker` from 2.4).

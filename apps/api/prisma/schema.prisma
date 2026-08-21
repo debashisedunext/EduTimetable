@@ -415,3 +415,21 @@ model TimetableSlot {
   @@index([timetableConfigId, status, teacherId])
   @@map("timetable_slots")
 }
+
+// Publish audit trail (§7 / task 3.7): one row per publish event, so the
+// Publish Confirmation screen can show "v13 → v14" and effective-since dates.
+// The slots themselves flip status inside the same transaction that writes
+// this row — the version number is derived from this log, never stored on slots.
+model TimetablePublication {
+  id                Int      @id @default(autoincrement())
+  timetableConfigId Int      @map("timetable_config_id")
+  version           Int
+  slotCount         Int      @map("slot_count")
+  changedCount      Int      @map("changed_count")
+  unallocatedCount  Int      @map("unallocated_count")
+  publishedById     Int?     @map("published_by_id")
+  publishedAt       DateTime @default(now()) @map("published_at")
+
+  @@unique([timetableConfigId, version], map: "uq_config_version")
+  @@map("timetable_publications")
+}

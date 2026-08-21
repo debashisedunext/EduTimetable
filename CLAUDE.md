@@ -11,7 +11,7 @@ This two-phase split is the load-bearing architectural decision. Everything else
 
 ## Repository status
 
-**No application code exists yet.** The repo currently contains only the specification artifacts:
+**Phases 0–3 are implemented** (pnpm monorepo: `apps/api` NestJS + Prisma, `apps/web` React/Vite, `packages/shared` feasibility + solver + board engines; Docker compose stack) — see the per-phase status notes in `IMPLEMENTATION-PLAN.md`. The specification artifacts remain authoritative:
 
 | File | Role |
 |---|---|
@@ -20,7 +20,7 @@ This two-phase split is the load-bearing architectural decision. Everything else
 | `AI-Timetable-System-Deck.pptx` | 13-slide stakeholder deck summarizing the architecture doc (no unique content). |
 | `IMPLEMENTATION-PLAN.md` | Sequential task-level build plan for all phases (0–7) with dependencies, deliverables, and exit criteria. Work through it in order; check tasks off as they land. |
 
-When implementation starts, follow the phased roadmap in §12 of the architecture doc (summarized below).
+Continue following the phased roadmap in §12 of the architecture doc (summarized below); next up is Phase 4 (Substitute Teacher Engine).
 
 ## Docker-only development (hard rule)
 

@@ -23,7 +23,8 @@ const abbr = (subject: string) => (subject.length <= 5 ? subject : subject.slice
  *  headers. Data is the compact cached endpoint (§14 budget). */
 export function Matrix() {
   const { current } = useConfigCtx();
-  const { data } = useApi<SlotsPayload>(current ? `/timetable-configs/${current.id}/slots` : null);
+  const [status, setStatus] = useState<"draft" | "published">("draft");
+  const { data } = useApi<SlotsPayload>(current ? `/timetable-configs/${current.id}/slots?status=${status}` : null);
   const [dimension, setDimension] = useState<"section" | "teacher">("section");
   const [search, setSearch] = useState("");
 
@@ -77,6 +78,11 @@ export function Matrix() {
             style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
             <option value="section">By Class-Section</option>
             <option value="teacher">By Teacher</option>
+          </select>
+          <select value={status} onChange={(e) => setStatus(e.target.value as "draft" | "published")}
+            style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
+            <option value="draft">Draft</option>
+            <option value="published">Published</option>
           </select>
           <input placeholder={`Search ${dimension === "section" ? "class" : "teacher"}…`} value={search}
             onChange={(e) => setSearch(e.target.value)}

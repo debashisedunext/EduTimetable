@@ -100,3 +100,66 @@ button { font-family: inherit; cursor: pointer; }
 .kv:last-child { border-bottom: none; }
 .kv b { min-width: 120px; color: var(--ink-soft); font-weight: 600; }
 .mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* ---- Phase 3: Draft Board (§7) ---- */
+.badge-warn { background: #FBF3E4; color: var(--amber, #B9791A); }
+.badge-neutral { background: var(--offwhite); color: var(--ink-mid, #4F5D70); }
+
+.dnd-cell {
+  min-height: 58px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--paper, #fff); padding: 3px; position: relative;
+  transition: box-shadow 0.12s, border-color 0.12s, background 0.12s;
+}
+.dnd-cell.legal {
+  border-color: #34a06a; background: #eefaf2;
+  box-shadow: 0 0 0 2px rgba(52, 160, 106, 0.25);
+}
+.dnd-cell.legal-swap {
+  border-color: var(--accent); background: #e9f7fb;
+  box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.22);
+}
+.dnd-cell.over { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35); }
+.dnd-cell.rejected { animation: cellshake 0.35s; border-color: var(--signal); background: #fdf0ef; }
+@keyframes cellshake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+.dnd-break {
+  background: repeating-linear-gradient(45deg, var(--offwhite), var(--offwhite) 5px, #e9eef7 5px, #e9eef7 10px);
+  border: 1px dashed var(--line); border-radius: 9px; min-height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; color: var(--ink-faint); letter-spacing: 0.08em; text-transform: uppercase;
+}
+.dnd-card {
+  border-radius: 7px; background: var(--steel-pale); border: 1px solid var(--steel-light);
+  padding: 5px 7px 4px; cursor: grab; user-select: none; font-size: 11px; line-height: 1.25;
+  position: relative; height: 100%;
+}
+.dnd-card.merged { background: #e3ecf9; border-style: double; }
+.dnd-card.locked { cursor: default; background: var(--offwhite); border-color: var(--line); }
+.dnd-card.dragging { opacity: 0.35; }
+.dnd-card .t { font-weight: 700; color: var(--brand-deep, #0b1f44); }
+.dnd-card .s { font-size: 9.5px; color: var(--ink-faint); }
+.dnd-card .tools { position: absolute; top: 2px; right: 3px; display: none; gap: 2px; }
+.dnd-card:hover .tools { display: flex; }
+.dnd-card .tools button {
+  border: none; background: transparent; cursor: pointer; font-size: 10px; padding: 0 2px; opacity: 0.65;
+}
+.dnd-card .tools button:hover { opacity: 1; }
+.drag-overlay-card {
+  border-radius: 7px; background: var(--brand); color: #fff; padding: 6px 10px;
+  font-size: 11.5px; font-weight: 700; box-shadow: 0 8px 22px rgba(11, 31, 68, 0.35); cursor: grabbing;
+}
+.tray {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 10px;
+  border: 1.5px dashed var(--steel-light); border-radius: 10px; background: var(--offwhite); min-height: 46px;
+}
+.board-toast {
+  position: fixed; right: 22px; bottom: 22px; z-index: 60; max-width: 420px;
+  padding: 12px 16px; border-radius: 10px; font-size: 12.5px; font-weight: 600;
+  box-shadow: 0 10px 30px rgba(11, 31, 68, 0.25); animation: toastin 0.18s ease-out;
+}
+.board-toast.err { background: #fdf0ef; border: 1px solid var(--signal); color: var(--signal); }
+.board-toast.ok { background: #eefaf2; border: 1px solid #34a06a; color: #1d6b45; }
+@keyframes toastin { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
