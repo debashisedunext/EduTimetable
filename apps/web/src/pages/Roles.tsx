@@ -60,7 +60,7 @@ export function Roles() {
 
   return (
     <div style={{ maxWidth: 980 }}>
-      <div style={{ background: "var(--forest-deep)", color: "var(--sage-light)", borderRadius: 10, padding: "12px 16px", fontSize: 12.5, marginBottom: 18 }}>
+      <div style={{ background: "var(--brand-deep)", color: "var(--steel-light)", borderRadius: 10, padding: "12px 16px", fontSize: 12.5, marginBottom: 18 }}>
         🔒 Users sign in through the <b style={{ color: "#fff" }}>Edunext ERP → Timetable menu (SSO)</b> — this app has no login of its own.
         Changes here are audit-logged and enforced server-side on the next request.
       </div>
@@ -144,7 +144,7 @@ export function Roles() {
                 ))}
               </select>,
               u.teacherId === null ? (
-                <span key="c" className="badge" style={{ background: "var(--sage-pale)", color: "var(--sage)" }}>— staff —</span>
+                <span key="c" className="badge" style={{ background: "var(--steel-pale)", color: "var(--steel)" }}>— staff —</span>
               ) : u.teacherLinked ? (
                 <span key="c" className="badge badge-ok">✓ {u.teacherName}</span>
               ) : (
@@ -182,7 +182,7 @@ function GroupRows({
   return (
     <>
       <tr>
-        <td colSpan={roles.length + 1} style={{ background: "var(--offwhite)", padding: "6px 10px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--sage)", fontWeight: 700 }}>
+        <td colSpan={roles.length + 1} style={{ background: "var(--offwhite)", padding: "6px 10px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--steel)", fontWeight: 700 }}>
           {group.label}
         </td>
       </tr>
@@ -198,7 +198,7 @@ function GroupRows({
                 checked={held(r.id).has(p)}
                 disabled={r.id === superAdminId}
                 onChange={() => toggle(r.id, p)}
-                style={{ width: 15, height: 15, accentColor: "var(--forest)" }}
+                style={{ width: 15, height: 15, accentColor: "var(--brand)" }}
               />
             </td>
           ))}

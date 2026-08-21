@@ -153,7 +153,7 @@ function TeacherForm({ initial, onSave, onCancel, error }: { initial: any; onSav
               <button key={d} onClick={() => toggleDay(d)} style={{
                 width: 44, height: 34, borderRadius: 8, fontWeight: 700, fontSize: 12,
                 border: "1px solid var(--line)",
-                background: form.alternateDaySet.includes(d) ? "var(--forest)" : "var(--paper)",
+                background: form.alternateDaySet.includes(d) ? "var(--brand)" : "var(--paper)",
                 color: form.alternateDaySet.includes(d) ? "#fff" : "var(--ink-faint)",
               }}>{DAY_NAMES[d]}</button>
             ))}
@@ -335,7 +335,7 @@ export function StepConfig() {
             {[1, 2, 3, 4, 5, 6].map((d) => (
               <button key={d} onClick={() => toggleDay(d)} style={{
                 width: 44, height: 34, borderRadius: 8, fontWeight: 700, fontSize: 12, border: "1px solid var(--line)",
-                background: form.workingDays.includes(d) ? "var(--forest)" : "var(--paper)",
+                background: form.workingDays.includes(d) ? "var(--brand)" : "var(--paper)",
                 color: form.workingDays.includes(d) ? "#fff" : "var(--ink-faint)",
               }}>{DAY_NAMES[d]}</button>
             ))}
@@ -360,8 +360,8 @@ export function StepConfig() {
           <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setForm({ ...form, breaks: [...form.breaks, { afterPeriod: 3, name: "Break", durationMins: 20 }] })}>＋ Add break</button>
         </Field>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--forest-deep)", borderRadius: 10, padding: "14px 20px", marginTop: 6 }}>
-          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, color: "var(--sage-light)" }}>Computed end of day</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--brand-deep)", borderRadius: 10, padding: "14px 20px", marginTop: 6 }}>
+          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, color: "var(--steel-light)" }}>Computed end of day</span>
           <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700, color: "#fff" }}>{computedEnd ?? "—"}</span>
         </div>
       </Card>
@@ -374,9 +374,9 @@ export function StepConfig() {
             return (
               <button key={cs.id} disabled={!!claimedByOther} onClick={() => toggleSection(cs.id, claimedByOther)} style={{
                 padding: "9px 11px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, textAlign: "left",
-                border: `1px solid ${on ? "var(--forest)" : "var(--line)"}`,
-                background: claimedByOther ? "var(--offwhite)" : on ? "var(--sage-pale)" : "var(--paper)",
-                color: claimedByOther ? "var(--ink-faint)" : on ? "var(--forest)" : "var(--ink)",
+                border: `1px solid ${on ? "var(--brand)" : "var(--line)"}`,
+                background: claimedByOther ? "var(--offwhite)" : on ? "var(--steel-pale)" : "var(--paper)",
+                color: claimedByOther ? "var(--ink-faint)" : on ? "var(--brand)" : "var(--ink)",
               }}>
                 {on ? "☑" : "☐"} {cs.label}
                 {claimedByOther && <div style={{ fontSize: 10, fontWeight: 400 }}>in {claimedByOther}</div>}

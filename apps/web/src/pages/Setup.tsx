@@ -34,8 +34,8 @@ export function Setup() {
               <span style={{
                 width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center",
                 fontSize: 11.5, fontWeight: 700,
-                background: i === step ? "var(--forest)" : i < step ? "var(--mint)" : "var(--sage-pale)",
-                color: i <= step ? "#fff" : "var(--sage)",
+                background: i === step ? "var(--brand)" : i < step ? "var(--accent)" : "var(--steel-pale)",
+                color: i <= step ? "#fff" : "var(--steel)",
               }}>{i + 1}</span>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: i === step ? "var(--ink)" : "var(--ink-faint)", whiteSpace: "nowrap" }}>
                 {label}

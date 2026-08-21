@@ -62,7 +62,7 @@ function Topbar() {
             <select
               value={current?.id ?? ""}
               onChange={(e) => setCurrentId(Number(e.target.value))}
-              style={{ fontWeight: 700, fontSize: 13, color: "var(--forest)", border: "1px solid var(--sage-pale)", background: "var(--sage-pale)", borderRadius: 7, padding: "5px 9px" }}
+              style={{ fontWeight: 700, fontSize: 13, color: "var(--brand)", border: "1px solid var(--steel-pale)", background: "var(--steel-pale)", borderRadius: 7, padding: "5px 9px" }}
             >
               {configs.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>

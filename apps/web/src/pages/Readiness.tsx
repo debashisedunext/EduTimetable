@@ -28,13 +28,13 @@ export function Readiness() {
   return (
     <div style={{ maxWidth: 880 }}>
       <div style={{ display: "flex", gap: 18, marginBottom: 18 }}>
-        <div style={{ width: 190, background: "var(--forest-deep)", borderRadius: 14, padding: 22, textAlign: "center", flexShrink: 0 }}>
+        <div style={{ width: 190, background: "var(--brand-deep)", borderRadius: 14, padding: 22, textAlign: "center", flexShrink: 0 }}>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 44, fontWeight: 700, color: "#fff" }}>{data.score}%</div>
-          <div style={{ fontSize: 11.5, color: "var(--sage-light)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>
+          <div style={{ fontSize: 11.5, color: "var(--steel-light)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>
             {data.ready ? "Ready to generate" : "Not ready"}
           </div>
-          <div style={{ width: "100%", height: 6, background: "#1E4534", borderRadius: 4, marginTop: 14, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${data.score}%`, background: data.ready ? "var(--mint)" : "var(--amber)", borderRadius: 4 }} />
+          <div style={{ width: "100%", height: 6, background: "#1B3A6B", borderRadius: 4, marginTop: 14, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${data.score}%`, background: data.ready ? "var(--accent)" : "var(--amber)", borderRadius: 4 }} />
           </div>
         </div>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, justifyContent: "center" }}>
@@ -70,7 +70,7 @@ function SummaryRow({ kind, count, label }: { kind: "err" | "warn"; count: numbe
   const bg = count === 0 ? "var(--paper)" : kind === "err" ? "var(--signal-bg)" : "var(--amber-bg)";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, border: "1px solid var(--line)", background: bg }}>
-      <span style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 700, color: count === 0 ? "var(--mint)" : color }}>{count}</span>
+      <span style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 700, color: count === 0 ? "var(--accent)" : color }}>{count}</span>
       <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
     </div>
   );
@@ -92,7 +92,7 @@ function IssueRow({ issue }: { issue: FeasibilityIssue }) {
         </div>
         <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.45 }}>{issue.message}</div>
         {issue.fix && (
-          <div style={{ fontSize: 12, color: "var(--mint)", fontWeight: 600, marginTop: 5 }}>Fix: {issue.fix}</div>
+          <div style={{ fontSize: 12, color: "var(--accent)", fontWeight: 600, marginTop: 5 }}>Fix: {issue.fix}</div>
         )}
       </div>
     </div>
