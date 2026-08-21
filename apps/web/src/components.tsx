@@ -64,3 +64,25 @@ export function ErrorNote({ message }: { message: string | null }) {
     </div>
   );
 }
+
+/** Row-level ✎ / 🗑 pair used on every master-data directory table. */
+export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () => void }) {
+  const btn: React.CSSProperties = { border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11.5, borderRadius: 7, background: "var(--paper)", cursor: "pointer" };
+  return (
+    <span style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+      {onEdit && <button style={btn} title="Edit" onClick={onEdit}>✎ Edit</button>}
+      {onDelete && <button style={{ ...btn, color: "var(--signal)" }} title="Delete" onClick={onDelete}>🗑</button>}
+    </span>
+  );
+}
+
+export function confirmDelete(label: string) {
+  return window.confirm(`Delete ${label}? This cannot be undone. If it is still referenced (curriculum, mappings, slots), the delete will be refused.`);
+}
+
+/** Unwrap the API helper's "409: {json}" error strings to the server message. */
+export const asMessage = (e: unknown) => {
+  const raw = e instanceof Error ? e.message : String(e);
+  const stripped = raw.replace(/^\d+: /, "");
+  try { return JSON.parse(stripped).message ?? stripped; } catch { return stripped; }
+};

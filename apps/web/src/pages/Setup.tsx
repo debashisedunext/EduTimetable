@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Card, DataTable, ErrorNote, Field } from "../components";
+import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
@@ -69,32 +69,44 @@ export function Setup() {
 function StepAcademicYear() {
   const { data, refetch } = useApi<any[]>("/academic-years");
   const [form, setForm] = useState({ name: "", startDate: "", endDate: "" });
+  const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const add = async () => {
+  const reset = () => { setForm({ name: "", startDate: "", endDate: "" }); setEditId(null); };
+  const save = async () => {
     try {
-      await api("/academic-years", { method: "POST", body: JSON.stringify(form) });
-      setForm({ name: "", startDate: "", endDate: "" });
-      setError(null);
-      refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      if (editId) await api(`/academic-years/${editId}`, { method: "PUT", body: JSON.stringify(form) });
+      else await api("/academic-years", { method: "POST", body: JSON.stringify(form) });
+      reset(); setError(null); refetch();
+    } catch (e) { setError(asMessage(e)); }
+  };
+  const remove = async (y: any) => {
+    if (!confirmDelete(`academic year "${y.name}"`)) return;
+    try { await api(`/academic-years/${y.id}`, { method: "DELETE" }); setError(null); refetch(); }
+    catch (e) { setError(asMessage(e)); }
   };
 
   return (
     <Card title="Academic Years" sub="Everything downstream is scoped to a year.">
       <ErrorNote message={error} />
       <DataTable
-        headers={["Name", "Start", "End", "Active"]}
+        headers={["Name", "Start", "End", "Active", ""]}
         rows={(data ?? []).map((y) => [
           y.name, y.startDate?.slice(0, 10), y.endDate?.slice(0, 10),
           y.isActive ? <span key="a" className="badge badge-ok">active</span> : "—",
+          <RowActions key="x"
+            onEdit={() => { setEditId(y.id); setForm({ name: y.name, startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }); }}
+            onDelete={() => remove(y)} />,
         ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Name (e.g. 2026-27)"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Start date"><input type="date" style={inputStyle} value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>
         <Field label="End date"><input type="date" style={inputStyle} value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={add} disabled={!form.name || !form.startDate || !form.endDate}>＋ Add</button>
+        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name || !form.startDate || !form.endDate}>
+          {editId ? "✓ Save changes" : "＋ Add"}
+        </button>
+        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
       </div>
     </Card>
   );
@@ -105,35 +117,75 @@ function StepClasses() {
   const { data: years } = useApi<any[]>("/academic-years");
   const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
   const [className, setClassName] = useState("");
+  const [editClassId, setEditClassId] = useState<number | null>(null);
   const [secForm, setSecForm] = useState({ classId: "", name: "" });
+  const [csEdit, setCsEdit] = useState<{ id: number; sectionName: string; strength: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const addClass = async () => {
+  const refetchAll = () => { refetch(); refetchSections(); };
+
+  const saveClass = async () => {
     try {
-      await api("/classes", { method: "POST", body: JSON.stringify({ name: className, sequence: (classes?.length ?? 0) + 1 }) });
-      setClassName(""); setError(null); refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      if (editClassId) await api(`/classes/${editClassId}`, { method: "PUT", body: JSON.stringify({ name: className }) });
+      else await api("/classes", { method: "POST", body: JSON.stringify({ name: className, sequence: (classes?.length ?? 0) + 1 }) });
+      setClassName(""); setEditClassId(null); setError(null); refetchAll();
+    } catch (e) { setError(asMessage(e)); }
+  };
+  const removeClass = async (c: any) => {
+    if (!confirmDelete(`class "${c.name}" (and nothing else — sections must be removed first)`)) return;
+    try { await api(`/classes/${c.id}`, { method: "DELETE" }); setError(null); refetchAll(); }
+    catch (e) { setError(asMessage(e)); }
   };
   const addSection = async () => {
     try {
       const yearId = years?.find((y) => y.isActive)?.id ?? years?.[0]?.id;
       if (!yearId) { setError("Create an academic year first."); return; }
       await api(`/classes/${secForm.classId}/sections`, { method: "POST", body: JSON.stringify({ name: secForm.name, academicYearId: yearId }) });
-      setSecForm({ classId: secForm.classId, name: "" }); setError(null); refetch(); refetchSections();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      setSecForm({ classId: secForm.classId, name: "" }); setError(null); refetchAll();
+    } catch (e) { setError(asMessage(e)); }
   };
+  const saveCs = async () => {
+    if (!csEdit) return;
+    try {
+      await api(`/class-sections/${csEdit.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          sectionName: csEdit.sectionName,
+          strength: csEdit.strength === "" ? null : Number(csEdit.strength),
+        }),
+      });
+      setCsEdit(null); setError(null); refetchAll();
+    } catch (e) { setError(asMessage(e)); }
+  };
+  const removeCs = async (cs: any) => {
+    if (!confirmDelete(`class-section "${cs.label}"`)) return;
+    try { await api(`/class-sections/${cs.id}`, { method: "DELETE" }); setError(null); refetchAll(); }
+    catch (e) { setError(asMessage(e)); }
+  };
+
+  const smallInput: React.CSSProperties = { ...inputStyle, padding: "5px 8px", fontSize: 12 };
 
   return (
     <>
       <Card title="Classes" sub="Grades I–XII, in display order.">
         <ErrorNote message={error} />
         <DataTable
-          headers={["Class", "Sections"]}
-          rows={(classes ?? []).map((c) => [c.name, c.sections.map((s: any) => s.name).join(", ") || "—"])}
+          headers={["Class", "Sections", ""]}
+          rows={(classes ?? []).map((c) => [
+            c.name, c.sections.map((s: any) => s.name).join(", ") || "—",
+            <RowActions key="x"
+              onEdit={() => { setEditClassId(c.id); setClassName(c.name); }}
+              onDelete={() => removeClass(c)} />,
+          ])}
         />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, marginTop: 14, alignItems: "end" }}>
-          <Field label="Class name (e.g. Class 7)"><input style={inputStyle} value={className} onChange={(e) => setClassName(e.target.value)} /></Field>
-          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={addClass} disabled={!className}>＋ Add Class</button>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+          <Field label={editClassId ? "Rename class" : "Class name (e.g. Class 7)"}>
+            <input style={inputStyle} value={className} onChange={(e) => setClassName(e.target.value)} />
+          </Field>
+          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={saveClass} disabled={!className}>
+            {editClassId ? "✓ Save" : "＋ Add Class"}
+          </button>
+          {editClassId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={() => { setEditClassId(null); setClassName(""); }}>Cancel</button>}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
           <Field label="Add section to">
@@ -148,12 +200,34 @@ function StepClasses() {
       </Card>
       <Card title="Class-Sections" sub="The scheduling units. Assign them to a timetable in the last step.">
         <DataTable
-          headers={["Class-Section", "Strength", "Timetable", "Class Teacher"]}
-          rows={(sections ?? []).map((cs) => [
-            <b key="a">{cs.label}</b>, cs.strength ?? "—",
-            cs.timetableConfigName ?? <span key="b" className="badge badge-error">unassigned</span>,
-            cs.classTeacherName ?? <span key="c" style={{ color: "var(--ink-faint)" }}>—</span>,
-          ])}
+          headers={["Class-Section", "Strength", "Timetable", "Class Teacher", ""]}
+          rows={(sections ?? []).map((cs) => {
+            const edit = csEdit && csEdit.id === cs.id ? csEdit : null;
+            return edit
+              ? [
+                  <span key="a" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <b>{cs.label.split("-").slice(0, -1).join("-")}-</b>
+                    <input style={{ ...smallInput, width: 54 }} value={edit.sectionName}
+                      onChange={(e) => setCsEdit({ ...edit, sectionName: e.target.value })} />
+                  </span>,
+                  <input key="b" type="number" style={{ ...smallInput, width: 70 }} placeholder="—" value={edit.strength}
+                    onChange={(e) => setCsEdit({ ...edit, strength: e.target.value })} />,
+                  cs.timetableConfigName ?? "—",
+                  cs.classTeacherName ?? "—",
+                  <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                    <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11.5 }} onClick={saveCs}>✓ Save</button>
+                    <button className="btn" style={{ padding: "4px 10px", fontSize: 11.5, border: "1px solid var(--line)" }} onClick={() => setCsEdit(null)}>Cancel</button>
+                  </span>,
+                ]
+              : [
+                  <b key="a">{cs.label}</b>, cs.strength ?? "—",
+                  cs.timetableConfigName ?? <span key="b" className="badge badge-error">unassigned</span>,
+                  cs.classTeacherName ?? <span key="c" style={{ color: "var(--ink-faint)" }}>—</span>,
+                  <RowActions key="x"
+                    onEdit={() => setCsEdit({ id: cs.id, sectionName: cs.label.split("-").pop() ?? "", strength: cs.strength == null ? "" : String(cs.strength) })}
+                    onDelete={() => removeCs(cs)} />,
+                ];
+          })}
         />
       </Card>
     </>
@@ -163,21 +237,37 @@ function StepClasses() {
 function StepRooms() {
   const { data, refetch } = useApi<any[]>("/rooms");
   const [form, setForm] = useState({ name: "", roomType: "classroom", capacity: "" });
+  const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const add = async () => {
+
+  const reset = () => { setForm({ name: "", roomType: "classroom", capacity: "" }); setEditId(null); };
+  const save = async () => {
     try {
-      await api("/rooms", { method: "POST", body: JSON.stringify({ ...form, capacity: form.capacity ? Number(form.capacity) : null }) });
-      setForm({ name: "", roomType: "classroom", capacity: "" }); setError(null); refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      const body = JSON.stringify({ ...form, capacity: form.capacity ? Number(form.capacity) : null });
+      if (editId) await api(`/rooms/${editId}`, { method: "PUT", body });
+      else await api("/rooms", { method: "POST", body });
+      reset(); setError(null); refetch();
+    } catch (e) { setError(asMessage(e)); }
   };
+  const remove = async (r: any) => {
+    if (!confirmDelete(`room "${r.name}"`)) return;
+    try { await api(`/rooms/${r.id}`, { method: "DELETE" }); setError(null); refetch(); }
+    catch (e) { setError(asMessage(e)); }
+  };
+
   return (
     <Card title="Rooms" sub="Labs and other shared rooms get their own contention check (§4.5).">
       <ErrorNote message={error} />
       <DataTable
-        headers={["Room", "Type", "Capacity", "Shared"]}
-        rows={(data ?? []).map((r) => [r.name, <span key="t" className="chip mono">{r.roomType}</span>, r.capacity ?? "—", r.isShared ? "yes" : "—"])}
+        headers={["Room", "Type", "Capacity", "Shared", ""]}
+        rows={(data ?? []).map((r) => [
+          r.name, <span key="t" className="chip mono">{r.roomType}</span>, r.capacity ?? "—", r.isShared ? "yes" : "—",
+          <RowActions key="x"
+            onEdit={() => { setEditId(r.id); setForm({ name: r.name, roomType: r.roomType, capacity: r.capacity == null ? "" : String(r.capacity) }); }}
+            onDelete={() => remove(r)} />,
+        ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Type">
           <select style={inputStyle} value={form.roomType} onChange={(e) => setForm({ ...form, roomType: e.target.value })}>
@@ -185,7 +275,10 @@ function StepRooms() {
           </select>
         </Field>
         <Field label="Capacity"><input type="number" style={inputStyle} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={add} disabled={!form.name}>＋ Add</button>
+        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name}>
+          {editId ? "✓ Save changes" : "＋ Add"}
+        </button>
+        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
       </div>
     </Card>
   );
@@ -194,26 +287,44 @@ function StepRooms() {
 function StepSubjects() {
   const { data, refetch } = useApi<any[]>("/subjects");
   const [form, setForm] = useState({ name: "", isLab: false });
+  const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const add = async () => {
+
+  const reset = () => { setForm({ name: "", isLab: false }); setEditId(null); };
+  const save = async () => {
     try {
-      await api("/subjects", { method: "POST", body: JSON.stringify(form) });
-      setForm({ name: "", isLab: false }); setError(null); refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      if (editId) await api(`/subjects/${editId}`, { method: "PUT", body: JSON.stringify(form) });
+      else await api("/subjects", { method: "POST", body: JSON.stringify(form) });
+      reset(); setError(null); refetch();
+    } catch (e) { setError(asMessage(e)); }
   };
+  const remove = async (s: any) => {
+    if (!confirmDelete(`subject "${s.name}"`)) return;
+    try { await api(`/subjects/${s.id}`, { method: "DELETE" }); setError(null); refetch(); }
+    catch (e) { setError(asMessage(e)); }
+  };
+
   return (
     <Card title="Subjects" sub="Flag lab subjects — they must land in a lab room.">
       <ErrorNote message={error} />
       <DataTable
-        headers={["Subject", "Lab?"]}
-        rows={(data ?? []).map((s) => [s.name, s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—"])}
+        headers={["Subject", "Lab?", ""]}
+        rows={(data ?? []).map((s) => [
+          s.name, s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—",
+          <RowActions key="x"
+            onEdit={() => { setEditId(s.id); setForm({ name: s.name, isLab: s.isLab }); }}
+            onDelete={() => remove(s)} />,
+        ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Subject name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <label style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 24, fontSize: 13 }}>
           <input type="checkbox" checked={form.isLab} onChange={(e) => setForm({ ...form, isLab: e.target.checked })} /> Requires lab
         </label>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={add} disabled={!form.name}>＋ Add</button>
+        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name}>
+          {editId ? "✓ Save changes" : "＋ Add"}
+        </button>
+        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
       </div>
     </Card>
   );

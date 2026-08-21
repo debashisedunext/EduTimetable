@@ -3,7 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
-import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 @Controller("rooms")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -64,7 +64,7 @@ export class RoomsController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await uniq(() => this.prisma.room.delete({ where: { id: toInt(id, "id") } }), "Room");
+    await del(() => this.prisma.room.delete({ where: { id: toInt(id, "id") } }), "Room");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }

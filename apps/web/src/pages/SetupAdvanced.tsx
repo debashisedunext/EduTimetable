@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Card, DataTable, ErrorNote, Field } from "../components";
+import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 
@@ -11,27 +11,40 @@ export function StepCurriculum() {
   const { data, refetch } = useApi<any[]>("/class-subjects");
   const { data: classes } = useApi<any[]>("/classes");
   const { data: subjects } = useApi<any[]>("/subjects");
-  const [form, setForm] = useState({ classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1", consecutiveBlockSize: "1", consecutiveBlocksPerWeek: "", samePeriodAcrossWeek: false });
+  const blank = { classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1", consecutiveBlockSize: "1", consecutiveBlocksPerWeek: "", samePeriodAcrossWeek: false };
+  const [form, setForm] = useState(blank);
+  const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const add = async () => {
+  const reset = () => { setForm(blank); setEditId(null); };
+  const save = async () => {
     try {
-      await api("/class-subjects", {
-        method: "POST",
-        body: JSON.stringify({
-          classId: Number(form.classId), subjectId: Number(form.subjectId),
-          periodsPerWeek: Number(form.periodsPerWeek), maxPeriodsPerDay: Number(form.maxPeriodsPerDay),
-          consecutiveBlockSize: Number(form.consecutiveBlockSize),
-          consecutiveBlocksPerWeek: form.consecutiveBlocksPerWeek ? Number(form.consecutiveBlocksPerWeek) : null,
-          samePeriodAcrossWeek: form.samePeriodAcrossWeek,
-        }),
+      const body = JSON.stringify({
+        classId: Number(form.classId), subjectId: Number(form.subjectId),
+        periodsPerWeek: Number(form.periodsPerWeek), maxPeriodsPerDay: Number(form.maxPeriodsPerDay),
+        consecutiveBlockSize: Number(form.consecutiveBlockSize),
+        consecutiveBlocksPerWeek: form.consecutiveBlocksPerWeek ? Number(form.consecutiveBlocksPerWeek) : null,
+        samePeriodAcrossWeek: form.samePeriodAcrossWeek,
       });
-      setError(null); refetch();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      if (editId) await api(`/class-subjects/${editId}`, { method: "PUT", body });
+      else await api("/class-subjects", { method: "POST", body });
+      reset(); setError(null); refetch();
+    } catch (e) { setError(asMessage(e)); }
   };
-  const remove = async (id: number) => {
-    await api(`/class-subjects/${id}`, { method: "DELETE" });
-    refetch();
+  const startEdit = (r: any) => {
+    setEditId(r.id);
+    setForm({
+      classId: String(r.classId), subjectId: String(r.subjectId),
+      periodsPerWeek: String(r.periodsPerWeek), maxPeriodsPerDay: String(r.maxPeriodsPerDay),
+      consecutiveBlockSize: String(r.consecutiveBlockSize),
+      consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek == null ? "" : String(r.consecutiveBlocksPerWeek),
+      samePeriodAcrossWeek: r.samePeriodAcrossWeek,
+    });
+  };
+  const remove = async (r: any) => {
+    if (!confirmDelete(`the ${r.className} · ${r.subjectName} curriculum row`)) return;
+    try { await api(`/class-subjects/${r.id}`, { method: "DELETE" }); setError(null); refetch(); }
+    catch (e) { setError(asMessage(e)); }
   };
 
   return (
@@ -43,18 +56,18 @@ export function StepCurriculum() {
           r.className, r.subjectName, r.periodsPerWeek, r.maxPeriodsPerDay,
           r.consecutiveBlockSize > 1 ? <span key="b" className="chip mono">{r.consecutiveBlocksPerWeek ?? "auto"}×{r.consecutiveBlockSize}</span> : "—",
           r.samePeriodAcrossWeek ? "yes" : "—",
-          <button key="d" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11 }} onClick={() => remove(r.id)}>✕</button>,
+          <RowActions key="d" onEdit={() => startEdit(r)} onDelete={() => remove(r)} />,
         ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr) auto", gap: 8, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr) auto auto", gap: 8, marginTop: 14, alignItems: "end" }}>
         <Field label="Class">
-          <select style={inputStyle} value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value })}>
+          <select style={inputStyle} disabled={editId !== null} value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value })}>
             <option value="">—</option>
             {(classes ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
         <Field label="Subject">
-          <select style={inputStyle} value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}>
+          <select style={inputStyle} disabled={editId !== null} value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}>
             <option value="">—</option>
             {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
@@ -63,7 +76,10 @@ export function StepCurriculum() {
         <Field label="Max/day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Block size"><input type="number" style={inputStyle} value={form.consecutiveBlockSize} onChange={(e) => setForm({ ...form, consecutiveBlockSize: e.target.value })} /></Field>
         <Field label="Blocks/wk"><input type="number" style={inputStyle} placeholder="auto" value={form.consecutiveBlocksPerWeek} onChange={(e) => setForm({ ...form, consecutiveBlocksPerWeek: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={add} disabled={!form.classId || !form.subjectId}>＋ Add</button>
+        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.classId || !form.subjectId}>
+          {editId ? "✓ Save" : "＋ Add"}
+        </button>
+        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
       </div>
     </Card>
   );

@@ -1,9 +1,9 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
-import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 @Controller("classes")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -66,10 +66,41 @@ export class ClassesController {
     return { section, classSection };
   }
 
+  @Put(":id")
+  async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const updated = await uniq(
+      () =>
+        this.prisma.schoolClass.update({
+          where: { id: toInt(id, "id") },
+          data: {
+            ...(body.name !== undefined ? { name: String(body.name) } : {}),
+            ...(body.sequence !== undefined ? { sequence: toInt(body.sequence, "sequence") } : {}),
+          },
+        }),
+      "Class",
+    );
+    await this.readiness.invalidate(req.user.schoolId);
+    return updated;
+  }
+
+  /** Sections and curriculum rows CASCADE from a class — check explicitly so a
+   *  class delete can never silently take its curriculum with it. */
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await uniq(
-      () => this.prisma.schoolClass.delete({ where: { id: toInt(id, "id") } }),
+    const classId = toInt(id, "id");
+    const [sections, curriculum] = await Promise.all([
+      this.prisma.classSection.count({ where: { classId } }),
+      this.prisma.classSubject.count({ where: { classId } }),
+    ]);
+    if (sections > 0 || curriculum > 0) {
+      const parts = [
+        sections > 0 ? `${sections} class-section(s)` : null,
+        curriculum > 0 ? `${curriculum} curriculum row(s)` : null,
+      ].filter(Boolean);
+      throw new ConflictException(`This class still has ${parts.join(" and ")} — remove those first`);
+    }
+    await del(
+      () => this.prisma.schoolClass.delete({ where: { id: classId } }),
       "Class",
     );
     await this.readiness.invalidate(req.user.schoolId);
@@ -131,8 +162,58 @@ export class ClassSectionsController {
         }),
       "Class-section",
     );
+    // renaming the section (the "A" in 5-A) rides along on the same call — the
+    // Section row is 1:1-owned by its class, so this stays a masters concern
+    if (body.sectionName !== undefined && String(body.sectionName).trim() !== "") {
+      await uniq(
+        () =>
+          this.prisma.section.update({
+            where: { id: updated.sectionId },
+            data: { name: String(body.sectionName).trim() },
+          }),
+        `Section '${body.sectionName}'`,
+      );
+    }
     await this.readiness.invalidate(req.user.schoolId);
     return updated;
+  }
+
+  /** Delete a class-section (and its Section row when nothing else uses it).
+   *  Dependencies are checked EXPLICITLY first — the mapping FK is ON DELETE
+   *  CASCADE and timetable_slots has no FK at all, so relying on the DB to
+   *  refuse would silently destroy mappings and orphan slots instead. */
+  @Delete(":id")
+  async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const cs = await this.prisma.classSection.findUnique({ where: { id: toInt(id, "id") } });
+    if (!cs) throw new BadRequestException("Class-section not found");
+    const [mappings, mergedMembers, slots] = await Promise.all([
+      this.prisma.teacherSubjectClassSection.count({ where: { classSectionId: cs.id } }),
+      this.prisma.mergedTeachingGroupMember.count({ where: { classSectionId: cs.id } }),
+      this.prisma.timetableSlot.count({ where: { classSectionId: cs.id } }),
+    ]);
+    if (mappings > 0 || mergedMembers > 0 || slots > 0) {
+      const parts = [
+        mappings > 0 ? `${mappings} subject mapping(s)` : null,
+        mergedMembers > 0 ? `${mergedMembers} merged-group membership(s)` : null,
+        slots > 0 ? `${slots} timetable slot(s)` : null,
+      ].filter(Boolean);
+      throw new ConflictException(
+        `This class-section still has ${parts.join(", ")} — remove those first (Teacher Mapping step / regenerate without it)`,
+      );
+    }
+    await del(
+      () => this.prisma.classSection.delete({ where: { id: cs.id } }),
+      "Class-section",
+    );
+    const otherUses = await this.prisma.classSection.count({ where: { sectionId: cs.sectionId } });
+    if (otherUses === 0) {
+      await del(
+        () => this.prisma.section.delete({ where: { id: cs.sectionId } }),
+        "Section",
+      );
+    }
+    await this.readiness.invalidate(req.user.schoolId);
+    return { ok: true };
   }
 
   /** §8.1b — Class Teacher Assignment: the pointer that activates a teacher's P1 rule. */

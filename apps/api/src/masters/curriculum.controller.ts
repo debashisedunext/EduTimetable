@@ -3,7 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
-import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 /** Curriculum mapping — class_subjects (§3), with §4.8 block validation at entry. */
 @Controller("class-subjects")
@@ -62,7 +62,7 @@ export class CurriculumController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await uniq(
+    await del(
       () => this.prisma.classSubject.delete({ where: { id: toInt(id, "id") } }),
       "Curriculum row",
     );

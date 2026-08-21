@@ -1,9 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { Body, ConflictException, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
-import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 @Controller("academic-years")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -59,10 +59,18 @@ export class AcademicYearsController {
     return updated;
   }
 
+  /** Class-sections CASCADE from a year — check explicitly, never rely on the DB. */
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await uniq(
-      () => this.prisma.academicYear.delete({ where: { id: toInt(id, "id") } }),
+    const yearId = toInt(id, "id");
+    const sections = await this.prisma.classSection.count({ where: { academicYearId: yearId } });
+    if (sections > 0) {
+      throw new ConflictException(
+        `This academic year still has ${sections} class-section(s) — remove those first`,
+      );
+    }
+    await del(
+      () => this.prisma.academicYear.delete({ where: { id: yearId } }),
       "Academic year",
     );
     await this.readiness.invalidate(req.user.schoolId);
