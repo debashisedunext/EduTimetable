@@ -1,0 +1,2040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Timetable AI — UI Mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --forest:#1B4332; --forest-dark:#122E23; --forest-deep:#0C211A;
+  --sage:#52796F; --sage-light:#B7CFC5; --sage-pale:#E7EFEC;
+  --paper:#FFFFFF; --offwhite:#F4F7F5; --line:#DCE6E1;
+  --ink:#16211D; --ink-soft:#546059; --ink-faint:#8A968F;
+  --signal:#C2372F; --signal-bg:#FBEAE9;
+  --amber:#B9791A; --amber-bg:#FBF0DE;
+  --mint:#2D6A4F; --mint-bg:#E6F2EC;
+  --font-display:'Fraunces', Georgia, serif;
+  --font-body:'Inter', -apple-system, sans-serif;
+  --font-mono:'JetBrains Mono', 'Courier New', monospace;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{font-family:var(--font-body); color:var(--ink); background:var(--offwhite); font-size:14px;}
+button{font-family:inherit; cursor:pointer;}
+.app{display:flex; min-height:100vh;}
+
+/* ===== SIDEBAR ===== */
+.sidebar{
+  width:236px; flex-shrink:0; background:var(--forest-deep); color:var(--sage-light);
+  display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh;
+}
+.brand{display:flex; align-items:center; gap:10px; padding:4px 8px 22px 8px;}
+.brand-mark{width:30px; height:30px; border-radius:7px; background:var(--mint); display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:2px; padding:5px;}
+.brand-mark span{background:var(--forest-deep); border-radius:1px;}
+.brand-name{font-family:var(--font-display); font-weight:700; font-size:16.5px; color:#fff; line-height:1.1;}
+.brand-sub{font-size:10px; color:var(--sage); letter-spacing:.06em; text-transform:uppercase;}
+.nav-group-label{font-size:10px; text-transform:uppercase; letter-spacing:.09em; color:#5A7A6F; margin:16px 10px 6px;}
+.nav-item{
+  display:flex; align-items:center; gap:11px; padding:9px 10px; border-radius:8px; color:#C7DAD1;
+  font-size:13.2px; font-weight:500; border:none; background:transparent; width:100%; text-align:left;
+}
+.nav-item svg{width:17px; height:17px; flex-shrink:0; opacity:.85;}
+.nav-item:hover{background:#173829;}
+.nav-item.active{background:var(--mint); color:#fff;}
+.nav-item.active svg{opacity:1;}
+.sidebar-foot{margin-top:auto; padding:12px 10px; border-top:1px solid #1E4534;}
+.sidebar-foot .who{display:flex; align-items:center; gap:9px;}
+.avatar{width:28px; height:28px; border-radius:50%; background:var(--sage); color:#fff; display:grid; place-items:center; font-size:11px; font-weight:700;}
+.who-name{font-size:12.5px; color:#fff; font-weight:600;}
+.who-role{font-size:10.5px; color:var(--sage);}
+
+/* ===== MAIN ===== */
+.main{flex:1; min-width:0; display:flex; flex-direction:column;}
+.topbar{
+  display:flex; align-items:center; justify-content:space-between; padding:16px 28px;
+  background:var(--paper); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;
+}
+.topbar-title{font-family:var(--font-display); font-size:21px; font-weight:600; color:var(--ink);}
+.topbar-eyebrow{font-size:11px; color:var(--sage); text-transform:uppercase; letter-spacing:.08em; font-weight:600; margin-bottom:2px;}
+.topbar-right{display:flex; align-items:center; gap:10px;}
+.tt-selector{display:flex; flex-direction:column; align-items:flex-end; margin-right:6px; padding-right:16px; border-right:1px solid var(--line);}
+.tt-selector-label{font-size:9.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink-faint); font-weight:700; margin-bottom:2px;}
+.tt-selector select{
+  font-family:var(--font-body); font-weight:700; font-size:13px; color:var(--forest); border:1px solid var(--sage-pale);
+  background:var(--sage-pale); border-radius:7px; padding:5px 9px; cursor:pointer;
+}
+.tt-selector-meta{font-size:10.5px; color:var(--ink-faint); margin-top:3px; font-family:var(--font-mono);}
+.content{padding:26px 28px 60px; flex:1;}
+.screen{display:none;}
+.screen.active{display:block; animation:fade .18s ease;}
+@keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;}}
+
+/* ===== SHARED COMPONENTS ===== */
+.btn{border-radius:8px; font-size:13px; font-weight:600; padding:9px 16px; border:1px solid transparent; display:inline-flex; align-items:center; gap:7px;}
+.btn-primary{background:var(--forest); color:#fff;}
+.btn-primary:hover{background:var(--forest-dark);}
+.btn-secondary{background:var(--paper); color:var(--ink); border-color:var(--line);}
+.btn-secondary:hover{border-color:var(--sage);}
+.btn-ghost{background:transparent; color:var(--sage); padding:9px 10px;}
+.btn:disabled{opacity:.45; cursor:not-allowed;}
+.btn-sm{padding:6px 11px; font-size:12px; border-radius:7px;}
+
+.card{background:var(--paper); border:1px solid var(--line); border-radius:12px;}
+.section-label{font-size:11px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; color:var(--sage);}
+
+.badge{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px;}
+.badge-ok{background:var(--mint-bg); color:var(--mint);}
+.badge-warn{background:var(--amber-bg); color:var(--amber);}
+.badge-error{background:var(--signal-bg); color:var(--signal);}
+.badge-neutral{background:var(--sage-pale); color:var(--sage);}
+
+.chip{display:inline-flex; align-items:center; padding:4px 10px; border-radius:7px; font-size:11.5px; font-weight:600; background:var(--sage-pale); color:var(--forest);}
+.chip-mono{font-family:var(--font-mono); font-size:10.5px;}
+
+table{border-collapse:collapse; width:100%;}
+th{text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); font-weight:700; padding:10px 12px; border-bottom:1px solid var(--line);}
+td{padding:11px 12px; border-bottom:1px solid var(--line); font-size:13px;}
+tr:last-child td{border-bottom:none;}
+
+.toast{display:flex; align-items:center; gap:10px; background:var(--signal-bg); border:1.5px solid var(--signal); color:var(--signal); border-radius:9px; padding:11px 14px; font-size:13px; font-weight:600; font-family:var(--font-mono);}
+
+/* ===== SCREEN: ASK AI (CHAT) ===== */
+.ai-layout{display:grid; grid-template-columns:1fr 280px; gap:18px; align-items:start;}
+.chat-card{display:flex; flex-direction:column; height:calc(100vh - 210px); min-height:520px; overflow:hidden;}
+.chat-head{display:flex; align-items:center; gap:11px; padding:14px 18px; border-bottom:1px solid var(--line); background:var(--paper);}
+.ai-avatar{width:34px; height:34px; border-radius:9px; background:var(--forest-deep); color:var(--sage-light); display:grid; place-items:center; font-size:15px; flex-shrink:0;}
+.chat-head-name{font-size:13.5px; font-weight:700;}
+.chat-head-sub{font-size:11px; color:var(--ink-faint); margin-top:1px;}
+.chat-body{flex:1; overflow-y:auto; padding:20px 18px; display:flex; flex-direction:column; gap:16px; background:var(--offwhite);}
+.msg{max-width:78%; display:flex; flex-direction:column; gap:6px;}
+.msg.user{align-self:flex-end; align-items:flex-end;}
+.msg.ai{align-self:flex-start;}
+.bubble{padding:11px 14px; border-radius:13px; font-size:13px; line-height:1.55;}
+.msg.user .bubble{background:var(--forest); color:#fff; border-bottom-right-radius:4px;}
+.msg.ai .bubble{background:var(--paper); border:1px solid var(--line); border-bottom-left-radius:4px;}
+.tool-trace{display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:10px; color:var(--sage); background:var(--sage-pale); border-radius:6px; padding:3px 8px; width:fit-content;}
+.mini-table{margin-top:8px; border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+.mini-table table{font-size:12px;}
+.mini-table th{padding:7px 10px; background:var(--offwhite); font-size:9.5px;}
+.mini-table td{padding:7px 10px; font-size:12px;}
+.report-chip{display:flex; align-items:center; gap:12px; margin-top:9px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--offwhite);}
+.report-chip-icon{width:36px; height:36px; border-radius:8px; background:var(--signal-bg); color:var(--signal); display:grid; place-items:center; font-size:11px; font-weight:800; flex-shrink:0;}
+.report-chip-name{font-size:12.5px; font-weight:700;}
+.report-chip-meta{font-size:10.5px; color:var(--ink-faint); margin-top:1px;}
+.msg-time{font-size:10px; color:var(--ink-faint);}
+.typing{display:flex; gap:4px; padding:12px 14px;}
+.typing span{width:6px; height:6px; border-radius:50%; background:var(--sage); animation:blink 1.2s infinite;}
+.typing span:nth-child(2){animation-delay:.2s;} .typing span:nth-child(3){animation-delay:.4s;}
+@keyframes blink{0%,60%,100%{opacity:.25;} 30%{opacity:1;}}
+.suggest-row{display:flex; gap:8px; padding:10px 18px 0; flex-wrap:wrap; background:var(--paper); border-top:1px solid var(--line);}
+.suggest-chip{font-size:11.5px; font-weight:600; color:var(--forest); background:var(--sage-pale); border:1px solid transparent; border-radius:16px; padding:6px 12px;}
+.suggest-chip:hover{border-color:var(--sage);}
+.chat-input-row{display:flex; gap:10px; padding:12px 18px 16px; background:var(--paper);}
+.chat-input-row input{flex:1; padding:11px 14px; border:1px solid var(--line); border-radius:10px; font-size:13px; font-family:inherit;}
+.chat-input-row input:focus{outline:none; border-color:var(--sage);}
+.btn-send{width:42px; height:42px; border-radius:10px; background:var(--forest); color:#fff; border:none; display:grid; place-items:center; flex-shrink:0;}
+.btn-send:hover{background:var(--forest-dark);}
+.ai-rail{display:flex; flex-direction:column; gap:14px;}
+.rail-card{padding:15px 16px;}
+.rail-title{font-size:11px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; color:var(--sage); margin-bottom:10px;}
+.rail-q{display:block; width:100%; text-align:left; font-size:12.5px; color:var(--ink-soft); background:transparent; border:none; padding:7px 8px; border-radius:7px; line-height:1.4;}
+.rail-q:hover{background:var(--sage-pale); color:var(--forest);}
+.ai-scope-note{font-size:11.5px; color:var(--ink-soft); line-height:1.55;}
+.ai-scope-note b{color:var(--ink);}
+.readonly-pill{display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700; color:var(--mint); background:var(--mint-bg); border-radius:14px; padding:4px 10px;}
+
+/* ===== SCREEN: AI SETTINGS ===== */
+.ai-settings-grid{display:grid; grid-template-columns:1.2fr 1fr; gap:18px; align-items:start;}
+.settings-card{padding:20px;}
+.settings-card h3{font-family:var(--font-display); font-size:16px; font-weight:600; margin-bottom:4px;}
+.settings-card .card-sub{font-size:12px; color:var(--ink-faint); margin-bottom:16px;}
+.key-row{display:flex; gap:9px;}
+.key-row input{flex:1;}
+.conn-status{display:flex; align-items:center; gap:7px; margin-top:9px; font-size:12px; color:var(--mint); font-weight:600;}
+.conn-dot{width:8px; height:8px; border-radius:50%; background:var(--mint);}
+.toggle-row{display:flex; align-items:center; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--line);}
+.toggle-row:last-child{border-bottom:none;}
+.toggle-name{font-size:13px; font-weight:600;}
+.toggle-desc{font-size:11px; color:var(--ink-faint); margin-top:2px;}
+.switch{position:relative; width:38px; height:22px; flex-shrink:0;}
+.switch input{opacity:0; width:0; height:0;}
+.switch .track{position:absolute; inset:0; background:var(--line); border-radius:20px; transition:.15s; cursor:pointer;}
+.switch .track::after{content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; background:#fff; border-radius:50%; transition:.15s; box-shadow:0 1px 2px rgba(0,0,0,.2);}
+.switch input:checked + .track{background:var(--mint);}
+.switch input:checked + .track::after{transform:translateX(16px);}
+.usage-meter-track{width:100%; height:10px; background:var(--sage-pale); border-radius:6px; overflow:hidden; margin:10px 0 8px;}
+.usage-meter-fill{height:100%; width:41%; background:linear-gradient(90deg, var(--sage), var(--mint)); border-radius:6px;}
+.usage-stats{display:flex; gap:12px; margin-top:12px;}
+.usage-stat{flex:1; background:var(--offwhite); border-radius:9px; padding:11px; text-align:center;}
+.usage-stat .n{font-family:var(--font-display); font-size:19px; font-weight:700; color:var(--forest);}
+.usage-stat .l{font-size:10px; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.05em; margin-top:2px;}
+.perm-table td{text-align:center;}
+.perm-table td:first-child{text-align:left; font-weight:600;}
+.perm-table input[type=checkbox]{width:16px; height:16px; accent-color:var(--forest); cursor:pointer;}
+.role-lock-banner{display:flex; align-items:center; gap:10px; background:var(--forest-deep); color:var(--sage-light); border-radius:10px; padding:12px 16px; font-size:12.5px; margin-bottom:18px;}
+.role-lock-banner b{color:#fff;}
+.nav-lock{margin-left:auto; font-size:9px; color:#5A7A6F;}
+
+/* ===== SCREEN: SETUP WIZARD ===== */
+.stepper{display:flex; align-items:center; gap:0; margin-bottom:26px; overflow-x:auto; padding-bottom:4px;}
+.step{display:flex; align-items:center; gap:8px; flex-shrink:0;}
+.step-dot{width:26px; height:26px; border-radius:50%; display:grid; place-items:center; font-size:11.5px; font-weight:700; background:var(--sage-pale); color:var(--sage);}
+.step.done .step-dot{background:var(--mint); color:#fff;}
+.step.active .step-dot{background:var(--forest); color:#fff; box-shadow:0 0 0 4px var(--sage-pale);}
+.step-label{font-size:12.5px; font-weight:600; color:var(--ink-faint); white-space:nowrap;}
+.step.active .step-label, .step.done .step-label{color:var(--ink);}
+.step-line{width:34px; height:1.5px; background:var(--line); margin:0 6px; flex-shrink:0;}
+
+.form-grid{display:grid; grid-template-columns:1fr 1fr; gap:20px;}
+.field{margin-bottom:18px;}
+.field label{display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:6px;}
+.field input[type=text], .field input[type=number], .field select, .field textarea{
+  width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:13px; font-family:inherit; color:var(--ink); background:var(--paper);
+}
+.class-checks{display:grid; grid-template-columns:repeat(6, 1fr); gap:8px; margin-top:6px;}
+.class-check{display:flex; align-items:center; gap:7px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:12.5px; font-weight:600; cursor:pointer;}
+.class-check:has(input:checked){border-color:var(--forest); background:var(--sage-pale); color:var(--forest);}
+.break-row{display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; margin-bottom:9px;}
+.break-row select, .break-row input[type=text], .break-row input[type=number]{padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:12.5px; font-family:inherit;}
+.break-unit{font-size:11.5px; color:var(--ink-faint);}
+.btn-icon-remove{width:26px; height:26px; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--signal); font-size:12px; flex-shrink:0;}
+.computed-end{display:flex; align-items:center; justify-content:space-between; background:var(--forest-deep); border-radius:10px; padding:16px 20px;}
+.computed-end .section-label{color:var(--sage-light);}
+.computed-end-time{font-family:var(--font-display); font-size:26px; font-weight:700; color:#fff; margin-top:4px;}
+.field-hint{font-size:11.5px; color:var(--ink-faint); margin-top:5px;}
+.radio-row{display:flex; flex-direction:column; gap:9px;}
+.radio-opt{display:flex; align-items:flex-start; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:9px; cursor:pointer;}
+.radio-opt.selected{border-color:var(--forest); background:var(--sage-pale);}
+.radio-opt input{margin-top:3px;}
+.radio-opt-title{font-size:13px; font-weight:600;}
+.radio-opt-desc{font-size:11.5px; color:var(--ink-faint); margin-top:2px;}
+.day-picker{display:flex; gap:7px; margin-top:10px;}
+.day-toggle{width:40px; height:36px; border-radius:8px; border:1px solid var(--line); background:var(--paper); font-size:12px; font-weight:700; color:var(--ink-faint);}
+.day-toggle.on{background:var(--forest); border-color:var(--forest); color:#fff;}
+.wizard-foot{display:flex; justify-content:space-between; margin-top:28px; padding-top:20px; border-top:1px solid var(--line);}
+.wizard-panel{display:none;}
+.wizard-panel.active{display:block; animation:fade .16s ease;}
+.wizard-subview{display:none;}
+.wizard-subview.active{display:block; animation:fade .16s ease;}
+.step{cursor:pointer;}
+
+/* ===== SCREEN: READINESS ===== */
+.readiness-hero{display:flex; gap:24px; margin-bottom:22px;}
+.score-ring-wrap{width:190px; flex-shrink:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--forest-deep); border-radius:14px; padding:22px;}
+.score-num{font-family:var(--font-display); font-size:44px; font-weight:700; color:#fff;}
+.score-lbl{font-size:11.5px; color:var(--sage-light); text-transform:uppercase; letter-spacing:.06em; margin-top:2px;}
+.score-bar-track{width:100%; height:6px; background:#1E4534; border-radius:4px; margin-top:14px; overflow:hidden;}
+.score-bar-fill{height:100%; background:var(--mint); border-radius:4px;}
+.readiness-summary{flex:1; display:flex; flex-direction:column; gap:12px; justify-content:center;}
+.summary-row{display:flex; align-items:center; gap:12px; padding:14px 16px; border-radius:10px; border:1px solid var(--line);}
+.summary-row.err{background:var(--signal-bg); border-color:#EFC3C0;}
+.summary-row.warn{background:var(--amber-bg); border-color:#EFDCB0;}
+.summary-count{font-family:var(--font-display); font-size:22px; font-weight:700;}
+.summary-row.err .summary-count{color:var(--signal);}
+.summary-row.warn .summary-count{color:var(--amber);}
+
+.blocker-list{display:flex; flex-direction:column; gap:10px;}
+.blocker{display:flex; align-items:flex-start; gap:12px; padding:14px 16px; border-radius:10px; border:1px solid var(--line); background:var(--paper);}
+.blocker:hover{border-color:var(--sage);}
+.blocker-icon{width:30px; height:30px; border-radius:8px; display:grid; place-items:center; flex-shrink:0; font-weight:700; font-size:14px;}
+.blocker.err .blocker-icon{background:var(--signal-bg); color:var(--signal);}
+.blocker.warn .blocker-icon{background:var(--amber-bg); color:var(--amber);}
+.blocker-title{font-size:13px; font-weight:700;}
+.blocker-desc{font-size:12.5px; color:var(--ink-soft); margin-top:3px; line-height:1.4;}
+.blocker-fix{font-size:11.5px; color:var(--mint); font-weight:600; margin-top:6px;}
+
+/* ===== MATRIX GRID ===== */
+.matrix-toolbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:12px; flex-wrap:wrap;}
+.matrix-toolbar-left{display:flex; align-items:center; gap:10px;}
+.search-box{padding:8px 12px; border:1px solid var(--line); border-radius:8px; font-size:12.5px; width:220px;}
+.matrix-stats{display:flex; gap:10px;}
+.matrix-scroll{overflow:auto; border:1px solid var(--line); border-radius:12px; max-height:560px; background:var(--paper);}
+.mtable{border-collapse:separate; border-spacing:0; font-size:11.5px;}
+.mtable th, .mtable td{border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:0; white-space:nowrap;}
+.mtable th.dayhead{background:var(--forest); color:#fff; text-align:center; padding:7px 4px; font-size:10px; letter-spacing:.05em;}
+.mtable th.pnum{background:var(--sage-pale); color:var(--forest); text-align:center; padding:6px 3px; font-size:10px; font-family:var(--font-mono); min-width:64px;}
+.mtable .rowhead{position:sticky; left:0; background:var(--offwhite); font-weight:700; padding:9px 12px; z-index:2; border-right:2px solid var(--line);}
+.mtable th.corner{position:sticky; left:0; top:0; z-index:4; background:var(--forest);}
+.mtable thead tr:first-child th{position:sticky; top:0; z-index:3;}
+.mtable thead tr:nth-child(2) th{position:sticky; top:29px; z-index:3;}
+.mcell{padding:6px 8px; min-width:64px; height:48px; vertical-align:middle;}
+.mcell.filled{background:var(--paper);}
+.mcell .msub{font-weight:700; font-size:11.5px; color:var(--ink);}
+.mcell .mteach{font-size:10px; color:var(--ink-faint); margin-top:1px;}
+.mcell.brk{background:repeating-linear-gradient(45deg, var(--offwhite), var(--offwhite) 5px, #ECF1EE 5px, #ECF1EE 10px); text-align:center; color:var(--ink-faint); font-size:10px;}
+.mcell.empty{background:var(--paper); color:var(--ink-faint); font-size:10.5px; text-align:center; border:1px dashed var(--line);}
+.mcell.merged{background:var(--sage-pale);}
+.mcell.merged .msub::after{content:" \1F517"; font-size:9px;}
+
+/* ===== GENERATE ===== */
+.progress-wrap{max-width:640px;}
+.progress-track{width:100%; height:14px; background:var(--sage-pale); border-radius:8px; overflow:hidden; margin:18px 0 10px;}
+.progress-fill{height:100%; background:linear-gradient(90deg, var(--sage), var(--mint)); width:0%; border-radius:8px; transition:width .05s linear;}
+.progress-log{font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft); background:var(--forest-deep); color:#B7CFC5; border-radius:10px; padding:14px 16px; height:170px; overflow-y:auto; line-height:1.7;}
+.progress-log .ok{color:var(--mint);}
+.result-stats{display:flex; gap:14px; margin-top:20px;}
+.stat-box{flex:1; background:var(--offwhite); border-radius:10px; padding:16px; text-align:center;}
+.stat-box .n{font-family:var(--font-display); font-size:26px; font-weight:700; color:var(--forest);}
+.stat-box .l{font-size:11px; color:var(--ink-faint); margin-top:3px;}
+
+/* ===== DRAFT BOARD ===== */
+.board-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;}
+.board-select{display:flex; gap:8px; align-items:center;}
+.dboard{display:grid; grid-template-columns:74px repeat(5, 1fr); gap:7px;}
+.dcell-head{background:var(--forest); color:#fff; text-align:center; padding:9px 0; border-radius:8px; font-size:12px; font-weight:700;}
+.dcell-time{display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:10.5px; color:var(--ink-faint); font-family:var(--font-mono); text-align:center;}
+.dcell-time b{color:var(--ink-soft); font-size:11.5px;}
+.dslot{border-radius:9px; min-height:66px; padding:8px 10px; border:1.5px dashed var(--line); display:flex; flex-direction:column; justify-content:center; position:relative; transition:.1s;}
+.dcard{border-radius:8px; padding:8px 10px; cursor:grab; border:1.5px solid transparent;}
+.dcard .s{font-weight:700; font-size:12.5px;}
+.dcard .t{font-size:10.5px; opacity:.85; margin-top:2px;}
+.sub-eng{background:#E7EFEC; border-color:#B7CFC5; color:#1B4332;}
+.sub-math{background:#FBF0DE; border-color:#EFDCB0; color:#8A5A0D;}
+.sub-sci{background:#E6F2EC; border-color:#B9E0CB; color:#1B5E3A;}
+.sub-hindi{background:#F3E9F7; border-color:#DCC3E6; color:#5B2E73;}
+.sub-sst{background:#FCE9E9; border-color:#F3C2C2; color:#8A2A26;}
+.sub-art{background:#FFF3D6; border-color:#F3DE9E; color:#8A6A0D;}
+.dslot.legal-target{border-color:var(--mint); background:var(--mint-bg);}
+.dslot.illegal-flash{border-color:var(--signal); background:var(--signal-bg); animation:shake .35s;}
+@keyframes shake{0%,100%{transform:translateX(0);} 25%{transform:translateX(-4px);} 75%{transform:translateX(4px);}}
+.dslot.brkrow{background:transparent; border:none; align-items:center; justify-content:center; color:var(--ink-faint); font-size:10.5px;}
+.demo-toast{margin-top:16px; display:none;}
+.demo-toast.show{display:flex;}
+.board-hint{font-size:12px; color:var(--ink-faint); margin-top:12px; font-style:italic;}
+
+/* ===== SUBSTITUTE ===== */
+.absence-banner{display:flex; align-items:center; gap:14px; background:var(--forest); color:#fff; border-radius:12px; padding:16px 18px; margin-bottom:20px;}
+.absence-banner .avatar{background:var(--mint); width:42px; height:42px; font-size:13px;}
+.absence-banner h3{font-family:var(--font-display); font-size:17px; font-weight:600;}
+.absence-banner p{font-size:12px; color:var(--sage-light); margin-top:2px;}
+.absence-banner .btn{margin-left:auto;}
+.sub-row{display:grid; grid-template-columns:1.1fr .8fr 1.6fr 1.6fr .9fr; gap:14px; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line);}
+.sub-row:last-child{border-bottom:none;}
+.sub-row .rationale{font-size:12px; color:var(--ink-faint); font-style:italic;}
+.sub-select{width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:12.5px;}
+.sub-row.needs-review{background:var(--amber-bg);}
+
+/* ===== REPORTS ===== */
+.report-grid{display:grid; grid-template-columns:repeat(3, 1fr); gap:16px; margin-bottom:26px;}
+.report-card{padding:18px; cursor:pointer;}
+.report-card:hover{border-color:var(--sage);}
+.report-icon{width:36px; height:36px; border-radius:9px; background:var(--sage-pale); display:grid; place-items:center; margin-bottom:12px;}
+.report-card h4{font-size:14px; font-weight:700; margin-bottom:4px;}
+.report-card p{font-size:12px; color:var(--ink-faint); line-height:1.4;}
+.filter-bar{display:flex; gap:10px; margin-bottom:16px;}
+.filter-bar select{padding:8px 12px; border:1px solid var(--line); border-radius:8px; font-size:12.5px;}
+
+/* ===== NOTIFICATIONS ===== */
+.notif-item{display:flex; gap:13px; padding:16px 18px; border-bottom:1px solid var(--line);}
+.notif-item:last-child{border-bottom:none;}
+.notif-dot{width:9px; height:9px; border-radius:50%; margin-top:6px; flex-shrink:0;}
+.notif-item.unread{background:var(--offwhite);}
+.notif-title{font-size:13px; font-weight:700;}
+.notif-body{font-size:12.5px; color:var(--ink-soft); margin-top:2px;}
+.notif-time{font-size:11px; color:var(--ink-faint); margin-top:4px;}
+
+/* misc */
+.flex-between{display:flex; align-items:center; justify-content:space-between;}
+.mb18{margin-bottom:18px;}
+.mb24{margin-bottom:24px;}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px;}
+h2.screen-title{font-family:var(--font-display); font-size:24px; font-weight:600; margin-bottom:4px;}
+.screen-sub{font-size:13px; color:var(--ink-faint); margin-bottom:22px;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><span></span><span></span><span></span><span></span></div>
+      <div>
+        <div class="brand-name">Timetable AI</div>
+        <div class="brand-sub">The British School</div>
+      </div>
+    </div>
+
+    <div class="nav-group-label">Build</div>
+    <button class="nav-item active" data-target="timetables" onclick="showScreen('timetables', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg> Timetables
+    </button>
+    <button class="nav-item" data-target="setup" onclick="showScreen('setup', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h7"/></svg> Setup Wizard
+    </button>
+    <button class="nav-item" data-target="readiness" onclick="showScreen('readiness', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> Readiness
+    </button>
+    <button class="nav-item" data-target="generate" onclick="showScreen('generate', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg> Generate
+    </button>
+
+    <div class="nav-group-label">Manage</div>
+    <button class="nav-item" data-target="matrix" onclick="showScreen('matrix', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg> Allocation Matrix
+    </button>
+    <button class="nav-item" data-target="board" onclick="showScreen('board', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg> Draft Board
+    </button>
+    <button class="nav-item" data-target="publish" onclick="showScreen('publish', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg> Publish
+    </button>
+    <button class="nav-item" data-target="substitute" onclick="showScreen('substitute', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg> Substitutes
+    </button>
+
+    <div class="nav-group-label">Intelligence <span class="nav-lock" title="Visible only to roles granted AI access">ROLE-GATED</span></div>
+    <button class="nav-item" data-target="askai" onclick="showScreen('askai', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Ask AI
+    </button>
+    <button class="nav-item" data-target="aisettings" onclick="showScreen('aisettings', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> AI Settings
+    </button>
+
+    <div class="nav-group-label">Reference</div>
+    <button class="nav-item" data-target="reports" onclick="showScreen('reports', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg> Reports
+    </button>
+    <button class="nav-item" data-target="masters" onclick="showScreen('masters', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg> Teachers
+    </button>
+    <button class="nav-item" data-target="notifications" onclick="showScreen('notifications', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications
+    </button>
+
+    <div class="nav-group-label">Administration <span class="nav-lock" title="Visible only to roles with roles.manage">ADMIN</span></div>
+    <button class="nav-item" data-target="roles" onclick="showScreen('roles', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Roles &amp; Access
+    </button>
+
+    <div class="sidebar-foot">
+      <div class="who">
+        <div class="avatar">RA</div>
+        <div>
+          <div class="who-name">R. Ahuja</div>
+          <div class="who-role">Timetable Admin</div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="topbar-eyebrow" id="topbar-eyebrow">Build</div>
+        <div class="topbar-title" id="topbar-title">Timetables</div>
+      </div>
+      <div class="topbar-right">
+        <div class="tt-selector">
+          <span class="tt-selector-label">Viewing timetable</span>
+          <select id="tt-selector" onchange="onTimetableChange(this.value)">
+            <option value="primary">Primary Wing (LKG–2)</option>
+            <option value="middle">Middle Wing (3–5)</option>
+            <option value="senior">Senior Wing (6–10)</option>
+            <option value="__new__">+ Create New Timetable…</option>
+          </select>
+          <span class="tt-selector-meta" id="tt-selector-meta">6 periods/day · 9:00 AM–12:30 PM · Published v3</span>
+        </div>
+        <span class="badge badge-ok">● Autosaved</span>
+        <button class="btn btn-secondary btn-sm">? Help</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 0: TIMETABLES (multi-config list)                 -->
+      <!-- ======================================================= -->
+      <section class="screen active" id="screen-timetables">
+        <div class="flex-between mb18">
+          <div>
+            <h2 class="screen-title" style="margin-bottom:2px;">Timetables</h2>
+            <div class="screen-sub" style="margin-bottom:0;">Every wing runs its own timetable — different timings, periods, and breaks — built and published independently.</div>
+          </div>
+          <button class="btn btn-primary" onclick="newTimetable()">+ New Timetable</button>
+        </div>
+
+        <div class="card">
+          <table>
+            <thead><tr><th>Timetable</th><th>Classes Covered</th><th>Periods/Day</th><th>Timing</th><th>Status</th><th>Last Edited</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td><b>Primary Wing (LKG–2)</b><div style="font-size:11.5px; color:var(--ink-faint); margin-top:2px;">Younger classes — shorter day, more frequent breaks</div></td>
+                <td>LKG, UKG, 1-A, 1-B, 2-A, 2-B</td>
+                <td>6</td>
+                <td>9:00 AM – 12:30 PM</td>
+                <td><span class="badge badge-ok">Published v3</span></td>
+                <td>2 days ago</td>
+                <td><button class="btn btn-secondary btn-sm" onclick="editTimetable('primary')">Edit</button></td>
+              </tr>
+              <tr>
+                <td><b>Middle Wing (3–5)</b><div style="font-size:11.5px; color:var(--ink-faint); margin-top:2px;">Standard day, one double-lab slot for Science</div></td>
+                <td>3-A…3-E, 4-A…4-D, 5-A…5-E</td>
+                <td>8</td>
+                <td>8:00 AM – 2:25 PM</td>
+                <td><span class="badge badge-warn">Draft</span></td>
+                <td>1 hour ago</td>
+                <td><button class="btn btn-secondary btn-sm" onclick="editTimetable('middle')">Edit</button></td>
+              </tr>
+              <tr>
+                <td><b>Senior Wing (6–10)</b><div style="font-size:11.5px; color:var(--ink-faint); margin-top:2px;">Longest day, zero period for exam-batch students</div></td>
+                <td>6-A…6-B, 7-A…7-B, 8-A…8-C, 9-A…9-D, 10-A…10-B</td>
+                <td>8</td>
+                <td>7:45 AM – 2:00 PM</td>
+                <td><span class="badge badge-ok">Published v5</span></td>
+                <td>5 days ago</td>
+                <td><button class="btn btn-secondary btn-sm" onclick="editTimetable('senior')">Edit</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card" style="margin-top:18px; padding:18px 20px; display:flex; gap:14px; align-items:flex-start;">
+          <div class="report-icon" style="margin-bottom:0; flex-shrink:0;">💡</div>
+          <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">
+            Each timetable is fully independent — its own periods/day, start &amp; end times, breaks, and class-section scope.
+            A class-section belongs to exactly one timetable, so a teacher who crosses wings (e.g. teaches both Class 2 and Class 6)
+            simply appears in the teacher mapping of both — the feasibility engine checks their <i>combined</i> load across every
+            timetable they're mapped into, not just one in isolation.
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 1: SETUP WIZARD                                   -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-setup">
+        <div class="flex-between mb18" style="background:var(--offwhite); border:1px solid var(--line); border-radius:10px; padding:12px 16px;">
+          <div style="font-size:12.5px;">Editing timetable: <b id="wizard-editing-name">Middle Wing (3–5)</b> <span class="badge badge-warn" id="wizard-editing-status" style="margin-left:6px;">Draft</span></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="showScreen('timetables', document.querySelector('[data-target=timetables]'))">All Timetables</button>
+            <button class="btn btn-secondary btn-sm">Save Draft</button>
+          </div>
+        </div>
+        <div class="stepper">
+          <div class="step done" id="stepnav-1" onclick="showWizardStep(1)"><div class="step-dot">✓</div><div class="step-label">Academic Year</div></div><div class="step-line"></div>
+          <div class="step done" id="stepnav-2" onclick="showWizardStep(2)"><div class="step-dot">✓</div><div class="step-label">Classes &amp; Rooms</div></div><div class="step-line"></div>
+          <div class="step done" id="stepnav-3" onclick="showWizardStep(3)"><div class="step-dot">✓</div><div class="step-label">Subjects</div></div><div class="step-line"></div>
+          <div class="step done" id="stepnav-4" onclick="showWizardStep(4)"><div class="step-dot">✓</div><div class="step-label">Curriculum</div></div><div class="step-line"></div>
+          <div class="step active" id="stepnav-5" onclick="showWizardStep(5)"><div class="step-dot">5</div><div class="step-label">Teachers</div></div><div class="step-line"></div>
+          <div class="step" id="stepnav-6" onclick="showWizardStep(6)"><div class="step-dot">6</div><div class="step-label">Teacher Mapping</div></div><div class="step-line"></div>
+          <div class="step" id="stepnav-7" onclick="showWizardStep(7)"><div class="step-dot">7</div><div class="step-label">Config</div></div>
+        </div>
+
+        <!-- ---------- STEP 1: ACADEMIC YEAR ---------- -->
+        <div class="wizard-panel" id="wp-1">
+          <div class="card" style="padding:26px;">
+            <h2 class="screen-title" style="margin-bottom:2px;">Academic Year</h2>
+            <div class="screen-sub">Set the year this timetable configuration belongs to — everything downstream is scoped to it.</div>
+
+            <div class="form-grid">
+              <div class="field"><label>Academic year name</label><input type="text" value="2026–27"></div>
+              <div class="field"><label>Status</label><select><option>Active</option><option>Draft</option><option>Archived</option></select></div>
+              <div class="field"><label>Start date</label><input type="text" value="01 Jul 2026"></div>
+              <div class="field"><label>End date</label><input type="text" value="30 Jun 2027"></div>
+            </div>
+
+            <div style="height:1px; background:var(--line); margin:6px 0 18px;"></div>
+            <div class="section-label mb18" style="display:block;">Existing academic years</div>
+            <table>
+              <thead><tr><th>Year</th><th>Status</th><th>Start</th><th>End</th><th></th></tr></thead>
+              <tbody>
+                <tr><td><b>2026–27</b></td><td><span class="badge badge-ok">Active</span></td><td>01 Jul 2026</td><td>30 Jun 2027</td><td><button class="btn btn-secondary btn-sm">Edit</button></td></tr>
+                <tr><td>2025–26</td><td><span class="badge badge-neutral">Archived</span></td><td>01 Jul 2025</td><td>30 Jun 2026</td><td><button class="btn btn-secondary btn-sm">View</button></td></tr>
+              </tbody>
+            </table>
+
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" disabled>← Back</button>
+              <button class="btn btn-primary" onclick="showWizardStep(2)">Next: Classes &amp; Rooms →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- STEP 2: CLASSES & ROOMS ---------- -->
+        <div class="wizard-panel" id="wp-2">
+          <div class="card" style="padding:26px;">
+            <h2 class="screen-title" style="margin-bottom:2px;">Classes, Sections &amp; Rooms</h2>
+            <div class="screen-sub">Define the class-section units and the physical rooms they'll be scheduled into.</div>
+
+            <div class="grid2">
+              <div>
+                <div class="section-label mb18" style="display:block;">Classes &amp; Sections</div>
+                <table>
+                  <thead><tr><th>Class</th><th>Sections</th><th>Class-Sections</th></tr></thead>
+                  <tbody>
+                    <tr><td>Class 5</td><td>A · B · C · D · E</td><td><span class="badge badge-neutral">5</span></td></tr>
+                    <tr><td>Class 6</td><td>A · B</td><td><span class="badge badge-neutral">2</span></td></tr>
+                    <tr><td>Class 7</td><td>A · B</td><td><span class="badge badge-neutral">2</span></td></tr>
+                    <tr><td>Class 8</td><td>A · B · C</td><td><span class="badge badge-neutral">3</span></td></tr>
+                    <tr><td>Class 9</td><td>A · B · C · D</td><td><span class="badge badge-neutral">4</span></td></tr>
+                    <tr><td>Class 10</td><td>A · B</td><td><span class="badge badge-neutral">2</span></td></tr>
+                  </tbody>
+                </table>
+                <button class="btn btn-secondary btn-sm" style="margin-top:12px;">+ Add Class</button>
+              </div>
+              <div>
+                <div class="section-label mb18" style="display:block;">Rooms</div>
+                <table>
+                  <thead><tr><th>Room</th><th>Type</th><th>Capacity</th></tr></thead>
+                  <tbody>
+                    <tr><td>Room 12</td><td>Classroom</td><td>34</td></tr>
+                    <tr><td>Room 204</td><td>Classroom</td><td>32</td></tr>
+                    <tr><td>Science Lab 1</td><td><span class="chip">Shared</span></td><td>28</td></tr>
+                    <tr><td>Science Lab 2</td><td><span class="chip">Shared</span></td><td>28</td></tr>
+                    <tr><td>Art Room</td><td>Special</td><td>30</td></tr>
+                  </tbody>
+                </table>
+                <button class="btn btn-secondary btn-sm" style="margin-top:12px;">+ Add Room</button>
+              </div>
+            </div>
+
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(1)">← Back: Academic Year</button>
+              <button class="btn btn-primary" onclick="showWizardStep(3)">Next: Subjects →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- STEP 3: SUBJECTS ---------- -->
+        <div class="wizard-panel" id="wp-3">
+          <div class="card" style="padding:26px;">
+            <div class="flex-between mb18">
+              <div>
+                <h2 class="screen-title" style="margin-bottom:2px;">Subjects</h2>
+                <div class="screen-sub" style="margin-bottom:0;">The master subject list, flagged for lab and double-period needs.</div>
+              </div>
+              <button class="btn btn-primary btn-sm">+ Add Subject</button>
+            </div>
+            <table>
+              <thead><tr><th>Subject</th><th>Code</th><th>Requires Lab</th><th>Double-Period</th></tr></thead>
+              <tbody>
+                <tr><td>English</td><td class="chip-mono" style="font-family:var(--font-mono);">ENG</td><td><span class="badge badge-neutral">No</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Mathematics</td><td class="chip-mono" style="font-family:var(--font-mono);">MAT</td><td><span class="badge badge-neutral">No</span></td><td><span class="badge badge-ok">Yes</span></td></tr>
+                <tr><td>Science</td><td class="chip-mono" style="font-family:var(--font-mono);">SCI</td><td><span class="badge badge-ok">Yes</span></td><td><span class="badge badge-ok">Yes</span></td></tr>
+                <tr><td>Biology</td><td class="chip-mono" style="font-family:var(--font-mono);">BIO</td><td><span class="badge badge-ok">Yes</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Hindi</td><td class="chip-mono" style="font-family:var(--font-mono);">HIN</td><td><span class="badge badge-neutral">No</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Social Studies</td><td class="chip-mono" style="font-family:var(--font-mono);">SST</td><td><span class="badge badge-neutral">No</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Art</td><td class="chip-mono" style="font-family:var(--font-mono);">ART</td><td><span class="badge badge-neutral">No</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+              </tbody>
+            </table>
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(2)">← Back: Classes &amp; Rooms</button>
+              <button class="btn btn-primary" onclick="showWizardStep(4)">Next: Curriculum →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- STEP 4: CURRICULUM MAPPING ---------- -->
+        <div class="wizard-panel" id="wp-4">
+          <div class="card" style="padding:26px;">
+            <div class="flex-between mb18">
+              <div>
+                <h2 class="screen-title" style="margin-bottom:2px;">Curriculum Mapping</h2>
+                <div class="screen-sub" style="margin-bottom:0;">Which subjects apply to each class, how often, and any block/sync rules.</div>
+              </div>
+              <span class="badge badge-neutral">Class 5 · 40 slots/week available</span>
+            </div>
+            <table>
+              <thead><tr><th>Subject</th><th>Periods/Week</th><th>Max/Day</th><th>Consecutive Block</th><th>Same Period All Week</th></tr></thead>
+              <tbody>
+                <tr><td>English</td><td>6</td><td>1</td><td><span class="badge badge-neutral">Single</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Mathematics</td><td>6</td><td>2</td><td><span class="badge badge-ok">2× double-block</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Science</td><td>5</td><td>2</td><td><span class="badge badge-ok">1× double-block</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Hindi</td><td>5</td><td>1</td><td><span class="badge badge-neutral">Single</span></td><td><span class="badge badge-ok">Yes · P2</span></td></tr>
+                <tr><td>Social Studies</td><td>5</td><td>1</td><td><span class="badge badge-neutral">Single</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+                <tr><td>Art</td><td>2</td><td>1</td><td><span class="badge badge-neutral">Single</span></td><td><span class="badge badge-neutral">No</span></td></tr>
+              </tbody>
+            </table>
+            <div style="margin-top:10px; font-size:12px; color:var(--ink-faint);">Total mapped: 29 of 40 slots/week — 11 remaining for this class.</div>
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(3)">← Back: Subjects</button>
+              <button class="btn btn-primary" onclick="showWizardStep(5)">Next: Teachers →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------- STEP 5: TEACHERS ---------- -->
+        <div class="wizard-panel active" id="wp-5">
+
+        <!-- ---- Step 5a: Teacher Directory (list) ---- -->
+        <div class="wizard-subview active" id="wp5-list">
+          <div class="card" style="padding:26px;">
+            <div class="flex-between mb18">
+              <div>
+                <h2 class="screen-title" style="margin-bottom:2px;">Teachers</h2>
+                <div class="screen-sub" style="margin-bottom:0;">6 teachers added to this timetable so far — click any row to view or edit.</div>
+              </div>
+              <button class="btn btn-primary" onclick="showTeacherForm('new')">+ Add New Teacher</button>
+            </div>
+            <table>
+              <thead><tr><th>Teacher</th><th>Subjects</th><th>Sections</th><th>Load</th><th>Class-Teacher Rule</th><th>Period Pattern</th><th></th></tr></thead>
+              <tbody>
+                <tr onclick="showTeacherForm('sharma')" style="cursor:pointer;">
+                  <td><b>R. Sharma</b></td><td>English</td><td>6</td><td><span class="badge badge-error">34 / 30</span></td>
+                  <td><span class="chip">always_first_period</span></td><td><span class="chip">every_period</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('sharma')">Edit</button></td>
+                </tr>
+                <tr onclick="showTeacherForm('verma')" style="cursor:pointer;">
+                  <td><b>A. Verma</b></td><td>English</td><td>5</td><td><span class="badge badge-ok">28 / 30</span></td>
+                  <td><span class="chip">random</span></td><td><span class="chip">every_period</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('verma')">Edit</button></td>
+                </tr>
+                <tr onclick="showTeacherForm('nair')" style="cursor:pointer;">
+                  <td><b>P. Nair</b></td><td>Science, Biology</td><td>4</td><td><span class="badge badge-ok">24 / 30</span></td>
+                  <td><span class="chip">none</span></td><td><span class="chip">alternate_period</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('nair')">Edit</button></td>
+                </tr>
+                <tr onclick="showTeacherForm('khan')" style="cursor:pointer;">
+                  <td><b>M. Khan</b></td><td>Social Studies</td><td>5</td><td><span class="badge badge-ok">26 / 30</span></td>
+                  <td><span class="chip">none</span></td><td><span class="chip">alternate_day</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('khan')">Edit</button></td>
+                </tr>
+                <tr onclick="showTeacherForm('menon')" style="cursor:pointer;">
+                  <td><b>S. Menon</b></td><td>Biology (merged 10-A/10-B)</td><td>2 <span class="chip chip-mono">merged</span></td><td><span class="badge badge-ok">18 / 30</span></td>
+                  <td><span class="chip">none</span></td><td><span class="chip">every_period</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('menon')">Edit</button></td>
+                </tr>
+                <tr onclick="showTeacherForm('das')" style="cursor:pointer;">
+                  <td><b>T. Das</b></td><td>Art</td><td>8</td><td><span class="badge badge-ok">22 / 30</span></td>
+                  <td><span class="chip">none</span></td><td><span class="chip">every_period</span></td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showTeacherForm('das')">Edit</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(4)">← Back: Curriculum</button>
+              <button class="btn btn-primary" onclick="showWizardStep(6)">Next: Teacher Mapping →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Step 5b: Add / Edit Teacher (form) ---- -->
+        <div class="wizard-subview" id="wp5-form">
+        <div class="card" style="padding:26px;">
+          <div class="flex-between mb18">
+            <div>
+              <h2 class="screen-title" style="margin-bottom:0;" id="form-teacher-title">Add / Edit Teacher</h2>
+              <div class="screen-sub" style="margin-bottom:0;" id="form-teacher-sub">Mrs. R. Sharma · Employee code EDX-1042</div>
+            </div>
+            <span class="badge badge-neutral" id="form-teacher-badge">6 sections mapped</span>
+          </div>
+
+          <div class="form-grid">
+            <div class="field"><label>Full name</label><input type="text" id="form-teacher-name" value="Rekha Sharma"></div>
+            <div class="field"><label>Employee code</label><input type="text" id="form-teacher-code" value="EDX-1042"></div>
+            <div class="field"><label>Max periods / day</label><input type="number" value="6"></div>
+            <div class="field"><label>Max periods / week</label><input type="number" value="30"></div>
+          </div>
+
+          <div style="height:1px; background:var(--line); margin:6px 0 22px;"></div>
+          <div class="section-label mb18" style="display:block;">Placement configuration — never bypassed by the solver</div>
+
+          <div class="grid2">
+            <div class="field">
+              <label>Class-teacher period rule</label>
+              <div class="radio-row">
+                <label class="radio-opt selected"><input type="radio" name="ctpr" checked><div><div class="radio-opt-title">Always first period</div><div class="radio-opt-desc">Mrs. Sharma teaches Period 1 of her own class-section every day, and is never placed in Period 1 of any other section.</div></div></label>
+                <label class="radio-opt"><input type="radio" name="ctpr"><div><div class="radio-opt-title">Random</div><div class="radio-opt-desc">Her own class's Period 1 is unrestricted — solver places normally.</div></div></label>
+                <label class="radio-opt"><input type="radio" name="ctpr"><div><div class="radio-opt-title">None</div><div class="radio-opt-desc">Class-teacher status has no bearing on period placement.</div></div></label>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Period pattern</label>
+              <div class="radio-row">
+                <label class="radio-opt"><input type="radio" name="pp"><div><div class="radio-opt-title">Every period</div><div class="radio-opt-desc">No gap restriction (default).</div></div></label>
+                <label class="radio-opt selected"><input type="radio" name="pp" checked><div><div class="radio-opt-title">Alternate period</div><div class="radio-opt-desc">Never two adjacent periods on the same day — hard constraint.</div></div></label>
+                <label class="radio-opt"><input type="radio" name="pp"><div>
+                  <div class="radio-opt-title">Alternate day</div>
+                  <div class="radio-opt-desc">Restrict to specific days:</div>
+                  <div class="day-picker">
+                    <button type="button" class="day-toggle on">Mon</button>
+                    <button type="button" class="day-toggle">Tue</button>
+                    <button type="button" class="day-toggle on">Wed</button>
+                    <button type="button" class="day-toggle">Thu</button>
+                    <button type="button" class="day-toggle on">Fri</button>
+                  </div>
+                </div></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="wizard-foot">
+            <button class="btn btn-secondary" onclick="showTeacherList()">← Back to Teacher List</button>
+            <div style="display:flex; gap:10px;">
+              <button class="btn btn-secondary" onclick="showTeacherForm('new')">Save &amp; Add Another</button>
+              <button class="btn btn-primary" onclick="showWizardStep(6)">Save &amp; Next: Teacher Mapping →</button>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        </div>
+
+        <!-- ---------- STEP 6: TEACHER MAPPING ---------- -->
+        <div class="wizard-panel" id="wp-6">
+
+        <!-- ---- Step 6a: Class Teacher Assignments + Mapping List ---- -->
+        <div class="wizard-subview active" id="wp6-list">
+
+          <div class="card" style="padding:26px; margin-bottom:18px;">
+            <div class="flex-between mb18">
+              <div>
+                <h2 class="screen-title" style="margin-bottom:2px;">Class Teacher Assignments</h2>
+                <div class="screen-sub" style="margin-bottom:0;">Every class-section can have one class teacher — this is what makes a teacher's "always first period" rule (set in Teachers) actually apply somewhere.</div>
+              </div>
+            </div>
+            <table>
+              <thead><tr><th>Class-Section</th><th>Home Room</th><th>Class Teacher</th><th>Their Period-1 Rule</th><th>Status</th></tr></thead>
+              <tbody id="class-teacher-rows">
+                <tr>
+                  <td><b>5-A</b></td><td>Room 12</td>
+                  <td><select class="sub-select" onchange="onClassTeacherAssign(this)"><option value="">— Unassigned —</option><option value="sharma" selected>R. Sharma</option><option value="verma">A. Verma</option><option value="kapoor">A. Kapoor</option><option value="nair">P. Nair</option></select></td>
+                  <td><span class="chip">always_first_period</span></td>
+                  <td><span class="badge badge-ok" data-ct-status>✓ Assigned</span></td>
+                </tr>
+                <tr>
+                  <td><b>5-B</b></td><td>Room 204</td>
+                  <td><select class="sub-select" onchange="onClassTeacherAssign(this)"><option value="">— Unassigned —</option><option value="sharma">R. Sharma</option><option value="verma" selected>A. Verma</option><option value="kapoor">A. Kapoor</option><option value="nair">P. Nair</option></select></td>
+                  <td><span class="chip">random</span></td>
+                  <td><span class="badge badge-ok" data-ct-status>✓ Assigned</span></td>
+                </tr>
+                <tr>
+                  <td><b>5-C</b></td><td>Room 205</td>
+                  <td><select class="sub-select" onchange="onClassTeacherAssign(this)"><option value="" selected>— Unassigned —</option><option value="sharma">R. Sharma</option><option value="verma">A. Verma</option><option value="kapoor">A. Kapoor</option><option value="nair">P. Nair</option></select></td>
+                  <td><span class="chip chip-mono">—</span></td>
+                  <td><span class="badge badge-warn" data-ct-status>⚠ Unassigned</span></td>
+                </tr>
+                <tr>
+                  <td><b>10-A</b></td><td>Room 8</td>
+                  <td><select class="sub-select" onchange="onClassTeacherAssign(this)"><option value="">— Unassigned —</option><option value="menon" selected>S. Menon</option><option value="das">T. Das</option><option value="khan">M. Khan</option></select></td>
+                  <td><span class="chip">none</span></td>
+                  <td><span class="badge badge-ok" data-ct-status>✓ Assigned</span></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="field-hint" style="margin-top:10px;">A teacher's Period-1 rule is configured once, in Teachers — assigning them here as class teacher of a section is what activates it for that section specifically.</div>
+          </div>
+
+          <div class="card" style="padding:26px;">
+            <div class="flex-between mb18">
+              <div>
+                <h2 class="screen-title" style="margin-bottom:2px;">Subject Mapping</h2>
+                <div class="screen-sub" style="margin-bottom:0;">Who teaches what, where — the core mapping the solver builds variables from.</div>
+              </div>
+              <button class="btn btn-primary btn-sm" onclick="showMappingForm('new')">+ Add Mapping</button>
+            </div>
+            <table>
+              <thead><tr><th>Teacher</th><th>Subject</th><th>Class-Section</th><th>Periods/Week</th><th>Room</th><th></th></tr></thead>
+              <tbody>
+                <tr><td>R. Sharma</td><td>English</td><td>5-A</td><td>6</td><td>Room 12 (home)</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m1')">Edit</button></td></tr>
+                <tr><td>R. Sharma</td><td>English</td><td>5-B</td><td>6</td><td>Room 204 (home)</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m2')">Edit</button></td></tr>
+                <tr><td>A. Kapoor</td><td>Mathematics</td><td>5-A</td><td>6</td><td>Room 12 (home)</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m3')">Edit</button></td></tr>
+                <tr><td>P. Nair</td><td>Science</td><td>5-A</td><td>5</td><td>Science Lab 1</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m4')">Edit</button></td></tr>
+                <tr><td>S. Menon</td><td>Biology</td><td>10-A + 10-B <span class="chip chip-mono">merged</span></td><td>4</td><td>Bio Lab</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m5')">Edit</button></td></tr>
+                <tr><td>T. Das</td><td>Art</td><td>5-A</td><td>2</td><td>Art Room</td><td><button class="btn btn-secondary btn-sm" onclick="showMappingForm('m6')">Edit</button></td></tr>
+              </tbody>
+            </table>
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(5)">← Back: Teachers</button>
+              <button class="btn btn-primary" onclick="showWizardStep(7)">Next: Config →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Step 6b: Add / Edit Subject Mapping (form) ---- -->
+        <div class="wizard-subview" id="wp6-form">
+          <div class="card" style="padding:26px;">
+            <h2 class="screen-title" style="margin-bottom:2px;" id="mapping-form-title">Add Subject Mapping</h2>
+            <div class="screen-sub">Assign one teacher to teach one subject in one (or more, if merged) class-section.</div>
+
+            <div class="form-grid">
+              <div class="field"><label>Teacher</label>
+                <select id="mf-teacher"><option>R. Sharma</option><option>A. Verma</option><option>A. Kapoor</option><option>P. Nair</option><option>M. Khan</option><option>S. Menon</option><option>T. Das</option></select>
+              </div>
+              <div class="field"><label>Subject</label>
+                <select id="mf-subject"><option>English</option><option>Mathematics</option><option>Science</option><option>Biology</option><option>Hindi</option><option>Social Studies</option><option>Art</option></select>
+              </div>
+              <div class="field"><label>Class-Section</label>
+                <select id="mf-class"><option>5-A</option><option>5-B</option><option>5-C</option><option>6-A</option><option>10-A</option><option>10-B</option></select>
+              </div>
+              <div class="field"><label>Periods / Week</label><input type="number" id="mf-periods" value="6"></div>
+              <div class="field"><label>Room</label>
+                <select><option>Use class-section's home room</option><option>Science Lab 1</option><option>Science Lab 2</option><option>Art Room</option><option>Bio Lab</option></select>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="radio-opt" style="display:flex;"><input type="checkbox" id="mf-merge" style="margin-top:3px;" onchange="document.getElementById('mf-merge-target').style.display = this.checked ? 'block' : 'none';">
+                <div><div class="radio-opt-title">Merged teaching — same teacher, same slot, another class-section</div>
+                <div class="radio-opt-desc">E.g. one Biology period taught to 10-A and 10-B at once. Both sections' timetables will show this period; the teacher is counted as occupied only once.</div></div>
+              </label>
+              <div id="mf-merge-target" style="display:none; margin-top:10px;">
+                <select><option>10-B</option><option>10-A</option><option>9-D</option></select>
+              </div>
+            </div>
+
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showMappingList()">← Back to Mapping List</button>
+              <div style="display:flex; gap:10px;">
+                <button class="btn btn-secondary" onclick="showMappingForm('new')">Save &amp; Add Another</button>
+                <button class="btn btn-primary" onclick="showMappingList()">Save Mapping</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        </div>
+
+        <!-- ---------- STEP 7: TIMETABLE CONFIGURATION ---------- -->
+        <div class="wizard-panel" id="wp-7">
+          <div class="card" style="padding:26px;">
+            <h2 class="screen-title" style="margin-bottom:2px;">Timetable Configuration</h2>
+            <div class="screen-sub">Give this timetable an identity and scope, then define the exact daily grid it runs on. Each timetable is independent — a school can run several at once.</div>
+
+            <div class="section-label mb18" style="display:block;">Identity &amp; scope</div>
+            <div class="form-grid">
+              <div class="field"><label>Timetable name</label><input type="text" id="cfg-name" value="Middle Wing (3–5)"></div>
+              <div class="field"><label>Status</label><select><option>Draft</option><option>Published</option><option>Archived</option></select></div>
+            </div>
+            <div class="field"><label>Description</label><textarea rows="2" style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:13px; font-family:inherit;">Standard-length day for Classes 3–5, with one double-period lab slot for Science each week.</textarea></div>
+
+            <div class="field">
+              <label>Classes covered by this timetable</label>
+              <div class="class-checks">
+                <label class="class-check"><input type="checkbox">LKG</label>
+                <label class="class-check"><input type="checkbox">UKG</label>
+                <label class="class-check"><input type="checkbox">Class 1</label>
+                <label class="class-check"><input type="checkbox">Class 2</label>
+                <label class="class-check"><input type="checkbox" checked>Class 3</label>
+                <label class="class-check"><input type="checkbox" checked>Class 4</label>
+                <label class="class-check"><input type="checkbox" checked>Class 5</label>
+                <label class="class-check"><input type="checkbox">Class 6</label>
+                <label class="class-check"><input type="checkbox">Class 7</label>
+                <label class="class-check"><input type="checkbox">Class 8</label>
+                <label class="class-check"><input type="checkbox">Class 9</label>
+                <label class="class-check"><input type="checkbox">Class 10</label>
+              </div>
+              <div class="field-hint">A class already covered by another timetable is shown disabled with the name of that timetable — a class-section can only belong to one timetable at a time.</div>
+            </div>
+
+            <div style="height:1px; background:var(--line); margin:8px 0 22px;"></div>
+            <div class="section-label mb18" style="display:block;">Daily structure</div>
+
+            <div class="form-grid">
+              <div class="field"><label>Working days</label>
+                <div class="day-picker">
+                  <button type="button" class="day-toggle on">Mon</button><button type="button" class="day-toggle on">Tue</button>
+                  <button type="button" class="day-toggle on">Wed</button><button type="button" class="day-toggle on">Thu</button>
+                  <button type="button" class="day-toggle on">Fri</button><button type="button" class="day-toggle">Sat</button>
+                </div>
+              </div>
+              <div class="field"><label>Start time</label><input type="text" id="cfg-start" value="8:00 AM" onchange="recalcEndTime()"></div>
+              <div class="field"><label>Number of periods</label><input type="number" id="cfg-periods" value="8" onchange="recalcEndTime()"></div>
+              <div class="field"><label>Period duration (mins)</label><input type="number" id="cfg-duration" value="40" onchange="recalcEndTime()"></div>
+            </div>
+
+            <div class="grid2">
+              <div class="field">
+                <label>Zero period</label>
+                <div class="radio-opt selected" style="display:flex;"><input type="checkbox" id="cfg-zp-on" checked style="margin-top:3px;" onchange="recalcEndTime()">
+                  <div style="flex:1;">
+                    <div class="radio-opt-title">Enabled</div>
+                    <div class="radio-opt-desc">Not counted toward subject load — typically assembly/reading.</div>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                      <select id="cfg-zp-pos" style="flex:1; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:12px;" onchange="recalcEndTime()">
+                        <option>Before Period 1</option>
+                        <option>After Period 1</option>
+                      </select>
+                      <input type="number" id="cfg-zp-dur" value="15" style="width:70px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:12px;" onchange="recalcEndTime()">
+                      <span style="align-self:center; font-size:11.5px; color:var(--ink-faint);">mins</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label>Class-teacher default</label>
+                <div class="radio-opt selected" style="display:flex;"><input type="checkbox" checked style="margin-top:3px;"><div><div class="radio-opt-title">Class teacher gets first period, by default</div><div class="radio-opt-desc">Applied to any teacher whose own rule is left as "Random" — can still be overridden per teacher.</div></div></div>
+              </div>
+            </div>
+
+            <div style="height:1px; background:var(--line); margin:8px 0 22px;"></div>
+            <div class="flex-between mb18">
+              <div class="section-label" style="display:block;">Breaks</div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="addBreakRow()">+ Add Break</button>
+            </div>
+            <div id="break-rows">
+              <div class="break-row">
+                <select style="flex:1;"><option>After Period 3</option><option selected>After Period 4</option><option>After Period 5</option></select>
+                <input type="text" placeholder="Break name" value="Recess" style="flex:1;">
+                <input type="number" value="20" style="width:70px;"><span class="break-unit">mins</span>
+                <button type="button" class="btn-icon-remove" onclick="this.closest('.break-row').remove(); recalcEndTime();">✕</button>
+              </div>
+              <div class="break-row">
+                <select style="flex:1;"><option>After Period 5</option><option selected>After Period 6</option><option>After Period 7</option></select>
+                <input type="text" placeholder="Break name" value="Lunch" style="flex:1;">
+                <input type="number" value="30" style="width:70px;"><span class="break-unit">mins</span>
+                <button type="button" class="btn-icon-remove" onclick="this.closest('.break-row').remove(); recalcEndTime();">✕</button>
+              </div>
+            </div>
+
+            <div style="height:1px; background:var(--line); margin:22px 0;"></div>
+            <div class="computed-end">
+              <div>
+                <div class="section-label" style="display:block;">Timetable end time <span style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--ink-faint);">— auto-calculated from the structure above</span></div>
+                <div class="computed-end-time" id="cfg-end-time">2:25 PM</div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="recalcEndTime()">↻ Recalculate</button>
+            </div>
+
+            <div class="wizard-foot">
+              <button class="btn btn-secondary" onclick="showWizardStep(6)">← Back: Teacher Mapping</button>
+              <div style="display:flex; gap:10px;">
+                <button class="btn btn-secondary" onclick="showScreen('timetables', document.querySelector('[data-target=timetables]'))">Save as Draft</button>
+                <button class="btn btn-primary" onclick="showScreen('readiness', document.querySelector('[data-target=readiness]'))">Save &amp; View Readiness →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 2: READINESS DASHBOARD                            -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-readiness">
+        <h2 class="screen-title">Readiness Dashboard</h2>
+        <div class="screen-sub">Live feasibility check — updates on every master-data edit, before you ever click Generate.</div>
+
+        <div class="readiness-hero">
+          <div class="score-ring-wrap">
+            <div class="score-num">87%</div>
+            <div class="score-lbl">Ready</div>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:87%;"></div></div>
+          </div>
+          <div class="readiness-summary">
+            <div class="summary-row err"><div class="summary-count">3</div><div><b>Blockers</b> — must fix before generation is possible</div></div>
+            <div class="summary-row warn"><div class="summary-count">5</div><div><b>Warnings</b> — generation will still succeed, review recommended</div></div>
+            <button class="btn btn-primary" disabled style="align-self:flex-start;">Generate Timetable (resolve blockers first)</button>
+          </div>
+        </div>
+
+        <div class="section-label mb18" style="display:block;">Blockers</div>
+        <div class="blocker-list mb24">
+          <div class="blocker err">
+            <div class="blocker-icon">✕</div>
+            <div>
+              <div class="blocker-title">Teacher overload — Mrs. Sharma</div>
+              <div class="blocker-desc">Assigned 34 periods/week across 6 sections but her max load is 30 — over by 4 periods.</div>
+              <div class="blocker-fix">Fix → Reassign 8-C English (4 periods) to another teacher, or raise her max load</div>
+            </div>
+          </div>
+          <div class="blocker err">
+            <div class="blocker-icon">✕</div>
+            <div>
+              <div class="blocker-title">Slot capacity exceeded — Class 5-A</div>
+              <div class="blocker-desc">Needs 44 periods/week from curriculum mapping but only 40 slots exist (5 days × 8 periods).</div>
+              <div class="blocker-fix">Fix → Reduce Art/Music periods, or add a period to the daily grid</div>
+            </div>
+          </div>
+          <div class="blocker err">
+            <div class="blocker-icon">✕</div>
+            <div>
+              <div class="blocker-title">Structural conflict — merged Bio group</div>
+              <div class="blocker-desc">10-A + 10-B merged Biology group needs 4 common free slots but only 2 remain in both sections' grids.</div>
+              <div class="blocker-fix">Fix → Review 10-A's schedule density in Curriculum Mapping</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-label mb18" style="display:block;">Warnings</div>
+        <div class="blocker-list">
+          <div class="blocker warn">
+            <div class="blocker-icon">!</div>
+            <div>
+              <div class="blocker-title">Shared room contention — Science Lab</div>
+              <div class="blocker-desc">3 sections need the Science Lab in Period 4 on Monday, but only 2 labs are configured.</div>
+            </div>
+          </div>
+          <div class="blocker warn">
+            <div class="blocker-icon">!</div>
+            <div>
+              <div class="blocker-title">3 free slots — Class 6-B</div>
+              <div class="blocker-desc">Curriculum uses only 37 of 40 available periods — mark remaining as Library/Study, or add periods.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 3: GENERATE                                       -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-generate">
+        <h2 class="screen-title">Generate Timetable</h2>
+        <div class="screen-sub">Readiness confirmed at 100% — Phase B solver is queued and running.</div>
+
+        <div class="progress-wrap">
+          <div class="flex-between">
+            <span class="section-label">Solving · draft #14</span>
+            <span id="progress-pct" style="font-family:var(--font-mono); font-size:13px; font-weight:700; color:var(--forest);">0%</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <div class="progress-log" id="progress-log">
+            <div>[00:00] Feasibility pre-check passed — 2,000 slots, 0 blockers</div>
+          </div>
+
+          <div class="result-stats">
+            <div class="stat-box"><div class="n" id="stat-placed">0</div><div class="l">slots placed</div></div>
+            <div class="stat-box"><div class="n">1,987</div><div class="l">target this run</div></div>
+            <div class="stat-box"><div class="n">0</div><div class="l">conflicts</div></div>
+          </div>
+
+          <div style="margin-top:22px; display:flex; gap:10px;">
+            <button class="btn btn-primary" onclick="runProgress()">▶ Run Generation</button>
+            <button class="btn btn-secondary">View Full Allocation Matrix</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 4: FULL ALLOCATION MATRIX                         -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-matrix">
+        <h2 class="screen-title">Full Allocation Matrix</h2>
+        <div class="screen-sub">Showing 10 of 50 class-sections · 400 of 2,000 total slots</div>
+
+        <div class="matrix-toolbar">
+          <div class="matrix-toolbar-left">
+            <select class="search-box" style="width:170px;"><option>By Class-Section</option><option>By Teacher</option><option>By Room</option></select>
+            <input class="search-box" placeholder="Search teacher / class / subject…">
+          </div>
+          <div class="matrix-stats">
+            <span class="badge badge-ok">1,987 / 2,000 filled (99.35%)</span>
+            <span class="badge badge-ok">0 conflicts</span>
+          </div>
+        </div>
+
+        <div class="matrix-scroll">
+          <table class="mtable" id="matrix-table"></table>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 5: DRAFT DRAG & DROP BOARD                        -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-board">
+        <div class="board-head">
+          <div class="board-select">
+            <select class="search-box"><option>5-A · Draft Timetable</option><option>5-B</option><option>6-A</option></select>
+            <span class="badge badge-warn">DRAFT — not published</span>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <button class="btn btn-secondary btn-sm">Auto-fill remaining gaps</button>
+            <button class="btn btn-primary btn-sm">Publish</button>
+          </div>
+        </div>
+
+        <div class="dboard" id="dboard"></div>
+
+        <div class="toast demo-toast" id="demo-toast">
+          ⚠ Can't move here — Mrs. Sharma already teaches 7-B Maths in this slot (Mon, Period 3).
+        </div>
+        <div class="board-hint">Drag any card — legal drop cells glow green immediately; try dropping English onto the highlighted Wed slot to see the conflict alert.</div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 6: PUBLISH                                        -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-publish">
+        <h2 class="screen-title">Publish Confirmation</h2>
+        <div class="screen-sub">Review changes before this draft replaces the live timetable for every teacher and class-section.</div>
+
+        <div class="grid2 mb24">
+          <div class="card" style="padding:20px;">
+            <div class="section-label mb18" style="display:block;">Currently Published</div>
+            <div style="font-family:var(--font-display); font-size:20px; font-weight:600;">v13</div>
+            <div style="font-size:12px; color:var(--ink-faint); margin-top:2px;">Effective since 3 Mar 2026</div>
+          </div>
+          <div class="card" style="padding:20px; border-color:var(--mint);">
+            <div class="section-label mb18" style="display:block; color:var(--mint);">New Draft</div>
+            <div style="font-family:var(--font-display); font-size:20px; font-weight:600;">v14</div>
+            <div style="font-size:12px; color:var(--ink-faint); margin-top:2px;">1,987 / 2,000 slots filled · 13 unallocated</div>
+          </div>
+        </div>
+
+        <div class="card mb24">
+          <table>
+            <thead><tr><th>Change</th><th>Class-Section</th><th>Detail</th></tr></thead>
+            <tbody>
+              <tr><td><span class="badge badge-ok">Changed</span></td><td>5-A</td><td>Maths moved Mon P3 → Mon P4 (double-block applied)</td></tr>
+              <tr><td><span class="badge badge-ok">Changed</span></td><td>10-A / 10-B</td><td>Biology merged group placed Thu P5–P6</td></tr>
+              <tr><td><span class="badge badge-warn">Unallocated</span></td><td>9-D</td><td>1 English period could not be auto-placed — needs manual drag-drop</td></tr>
+              <tr><td><span class="badge badge-neutral">Unchanged</span></td><td>47 sections</td><td>No changes from v13</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary">Back to Draft Board</button>
+          <button class="btn btn-primary">Confirm &amp; Publish v14</button>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 7: SUBSTITUTE TEACHER CENTER                      -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-substitute">
+        <h2 class="screen-title">Substitute Teacher Center</h2>
+        <div class="screen-sub">Matches computed automatically the moment an absence is logged.</div>
+
+        <div class="absence-banner">
+          <div class="avatar">RS</div>
+          <div>
+            <h3>Mrs. Sharma — Absent Today (Mon, 17 Aug)</h3>
+            <p>4 periods affected · 3 substitutes auto-matched · 1 needs review</p>
+          </div>
+          <button class="btn btn-primary">Confirm All Matches</button>
+        </div>
+
+        <div class="card">
+          <div class="sub-row" style="background:var(--offwhite); font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-faint); font-weight:700;">
+            <div>Period</div><div>Class-Section</div><div>Subject</div><div>Suggested Substitute</div><div>Status</div>
+          </div>
+          <div class="sub-row">
+            <div>P1 · 8:00–8:40</div><div>5-A</div><div>English</div>
+            <div><select class="sub-select"><option>Mr. Verma — English</option><option>Ms. Iyer — free</option></select><div class="rationale">Also teaches English · free this period · 1 substitution today</div></div>
+            <div><span class="badge badge-ok">✓ Ready</span></div>
+          </div>
+          <div class="sub-row">
+            <div>P3 · 9:20–10:00</div><div>7-B</div><div>English</div>
+            <div><select class="sub-select"><option>Mr. Verma — English</option></select><div class="rationale">Already teaches 7-B (continuity) · 2nd substitution today</div></div>
+            <div><span class="badge badge-ok">✓ Ready</span></div>
+          </div>
+          <div class="sub-row">
+            <div>P5 · 11:00–11:40</div><div>8-C</div><div>English</div>
+            <div><select class="sub-select"><option>Ms. Iyer — English</option></select><div class="rationale">Free this period · subject specialist</div></div>
+            <div><span class="badge badge-ok">✓ Ready</span></div>
+          </div>
+          <div class="sub-row needs-review">
+            <div>P7 · 12:40–1:20</div><div>9-D</div><div>English</div>
+            <div><select class="sub-select"><option>No eligible substitute</option></select><div class="rationale">All English teachers occupied — assign duty teacher or merge sections</div></div>
+            <div><span class="badge badge-warn">⚠ Action needed</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 8: REPORTS                                        -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-reports">
+        <h2 class="screen-title">Reports</h2>
+        <div class="screen-sub">Class-section, teacher, and room views — printable and exportable.</div>
+
+        <div class="report-grid">
+          <div class="card report-card"><div class="report-icon">📘</div><h4>Class-Section Weekly</h4><p>Full week grid per class-section — subject, teacher, room.</p></div>
+          <div class="card report-card"><div class="report-icon">🧑‍🏫</div><h4>Teacher Weekly</h4><p>Per-teacher grid with free periods explicitly marked.</p></div>
+          <div class="card report-card"><div class="report-icon">🏫</div><h4>Room Utilization</h4><p>Occupancy % across the week per room.</p></div>
+          <div class="card report-card"><div class="report-icon">📊</div><h4>Teacher Load Summary</h4><p>Periods/week vs. capacity — ongoing health check.</p></div>
+          <div class="card report-card"><div class="report-icon">🔁</div><h4>Substitution History</h4><p>Every substitution logged, filterable by date range.</p></div>
+          <div class="card report-card"><div class="report-icon">⬇</div><h4>Export Center</h4><p>Bulk PDF / Excel export for any of the above.</p></div>
+        </div>
+
+        <div class="filter-bar">
+          <select><option>Class 5</option></select>
+          <select><option>Section A</option></select>
+          <select><option>This Week</option></select>
+          <button class="btn btn-secondary btn-sm">Print / PDF</button>
+        </div>
+
+        <div class="card" style="padding:18px;">
+          <div class="flex-between mb18">
+            <div style="font-family:var(--font-display); font-size:16px; font-weight:600;">5-A — Weekly Timetable</div>
+            <span class="badge badge-neutral">Room 12 · Class Teacher: R. Sharma</span>
+          </div>
+          <div id="report-grid-mount"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 9: TEACHERS MASTER GRID                           -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-masters">
+        <div class="flex-between mb18">
+          <div><h2 class="screen-title" style="margin-bottom:2px;">Teachers</h2><div class="screen-sub" style="margin-bottom:0;">42 active · placement rules shown as configured</div></div>
+          <button class="btn btn-primary">+ Add Teacher</button>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>Teacher</th><th>Subjects</th><th>Sections</th><th>Load</th><th>Class-Teacher Rule</th><th>Period Pattern</th></tr></thead>
+            <tbody>
+              <tr><td><b>R. Sharma</b></td><td>English</td><td>6</td><td><span class="badge badge-error">34 / 30</span></td><td><span class="chip">always_first_period</span></td><td><span class="chip">every_period</span></td></tr>
+              <tr><td><b>A. Verma</b></td><td>English</td><td>5</td><td><span class="badge badge-ok">28 / 30</span></td><td><span class="chip">random</span></td><td><span class="chip">every_period</span></td></tr>
+              <tr><td><b>P. Nair</b></td><td>Science, Biology</td><td>4</td><td><span class="badge badge-ok">24 / 30</span></td><td><span class="chip">none</span></td><td><span class="chip">alternate_period</span></td></tr>
+              <tr><td><b>M. Khan</b></td><td>Social Studies</td><td>5</td><td><span class="badge badge-ok">26 / 30</span></td><td><span class="chip">none</span></td><td><span class="chip">alternate_day</span> <span class="chip chip-mono">Mon·Wed·Fri</span></td></tr>
+              <tr><td><b>S. Menon</b></td><td>Biology (merged 10-A/10-B)</td><td>2 <span class="chip chip-mono">merged</span></td><td><span class="badge badge-ok">18 / 30</span></td><td><span class="chip">none</span></td><td><span class="chip">every_period</span></td></tr>
+              <tr><td><b>T. Das</b></td><td>Art</td><td>8</td><td><span class="badge badge-ok">22 / 30</span></td><td><span class="chip">none</span></td><td><span class="chip">every_period</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 10: NOTIFICATIONS                                 -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-notifications">
+        <h2 class="screen-title">Notification Center</h2>
+        <div class="screen-sub">Everything the system has flagged, in one timeline.</div>
+
+        <div class="card">
+          <div class="notif-item unread"><div class="notif-dot" style="background:var(--signal);"></div>
+            <div><div class="notif-title">Teacher overload detected</div><div class="notif-body">Mrs. Sharma is assigned 4 periods over her weekly max.</div><div class="notif-time">2 minutes ago</div></div></div>
+          <div class="notif-item unread"><div class="notif-dot" style="background:var(--amber);"></div>
+            <div><div class="notif-title">No eligible substitute — 9-D, Period 7</div><div class="notif-body">All English teachers are occupied at this slot today.</div><div class="notif-time">18 minutes ago</div></div></div>
+          <div class="notif-item"><div class="notif-dot" style="background:var(--mint);"></div>
+            <div><div class="notif-title">Substitute assigned</div><div class="notif-body">Mr. Verma is covering 5-A English, Period 1 today.</div><div class="notif-time">40 minutes ago</div></div></div>
+          <div class="notif-item"><div class="notif-dot" style="background:var(--forest);"></div>
+            <div><div class="notif-title">Timetable published</div><div class="notif-body">v14 is now effective — 861 teachers and students notified.</div><div class="notif-time">Yesterday, 6:02 PM</div></div></div>
+          <div class="notif-item"><div class="notif-dot" style="background:var(--sage);"></div>
+            <div><div class="notif-title">Solver run completed</div><div class="notif-body">Draft #14 generated: 1,987 / 2,000 slots (99.35%). 13 slots need manual placement.</div><div class="notif-time">Yesterday, 5:47 PM</div></div></div>
+          <div class="notif-item"><div class="notif-dot" style="background:var(--ink-faint);"></div>
+            <div><div class="notif-title">Draft pending publish</div><div class="notif-body">Draft #13 has been unpublished for 3 days.</div><div class="notif-time">3 days ago</div></div></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 13: ROLES & ACCESS                                -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-roles">
+        <div class="role-lock-banner">
+          🔒 <span>Visible only to roles with <b>roles.manage</b>. Users sign in through the <b>Edunext ERP → Timetable menu (SSO)</b> — this app has no login page of its own. Roles map from ERP roles below and can be overridden per user. Every change is audit-logged and enforced server-side on the next request.</span>
+        </div>
+
+        <div class="ai-settings-grid">
+          <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <div class="card settings-card">
+              <div class="flex-between" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                <h3 style="margin-bottom:0;">Permission Matrix</h3>
+                <button class="btn btn-secondary btn-sm">＋ Add Custom Role</button>
+              </div>
+              <div class="card-sub">What each role can do, grouped by module. Default roles can be edited but not deleted.</div>
+              <div style="overflow-x:auto;">
+              <table class="perm-table">
+                <thead><tr><th>Permission</th><th>Super Admin</th><th>Principal</th><th>TT Admin</th><th>Teacher</th><th>Front Office</th></tr></thead>
+                <tbody>
+                  <tr><td colspan="6" style="background:var(--offwhite); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--sage); font-weight:700;">Timetable visibility (row-level scope)</td></tr>
+                  <tr>
+                    <td>Can view</td>
+                    <td><select disabled><option selected>All</option></select></td>
+                    <td><select><option selected>All</option><option>Own + classes</option><option>Own only</option><option>None</option></select></td>
+                    <td><select><option selected>All</option><option>Own + classes</option><option>Own only</option><option>None</option></select></td>
+                    <td><select><option>All</option><option selected>Own + classes</option><option>Own only</option><option>None</option></select></td>
+                    <td><select><option selected>All</option><option>Own + classes</option><option>Own only</option><option>None</option></select></td>
+                  </tr>
+                  <tr><td colspan="6" style="background:var(--offwhite); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--sage); font-weight:700;">Build &amp; Manage</td></tr>
+                  <tr><td>Manage masters (masters.manage)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Generate timetable</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Edit draft (drag &amp; drop)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Publish</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Manage substitutes</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox" checked></td></tr>
+                  <tr><td colspan="6" style="background:var(--offwhite); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--sage); font-weight:700;">Reports &amp; AI</td></tr>
+                  <tr><td>View reports (scoped)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Export reports</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>AI chat (ai.chat)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>AI reports (ai.reports)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td colspan="6" style="background:var(--offwhite); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--sage); font-weight:700;">Administration</td></tr>
+                  <tr><td>Roles &amp; access (roles.manage)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Configure AI (ai.configure)</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                </tbody>
+              </table>
+              </div>
+              <div class="field-hint" style="margin-top:10px;">Scope enforcement is in the server's query layer: a Teacher with "Own + classes" sees <b>My Timetable</b> and the class-sections they teach or class-teach — a hand-crafted API call for anything else returns 403.</div>
+            </div>
+
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <div class="card settings-card">
+              <h3>ERP Role Mapping</h3>
+              <div class="card-sub">Incoming Edunext ERP roles get this timetable role on first SSO login. Per-user overrides below win over the mapping.</div>
+              <table>
+                <thead><tr><th>ERP Role</th><th>Timetable Role</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="chip chip-mono">ADMIN</span></td><td><select><option selected>Super Admin</option><option>Timetable Admin</option></select></td></tr>
+                  <tr><td><span class="chip chip-mono">PRINCIPAL</span></td><td><select><option selected>Principal</option></select></td></tr>
+                  <tr><td><span class="chip chip-mono">TEACHER</span></td><td><select><option selected>Teacher</option></select></td></tr>
+                  <tr><td><span class="chip chip-mono">FRONT_OFFICE</span></td><td><select><option selected>Front Office</option></select></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="card settings-card">
+              <h3>User Overrides</h3>
+              <div class="card-sub">Individual users whose role differs from their ERP mapping, and their teacher-record link (needed for scoped views).</div>
+              <table>
+                <thead><tr><th>User</th><th>Role</th><th>Teacher Link</th></tr></thead>
+                <tbody>
+                  <tr><td>R. Ahuja</td><td><select><option selected>Timetable Admin</option><option>Teacher</option></select></td><td><span class="badge badge-neutral">— staff —</span></td></tr>
+                  <tr><td>R. Sharma</td><td><select><option selected>Timetable Admin</option><option>Teacher</option></select></td><td><span class="badge badge-ok">✓ EDX-1042</span></td></tr>
+                  <tr><td>A. Verma</td><td><select><option selected>Teacher</option></select></td><td><span class="badge badge-warn">⚠ Not linked</span></td></tr>
+                </tbody>
+              </table>
+              <div class="field-hint" style="margin-top:8px;">⚠ An unlinked teacher login can't see "My Timetable" — link it to the teacher record.</div>
+            </div>
+
+            <div class="card settings-card">
+              <h3>Recent Changes</h3>
+              <div class="card-sub">Audit log — takes effect on the user's next request.</div>
+              <div class="ai-scope-note">
+                <b>Today 09:12</b> · R. Ahuja granted Front Office → Manage substitutes<br>
+                <b>Yesterday</b> · Super Admin set Teacher visibility → Own + classes<br>
+                <b>Mon</b> · Custom role "Exam Cell" created
+              </div>
+            </div>
+
+            <button class="btn btn-primary" style="justify-content:center;">Save Roles &amp; Access</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 11: ASK AI (CHAT)                                 -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-askai">
+        <div class="ai-layout">
+
+          <div class="card chat-card">
+            <div class="chat-head">
+              <div class="ai-avatar">✳</div>
+              <div style="flex:1;">
+                <div class="chat-head-name">Timetable Assistant</div>
+                <div class="chat-head-sub">Answers from live timetable data · <span class="chip chip-mono" style="padding:1px 7px;">claude-opus-5</span></div>
+              </div>
+              <span class="readonly-pill">🔒 Read-only — AI can never change the timetable</span>
+            </div>
+
+            <div class="chat-body" id="chat-body">
+              <div class="msg user">
+                <div class="bubble">What is Mrs. Sharma's workload this week?</div>
+                <div class="msg-time">10:42 AM</div>
+              </div>
+              <div class="msg ai">
+                <span class="tool-trace">⚙ queried getTeacherLoadSummary · teacher: R. Sharma</span>
+                <div class="bubble">
+                  Mrs. Rekha Sharma is at <b>full capacity this week: 30 of 30 periods</b>, teaching English across 6 class-sections. She has no free periods on Monday or Thursday.
+                  <div class="mini-table"><table>
+                    <thead><tr><th>Class-Section</th><th>Periods/wk</th><th>Free periods</th></tr></thead>
+                    <tbody>
+                      <tr><td>5-A, 5-B</td><td>12</td><td>Tue P6, Wed P4</td></tr>
+                      <tr><td>7-B, 8-C</td><td>10</td><td>Fri P2</td></tr>
+                      <tr><td>9-D, 10-A</td><td>8</td><td>Wed P7</td></tr>
+                    </tbody>
+                  </table></div>
+                </div>
+                <div class="msg-time">10:42 AM</div>
+              </div>
+
+              <div class="msg user">
+                <div class="bubble">Which teachers are free on Friday, Period 6?</div>
+                <div class="msg-time">10:44 AM</div>
+              </div>
+              <div class="msg ai">
+                <span class="tool-trace">⚙ queried getFreeTeachers · day: FRI · period: 6</span>
+                <div class="bubble">
+                  <b>5 teachers are free</b> on Friday, Period 6 in the Senior Wing:
+                  <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+                    <span class="chip">A. Verma · English</span><span class="chip">P. Nair · Science</span>
+                    <span class="chip">T. Das · Art</span><span class="chip">S. Rao · Hindi</span>
+                    <span class="chip">M. Khan · Soc. St.</span>
+                  </div>
+                </div>
+                <div class="msg-time">10:44 AM</div>
+              </div>
+
+              <div class="msg user">
+                <div class="bubble">Generate the room utilization report for this wing as PDF</div>
+                <div class="msg-time">10:45 AM</div>
+              </div>
+              <div class="msg ai">
+                <span class="tool-trace">⚙ called generateReport · type: room_utilization · format: pdf</span>
+                <div class="bubble">
+                  Done — here's the <b>Room Utilization Report</b> for the Senior Wing. Science Lab 2 is the most underused special room this week at <b>34% occupancy</b>.
+                  <div class="report-chip">
+                    <div class="report-chip-icon">PDF</div>
+                    <div style="flex:1;">
+                      <div class="report-chip-name">Room Utilization — Senior Wing</div>
+                      <div class="report-chip-meta">Generated just now · 12 rooms · week of 17 Aug</div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm">⬇ PDF</button>
+                    <button class="btn btn-secondary btn-sm">⬇ Excel</button>
+                  </div>
+                </div>
+                <div class="msg-time">10:45 AM</div>
+              </div>
+
+              <div class="msg ai" id="chat-typing" style="display:none;">
+                <div class="bubble typing"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+
+            <div class="suggest-row">
+              <button class="suggest-chip" onclick="askAI(this.textContent)">Who teaches 5-A right now?</button>
+              <button class="suggest-chip" onclick="askAI(this.textContent)">Show substitution history for last week</button>
+              <button class="suggest-chip" onclick="askAI(this.textContent)">Which class has the most free slots?</button>
+            </div>
+            <div class="chat-input-row">
+              <input type="text" id="chat-input" placeholder="Ask anything about the timetable…" onkeydown="if(event.key==='Enter')sendChat();">
+              <button class="btn-send" onclick="sendChat()" title="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="ai-rail">
+            <div class="card rail-card">
+              <div class="rail-title">Try asking</div>
+              <button class="rail-q" onclick="askAI(this.textContent)">“Compare P. Nair's and A. Kapoor's weekly load”</button>
+              <button class="rail-q" onclick="askAI(this.textContent)">“Are there any readiness blockers right now?”</button>
+              <button class="rail-q" onclick="askAI(this.textContent)">“Which periods is Science Lab 1 booked on Wednesday?”</button>
+              <button class="rail-q" onclick="askAI(this.textContent)">“Export teacher timetables for Class 5 as PDF”</button>
+            </div>
+            <div class="card rail-card">
+              <div class="rail-title">What the AI can see</div>
+              <div class="ai-scope-note">
+                Answers come only from <b>whitelisted, read-only queries</b> over this school's published and draft timetables — the same queries that power Reports. Every answer shows which query it ran.
+              </div>
+            </div>
+            <div class="card rail-card">
+              <div class="rail-title">Your access</div>
+              <div class="ai-scope-note">
+                Role <b>Timetable Admin</b> — granted <span class="chip chip-mono" style="padding:1px 6px;">ai.chat</span> <span class="chip chip-mono" style="padding:1px 6px;">ai.reports</span><br>
+                <span style="color:var(--ink-faint); font-size:10.5px;">Access is enforced on the server, per role, from AI Settings.</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ======================================================= -->
+      <!-- SCREEN 12: AI SETTINGS                                   -->
+      <!-- ======================================================= -->
+      <section class="screen" id="screen-aisettings">
+        <div class="role-lock-banner">
+          🔒 <span>This screen is visible only to roles granted <b>ai.configure</b> — currently <b>Super Admin</b>. All AI endpoints re-check permissions on the server.</span>
+        </div>
+
+        <div class="ai-settings-grid">
+          <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <div class="card settings-card">
+              <h3>Provider &amp; Model</h3>
+              <div class="card-sub">The AI answers only through the app's read-only query tools — the provider choice affects quality and cost, never data access.</div>
+              <div class="form-grid">
+                <div class="field">
+                  <label>AI Provider</label>
+                  <select>
+                    <option selected>Anthropic Claude (recommended)</option>
+                    <option>OpenAI</option>
+                    <option>Google Gemini</option>
+                    <option>Azure OpenAI</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Model</label>
+                  <select>
+                    <option selected>claude-opus-5 (default)</option>
+                    <option>claude-sonnet-5</option>
+                    <option>claude-haiku-4-5</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label>API Key</label>
+                <div class="key-row">
+                  <input type="password" value="sk-ant-••••••••••••••••••••••••" style="font-family:var(--font-mono); font-size:12px;">
+                  <button class="btn btn-secondary">Test Connection</button>
+                </div>
+                <div class="conn-status"><span class="conn-dot"></span> Connected — verified 2 minutes ago</div>
+                <div class="field-hint">Stored encrypted (AES-256). Write-only: the key is never shown again after saving, and never appears in logs.</div>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>Custom API Base URL <span style="font-weight:400; color:var(--ink-faint);">(optional — Azure / gateway deployments)</span></label>
+                <input type="text" placeholder="https://…">
+              </div>
+            </div>
+
+            <div class="card settings-card">
+              <h3>Role Access</h3>
+              <div class="card-sub">Who can chat, who can generate reports from chat, and who can open this screen. Enforced server-side on every request.</div>
+              <table class="perm-table">
+                <thead><tr><th>Role</th><th>Chat (ai.chat)</th><th>Reports (ai.reports)</th><th>Configure (ai.configure)</th></tr></thead>
+                <tbody>
+                  <tr><td>Super Admin</td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked disabled></td><td><input type="checkbox" checked disabled></td></tr>
+                  <tr><td>Principal</td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Timetable Admin</td><td><input type="checkbox" checked></td><td><input type="checkbox" checked></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Teacher</td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                  <tr><td>Front Office</td><td><input type="checkbox"></td><td><input type="checkbox"></td><td><input type="checkbox"></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <div class="card settings-card">
+              <h3>AI Features</h3>
+              <div class="card-sub">Each capability can be switched off independently.</div>
+              <div class="toggle-row">
+                <div><div class="toggle-name">Chat queries</div><div class="toggle-desc">Natural-language questions over timetable data</div></div>
+                <label class="switch"><input type="checkbox" checked><span class="track"></span></label>
+              </div>
+              <div class="toggle-row">
+                <div><div class="toggle-name">AI report generation</div><div class="toggle-desc">Generate &amp; export PDF/Excel reports from chat</div></div>
+                <label class="switch"><input type="checkbox" checked><span class="track"></span></label>
+              </div>
+              <div class="toggle-row">
+                <div><div class="toggle-name">Conflict explanations</div><div class="toggle-desc">Plain-English reasons on readiness blockers &amp; illegal drops</div></div>
+                <label class="switch"><input type="checkbox" checked><span class="track"></span></label>
+              </div>
+              <div class="toggle-row">
+                <div><div class="toggle-name">Natural-language data entry</div><div class="toggle-desc">"Add English, 6/week, Mrs. Sharma in 5-A" — always confirmation-gated</div></div>
+                <label class="switch"><input type="checkbox"><span class="track"></span></label>
+              </div>
+            </div>
+
+            <div class="card settings-card">
+              <h3>Usage &amp; Budget</h3>
+              <div class="card-sub">August 2026 · resets on the 1st</div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:600;">
+                <span>412K tokens used</span><span style="color:var(--ink-faint);">of 1M budget</span>
+              </div>
+              <div class="usage-meter-track"><div class="usage-meter-fill"></div></div>
+              <div class="usage-stats">
+                <div class="usage-stat"><div class="n">236</div><div class="l">Queries</div></div>
+                <div class="usage-stat"><div class="n">31</div><div class="l">Reports</div></div>
+                <div class="usage-stat"><div class="n">$8.40</div><div class="l">Est. cost</div></div>
+              </div>
+              <div class="field" style="margin:14px 0 0;">
+                <label>Monthly token budget</label>
+                <input type="number" value="1000000">
+                <div class="field-hint">Chat is disabled (with a banner) once the budget is reached. Every conversation is audit-logged per user.</div>
+              </div>
+            </div>
+
+            <button class="btn btn-primary" style="justify-content:center;">Save AI Settings</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- class teacher assignment ---------- */
+function onClassTeacherAssign(sel){
+  const row = sel.closest('tr');
+  const status = row.querySelector('[data-ct-status]');
+  if(sel.value === ''){
+    status.textContent = '⚠ Unassigned';
+    status.className = 'badge badge-warn';
+  } else {
+    status.textContent = '✓ Assigned';
+    status.className = 'badge badge-ok';
+  }
+}
+
+/* ---------- subject mapping: list <-> form ---------- */
+const MAPPINGS = {
+  m1:{title:'Edit Subject Mapping', teacher:'R. Sharma', subject:'English', cls:'5-A', periods:6},
+  m2:{title:'Edit Subject Mapping', teacher:'R. Sharma', subject:'English', cls:'5-B', periods:6},
+  m3:{title:'Edit Subject Mapping', teacher:'A. Kapoor', subject:'Mathematics', cls:'5-A', periods:6},
+  m4:{title:'Edit Subject Mapping', teacher:'P. Nair', subject:'Science', cls:'5-A', periods:5},
+  m5:{title:'Edit Subject Mapping', teacher:'S. Menon', subject:'Biology', cls:'10-A', periods:4},
+  m6:{title:'Edit Subject Mapping', teacher:'T. Das', subject:'Art', cls:'5-A', periods:2},
+  new:{title:'Add Subject Mapping', teacher:'R. Sharma', subject:'English', cls:'5-A', periods:6}
+};
+function showMappingForm(key){
+  const m = MAPPINGS[key] || MAPPINGS.new;
+  document.getElementById('mapping-form-title').textContent = m.title;
+  document.getElementById('mf-teacher').value = m.teacher;
+  document.getElementById('mf-subject').value = m.subject;
+  document.getElementById('mf-class').value = m.cls;
+  document.getElementById('mf-periods').value = m.periods;
+  document.getElementById('mf-merge').checked = (key === 'm5');
+  document.getElementById('mf-merge-target').style.display = (key === 'm5') ? 'block' : 'none';
+  document.getElementById('wp6-list').classList.remove('active');
+  document.getElementById('wp6-form').classList.add('active');
+}
+function showMappingList(){
+  document.getElementById('wp6-form').classList.remove('active');
+  document.getElementById('wp6-list').classList.add('active');
+}
+
+/* ---------- teacher directory: list <-> form ---------- */
+const TEACHERS = {
+  sharma: {name:'Rekha Sharma', code:'EDX-1042', sections:'6 sections mapped', title:'Add / Edit Teacher', sub:'Mrs. R. Sharma · Employee code EDX-1042'},
+  verma:  {name:'Ajay Verma',   code:'EDX-1058', sections:'5 sections mapped', title:'Add / Edit Teacher', sub:'Mr. A. Verma · Employee code EDX-1058'},
+  nair:   {name:'Priya Nair',   code:'EDX-1071', sections:'4 sections mapped', title:'Add / Edit Teacher', sub:'Ms. P. Nair · Employee code EDX-1071'},
+  khan:   {name:'Mehreen Khan', code:'EDX-1083', sections:'5 sections mapped', title:'Add / Edit Teacher', sub:'Ms. M. Khan · Employee code EDX-1083'},
+  menon:  {name:'Sunil Menon',  code:'EDX-1094', sections:'2 sections mapped', title:'Add / Edit Teacher', sub:'Mr. S. Menon · Employee code EDX-1094'},
+  das:    {name:'Tanvi Das',    code:'EDX-1107', sections:'8 sections mapped', title:'Add / Edit Teacher', sub:'Ms. T. Das · Employee code EDX-1107'},
+  new:    {name:'', code:'', sections:'0 sections mapped', title:'Add New Teacher', sub:'Fill in the details below and configure placement rules'}
+};
+function showTeacherForm(key){
+  const t = TEACHERS[key] || TEACHERS.new;
+  document.getElementById('form-teacher-title').textContent = t.title;
+  document.getElementById('form-teacher-sub').textContent = t.sub;
+  document.getElementById('form-teacher-badge').textContent = t.sections;
+  document.getElementById('form-teacher-name').value = t.name;
+  document.getElementById('form-teacher-code').value = t.code;
+  document.getElementById('wp5-list').classList.remove('active');
+  document.getElementById('wp5-form').classList.add('active');
+}
+function showTeacherList(){
+  document.getElementById('wp5-form').classList.remove('active');
+  document.getElementById('wp5-list').classList.add('active');
+}
+
+/* ---------- multi-timetable data & selector ---------- */
+const TIMETABLES = {
+  primary: {label:'Primary Wing (LKG–2)', meta:'6 periods/day · 9:00 AM–12:30 PM · Published v3', status:'Published v3', statusClass:'badge-ok'},
+  middle:  {label:'Middle Wing (3–5)',     meta:'8 periods/day · 8:00 AM–2:25 PM · Draft',        status:'Draft',        statusClass:'badge-warn'},
+  senior:  {label:'Senior Wing (6–10)',    meta:'8 periods/day · 7:45 AM–2:00 PM · Published v5', status:'Published v5', statusClass:'badge-ok'}
+};
+let currentTimetable = 'primary';
+
+function onTimetableChange(key){
+  if(key === '__new__'){
+    document.getElementById('tt-selector').value = currentTimetable;
+    newTimetable();
+    return;
+  }
+  currentTimetable = key;
+  document.getElementById('tt-selector-meta').textContent = TIMETABLES[key].meta;
+}
+
+function newTimetable(){
+  showScreen('setup', document.querySelector('[data-target=setup]'));
+  showWizardStep(1);
+  document.getElementById('wizard-editing-name').textContent = 'New Timetable (unsaved)';
+  document.getElementById('wizard-editing-status').textContent = 'Draft';
+  document.getElementById('wizard-editing-status').className = 'badge badge-warn';
+}
+
+function editTimetable(key){
+  currentTimetable = key;
+  document.getElementById('tt-selector').value = key;
+  document.getElementById('tt-selector-meta').textContent = TIMETABLES[key].meta;
+  showScreen('setup', document.querySelector('[data-target=setup]'));
+  showWizardStep(7);
+  document.getElementById('wizard-editing-name').textContent = TIMETABLES[key].label;
+  document.getElementById('wizard-editing-status').textContent = TIMETABLES[key].status;
+  document.getElementById('wizard-editing-status').className = 'badge ' + TIMETABLES[key].statusClass;
+  document.getElementById('cfg-name').value = TIMETABLES[key].label;
+}
+
+/* ---------- breaks builder ---------- */
+function addBreakRow(){
+  const wrap = document.getElementById('break-rows');
+  const row = document.createElement('div');
+  row.className = 'break-row';
+  row.innerHTML = `
+    <select style="flex:1;"><option>After Period 1</option><option>After Period 2</option><option selected>After Period 3</option><option>After Period 4</option><option>After Period 5</option><option>After Period 6</option><option>After Period 7</option></select>
+    <input type="text" placeholder="Break name" value="Short Break" style="flex:1;">
+    <input type="number" value="15" style="width:70px;"><span class="break-unit">mins</span>
+    <button type="button" class="btn-icon-remove" onclick="this.closest('.break-row').remove(); recalcEndTime();">✕</button>`;
+  wrap.appendChild(row);
+  recalcEndTime();
+}
+
+/* ---------- end-time calculator ---------- */
+function parseTimeToMinutes(str){
+  const m = str.trim().match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if(!m) return 8*60;
+  let h = parseInt(m[1]), min = parseInt(m[2]);
+  const ap = m[3].toUpperCase();
+  if(ap === 'PM' && h !== 12) h += 12;
+  if(ap === 'AM' && h === 12) h = 0;
+  return h*60 + min;
+}
+function minutesToTimeStr(total){
+  total = ((total % 1440) + 1440) % 1440;
+  let h = Math.floor(total/60), min = total%60;
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if(h === 0) h = 12;
+  return `${h}:${String(min).padStart(2,'0')} ${ap}`;
+}
+function recalcEndTime(){
+  const start = parseTimeToMinutes(document.getElementById('cfg-start').value);
+  const periods = parseInt(document.getElementById('cfg-periods').value) || 0;
+  const duration = parseInt(document.getElementById('cfg-duration').value) || 0;
+  let total = periods * duration;
+  document.querySelectorAll('#break-rows .break-row input[type=number]').forEach(inp=>{
+    total += parseInt(inp.value) || 0;
+  });
+  if(document.getElementById('cfg-zp-on').checked){
+    total += parseInt(document.getElementById('cfg-zp-dur').value) || 0;
+  }
+  document.getElementById('cfg-end-time').textContent = minutesToTimeStr(start + total);
+}
+
+/* ---------- setup wizard step navigation ---------- */
+function showWizardStep(n){
+  document.querySelectorAll('.wizard-panel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('wp-'+n).classList.add('active');
+  for(let i=1; i<=7; i++){
+    const nav = document.getElementById('stepnav-'+i);
+    nav.classList.remove('active','done');
+    if(i < n) nav.classList.add('done');
+    else if(i === n) nav.classList.add('active');
+  }
+  document.querySelectorAll('.step-dot').forEach((dot,i)=>{
+    const idx = i+1;
+    if(idx < n) dot.textContent = '✓';
+    else dot.textContent = idx;
+  });
+}
+
+/* ---------- navigation ---------- */
+const titles = {
+  timetables:['Build','Timetables'], setup:['Build','Setup Wizard'], readiness:['Build','Readiness Dashboard'], generate:['Build','Generate Timetable'],
+  matrix:['Manage','Full Allocation Matrix'], board:['Manage','Draft Board — 5-A'], publish:['Manage','Publish Confirmation'],
+  substitute:['Manage','Substitute Teacher Center'], reports:['Reference','Reports'], masters:['Reference','Teachers'],
+  notifications:['Reference','Notification Center'],
+  askai:['Intelligence','Ask AI'], aisettings:['Intelligence','AI Settings'],
+  roles:['Administration','Roles & Access']
+};
+function showScreen(name, btn){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+name).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('topbar-eyebrow').textContent = titles[name][0];
+  document.getElementById('topbar-title').textContent = titles[name][1];
+}
+
+/* ---------- build allocation matrix ---------- */
+(function(){
+  const days = ['Mon','Tue','Wed','Thu','Fri'];
+  const periods = [
+    {n:'P1',t:'8:00'},{n:'P2',t:'8:40'},{n:'P3',t:'9:20'},{n:'Brk',t:'10:00',brk:true},
+    {n:'P4',t:'10:20'},{n:'P5',t:'11:00'},{n:'P6',t:'11:40'},{n:'P7',t:'12:20'},{n:'P8',t:'1:00'}
+  ];
+  const sections = ['5-A','5-B','5-C','5-D','5-E','6-A','6-B','7-A','8-C','9-D'];
+  const subjects = [
+    {s:'Eng',t:'R.Sharma',cls:''},{s:'Math',t:'A.Kapoor',cls:''},{s:'Sci',t:'P.Nair',cls:''},
+    {s:'Hindi',t:'S.Rao',cls:''},{s:'SSt',t:'M.Khan',cls:''},{s:'Art',t:'T.Das',cls:''},
+    {s:'Bio',t:'S.Menon',cls:'merged'}
+  ];
+  let thead = '<thead><tr><th class="corner rowhead">Class-Section</th>';
+  days.forEach(d=>{ thead += `<th class="dayhead" colspan="${periods.length}">${d}</th>`; });
+  thead += '</tr><tr><th class="corner"></th>';
+  days.forEach(()=>{ periods.forEach(p=>{ thead += `<th class="pnum">${p.n}<br>${p.t}</th>`; }); });
+  thead += '</tr></thead>';
+
+  let tbody = '<tbody>';
+  sections.forEach((sec, ri)=>{
+    tbody += `<tr><td class="rowhead">${sec}</td>`;
+    days.forEach((d, di)=>{
+      periods.forEach((p, pi)=>{
+        if(p.brk){ tbody += `<td class="mcell brk">—</td>`; return; }
+        const seed = (ri*13 + di*7 + pi*5) % 9;
+        if(seed === 8 && ri < 2){ tbody += `<td class="mcell empty">+ Add</td>`; return; }
+        const subj = subjects[(ri+di+pi) % subjects.length];
+        const merged = subj.cls === 'merged' && (sec==='9-D');
+        tbody += `<td class="mcell filled ${merged?'merged':''}"><div class="msub">${subj.s}</div><div class="mteach">${subj.t}</div></td>`;
+      });
+    });
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+  document.getElementById('matrix-table').innerHTML = thead + tbody;
+})();
+
+/* ---------- generate progress simulation ---------- */
+function runProgress(){
+  const fill = document.getElementById('progress-fill');
+  const pct = document.getElementById('progress-pct');
+  const log = document.getElementById('progress-log');
+  const placed = document.getElementById('stat-placed');
+  let p = 0;
+  const msgs = [
+    '[00:01] Placing macro-variables: consecutive blocks & merged groups first…',
+    '[00:03] 512 / 2,000 slots placed — no conflicts',
+    '[00:06] 1,120 / 2,000 slots placed — backjump recovered 3 dead ends',
+    '[00:09] 1,690 / 2,000 slots placed — applying alternate-day domain limits',
+    '[00:11] 1,987 / 2,000 slots placed — 13 remaining flagged for manual placement',
+    '[00:12] Generation complete.'
+  ];
+  let mi = 0;
+  const timer = setInterval(()=>{
+    p += 4;
+    if(p>100) p = 100;
+    fill.style.width = p+'%';
+    pct.textContent = p+'%';
+    placed.textContent = Math.round(p/100*1987).toLocaleString();
+    if(p % 18 < 4 && mi < msgs.length){
+      const d = document.createElement('div');
+      d.className = p>=96 ? 'ok' : '';
+      d.textContent = msgs[mi++];
+      log.appendChild(d);
+      log.scrollTop = log.scrollHeight;
+    }
+    if(p>=100) clearInterval(timer);
+  }, 160);
+}
+
+/* ---------- draft drag-and-drop board ---------- */
+(function(){
+  const days=['Mon','Tue','Wed','Thu','Fri'];
+  const rows=[
+    {p:'P1',t:'8:00'},{p:'P2',t:'8:40'},{p:'P3',t:'9:20'},{p:'BRK',t:'10:00',brk:true},
+    {p:'P4',t:'10:20'},{p:'P5',t:'11:00'},{p:'P6',t:'11:40'},{p:'P7',t:'12:20'}
+  ];
+  const seed = [
+    ['sub-eng|English|R. Sharma · Rm 12','sub-math|Maths|A. Kapoor · Rm 12','sub-sci|Science|P. Nair · Lab 1','','sub-hindi|Hindi|S. Rao · Rm 12'],
+    ['sub-math|Maths|A. Kapoor · Rm 12','sub-eng|English|R. Sharma · Rm 12','','sub-sst|Soc. Studies|M. Khan · Rm 12','sub-sci|Science|P. Nair · Lab 1'],
+    ['sub-sst|Soc. Studies|M. Khan · Rm 12','','sub-eng|English|R. Sharma · Rm 12','sub-math|Maths|A. Kapoor · Rm 12','sub-art|Art|T. Das · Art Rm'],
+    null,
+    ['sub-sci|Science|P. Nair · Lab 1','sub-hindi|Hindi|S. Rao · Rm 12','','sub-art|Art|T. Das · Art Rm','sub-math|Maths|A. Kapoor · Rm 12'],
+    ['sub-hindi|Hindi|S. Rao · Rm 12','sub-sst|Soc. Studies|M. Khan · Rm 12','sub-math|Maths|A. Kapoor · Rm 12','sub-eng|English|R. Sharma · Rm 12',''],
+    ['','sub-art|Art|T. Das · Art Rm','sub-sci|Science|P. Nair · Lab 1','sub-hindi|Hindi|S. Rao · Rm 12','sub-sst|Soc. Studies|M. Khan · Rm 12'],
+    ['sub-art|Art|T. Das · Art Rm','sub-math|Maths|A. Kapoor · Rm 12','sub-hindi|Hindi|S. Rao · Rm 12','sub-sci|Science|P. Nair · Lab 1','']
+  ];
+  const board = document.getElementById('dboard');
+  let html = '<div class="dcell-head" style="background:transparent;"></div>';
+  days.forEach(d=> html += `<div class="dcell-head">${d}</div>`);
+  rows.forEach((row, ri)=>{
+    html += `<div class="dcell-time"><b>${row.p}</b>${row.t}</div>`;
+    if(row.brk){
+      html += `<div class="dslot brkrow" style="grid-column: span 5;">— 20 min break —</div>`;
+    } else {
+      days.forEach((d, di)=>{
+        const cellData = seed[ri][di];
+        const illegal = (ri===2 && di===2); // Wed, P3 pre-marked as an illegal drop demo target
+        if(cellData){
+          const [cls, sub, teach] = cellData.split('|');
+          html += `<div class="dslot" data-r="${ri}" data-d="${di}" ${illegal?'data-illegal="true"':''} ondragover="onDragOver(event,this)" ondragleave="onDragLeave(this)" ondrop="onDrop(event,this)">
+            <div class="dcard ${cls}" draggable="true" ondragstart="onDragStart(event,this)">
+              <div class="s">${sub}</div><div class="t">${teach}</div>
+            </div></div>`;
+        } else {
+          html += `<div class="dslot" data-r="${ri}" data-d="${di}" ondragover="onDragOver(event,this)" ondragleave="onDragLeave(this)" ondrop="onDrop(event,this)" style="align-items:center; justify-content:center; color:var(--ink-faint); font-size:11px;">Drop here</div>`;
+        }
+      });
+    }
+  });
+  board.innerHTML = html;
+})();
+
+let dragged = null;
+function onDragStart(e, el){
+  dragged = el;
+  e.dataTransfer.setData('text/plain','x');
+  document.querySelectorAll('.dslot').forEach(s=>{
+    if(s.getAttribute('data-illegal') === 'true'){ s.classList.add('illegal-target-hint'); }
+  });
+}
+function onDragOver(e, slot){
+  e.preventDefault();
+  if(slot.getAttribute('data-illegal') === 'true'){
+    slot.classList.add('illegal-flash');
+  } else if(slot !== (dragged && dragged.parentElement)) {
+    slot.classList.add('legal-target');
+  }
+}
+function onDragLeave(slot){
+  slot.classList.remove('legal-target');
+}
+function onDrop(e, slot){
+  e.preventDefault();
+  slot.classList.remove('legal-target');
+  if(slot.getAttribute('data-illegal') === 'true'){
+    slot.classList.remove('illegal-flash');
+    slot.classList.add('illegal-flash');
+    document.getElementById('demo-toast').classList.add('show');
+    setTimeout(()=>slot.classList.remove('illegal-flash'), 400);
+    return;
+  }
+  document.getElementById('demo-toast').classList.remove('show');
+  if(dragged && slot.children.length === 0 && !slot.textContent.includes('Drop here') === false){
+    slot.innerHTML = '';
+    slot.appendChild(dragged);
+  } else if(dragged){
+    slot.innerHTML = '';
+    slot.appendChild(dragged);
+  }
+}
+
+/* ---------- reports: render a read-only weekly grid ---------- */
+(function(){
+  const days=['Mon','Tue','Wed','Thu','Fri'];
+  const rows=[
+    {p:'P1 · 8:00'},{p:'P2 · 8:40'},{p:'P3 · 9:20'},{p:'Break',brk:true},
+    {p:'P4 · 10:20'},{p:'P5 · 11:00'},{p:'P6 · 11:40'},{p:'P7 · 12:20'}
+  ];
+  const data = [
+    ['English','Maths','Science','','Hindi'],
+    ['Maths','English','','Soc. Studies','Science'],
+    ['Soc. Studies','','English','Maths','Art'],
+    null,
+    ['Science','Hindi','','Art','Maths'],
+    ['Hindi','Soc. Studies','Maths','English',''],
+    ['','Art','Science','Hindi','Soc. Studies'],
+    ['Art','Maths','Hindi','Science','']
+  ];
+  let out = '<table><thead><tr><th></th>'+days.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
+  rows.forEach((r,ri)=>{
+    out += `<tr><td style="font-weight:700; color:var(--ink-faint); font-family:var(--font-mono); font-size:11px;">${r.p}</td>`;
+    if(r.brk){ out += `<td colspan="5" style="text-align:center; color:var(--ink-faint); font-style:italic;">20 min break</td>`; }
+    else { data[ri].forEach(c=> out += `<td>${c || '<span style="color:var(--ink-faint);">Free</span>'}</td>`); }
+    out += '</tr>';
+  });
+  out += '</tbody></table>';
+  document.getElementById('report-grid-mount').innerHTML = out;
+})();
+
+/* ---------- Ask AI chat demo ---------- */
+function askAI(q){
+  document.getElementById('chat-input').value = q.replace(/[""]/g,'');
+  sendChat();
+}
+function sendChat(){
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if(!text) return;
+  input.value = '';
+  const body = document.getElementById('chat-body');
+  const typing = document.getElementById('chat-typing');
+  const now = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  const userMsg = document.createElement('div');
+  userMsg.className = 'msg user';
+  userMsg.innerHTML = `<div class="bubble"></div><div class="msg-time">${now}</div>`;
+  userMsg.querySelector('.bubble').textContent = text;
+  body.insertBefore(userMsg, typing);
+  typing.style.display = 'flex';
+  body.scrollTop = body.scrollHeight;
+  setTimeout(()=>{
+    typing.style.display = 'none';
+    const aiMsg = document.createElement('div');
+    aiMsg.className = 'msg ai';
+    aiMsg.innerHTML = `<span class="tool-trace">⚙ queried timetable data · scope: Senior Wing</span>
+      <div class="bubble">This is a static mockup — in the real app this answer streams live from the AI Gateway, grounded in whitelisted read-only queries over the published timetable.</div>
+      <div class="msg-time">${now}</div>`;
+    body.insertBefore(aiMsg, typing);
+    body.scrollTop = body.scrollHeight;
+  }, 900);
+}
+
+/* ---------- initial computed values ---------- */
+recalcEndTime();
+</script>
+</body>
+</html>
