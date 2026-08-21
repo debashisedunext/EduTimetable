@@ -174,8 +174,10 @@ export function StepTeacherMapping() {
   const { data: teachers } = useApi<any[]>("/teachers");
   const { data: mappings, refetch: refetchMappings } = useApi<any[]>("/mappings");
   const { data: subjects } = useApi<any[]>("/subjects");
-  const [form, setForm] = useState({ teacherId: "", subjectId: "", classSectionId: "", periodsPerWeek: "5" });
+  const [form, setForm] = useState({ teacherId: "", subjectId: "", periodsPerWeek: "5" });
+  const [selectedSections, setSelectedSections] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   const assignCT = async (csId: number, teacherId: string) => {
     try {
@@ -183,17 +185,31 @@ export function StepTeacherMapping() {
       setError(null); refetchSections();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
+  const toggleSection = (id: number) => {
+    setSelectedSections((prev) => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      return s;
+    });
+  };
+  // Bulk add (task 1.8): one teacher + subject across every selected section in one go.
   const addMapping = async () => {
     try {
-      await api("/mappings", {
+      const res = await api<{ created: number; skipped: string[] }>("/mappings", {
         method: "POST",
         body: JSON.stringify({
           teacherId: Number(form.teacherId), subjectId: Number(form.subjectId),
-          classSectionId: Number(form.classSectionId), periodsPerWeek: Number(form.periodsPerWeek),
+          classSectionIds: [...selectedSections], periodsPerWeek: Number(form.periodsPerWeek),
         }),
       });
-      setError(null); refetchMappings();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      setError(null);
+      setNote(
+        `Added ${res.created} mapping${res.created === 1 ? "" : "s"}` +
+          (res.skipped.length > 0 ? ` · skipped: ${res.skipped.join(", ")}` : ""),
+      );
+      setSelectedSections(new Set());
+      refetchMappings();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setNote(null); }
   };
   const removeMapping = async (id: number) => {
     await api(`/mappings/${id}`, { method: "DELETE" });
@@ -230,7 +246,12 @@ export function StepTeacherMapping() {
             <button key="d" className="btn" style={{ border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11 }} onClick={() => removeMapping(m.id)}>✕</button>,
           ])}
         />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr) auto", gap: 8, marginTop: 14, alignItems: "end" }}>
+        {note && (
+          <div style={{ background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginTop: 12, fontWeight: 600 }}>
+            ✓ {note}
+          </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 14 }}>
           <Field label="Teacher">
             <select style={inputStyle} value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })}>
               <option value="">—</option>
@@ -243,15 +264,32 @@ export function StepTeacherMapping() {
               {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
-          <Field label="Class-Section">
-            <select style={inputStyle} value={form.classSectionId} onChange={(e) => setForm({ ...form, classSectionId: e.target.value })}>
-              <option value="">—</option>
-              {(sections ?? []).map((cs) => <option key={cs.id} value={cs.id}>{cs.label}</option>)}
-            </select>
-          </Field>
-          <Field label="Periods/wk"><input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} /></Field>
-          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={addMapping} disabled={!form.teacherId || !form.subjectId || !form.classSectionId}>＋ Add</button>
+          <Field label="Periods/wk (each section)"><input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} /></Field>
         </div>
+        <Field label={`Class-Sections — pick every section this teacher takes for this subject (${selectedSections.size} selected)`}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 7 }}>
+            {(sections ?? []).map((cs) => {
+              const on = selectedSections.has(cs.id);
+              return (
+                <button key={cs.id} onClick={() => toggleSection(cs.id)} style={{
+                  padding: "8px 10px", borderRadius: 8, fontSize: 12.5, fontWeight: 600,
+                  border: `1px solid ${on ? "var(--brand)" : "var(--line)"}`,
+                  background: on ? "var(--steel-pale)" : "var(--paper)",
+                  color: on ? "var(--brand)" : "var(--ink)",
+                }}>
+                  {on ? "☑" : "☐"} {cs.label}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+        <button
+          className="btn btn-primary"
+          onClick={addMapping}
+          disabled={!form.teacherId || !form.subjectId || selectedSections.size === 0}
+        >
+          ＋ Add {selectedSections.size > 0 ? `${selectedSections.size} mapping${selectedSections.size === 1 ? "" : "s"}` : "mappings"}
+        </button>
       </Card>
     </>
   );

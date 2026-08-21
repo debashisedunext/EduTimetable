@@ -55,7 +55,7 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 |---|------|--------|
 | 1.6 | Curriculum mapping step | `class_subjects` grid with periods/week, max/day, same-period-across-week, consecutive-block fields (§4.8) |
 | 1.7 | Teacher Directory + form | §8.1a: directory table (load vs. capacity live), Add/Edit form incl. §4.7 placement rules with the alternate-day day-set picker |
-| 1.8 | Teacher Mapping step | §8.1b: Class-Teacher Assignments table (writes `class_sections.class_teacher_id`) + Subject Mapping list/form incl. merged-group checkbox and elective-block setup |
+| 1.8 | Teacher Mapping step | §8.1b: Class-Teacher Assignments table (writes `class_sections.class_teacher_id`) + Subject Mapping list/form incl. merged-group checkbox and elective-block setup. **Bulk add:** the form takes one teacher + one subject + a multi-select of class-sections, and one Add creates a mapping row per selected section (duplicates skipped and reported) — no section-by-section re-entry |
 | 1.9 | Timetable Configuration step | Name/description/classes-covered (class-picker disables sections claimed by another config, §3.10), working days, periods, breaks builder, zero period, server-computed period times + end time |
 
 ### 1C — Feasibility Engine (weeks 4–6) — the core of this phase

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
@@ -40,24 +40,59 @@ export class MappingsController {
     }));
   }
 
+  /**
+   * Bulk create (task 1.8): one teacher + one subject + N class-sections in a
+   * single Add. `classSectionIds: number[]` is the primary shape; a single
+   * `classSectionId` still works. Sections that already have a mapping for
+   * this subject are skipped and reported, never silently dropped.
+   */
   @Post()
   async create(@Req() req: AuthedRequest, @Body() body: any) {
-    requireFields(body, ["teacherId", "subjectId", "classSectionId", "periodsPerWeek"]);
-    const created = await uniq(
+    requireFields(body, ["teacherId", "subjectId", "periodsPerWeek"]);
+    const ids: number[] = Array.isArray(body.classSectionIds)
+      ? body.classSectionIds.map((x: unknown) => toInt(x, "classSectionIds[]"))
+      : body.classSectionId != null
+        ? [toInt(body.classSectionId, "classSectionId")]
+        : [];
+    if (ids.length === 0) {
+      throw new BadRequestException("Select at least one class-section");
+    }
+    const subjectId = toInt(body.subjectId, "subjectId");
+    const teacherId = toInt(body.teacherId, "teacherId");
+    const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
+    const preferredRoomId =
+      body.preferredRoomId != null ? toInt(body.preferredRoomId, "preferredRoomId") : null;
+
+    // uq_tscs is (subjectId, classSectionId) — find sections already mapped for
+    // this subject so the caller learns exactly what was skipped and why.
+    const existing = await this.prisma.teacherSubjectClassSection.findMany({
+      where: { subjectId, classSectionId: { in: ids } },
+      include: { classSection: { include: { class: true, section: true } }, teacher: true },
+    });
+    const existingIds = new Set(existing.map((e) => e.classSectionId));
+    const toCreate = ids.filter((id) => !existingIds.has(id));
+
+    await uniq(
       () =>
-        this.prisma.teacherSubjectClassSection.create({
-          data: {
-            teacherId: toInt(body.teacherId, "teacherId"),
-            subjectId: toInt(body.subjectId, "subjectId"),
-            classSectionId: toInt(body.classSectionId, "classSectionId"),
-            periodsPerWeek: toInt(body.periodsPerWeek, "periodsPerWeek"),
-            preferredRoomId: body.preferredRoomId != null ? toInt(body.preferredRoomId, "preferredRoomId") : null,
-          },
+        this.prisma.teacherSubjectClassSection.createMany({
+          data: toCreate.map((classSectionId) => ({
+            teacherId,
+            subjectId,
+            classSectionId,
+            periodsPerWeek,
+            preferredRoomId,
+          })),
         }),
-      "A mapping for that subject & class-section",
+      "Subject mapping",
     );
     await this.readiness.invalidate(req.user.schoolId);
-    return created;
+    return {
+      created: toCreate.length,
+      skipped: existing.map(
+        (e) =>
+          `${e.classSection.class.name}-${e.classSection.section.name} (already mapped to ${e.teacher.name})`,
+      ),
+    };
   }
 
   @Put(":id")
