@@ -2,6 +2,7 @@
 # is always the dev stack. Production uses `docker compose -f docker-compose.yml up`.
 services:
   api:
+    image: edutimetable/api:dev
     build:
       target: dev
     command: >
@@ -13,6 +14,9 @@ services:
              pnpm --filter @edutimetable/api run start:dev"
     environment:
       NODE_ENV: development
+      # bind-mount file events are unreliable on macOS — poll (tsc --watch & chokidar)
+      CHOKIDAR_USEPOLLING: "1"
+      TSC_WATCHFILE: DynamicPriorityPolling
     volumes:
       - .:/app
       - node-modules:/app/node_modules
@@ -22,6 +26,7 @@ services:
       - pnpm-store:/root/.local/share/pnpm/store
 
   worker:
+    image: edutimetable/api:dev
     build:
       target: dev
     command: >
@@ -31,6 +36,8 @@ services:
              pnpm --filter @edutimetable/api run start:worker:dev"
     environment:
       NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "1"
+      TSC_WATCHFILE: DynamicPriorityPolling
     volumes:
       - .:/app
       - node-modules:/app/node_modules
@@ -43,6 +50,7 @@ services:
         condition: service_started
 
   web:
+    image: edutimetable/web:dev
     build:
       target: dev
     command: >

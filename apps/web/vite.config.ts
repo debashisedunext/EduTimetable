@@ -7,6 +7,9 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    // macOS bind mounts don't deliver file events into the container reliably —
+    // poll instead, or edits silently keep serving stale transforms.
+    watch: { usePolling: true, interval: 300 },
     proxy: {
       "/api": { target: "http://api:3000", changeOrigin: true },
       "/socket.io": { target: "http://api:3000", ws: true },

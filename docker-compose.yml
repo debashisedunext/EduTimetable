@@ -25,6 +25,7 @@ services:
       retries: 20
 
   api:
+    image: edutimetable/api:prod
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -49,6 +50,7 @@ services:
         condition: service_healthy
 
   worker:
+    image: edutimetable/api:prod
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -66,6 +68,7 @@ services:
         condition: service_healthy
 
   web:
+    image: edutimetable/web:prod
     build:
       context: .
       dockerfile: docker/web.Dockerfile
