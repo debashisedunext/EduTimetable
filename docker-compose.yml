@@ -61,11 +61,30 @@ services:
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${MYSQL_DATABASE:-edutimetable}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      OPTIMIZER_URL: ${OPTIMIZER_URL:-http://optimizer:8000}
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # §5.6 soft-optimization engine. Optional at runtime: if it is down, the
+  # worker falls back to the fast TypeScript CSP engine and generation still
+  # succeeds — "Optimized" mode is an upgrade, never a dependency.
+  optimizer:
+    image: edutimetable/optimizer:prod
+    build:
+      context: .
+      dockerfile: docker/optimizer.Dockerfile
+      target: prod
+    environment:
+      PORT: 8000
+      CPSAT_WORKERS: ${CPSAT_WORKERS:-8}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   web:
     image: edutimetable/web:prod

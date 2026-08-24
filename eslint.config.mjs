@@ -2,7 +2,9 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/*.html"] },
+  // scripts/ holds standalone Node/shell tools run inside the containers
+  // (smoke tests, benchmarks) — not part of the app's module graph.
+  { ignores: ["**/dist/**", "**/node_modules/**", "**/*.html", "scripts/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

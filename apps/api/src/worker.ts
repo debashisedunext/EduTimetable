@@ -7,8 +7,18 @@
 import { Worker } from "bullmq";
 import Redis from "ioredis";
 import { PrismaClient } from "@prisma/client";
-import { runFeasibility, solveTimetable } from "@edutimetable/shared";
+import {
+  buildTeacherCtx,
+  buildVariables,
+  DEFAULT_WEIGHTS,
+  describeImprovement,
+  runFeasibility,
+  scoreTimetable,
+  solveTimetable,
+  type ObjectiveWeights,
+} from "@edutimetable/shared";
 import { buildSolverInput } from "./solver/input";
+import { optimizeWithCpSat, type OptimizeOutcome } from "./solver/optimize";
 import { writeDraftSlots } from "./solver/writer";
 
 const connection = {
@@ -60,23 +70,66 @@ new Worker(
       },
     });
 
-    const { rows } = await writeDraftSlots(prisma, configId, result.placements);
+    // ---- Phase 6 (§5.6): optional soft-optimization pass ----
+    // The fast result above is already valid and is the floor: CP-SAT's answer
+    // is adopted only if it verifies AND scores better (task 6.3 parity gate).
+    const mode: "fast" | "optimized" = job.data.mode === "optimized" ? "optimized" : "fast";
+    const weights: ObjectiveWeights = { ...DEFAULT_WEIGHTS, ...(job.data.weights ?? {}) };
+    const variables = buildVariables(input, buildTeacherCtx(input));
+    let placements = result.placements;
+    const before = scoreTimetable(input, placements, variables, weights);
+    let optimization: OptimizeOutcome = {
+      attempted: false,
+      adopted: false,
+      status: "SKIPPED",
+      detail: "fast mode — feasibility only",
+    };
+
+    if (mode === "optimized" && result.unplaced.length === 0) {
+      void job.updateProgress({ placed: result.placements.length, total: result.totalVariables, phase: "optimizing" });
+      optimization = await optimizeWithCpSat(
+        input,
+        variables,
+        placements,
+        weights,
+        Number(job.data.optimizeBudgetSec ?? 30),
+      );
+      if (optimization.adopted && optimization.placements) placements = optimization.placements;
+    } else if (mode === "optimized") {
+      optimization = {
+        attempted: false,
+        adopted: false,
+        status: "SKIPPED",
+        detail: `${result.unplaced.length} variable(s) unplaced — optimizing a partial timetable would hide the gap`,
+      };
+    }
+    const after = scoreTimetable(input, placements, variables, weights);
+
+    const { rows } = await writeDraftSlots(prisma, configId, placements);
     await redis.del(`slots:${configId}:draft`);
 
     const summary = {
       configId,
       // echoed for the §9 solver-completed notification (NotificationsService)
       userId: job.data.userId ?? undefined,
-      placements: result.placements.length,
+      mode,
+      placements: placements.length,
       total: result.totalVariables,
-      placedVariables: result.placements.length,
+      placedVariables: placements.length,
       totalVariables: result.totalVariables,
       slotRows: rows,
       unplaced: result.unplaced,
       stats: result.stats,
+      objective: {
+        weights,
+        before,
+        after,
+        improvement: describeImprovement(before, after),
+        optimization,
+      },
     };
     console.log(
-      `[worker] solver job ${job.id} done: ${summary.placedVariables}/${summary.totalVariables} vars, ${rows} slot rows, ${result.unplaced.length} unplaced, ${result.stats.ms}ms`,
+      `[worker] solver job ${job.id} done [${mode}]: ${summary.placedVariables}/${summary.totalVariables} vars, ${rows} slot rows, ${result.unplaced.length} unplaced, ${result.stats.ms}ms · objective ${before.weighted}→${after.weighted} (${optimization.detail})`,
     );
     return summary;
   },

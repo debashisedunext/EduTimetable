@@ -175,6 +175,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 6 — OR-Tools CP-SAT Optimization (optional, 3 weeks)
 
+> **Status: ✅ complete** (branch `phase6/cpsat-optimization`). `optimizer` compose service (Python 3.12 + ortools 9.15, stdlib HTTP) behind the same solver-job interface; TS owns §4.7 pruning + room assignment, CP-SAT owns search + the three §5.6 objectives (teacher gaps, peak daily load, lab-cluster room changes) with per-run weight sliders on the Generate screen; task 6.3 parity gate = every CP-SAT answer replayed through the real `SolverState.check()` and adopted only if it verifies AND scores better, so Optimized can never be worse or unsafe than Fast. Fallbacks proven live: optimizer unreachable, INFEASIBLE, partial cover, checker rejection → keep the fast result. Benchmark (`scripts/optimize-benchmark.cjs`): **teacher gaps 171 → 0**, room changes 54 → 21, zero hard-constraint regressions. Deviation from the task sketch: Python service rather than Node bindings (OR-Tools has no official Node binding) — recorded in §5.6.
+
 **Objective:** Soft-optimization mode — "nice" timetables, not just valid ones (§5.6).
 **Dependencies:** Phase 2 (can run any time after; independent of 3–5, 7).
 

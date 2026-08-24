@@ -1,8 +1,8 @@
-import { BadRequestException, Controller, Get, Inject, Param, Post, Query, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, Param, Post, Query, Req } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import type Redis from "ioredis";
-import { PERMISSIONS } from "@edutimetable/shared";
+import { DEFAULT_WEIGHTS, PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
@@ -20,10 +20,11 @@ export class SolverController {
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
-  /** Trigger generation (§8 screen 4). Hard-gated on Phase A: not ready → 400. */
+  /** Trigger generation (§8 screen 4). Hard-gated on Phase A: not ready → 400.
+   *  Phase 6: `mode: "optimized"` adds the CP-SAT soft-objective pass (§5.6). */
   @Post("generate")
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
-  async generate(@Req() _req: AuthedRequest, @Param("id") id: string) {
+  async generate(@Req() _req: AuthedRequest, @Param("id") id: string, @Body() body?: any) {
     const configId = toInt(id, "id");
     const readiness = await this.readiness.getReadiness(configId);
     if (!readiness.ready) {
@@ -31,8 +32,24 @@ export class SolverController {
         `Readiness is ${readiness.score}% with ${readiness.blockers.length} blocker(s) — generation is only offered at 100% (§4)`,
       );
     }
-    const job = await this.queue.add("solve", { configId, userId: _req.user.sub });
-    return { jobId: job.id };
+    const mode = body?.mode === "optimized" ? "optimized" : "fast";
+    const w = body?.weights ?? {};
+    const weight = (v: unknown, fallback: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 && n <= 20 ? Math.round(n) : fallback;
+    };
+    const job = await this.queue.add("solve", {
+      configId,
+      userId: _req.user.sub,
+      mode,
+      weights: {
+        teacherGaps: weight(w.teacherGaps, DEFAULT_WEIGHTS.teacherGaps),
+        dailyLoadBalance: weight(w.dailyLoadBalance, DEFAULT_WEIGHTS.dailyLoadBalance),
+        roomChanges: weight(w.roomChanges, DEFAULT_WEIGHTS.roomChanges),
+      },
+      optimizeBudgetSec: Math.min(120, Math.max(5, Number(body?.optimizeBudgetSec) || 30)),
+    });
+    return { jobId: job.id, mode };
   }
 
   /**

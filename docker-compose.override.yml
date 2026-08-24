@@ -49,6 +49,13 @@ services:
       api:
         condition: service_started
 
+  optimizer:
+    image: edutimetable/optimizer:dev
+    build:
+      target: dev
+    volumes:
+      - .:/app
+
   web:
     image: edutimetable/web:dev
     build:

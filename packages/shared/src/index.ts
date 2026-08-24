@@ -89,6 +89,8 @@ export { SolverState } from "./solver/state";
 export { buildVariables, buildTeacherCtx, segmentOfPeriod } from "./solver/variables";
 export * from "./board/engine";
 export * from "./substitute/engine";
+export * from "./optimize/objective";
+export * from "./optimize/model";
 
 export interface MeResponse {
   id: number;

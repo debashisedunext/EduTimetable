@@ -11,7 +11,7 @@ This two-phase split is the load-bearing architectural decision. Everything else
 
 ## Repository status
 
-**Phases 0–3 are implemented** (pnpm monorepo: `apps/api` NestJS + Prisma, `apps/web` React/Vite, `packages/shared` feasibility + solver + board engines; Docker compose stack) — see the per-phase status notes in `IMPLEMENTATION-PLAN.md`. The specification artifacts remain authoritative:
+**Phases 0–6 are implemented** (pnpm monorepo: `apps/api` NestJS + Prisma, `apps/web` React/Vite, `packages/shared` feasibility + solver + board + substitute + objective engines; `apps/optimizer` Python CP-SAT service; Docker compose stack) — see the per-phase status notes in `IMPLEMENTATION-PLAN.md`. The specification artifacts remain authoritative:
 
 | File | Role |
 |---|---|
@@ -20,13 +20,13 @@ This two-phase split is the load-bearing architectural decision. Everything else
 | `AI-Timetable-System-Deck.pptx` | 13-slide stakeholder deck summarizing the architecture doc (no unique content). |
 | `IMPLEMENTATION-PLAN.md` | Sequential task-level build plan for all phases (0–7) with dependencies, deliverables, and exit criteria. Work through it in order; check tasks off as they land. |
 
-Continue following the phased roadmap in §12 of the architecture doc (summarized below); next up is Phase 4 (Substitute Teacher Engine).
+Continue following the phased roadmap in §12 of the architecture doc (summarized below); next up is Phase 7 (AI Assistant).
 
 ## Docker-only development (hard rule)
 
 The application is developed, tested, and run **exclusively inside Docker** — never on the host:
 
-- The Docker Compose stack (`docker-compose.yml` + `docker-compose.override.yml` dev overrides, auto-loaded) defines every service: `api` (NestJS), `web` (React/Vite), `worker` (solver, BullMQ consumer), `mysql` (MySQL 8), `redis`. `docker compose up` is the only supported way to start the app (production: `docker compose -f docker-compose.yml up`). Host ports: api **3001**, web **5174** — 3000/5173 are occupied by an unrelated SSH tunnel on the primary dev machine; inside the network it's always `api:3000`.
+- The Docker Compose stack (`docker-compose.yml` + `docker-compose.override.yml` dev overrides, auto-loaded) defines every service: `api` (NestJS), `web` (React/Vite), `worker` (solver, BullMQ consumer), `optimizer` (Python CP-SAT, §5.6 soft optimization), `mysql` (MySQL 8), `redis`. `docker compose up` is the only supported way to start the app (production: `docker compose -f docker-compose.yml up`). Host ports: api **3001**, web **5174** — 3000/5173 are occupied by an unrelated SSH tunnel on the primary dev machine; inside the network it's always `api:3000`.
 - **Never install or run Node, MySQL, or Redis on the host, and never suggest doing so.** All commands — dependency install, migrations, seeds, tests, lint, one-off scripts — run inside containers: `docker compose exec api pnpm test`, `docker compose exec api pnpm migrate`, etc. If the stack isn't running, use `docker compose run --rm <service> <cmd>`.
 - Dev and production share the same multi-stage Dockerfiles; dev overrides add bind mounts and hot reload. CI builds and tests the same images. A change that only works outside Docker is broken by definition.
 - Connection config comes from compose environment variables (service names as hosts: `mysql`, `redis`) — never `localhost` hardcoded in app code.
@@ -36,7 +36,7 @@ The application is developed, tested, and run **exclusively inside Docker** — 
 
 - **Frontend:** React + TypeScript, `@dnd-kit` for drag-and-drop (not react-beautiful-dnd), Zustand/Redux for the in-memory timetable grid, TailwindCSS, virtualized grid (`react-window` / AG Grid) for the 50×40 allocation matrix.
 - **Backend:** Node.js (NestJS recommended), MySQL 8 (or Postgres), Redis + BullMQ for the solver job queue, Socket.IO for solver progress streaming and live conflict alerts.
-- **Solver:** pure Node/TypeScript custom CSP engine for v1. Google OR-Tools CP-SAT is a *v2* option only, for soft-optimization goals (workload balancing, gap minimization).
+- **Solver:** pure Node/TypeScript custom CSP engine owns feasibility. Google OR-Tools CP-SAT (Phase 6, `optimizer` compose service — Python, since OR-Tools has no official Node bindings) adds *soft* optimization only: it receives the already-pruned domains, and its answer is replayed through the same `SolverState.check()` and adopted only if it verifies AND scores better (§5.6). Optimizer down = fast-mode fallback, never a failed generation.
 - **LLM usage is deliberately narrow:** never for slot placement (it can hallucinate invalid placements). Only for plain-English explanation of constraint failures, natural-language bulk data entry (with confirmation screen), and substitute-suggestion rationale text.
 
 ## Non-negotiable invariants
