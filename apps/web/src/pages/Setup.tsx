@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
@@ -26,6 +27,20 @@ export function Setup() {
 
   return (
     <div>
+      {/* §16: the whole wizard can be skipped by uploading one spreadsheet */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 16,
+        background: "var(--steel-pale)", border: "1px solid var(--steel-light)", borderRadius: 10,
+      }}>
+        <span style={{ fontSize: 16 }}>⬆</span>
+        <span style={{ fontSize: 12.5, color: "var(--ink-soft)", flex: 1 }}>
+          Already have this data in a spreadsheet? Import every master from one Excel file instead of typing it in.
+        </span>
+        <Link to="/import" className="btn btn-secondary" style={{ textDecoration: "none", fontSize: 12.5, padding: "6px 12px" }}>
+          Import from Excel →
+        </Link>
+      </div>
+
       {/* stepper spans the full width: connector lines flex-grow so all steps
           stay visible without horizontal scroll; wraps on narrow screens */}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 10, marginBottom: 22 }}>

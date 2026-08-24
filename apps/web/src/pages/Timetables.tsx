@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { Card, ErrorNote, Field } from "../components";
 import { useConfigCtx } from "../hooks";
@@ -42,7 +42,11 @@ export function Timetables() {
         <p className="screen-sub" style={{ margin: 0 }}>
           Every wing runs its own timetable — different timings, periods, and breaks — built and published independently (§3.10).
         </p>
-        <button className="btn btn-primary" onClick={() => setCreating(true)}>＋ New Timetable</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          {/* §16: skip the hand-entry route entirely and load the masters from a spreadsheet */}
+          <Link to="/import" className="btn btn-secondary" style={{ textDecoration: "none" }}>⬆ Import from Excel</Link>
+          <button className="btn btn-primary" onClick={() => setCreating(true)}>＋ New Timetable</button>
+        </div>
       </div>
 
       {creating && (

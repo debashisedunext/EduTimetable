@@ -20,6 +20,7 @@ import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
 import { AiSettings } from "./pages/AiSettings";
+import { ImportMasters } from "./pages/ImportMasters";
 
 /** Captures the session token from the SSO redirect fragment (§15.1). */
 function SsoCapture() {
@@ -112,6 +113,7 @@ export default function App() {
             : <Dashboard me={me} />
           } />
           <Route path="/setup" element={<Setup />} />
+          <Route path="/import" element={<ImportMasters />} />
           <Route path="/readiness" element={<Readiness />} />
           <Route path="/generate" element={<Generate />} />
           <Route path="/matrix" element={<Matrix />} />

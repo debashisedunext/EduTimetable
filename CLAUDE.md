@@ -11,7 +11,7 @@ This two-phase split is the load-bearing architectural decision. Everything else
 
 ## Repository status
 
-**All phases (0–7) are implemented** (pnpm monorepo: `apps/api` NestJS + Prisma, `apps/web` React/Vite, `packages/shared` feasibility + solver + board + substitute + objective engines; `apps/optimizer` Python CP-SAT service; AI assistant with a tool-gated read-only registry; Docker compose stack) — see the per-phase status notes in `IMPLEMENTATION-PLAN.md`. The specification artifacts remain authoritative:
+**All phases (0–8) are implemented** (pnpm monorepo: `apps/api` NestJS + Prisma, `apps/web` React/Vite, `packages/shared` feasibility + solver + board + substitute + objective engines; `apps/optimizer` Python CP-SAT service; AI assistant with a tool-gated read-only registry; Docker compose stack) — see the per-phase status notes in `IMPLEMENTATION-PLAN.md`. The specification artifacts remain authoritative:
 
 | File | Role |
 |---|---|
@@ -20,7 +20,7 @@ This two-phase split is the load-bearing architectural decision. Everything else
 | `AI-Timetable-System-Deck.pptx` | 13-slide stakeholder deck summarizing the architecture doc (no unique content). |
 | `IMPLEMENTATION-PLAN.md` | Sequential task-level build plan for all phases (0–7) with dependencies, deliverables, and exit criteria. Work through it in order; check tasks off as they land. |
 
-The phased roadmap in §12 (summarized below) is complete; per-phase status notes in `IMPLEMENTATION-PLAN.md` record what shipped and what was deliberately deferred.
+The phased roadmap in §12 (summarized below) is complete, plus Phase 8 (Excel master-data import, §16); per-phase status notes in `IMPLEMENTATION-PLAN.md` record what shipped and what was deliberately deferred.
 
 ## Docker-only development (hard rule)
 

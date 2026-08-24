@@ -18,6 +18,7 @@ import { SubstitutesModule } from "./substitutes/substitutes.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { ReportsModule } from "./reports/reports.module";
 import { AiModule } from "./ai/ai.module";
+import { ImportModule } from "./import/import.module";
 import { SolverController } from "./solver/solver.controller";
 import { RolesAdminController } from "./admin/roles-admin.controller";
 import { SampleDataController } from "./dev/sample-data.controller";
@@ -43,6 +44,7 @@ import { ReadinessService } from "./readiness/readiness.service";
     NotificationsModule,
     ReportsModule,
     AiModule,
+    ImportModule,
     BullQueueModule.registerQueue({ name: "solver" }),
   ],
   controllers: [HealthController, MeController, RolesAdminController, SampleDataController, SolverController],

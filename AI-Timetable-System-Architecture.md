@@ -1113,3 +1113,38 @@ Changes here are enforced by the same guard middleware on every REST endpoint an
 ---
 
 This is the complete architecture. If you want, I can go deeper on any single module next — for example, a full working TypeScript implementation of the Phase A feasibility engine, the exact backtracking solver code, or fully-styled React components for the drag-and-drop board.
+
+---
+
+---
+
+## 16. Master Data Import (Phase 8)
+
+Typing a real school's masters through the Setup Wizard is hundreds of rows and the single biggest onboarding barrier — schools already hold this data in spreadsheets. §16 adds a **one-file import**: download a pre-formatted workbook, fill it, upload once.
+
+The design principle is that this is a **validation engine that happens to write rows**, not a parser that hopes for the best. Its promise — *no wrong, duplicate, or garbage data can enter* — is enforced by six stages, each producing issues that name the exact sheet, row, cell, value and fix (the same contract §4 uses for feasibility blockers).
+
+### 16.1 The workbook
+
+One sheet per master, ordered by dependency, plus `Instructions` and `Reference` sheets. Humans type **names, never ids** — the importer resolves them, and a reference may point at a row being added in the same upload. `packages/shared/src/import/contract.ts` is the single declarative definition that drives the template generator, the parser, the validator and the docs.
+
+The template is generated with exceljs: locked styled headers, frozen panes, a note on every heading, real dropdowns on every enum column, blue-tinted required columns, and greyed `e.g.` sample rows the importer ignores. **Export current masters** produces the same workbook filled with the school's data, so it doubles as a backup and a bulk-edit round trip.
+
+### 16.2 Validation stages
+
+- **A Structural** — file type and size; workbook opens; headers matched **by name, not position**, so columns may be reordered or hidden; missing required columns named; unknown columns ignored with a note.
+- **B Cell** — trim, collapse whitespace, strip control characters; required-ness; coercion of Excel dates (objects, serials, dd/mm/yyyy), numbers-as-text, and booleans (`Yes/Y/TRUE/1`); enum membership with a nearest-match suggestion; numeric ranges; and **string length against the exact `VarChar` limits** — the main garbage guard.
+- **C Duplicates** — within-file on each natural key, naming *both* rows; against the database → classified **skip**, never overwrite.
+- **D References** — resolved case-insensitively against *this workbook ∪ the database*, with a Levenshtein "did you mean 'Mathematics'?" and the sheet where the value should be defined.
+- **E Business rules**, reusing what the app already enforces: the §4.8 block rule, weekly capacity (§3.10), merged groups needing ≥2 sections, `alternate_day` requiring a day-set, and class teachers having to be active.
+- **F Feasibility preview** — the dry run reports the current Readiness score so the admin can see what the import is working toward.
+
+**Every row reports all of its independent problems at once** rather than one per upload cycle: a reference error does not mask a block-overflow error in the same row.
+
+### 16.3 Guarantees
+
+- **Dry run first, always.** `POST /import/dry-run` never writes. The preview shows, per sheet, rows read / to add / already exist / errors.
+- **All-or-nothing.** One error anywhere blocks the entire import; `POST /import/commit` re-parses and re-validates the uploaded bytes rather than trusting a plan held by the client, then writes everything in **one transaction** in dependency order.
+- **Idempotent.** Natural-key matching means re-uploading the same file is a no-op — verified by `scripts/import-smoke.cjs`.
+- **Fix in place.** `POST /import/annotate` returns the uploaded file with an `Import Errors` column per sheet and the offending cells tinted red.
+- Endpoints are `masters.manage`-gated, capped at 10 MB and 5,000 rows per sheet, and `readiness.invalidate()` runs once at the end.

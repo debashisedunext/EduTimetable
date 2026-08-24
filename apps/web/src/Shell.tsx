@@ -25,6 +25,7 @@ const NAV: NavGroup[] = [
     items: [
       { label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
+      { label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
       { label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
     ],
@@ -73,6 +74,7 @@ const NAV: NavGroup[] = [
 const TITLES: Record<string, [string, string]> = {
   "/": ["Build", "Timetables"],
   "/setup": ["Build", "Setup Wizard"],
+  "/import": ["Build", "Import Master Data"],
   "/readiness": ["Build", "Readiness Dashboard"],
   "/generate": ["Build", "Generate Timetable"],
   "/matrix": ["Manage", "Full Allocation Matrix"],

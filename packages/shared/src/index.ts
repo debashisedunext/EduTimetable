@@ -91,6 +91,9 @@ export * from "./board/engine";
 export * from "./substitute/engine";
 export * from "./optimize/objective";
 export * from "./optimize/model";
+export * from "./import/contract";
+export * from "./import/types";
+export * from "./import/validate";
 
 export interface MeResponse {
   id: number;

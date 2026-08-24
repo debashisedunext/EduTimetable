@@ -219,3 +219,25 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 - **Design system:** all screens derive from `timetable-ui-mockup.html` tokens/components; extract into a shared component library during Phase 1.
 - **Documentation:** spec deviations update `AI-Timetable-System-Architecture.md` in the same PR (per CLAUDE.md convention).
 - **Pilot feedback loop:** put Phase 1 in front of a real school's timetable-in-charge before Phase 2 begins — master-data UX findings are cheapest to fix then.
+
+---
+
+## Phase 8 — Master Data Import from Excel (2 weeks)
+
+> **Status: ✅ complete** (branch `phase8/excel-import`). One-file import of every master with a validation engine in front of it. Verified by `scripts/import-smoke.cjs` (26 live checks): RBAC 403s, a dirty workbook rejected with every planted error named while the database stays **byte-identical**, a clean workbook creating exactly what the preview predicted, and re-upload proving idempotent.
+
+**Objective:** Onboard a school from an existing spreadsheet instead of hand-typing hundreds of master rows — without letting one wrong, duplicate, or garbage row into the database (§16).
+**Dependencies:** Phase 1 (masters + feasibility engine).
+
+| # | Task | Detail |
+|---|------|--------|
+| 8.1 | Workbook contract | `packages/shared/src/import/contract.ts` — one declarative definition of every sheet, column, type, enum, limit and natural key, driving the generator, parser, validator and docs |
+| 8.2 | Template + export | exceljs writer: Instructions sheet, locked styled headers with per-column notes, dropdowns on every enum, tinted required columns, greyed `e.g.` samples, and a Reference sheet of existing names. Same writer produces **Export current masters** (round-trip backup / bulk edit) |
+| 8.3 | Pure validator | `validate.ts` — structural, cell (incl. Excel dates, numbers-as-text, booleans, VarChar limits), within-file and against-DB duplicates, cross-sheet references with "did you mean", and business rules reusing §4.8 / capacity / merged-group / class-teacher rules. Reports **all** independent problems per row |
+| 8.4 | Dry-run API | `POST /import/dry-run` — never writes; returns per-sheet counts, every issue with `Sheet!C7` reference, and the current readiness score |
+| 8.5 | Commit API | `POST /import/commit` — re-validates the uploaded bytes (never trusts a client plan), writes in one transaction in dependency order, skips anything that already exists, invalidates readiness once |
+| 8.6 | Annotated error file | `POST /import/annotate` — the uploaded workbook back with an `Import Errors` column per sheet and offending cells tinted, so users fix in place |
+| 8.7 | Import screen | `/import` (Build → Import from Excel) + entry points on Timetables and the Setup Wizard; template/export buttons, upload, preview table, grouped issue list, confirm |
+| 8.8 | Tests | 27 validator unit tests (one per rule) + the live smoke script |
+
+**Exit criteria:** an admin can take a school from empty to ready-to-generate by downloading the template, filling it, and uploading once; no invalid, duplicate or garbage row can enter; every rejection names the sheet, row, cell, value and the fix.
