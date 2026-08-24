@@ -41,10 +41,13 @@ export class SolverController {
    */
   @Get("slots")
   @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
-  async slots(@Param("id") id: string, @Query("status") statusQ?: string) {
+  async slots(@Param("id") id: string, @Query("status") statusQ?: string, @Query("date") dateQ?: string) {
     const configId = toInt(id, "id");
     const status = statusQ === "published" ? "published" : "draft";
-    const cacheKey = `slots:${configId}:${status}`;
+    // §6 overlay (task 4.5): a date on the published view layers that day's
+    // substitutions over the base grid — the stored rows are never mutated
+    const date = status === "published" && dateQ && /^\d{4}-\d{2}-\d{2}$/.test(dateQ) ? dateQ : null;
+    const cacheKey = `slots:${configId}:${status}${date ? `:${date}` : ""}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -68,8 +71,22 @@ export class SolverController {
     ]);
     if (!config) throw new BadRequestException("Timetable config not found");
 
+    // date overlay: slotId -> substitute teacher for that specific date
+    const subBydSlot = new Map<string, number>();
+    if (date) {
+      const subs = await this.prisma.substitutionLog.findMany({
+        where: { date: new Date(`${date}T00:00:00.000Z`), timetableSlotId: { in: slots.map((s) => s.id) } },
+      });
+      for (const r of subs) subBydSlot.set(r.timetableSlotId.toString(), r.substituteTeacherId);
+    }
+
     const subjectIds = [...new Set(slots.map((s) => s.subjectId).filter((x): x is number => x !== null))];
-    const teacherIds = [...new Set(slots.map((s) => s.teacherId).filter((x): x is number => x !== null))];
+    const teacherIds = [
+      ...new Set([
+        ...slots.map((s) => s.teacherId).filter((x): x is number => x !== null),
+        ...subBydSlot.values(),
+      ]),
+    ];
     const roomIds = [...new Set(slots.map((s) => s.roomId).filter((x): x is number => x !== null))];
     const [subjects, teachers, rooms] = await Promise.all([
       this.prisma.subject.findMany({ where: { id: { in: subjectIds } } }),
@@ -88,11 +105,17 @@ export class SolverController {
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),
       teachers: Object.fromEntries(teachers.map((t) => [t.id, t.name])),
       rooms: Object.fromEntries(rooms.map((r) => [r.id, r.name])),
-      // compact tuples: [classSectionId, day, period, subjectId, teacherId, roomId, mergedGroupId, locked]
-      slots: slots.map((s) => [
-        s.classSectionId, s.dayOfWeek, s.periodNumber,
-        s.subjectId, s.teacherId, s.roomId, s.mergedGroupId, s.isLocked ? 1 : 0,
-      ]),
+      date,
+      // compact tuples: [classSectionId, day, period, subjectId, teacherId, roomId, mergedGroupId, locked, substituted]
+      // with a date overlay, teacherId is the SUBSTITUTE for that date and substituted = 1
+      slots: slots.map((s) => {
+        const sub = subBydSlot.get(s.id.toString());
+        return [
+          s.classSectionId, s.dayOfWeek, s.periodNumber,
+          s.subjectId, sub ?? s.teacherId, s.roomId, s.mergedGroupId, s.isLocked ? 1 : 0,
+          sub !== undefined ? 1 : 0,
+        ];
+      }),
     };
     await this.redis.set(cacheKey, JSON.stringify(payload), "EX", 3600);
     return payload;

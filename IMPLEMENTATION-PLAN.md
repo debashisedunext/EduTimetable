@@ -132,6 +132,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 4 — Substitute Teacher Engine (3 weeks)
 
+> **Status: ✅ complete** (branch `phase4/substitute-engine`). Pure matching engine in `packages/shared/src/substitute` (eligibility → §6.1 scoring → greedy + depth-1 augmenting matching, 11 tests incl. fairness spread, same-day multi-absence, absent-substitute edge); `teacher_absences` + `substitution_log` with `uq_slot_substitution_date`; overlay lives in `substitution_log` only (see §6.2 implementation note — no timetable_slots rows, base grid untouchable by construction); Substitute Center screen with absence banner, per-slot dropdown + rationale, Confirm All; Matrix date picker overlays substitutions (accent ↺ cells); `scripts/substitute-smoke.sh`. Note: rationale text is rule-generated for now — the LLM-polished phrasing arrives with Phase 5's explanation layer.
+
 **Objective:** One-click, explainable substitute assignment for absences (§6).
 **Dependencies:** Phase 3 (needs a published timetable).
 

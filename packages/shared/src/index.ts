@@ -88,6 +88,7 @@ export { solveTimetable } from "./solver/engine";
 export { SolverState } from "./solver/state";
 export { buildVariables, buildTeacherCtx, segmentOfPeriod } from "./solver/variables";
 export * from "./board/engine";
+export * from "./substitute/engine";
 
 export interface MeResponse {
   id: number;

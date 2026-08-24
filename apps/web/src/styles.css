@@ -179,3 +179,15 @@ button { font-family: inherit; cursor: pointer; }
 .day-toggle.on { background: var(--brand); border-color: var(--brand); color: #fff; }
 .wizard-foot { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
 .btn-secondary { border: 1px solid var(--line); background: var(--paper); }
+
+/* ---- Phase 4: Substitute Center (§8.2) ---- */
+.absence-banner { display: flex; align-items: center; gap: 14px; background: var(--brand); color: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
+.absence-banner .avatar { background: var(--accent); width: 42px; height: 42px; font-size: 13px; }
+.absence-banner h3 { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+.absence-banner p { font-size: 12px; color: var(--steel-light); margin-top: 2px; }
+.absence-banner .btn { margin-left: auto; }
+.sub-row { display: grid; grid-template-columns: 1.1fr 0.8fr 1.6fr 1.6fr 0.9fr; gap: 14px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.sub-row:last-child { border-bottom: none; }
+.sub-row .rationale { font-size: 12px; color: var(--ink-faint); font-style: italic; margin-top: 4px; }
+.sub-select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font-size: 12.5px; }
+.sub-row.needs-review { background: var(--amber-bg); }

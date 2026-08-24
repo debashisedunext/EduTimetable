@@ -24,7 +24,12 @@ const abbr = (subject: string) => (subject.length <= 5 ? subject : subject.slice
 export function Matrix() {
   const { current } = useConfigCtx();
   const [status, setStatus] = useState<"draft" | "published">("draft");
-  const { data } = useApi<SlotsPayload>(current ? `/timetable-configs/${current.id}/slots?status=${status}` : null);
+  const [date, setDate] = useState("");
+  const { data } = useApi<SlotsPayload>(
+    current
+      ? `/timetable-configs/${current.id}/slots?status=${status}${status === "published" && date ? `&date=${date}` : ""}`
+      : null,
+  );
   const [dimension, setDimension] = useState<"section" | "teacher">("section");
   const [search, setSearch] = useState("");
 
@@ -60,12 +65,13 @@ export function Matrix() {
       ? index.bySection.get(`${rowKey}@${day}:${period}`)
       : index.byTeacher.get(`${rowKey}@${day}:${period}`);
     if (!s) return null;
-    const [csId, , , subjectId, teacherId, roomId, mergedGroupId, locked] = s;
+    const [csId, , , subjectId, teacherId, roomId, mergedGroupId, locked, substituted] = s;
     return {
       main: dimension === "section" ? abbr(data.subjects[String(subjectId)] ?? "?") : (data.sections.find((x) => x.id === csId)?.label ?? "?"),
       sub: dimension === "section" ? short(data.teachers[String(teacherId)] ?? "") : abbr(data.subjects[String(subjectId)] ?? "?"),
       merged: mergedGroupId !== null,
       locked: locked === 1,
+      substituted: substituted === 1,
       room: roomId !== null ? data.rooms[String(roomId)] : null,
     };
   };
@@ -84,6 +90,11 @@ export function Matrix() {
             <option value="draft">Draft</option>
             <option value="published">Published</option>
           </select>
+          {status === "published" && (
+            <input type="date" title="Overlay this date's substitutions (§6)" value={date}
+              onChange={(e) => setDate(e.target.value)}
+              style={{ padding: "7px 10px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12.5 }} />
+          )}
           <input placeholder={`Search ${dimension === "section" ? "class" : "teacher"}…`} value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ padding: "8px 12px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12.5, width: 210 }} />
@@ -138,17 +149,17 @@ export function Matrix() {
                     }
                     const cell = cellFor(row.key, d, p.periodNumber as number);
                     return (
-                      <td key={`${d}:${i}`} title={cell?.room ?? undefined} style={{
+                      <td key={`${d}:${i}`} title={cell?.substituted ? `Substitute teacher on ${date}` : (cell?.room ?? undefined)} style={{
                         padding: "5px 7px", minWidth: 62, height: 44, verticalAlign: "middle",
                         borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                        background: cell?.merged ? "var(--steel-pale)" : "var(--paper)",
+                        background: cell?.substituted ? "var(--accent-bg)" : cell?.merged ? "var(--steel-pale)" : "var(--paper)",
                       }}>
                         {cell ? (
                           <>
                             <div style={{ fontWeight: 700, fontSize: 11 }}>
-                              {cell.main}{cell.merged ? " 🔗" : ""}{cell.locked ? " 🔒" : ""}
+                              {cell.main}{cell.merged ? " 🔗" : ""}{cell.locked ? " 🔒" : ""}{cell.substituted ? " ↺" : ""}
                             </div>
-                            <div style={{ fontSize: 9.5, color: "var(--ink-faint)" }}>{cell.sub}</div>
+                            <div style={{ fontSize: 9.5, color: cell.substituted ? "var(--accent)" : "var(--ink-faint)", fontWeight: cell.substituted ? 700 : 400 }}>{cell.sub}</div>
                           </>
                         ) : (
                           <span style={{ color: "var(--ink-faint)", fontSize: 10 }}>—</span>

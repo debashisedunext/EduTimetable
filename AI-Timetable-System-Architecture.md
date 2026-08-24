@@ -597,6 +597,8 @@ Input: absent_teacher, date
 1. User marks Teacher absent for a date (or the system detects via leave-approval integration).
 2. System instantly computes the matching above and shows a **review screen**: each of the 4 affected slots with its top-ranked substitute pre-selected + 1-2 alternates in a dropdown, and the LLM-written rationale ("Mr. Verma — also teaches English to 7-B, free this period, only 2 substitutions today").
 3. One click **"Confirm All"** writes 4 rows into `substitution_log` and creates matching `timetable_slots` rows with `source='substitute'`, `status` scoped to that single date only (the base published timetable is untouched — substitutions are date-specific overlays, not permanent changes).
+
+> **Implementation note (Phase 4):** the overlay lives in `substitution_log` alone — no `timetable_slots` rows are created for substitutions. `timetable_slots` has no date column, so a substitute row at the same `(config, published, section, day, period)` would collide with the §3 unique keys; instead every read that takes a `?date=` (matrix, boards, reports) joins that date's `substitution_log` rows over the published grid at query time. `uq_slot_substitution_date (timetable_slot_id, date)` guarantees one substitute per slot per day, and deleting an absence cascades its overlay rows away — the base grid is untouchable by construction, which is the §6.2 intent stated more strongly.
 4. Affected class-sections and the substitute teachers get a notification (see §9).
 
 ---

@@ -205,6 +205,7 @@ model Teacher {
   classTeacherOf      ClassSection[] @relation("classTeacherOf")
   mergedGroups        MergedTeachingGroup[]
   electiveOptions     ElectiveOption[]
+  absences            TeacherAbsence[]
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
@@ -432,4 +433,49 @@ model TimetablePublication {
 
   @@unique([timetableConfigId, version], map: "uq_config_version")
   @@map("timetable_publications")
+}
+
+// ===== Phase 4 — Substitute Teacher Engine (§6) =====
+
+enum AbsenceStatus {
+  reported
+  substitutes_assigned
+  resolved
+}
+
+model TeacherAbsence {
+  id        Int           @id @default(autoincrement())
+  teacherId Int           @map("teacher_id")
+  teacher   Teacher       @relation(fields: [teacherId], references: [id])
+  date      DateTime      @db.Date
+  reason    String?       @db.VarChar(100)
+  status    AbsenceStatus @default(reported)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  substitutions SubstitutionLog[]
+
+  @@unique([teacherId, date], map: "uq_teacher_absence_date")
+  @@map("teacher_absences")
+}
+
+// Date-specific overlay (§6.2, invariant 4): the base published timetable is
+// NEVER mutated. One row = "on {date}, {substitute} covers {slot} instead of
+// {original}". Views layer these over the published grid at read time — the
+// literal §6.2 "insert substitute rows into timetable_slots" would collide
+// with the §3 unique keys (no date column there), so the overlay lives here.
+model SubstitutionLog {
+  id                  Int            @id @default(autoincrement())
+  timetableSlotId     BigInt         @map("timetable_slot_id")
+  absenceId           Int            @map("absence_id")
+  absence             TeacherAbsence @relation(fields: [absenceId], references: [id], onDelete: Cascade)
+  originalTeacherId   Int            @map("original_teacher_id")
+  substituteTeacherId Int            @map("substitute_teacher_id")
+  date                DateTime       @db.Date
+  reason              String?        @db.VarChar(100)
+  createdById         Int?           @map("created_by")
+  createdAt           DateTime       @default(now()) @map("created_at")
+
+  @@unique([timetableSlotId, date], map: "uq_slot_substitution_date")
+  @@index([date, substituteTeacherId])
+  @@map("substitution_log")
 }

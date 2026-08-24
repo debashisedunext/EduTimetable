@@ -31,6 +31,7 @@ const NAV: NavGroup[] = [
       { label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
       { label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
       { label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
+      { label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
     ],
   },
   {
@@ -52,6 +53,7 @@ const TITLES: Record<string, [string, string]> = {
   "/matrix": ["Manage", "Full Allocation Matrix"],
   "/board": ["Manage", "Draft Board"],
   "/publish": ["Manage", "Publish Confirmation"],
+  "/substitutes": ["Manage", "Substitute Teacher Center"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };

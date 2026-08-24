@@ -14,6 +14,7 @@ import { EventsModule } from "./events/events.module";
 import { BullModule as BullQueueModule } from "@nestjs/bullmq";
 import { MastersModule } from "./masters/masters.module";
 import { BoardModule } from "./board/board.module";
+import { SubstitutesModule } from "./substitutes/substitutes.module";
 import { SolverController } from "./solver/solver.controller";
 import { RolesAdminController } from "./admin/roles-admin.controller";
 import { SampleDataController } from "./dev/sample-data.controller";
@@ -35,6 +36,7 @@ import { ReadinessService } from "./readiness/readiness.service";
     EventsModule,
     MastersModule,
     BoardModule,
+    SubstitutesModule,
     BullQueueModule.registerQueue({ name: "solver" }),
   ],
   controllers: [HealthController, MeController, RolesAdminController, SampleDataController, SolverController],
