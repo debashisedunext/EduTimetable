@@ -152,6 +152,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 5 — Reports, Notifications & LLM Explanations (4 weeks)
 
+> **Status: ✅ complete** (branch `phase4/substitute-engine`). Report query service = the future §13.1 tool layer (`reports.service.ts`: classSectionTimetable / teacherTimetable / roomUtilization / teacherLoadSummary, scope-injected, Redis-cached under the slots:* sweep, ?date= substitution overlay); Reports screen with filters + Print + CSV; notifications table + Socket.IO delivery + topbar bell, triggers wired: publish (teachers+admins), solver-completed (queue listener), absence, substitute-assigned, substitute-gap; Notification Center; LLM layer: AnthropicProvider abstraction (`@anthropic-ai/sdk`, claude-opus-5, adaptive thinking; key via env until §13.2) + /ai/explain-readiness with template degradation; ScopeService real section lookup; My Timetable / My Classes teacher views, scope negatives verified live (403s). Deferred: 5.7 NL data entry (needs §13.2 toggle → Phase 7), queued PDF/Excel pipeline (CSV + print-PDF ship now), k6 CI perf suite, email/push channel (ERP provider hook stubbed), overload-banner + stale-draft reminder triggers.
+
 **Objective:** The reference layer (§9, §10) plus the first LLM features (§5.7).
 **Dependencies:** Phase 4 (substitution history feeds reports).
 

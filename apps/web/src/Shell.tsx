@@ -1,6 +1,8 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { io } from "socket.io-client";
 import { PERMISSIONS, type MeResponse, type Permission } from "@edutimetable/shared";
-import { clearToken } from "./api";
+import { api, clearToken, getToken } from "./api";
 import { useConfigCtx } from "./hooks";
 
 interface NavEntry {
@@ -35,6 +37,20 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    label: "My Timetable",
+    items: [
+      { label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN },
+      { label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS },
+    ],
+  },
+  {
+    label: "Reference",
+    items: [
+      { label: "Reports", to: "/reports", requires: PERMISSIONS.REPORTS_VIEW },
+      { label: "Notifications", to: "/notifications", requires: PERMISSIONS.NOTIFICATIONS_VIEW },
+    ],
+  },
+  {
     label: "Administration",
     items: [{ label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE }],
   },
@@ -54,11 +70,41 @@ const TITLES: Record<string, [string, string]> = {
   "/board": ["Manage", "Draft Board"],
   "/publish": ["Manage", "Publish Confirmation"],
   "/substitutes": ["Manage", "Substitute Teacher Center"],
+  "/reports": ["Reference", "Reports"],
+  "/notifications": ["Reference", "Notification Center"],
+  "/my-timetable": ["My Timetable", "My Weekly Timetable"],
+  "/my-classes": ["My Timetable", "My Classes"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };
 
-function Topbar() {
+/** §9 in-app channel: live unread badge, incremented over Socket.IO. */
+function Bell() {
+  const { pathname } = useLocation();
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const load = () => api<{ count: number }>("/notifications/unread-count").then((r) => setCount(r.count)).catch(() => {});
+    load();
+    const socket = io({ auth: { token: getToken() } });
+    socket.on("notification:new", load);
+    return () => { socket.disconnect(); };
+  }, [pathname]);
+  return (
+    <Link to="/notifications" title="Notifications" style={{ position: "relative", textDecoration: "none", fontSize: 18, lineHeight: 1 }}>
+      🔔
+      {count > 0 && (
+        <span style={{
+          position: "absolute", top: -6, right: -9, background: "var(--signal)", color: "#fff",
+          borderRadius: 9, fontSize: 9.5, fontWeight: 800, padding: "1.5px 5px", minWidth: 16, textAlign: "center",
+        }}>
+          {count > 99 ? "99+" : count}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+function Topbar({ me }: { me: MeResponse }) {
   const { pathname } = useLocation();
   const { configs, current, setCurrentId } = useConfigCtx();
   const [eyebrow, title] = TITLES[pathname] ?? ["", "Timetable AI"];
@@ -85,6 +131,7 @@ function Topbar() {
             </select>
           </div>
         )}
+        {me.permissions.includes(PERMISSIONS.NOTIFICATIONS_VIEW) && <Bell />}
         <span className="badge badge-ok">● Live</span>
       </div>
     </div>
@@ -146,7 +193,7 @@ export function Shell({ me }: { me: MeResponse }) {
         </div>
       </nav>
       <div className="main">
-        <Topbar />
+        <Topbar me={me} />
         <div className="content">
           <Outlet />
         </div>

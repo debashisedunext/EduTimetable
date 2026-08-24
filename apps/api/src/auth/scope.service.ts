@@ -1,13 +1,16 @@
 import { Injectable } from "@nestjs/common";
 import { PERMISSIONS, type Permission, type ViewScope } from "@edutimetable/shared";
+import { PrismaService } from "../prisma/prisma.service";
 
 /**
  * Resolves the row-level visibility scope for a user (§15.3). Every timetable
- * and report query in later phases must be filtered through this — it is the
- * single scoping module shared by REST, Socket.IO, reports, and the AI tools.
+ * and report query is filtered through this — it is the single scoping module
+ * shared by REST, Socket.IO, reports, and the AI tools.
  */
 @Injectable()
 export class ScopeService {
+  constructor(private readonly prisma: PrismaService) {}
+
   async resolve(
     permissions: Permission[],
     teacherId: number | null,
@@ -33,11 +36,30 @@ export class ScopeService {
   }
 
   /**
-   * Sections the teacher teaches in (teacher_subject_class_section) or is
-   * class teacher of (class_sections.class_teacher_id). Those tables land in
-   * Phase 1 — until then no sections are resolvable.
+   * Sections the teacher is linked to: teaches (mappings), teaches via a
+   * merged group, or is class teacher of.
    */
-  protected async lookupLinkedClassSections(_teacherId: number): Promise<number[]> {
-    return [];
+  protected async lookupLinkedClassSections(teacherId: number): Promise<number[]> {
+    const [mappings, merged, classTeacherOf] = await Promise.all([
+      this.prisma.teacherSubjectClassSection.findMany({
+        where: { teacherId },
+        select: { classSectionId: true },
+      }),
+      this.prisma.mergedTeachingGroup.findMany({
+        where: { teacherId },
+        select: { members: { select: { classSectionId: true } } },
+      }),
+      this.prisma.classSection.findMany({
+        where: { classTeacherId: teacherId },
+        select: { id: true },
+      }),
+    ]);
+    return [
+      ...new Set([
+        ...mappings.map((m) => m.classSectionId),
+        ...merged.flatMap((g) => g.members.map((m) => m.classSectionId)),
+        ...classTeacherOf.map((c) => c.id),
+      ]),
+    ];
   }
 }

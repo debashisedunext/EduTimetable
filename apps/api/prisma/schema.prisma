@@ -48,6 +48,7 @@ model User {
   roleOverridden Boolean @default(false) @map("role_overridden")
   lastLoginAt DateTime? @map("last_login_at")
   createdAt   DateTime  @default(now()) @map("created_at")
+  notifications Notification[]
 
   @@unique([schoolId, erpUserId])
   @@map("users")
@@ -478,4 +479,20 @@ model SubstitutionLog {
   @@unique([timetableSlotId, date], map: "uq_slot_substitution_date")
   @@index([date, substituteTeacherId])
   @@map("substitution_log")
+}
+
+// ===== Phase 5 — Notifications (§9) =====
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   @db.VarChar(40)
+  title     String   @db.VarChar(160)
+  body      String   @db.VarChar(500)
+  link      String?  @db.VarChar(120)
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, isRead, createdAt])
+  @@map("notifications")
 }

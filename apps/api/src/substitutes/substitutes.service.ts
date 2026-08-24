@@ -13,6 +13,7 @@ import {
 } from "@nestjs/common";
 import type Redis from "ioredis";
 import {
+  PERMISSIONS,
   planSubstitutes,
   type AffectedSlot,
   type SubstitutePlan,
@@ -21,6 +22,7 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
 import { EventsGateway } from "../events/events.gateway";
+import { NotificationsService } from "../notifications/notifications.service";
 
 /** our convention: 1 = Monday … 7 = Sunday */
 export function dayOfWeekOf(date: Date): number {
@@ -40,6 +42,7 @@ export class SubstitutesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
+    private readonly notifications: NotificationsService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -74,6 +77,21 @@ export class SubstitutesService {
         data: { teacherId: body.teacherId, date, reason: body.reason ?? null },
       });
       this.events.server?.emit("substitutions:changed", { date: body.date });
+      // §9 trigger "Teacher marked absent" → substitute managers, urgent
+      const affected = await this.prisma.timetableSlot.count({
+        where: {
+          teacherId: body.teacherId,
+          status: "published",
+          dayOfWeek: dayOfWeekOf(date),
+          teacherOccupancyKey: { not: null },
+        },
+      });
+      await this.notifications.notifyByPermission(schoolId, PERMISSIONS.SUBSTITUTE_MANAGE, {
+        type: "absence",
+        title: `${teacher.name} absent ${body.date}`,
+        body: `${affected} period(s) need substitutes — open the Substitute Center to review the matches.`,
+        link: "/substitutes",
+      });
       return { id: absence.id };
     } catch (e: any) {
       if (e?.code === "P2002") {
@@ -313,6 +331,35 @@ export class SubstitutesService {
     }
     await this.invalidateSlotCaches();
     this.events.server?.emit("substitutions:changed", { date: absence.date });
+
+    // §9 trigger "Substitute assigned" — one ping per substitute, listing their covers
+    const bySub = new Map<number, string[]>();
+    for (const a of assignments) {
+      const sp = bySlot.get(a.slotId)!;
+      const list = bySub.get(a.substituteTeacherId) ?? [];
+      list.push(`${sp.slot.classSectionLabel} ${sp.slot.subjectName} P${sp.slot.period}`);
+      bySub.set(a.substituteTeacherId, list);
+    }
+    for (const [teacherId, covers] of bySub) {
+      await this.notifications.notifyTeachers([teacherId], {
+        type: "substitute_assigned",
+        title: `You're covering for ${absence.teacherName} on ${absence.date}`,
+        body: covers.join(" · "),
+        link: `/my-timetable?date=${absence.date}`,
+      });
+    }
+    // §9 trigger "No eligible substitute found" — anything left uncovered is urgent
+    const stillOpen = plan.slots.filter(
+      (s) => s.assigned === null && !assignments.some((a) => a.slotId === s.slot.slotId),
+    );
+    if (stillOpen.length > 0) {
+      await this.notifications.notifyByPermission(schoolId, PERMISSIONS.SUBSTITUTE_MANAGE, {
+        type: "substitute_gap",
+        title: `${stillOpen.length} period(s) still uncovered on ${absence.date}`,
+        body: stillOpen.map((s) => `${s.slot.classSectionLabel} P${s.slot.period} ${s.slot.subjectName}`).join(" · ") + " — no eligible substitute; assign a duty teacher, merge sections, or cancel.",
+        link: "/substitutes",
+      });
+    }
     return { ok: true, confirmed: assignments.length };
   }
 

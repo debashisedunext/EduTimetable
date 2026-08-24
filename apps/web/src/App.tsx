@@ -15,6 +15,9 @@ import { Matrix } from "./pages/Matrix";
 import { Board } from "./pages/Board";
 import { Publish } from "./pages/Publish";
 import { Substitutes } from "./pages/Substitutes";
+import { Reports } from "./pages/Reports";
+import { Notifications } from "./pages/Notifications";
+import { MyClasses, MyTimetable } from "./pages/MyViews";
 
 /** Captures the session token from the SSO redirect fragment (§15.1). */
 function SsoCapture() {
@@ -101,7 +104,11 @@ export default function App() {
             </ConfigContext.Provider>
           }
         >
-          <Route path="/" element={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE) ? <Timetables /> : <Dashboard me={me} />} />
+          <Route path="/" element={
+            me.permissions.includes(PERMISSIONS.MASTERS_MANAGE) ? <Timetables />
+            : me.permissions.includes(PERMISSIONS.TIMETABLE_VIEW_OWN) ? <MyTimetable />
+            : <Dashboard me={me} />
+          } />
           <Route path="/setup" element={<Setup />} />
           <Route path="/readiness" element={<Readiness />} />
           <Route path="/generate" element={<Generate />} />
@@ -109,6 +116,10 @@ export default function App() {
           <Route path="/board" element={<Board />} />
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/notifications" element={<Notifications />} />
+          <Route path="/my-timetable" element={<MyTimetable />} />
+          <Route path="/my-classes" element={<MyClasses />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />

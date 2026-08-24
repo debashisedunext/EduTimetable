@@ -31,7 +31,7 @@ export class SolverController {
         `Readiness is ${readiness.score}% with ${readiness.blockers.length} blocker(s) — generation is only offered at 100% (§4)`,
       );
     }
-    const job = await this.queue.add("solve", { configId });
+    const job = await this.queue.add("solve", { configId, userId: _req.user.sub });
     return { jobId: job.id };
   }
 

@@ -1,7 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 import type { FeasibilityIssue, FeasibilityResult } from "@edutimetable/shared";
-import { getToken } from "../api";
+import { api, getToken } from "../api";
 import { Card } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 
@@ -58,9 +58,56 @@ export function Readiness() {
         </Card>
       )}
 
+      <ExplainPanel configId={current.id} issueCount={data.blockers.length + data.warnings.length} />
+
       {[...data.blockers, ...data.warnings].map((issue, i) => (
         <IssueRow key={i} issue={issue} />
       ))}
+    </div>
+  );
+}
+
+/** Task 5.6 — LLM rephrasing of the structured feasibility result (§5.7).
+ *  Degrades to the engine's own template text when no provider is configured. */
+function ExplainPanel({ configId, issueCount }: { configId: number; issueCount: number }) {
+  const [state, setState] = useState<{ source: string; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setState(null); }, [configId, issueCount]);
+
+  const explain = async () => {
+    setBusy(true);
+    try {
+      setState(await api<{ source: string; text: string }>("/ai/explain-readiness", {
+        method: "POST",
+        body: JSON.stringify({ configId }),
+      }));
+    } catch {
+      setState({ source: "error", text: "Explanation unavailable right now — the itemized list below has the same information." });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ margin: "6px 0 16px" }}>
+      {!state ? (
+        <button className="btn btn-secondary" onClick={explain} disabled={busy}>
+          {busy ? "Thinking…" : "✨ Explain in plain English"}
+        </button>
+      ) : (
+        <Card>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ fontSize: 18 }}>✨</div>
+            <div>
+              <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.55 }}>{state.text}</div>
+              <div style={{ fontSize: 10.5, color: "var(--ink-faint)", marginTop: 8 }}>
+                {state.source === "llm"
+                  ? "Written by the AI from the engine's structured result — it never invents constraints (§5.7)."
+                  : "Engine template text (no AI provider configured — set ANTHROPIC_API_KEY to enable AI phrasing)."}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

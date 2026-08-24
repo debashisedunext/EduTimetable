@@ -65,6 +65,10 @@ new Worker(
 
     const summary = {
       configId,
+      // echoed for the §9 solver-completed notification (NotificationsService)
+      userId: job.data.userId ?? undefined,
+      placements: result.placements.length,
+      total: result.totalVariables,
       placedVariables: result.placements.length,
       totalVariables: result.totalVariables,
       slotRows: rows,

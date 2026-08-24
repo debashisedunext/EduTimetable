@@ -1,0 +1,179 @@
+import { useCallback, useEffect, useState } from "react";
+import { api } from "../api";
+import { asMessage, Card, DataTable, ErrorNote, Field } from "../components";
+import { useConfigCtx } from "../hooks";
+import { inputStyle } from "./Timetables";
+import { WeekGrid, type GridPayload } from "./WeekGrid";
+
+type ReportKind = "class-section" | "teacher" | "rooms" | "load";
+
+interface Options {
+  scope?: string;
+  sections: { id: number; label: string }[];
+  teachers: { id: number; name: string }[];
+  configs: { id: number; name: string }[];
+}
+
+/** §10 Reports screen — filter bar, on-screen grid ≤1s (Redis-cached compact
+ *  payloads), Print (browser print-style PDF) and CSV export. */
+export function Reports() {
+  const { current } = useConfigCtx();
+  const [options, setOptions] = useState<Options | null>(null);
+  const [kind, setKind] = useState<ReportKind>("class-section");
+  const [sectionId, setSectionId] = useState("");
+  const [teacherId, setTeacherId] = useState("");
+  const [date, setDate] = useState("");
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<Options>("/reports/options")
+      .then((o) => {
+        setOptions(o);
+        if (o.sections[0]) setSectionId(String(o.sections[0].id));
+        if (o.teachers[0]) setTeacherId(String(o.teachers[0].id));
+      })
+      .catch((e) => setError(asMessage(e)));
+  }, []);
+
+  const load = useCallback(async () => {
+    setError(null);
+    setData(null);
+    try {
+      const q = date ? `?date=${date}` : "";
+      if (kind === "class-section" && sectionId) setData(await api(`/reports/class-section/${sectionId}${q}`));
+      else if (kind === "teacher" && teacherId) setData(await api(`/reports/teacher/${teacherId}${q}`));
+      else if (kind === "rooms" && current) setData(await api(`/reports/rooms/${current.id}`));
+      else if (kind === "load" && current) setData(await api(`/reports/teacher-load/${current.id}`));
+    } catch (e) { setError(asMessage(e)); }
+  }, [kind, sectionId, teacherId, date, current]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const exportCsv = () => {
+    if (!data) return;
+    let rows: string[][] = [];
+    let name = "report";
+    if (data.kind === "rooms") {
+      name = "room-utilization";
+      rows = [["Room", "Type", "Periods used", "Capacity", "Utilization %"],
+        ...data.rows.map((r: any) => [r.name, r.type, String(r.used), String(data.capacityPerRoom), String(r.pct)])];
+    } else if (data.kind === "load") {
+      name = "teacher-load";
+      rows = [["Teacher", "Assigned/week", "Capacity", "Sections", "Gaps", "Overloaded"],
+        ...data.rows.map((r: any) => [r.name, String(r.assigned), String(r.capacity), String(r.sections), String(r.gaps), r.over ? "YES" : ""])];
+    } else {
+      name = `${data.kind}-${data.label}`;
+      const g = data as GridPayload;
+      rows = [["Period", ...g.dayNames]];
+      for (const p of g.periods.filter((x) => !x.isBreak && x.periodNumber !== 0)) {
+        rows.push([
+          `P${p.periodNumber}`,
+          ...g.workingDays.map((d) => {
+            const c = g.grid[`${d}:${p.periodNumber}`];
+            if (!c) return "Free";
+            const main = g.kind === "teacher" ? c.classSection : c.subject;
+            const sub = g.kind === "teacher" ? c.subject : c.teacher;
+            return `${main ?? ""} (${sub ?? ""}${c.room ? `, ${c.room}` : ""})${c.substituted ? " [SUB]" : ""}`;
+          }),
+        ]);
+      }
+    }
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `${name.replace(/\s+/g, "-").toLowerCase()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <div>
+      <Card title="Reports" sub="All reports read the PUBLISHED timetable (§10); pick a date to overlay that day's substitutions.">
+        <ErrorNote message={error} />
+        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1fr auto auto", gap: 10, alignItems: "end" }}>
+          <Field label="Report">
+            <select style={inputStyle} value={kind} onChange={(e) => setKind(e.target.value as ReportKind)}>
+              <option value="class-section">Class-Section Weekly Timetable</option>
+              <option value="teacher">Teacher Weekly Timetable</option>
+              {options?.scope === "all" && <option value="rooms">Room Utilization</option>}
+              {options?.scope === "all" && <option value="load">Teacher Load Summary</option>}
+            </select>
+          </Field>
+          {kind === "class-section" && (
+            <Field label="Class-Section">
+              <select style={inputStyle} value={sectionId} onChange={(e) => setSectionId(e.target.value)}>
+                {(options?.sections ?? []).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </Field>
+          )}
+          {kind === "teacher" && (
+            <Field label="Teacher">
+              <select style={inputStyle} value={teacherId} onChange={(e) => setTeacherId(e.target.value)}>
+                {(options?.teachers ?? []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </Field>
+          )}
+          {(kind === "rooms" || kind === "load") && (
+            <Field label="Timetable"><input style={inputStyle} disabled value={current?.name ?? ""} /></Field>
+          )}
+          {(kind === "class-section" || kind === "teacher") ? (
+            <Field label="Date (substitution overlay)">
+              <input type="date" style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} />
+            </Field>
+          ) : <div />}
+          <button className="btn btn-secondary" style={{ marginBottom: 18 }} onClick={() => window.print()} disabled={!data}>🖨 Print / PDF</button>
+          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={exportCsv} disabled={!data}>⬇ Excel (CSV)</button>
+        </div>
+      </Card>
+
+      {data && (data.kind === "class-section" || data.kind === "teacher") && (
+        <Card
+          title={data.kind === "teacher" ? `${data.label} — weekly timetable` : `${data.label} — weekly timetable`}
+          sub={
+            data.kind === "teacher"
+              ? `${data.weeklyLoad}/${data.maxPeriodsPerWeek} periods per week${data.date ? ` · substitutions overlaid for ${data.date}` : ""}`
+              : `${data.classTeacher ? `Class teacher: ${data.classTeacher}` : "No class teacher assigned"}${data.date ? ` · substitutions overlaid for ${data.date}` : ""}`
+          }
+        >
+          <WeekGrid data={data} />
+        </Card>
+      )}
+
+      {data?.kind === "rooms" && (
+        <Card title="Room Utilization" sub={`Capacity per room: ${data.capacityPerRoom} periods/week. Flags under- and over-used special rooms (§10).`}>
+          <DataTable
+            headers={["Room", "Type", "Used", "Utilization", ""]}
+            rows={data.rows.map((r: any) => [
+              <b key="n">{r.name}</b>,
+              <span key="t" className="chip mono">{r.type}</span>,
+              `${r.used} / ${data.capacityPerRoom}`,
+              <div key="p" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 160 }}>
+                <div style={{ flex: 1, height: 7, background: "var(--offwhite)", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min(100, r.pct)}%`, height: "100%", background: r.pct > 85 ? "var(--signal)" : "var(--brand)" }} />
+                </div>
+                <span className="mono" style={{ fontSize: 11.5 }}>{r.pct}%</span>
+              </div>,
+              r.pct === 0 ? <span key="f" className="badge badge-warn">unused</span> : r.pct > 85 ? <span key="f" className="badge badge-error">heavily used</span> : "",
+            ])}
+          />
+        </Card>
+      )}
+
+      {data?.kind === "load" && (
+        <Card title="Teacher Load Summary" sub="Doubles as an ongoing feasibility-health report (§10).">
+          <DataTable
+            headers={["Teacher", "Assigned / Capacity", "Sections", "Gap periods", ""]}
+            rows={data.rows.map((r: any) => [
+              <b key="n">{r.name}</b>,
+              <span key="l" className={`badge ${r.over ? "badge-error" : "badge-ok"}`}>{r.assigned} / {r.capacity}</span>,
+              r.sections,
+              r.gaps,
+              r.over ? <span key="o" className="badge badge-error">overloaded</span> : "",
+            ])}
+          />
+        </Card>
+      )}
+    </div>
+  );
+}

@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { ScopeService } from "./scope.service";
 
-const svc = new ScopeService();
+// prisma is only touched by the linked-sections lookup — stub it for the
+// pure resolve() cases and override the lookup where a value matters
+const svc = new (class extends ScopeService {
+  protected override async lookupLinkedClassSections(): Promise<number[]> {
+    return [];
+  }
+})(null as never);
 
 describe("ScopeService.resolve (§15.3)", () => {
   it("view.all wins regardless of other permissions", async () => {

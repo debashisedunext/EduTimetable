@@ -10,6 +10,7 @@ import type Redis from "ioredis";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
 import { EventsGateway } from "../events/events.gateway";
+import { NotificationsService } from "../notifications/notifications.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -29,6 +30,7 @@ export class PublishService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
+    private readonly notifications: NotificationsService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -171,6 +173,22 @@ export class PublishService {
     );
     this.events.server?.emit("slots:changed", { configId });
     this.events.server?.emit("timetable:published", { configId, version: pub.version });
+    // §9 trigger "Timetable published" — every teacher whose slots are in this
+    // config + the timetable admins get the in-app notification
+    const cfg = await this.prisma.timetableConfig.findUnique({ where: { id: configId } });
+    const teacherIds = [
+      ...new Set(
+        diff.snapshot.mappings.map((m) => m.teacherId).concat(diff.snapshot.mergedGroups.map((g) => g.teacherId)),
+      ),
+    ];
+    const note = {
+      type: "published",
+      title: `Timetable published — v${pub.version}`,
+      body: `${cfg?.name ?? "The timetable"} v${pub.version} is now live (${diff.draftCount} slots). View yours.`,
+      link: "/my-timetable",
+    };
+    await this.notifications.notifyTeachers(teacherIds, note);
+    if (cfg) await this.notifications.notifyAdmins(cfg.schoolId, { ...note, link: "/matrix" });
     return { ok: true, version: pub.version, slotCount: diff.draftCount };
   }
 
