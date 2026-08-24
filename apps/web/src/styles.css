@@ -35,9 +35,16 @@ button { font-family: inherit; cursor: pointer; }
 
 .sidebar {
   width: 236px; flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
-  display: flex; flex-direction: column; padding: 22px 14px; position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column; padding: 22px 14px; position: sticky; top: 0;
+  height: 100vh; overflow: hidden;
 }
-.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px; }
+/* the nav list scrolls; brand and user footer stay pinned, so more nav groups
+   can never push the footer outside the navy panel */
+.sidebar-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.sidebar-nav::-webkit-scrollbar { width: 6px; }
+.sidebar-nav::-webkit-scrollbar-thumb { background: #1b3a6b; border-radius: 3px; }
+.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+.brand { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px; }
 .brand-mark {
   width: 30px; height: 30px; border-radius: 7px; background: var(--accent);
   display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; padding: 5px;
@@ -53,7 +60,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-item:hover { background: #12305E; }
 .nav-item.active { background: var(--brand); color: #fff; }
-.sidebar-foot { margin-top: auto; padding: 12px 10px; border-top: 1px solid #1b3a6b; }
+.sidebar-foot { flex-shrink: 0; margin-top: 10px; padding: 12px 10px 0; border-top: 1px solid #1b3a6b; background: var(--brand-deep); }
 .who { display: flex; align-items: center; gap: 9px; }
 .avatar {
   width: 28px; height: 28px; border-radius: 50%; background: var(--steel); color: #fff;

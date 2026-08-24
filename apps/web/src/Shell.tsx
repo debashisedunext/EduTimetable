@@ -9,6 +9,8 @@ interface NavEntry {
   label: string;
   to: string;
   requires?: Permission;
+  /** personal views only make sense for a login linked to a teacher record */
+  requiresTeacher?: boolean;
 }
 interface NavGroup {
   label: string;
@@ -39,8 +41,8 @@ const NAV: NavGroup[] = [
   {
     label: "My Timetable",
     items: [
-      { label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN },
-      { label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS },
+      { label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN, requiresTeacher: true },
+      { label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS, requiresTeacher: true },
     ],
   },
   {
@@ -142,7 +144,9 @@ export function Shell({ me }: { me: MeResponse }) {
   const held = new Set(me.permissions);
   const groups = NAV.map((g) => ({
     ...g,
-    items: g.items.filter((i) => !i.requires || held.has(i.requires)),
+    items: g.items.filter(
+      (i) => (!i.requires || held.has(i.requires)) && (!i.requiresTeacher || me.teacherId !== null),
+    ),
   })).filter((g) => g.items.length > 0);
 
   return (
@@ -157,20 +161,22 @@ export function Shell({ me }: { me: MeResponse }) {
             <div className="brand-sub">Edunext ERP</div>
           </div>
         </div>
-        {groups.map((g) => (
-          <div key={g.label}>
-            <div className="nav-group-label">{g.label}</div>
-            {g.items.map((i) => (
-              <NavLink
-                key={i.to}
-                to={i.to}
-                className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-              >
-                {i.label}
-              </NavLink>
-            ))}
-          </div>
-        ))}
+        <div className="sidebar-nav">
+          {groups.map((g) => (
+            <div key={g.label}>
+              <div className="nav-group-label">{g.label}</div>
+              {g.items.map((i) => (
+                <NavLink
+                  key={i.to}
+                  to={i.to}
+                  className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+                >
+                  {i.label}
+                </NavLink>
+              ))}
+            </div>
+          ))}
+        </div>
         <div className="sidebar-foot">
           <div className="who">
             <div className="avatar">
