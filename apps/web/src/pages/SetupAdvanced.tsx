@@ -6,11 +6,31 @@ import { inputStyle } from "./Timetables";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/** Tightest weekly capacity (periods/day × working days) across the configs
+ *  the given class-sections belong to — mirrors the server's capacity guard. */
+function weekCapFor(
+  sectionRows: any[],
+  ids: number[],
+  configs: { id: number; name: string; periodsPerDay: number; workingDays: number[] }[],
+): { cap: number; name: string } | null {
+  let min: { cap: number; name: string } | null = null;
+  for (const id of ids) {
+    const cs = sectionRows.find((s) => s.id === id);
+    const cfg = cs && configs.find((c) => c.id === cs.timetableConfigId);
+    if (!cfg) continue;
+    const cap = cfg.periodsPerDay * cfg.workingDays.length;
+    if (!min || cap < min.cap) min = { cap, name: cfg.name };
+  }
+  return min;
+}
+
 /** Step 5 — Curriculum mapping (class_subjects, §4.8 block fields). */
 export function StepCurriculum() {
   const { data, refetch } = useApi<any[]>("/class-subjects");
   const { data: classes } = useApi<any[]>("/classes");
   const { data: subjects } = useApi<any[]>("/subjects");
+  const { data: sectionRows } = useApi<any[]>("/class-sections");
+  const { configs } = useConfigCtx();
   const blank = { classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1", consecutiveBlockSize: "1", consecutiveBlocksPerWeek: "", samePeriodAcrossWeek: false };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState<number | null>(null);
@@ -47,6 +67,15 @@ export function StepCurriculum() {
     catch (e) { setError(asMessage(e)); }
   };
 
+  // weekly capacity of the selected class's timetable (mirrors the server guard)
+  const classId = form.classId ? Number(form.classId) : null;
+  const capInfo = classId !== null
+    ? weekCapFor(sectionRows ?? [], (sectionRows ?? []).filter((s) => s.classId === classId).map((s) => s.id), configs)
+    : null;
+  const usedByClass = classId !== null
+    ? (data ?? []).filter((r) => r.classId === classId && r.id !== editId).reduce((n, r) => n + r.periodsPerWeek, 0)
+    : 0;
+
   return (
     <Card title="Curriculum Mapping" sub="Which subjects each class takes, how often, and any double-period rules (§4.8).">
       <ErrorNote message={error} />
@@ -72,7 +101,10 @@ export function StepCurriculum() {
             {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </Field>
-        <Field label="Periods/wk"><input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} /></Field>
+        <Field label="Periods/wk"
+          hint={capInfo ? `${capInfo.name} week = ${capInfo.cap} · class uses ${usedByClass + (Number(form.periodsPerWeek) || 0)}/${capInfo.cap}` : undefined}>
+          <input type="number" min={1} max={capInfo?.cap} style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} />
+        </Field>
         <Field label="Max/day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Block size"><input type="number" style={inputStyle} value={form.consecutiveBlockSize} onChange={(e) => setForm({ ...form, consecutiveBlockSize: e.target.value })} /></Field>
         <Field label="Blocks/wk"><input type="number" style={inputStyle} placeholder="auto" value={form.consecutiveBlocksPerWeek} onChange={(e) => setForm({ ...form, consecutiveBlocksPerWeek: e.target.value })} /></Field>
@@ -259,7 +291,7 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
         <button className="btn btn-secondary" onClick={onBack}>← Back to Teacher List</button>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn btn-secondary" disabled={!valid} onClick={() => onSaveAnother(form)}>Save &amp; Add Another</button>
-          <button className="btn btn-primary" disabled={!valid} onClick={() => onSaveNext(form)}>Save &amp; Next: Teacher Mapping →</button>
+          <button className="btn btn-primary" disabled={!valid} onClick={() => onSaveNext(form)}>Save &amp; Next: Timetable Config →</button>
         </div>
       </div>
     </div>
@@ -385,6 +417,8 @@ function MappingForm({
     merged: editing?.type === "merged",
   });
   const [selected, setSelected] = useState<Set<number>>(new Set(editing?.classSectionIds ?? []));
+  const { configs } = useConfigCtx();
+  const mapCap = weekCapFor(sections, [...selected], configs);
 
   const isEdit = editing !== null;
   const sectionLocked = isEdit && editing.type === "single"; // a plain mapping's section is its identity
@@ -485,8 +519,9 @@ function MappingForm({
             })}
           </div>
         </Field>
-        <Field label="Periods / Week (each section)">
-          <input type="number" style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} />
+        <Field label="Periods / Week (each section)"
+          hint={mapCap ? `${mapCap.name} week = ${mapCap.cap} periods — entries above that are refused` : undefined}>
+          <input type="number" min={1} max={mapCap?.cap} style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} />
         </Field>
       </div>
       <Field label="Room">

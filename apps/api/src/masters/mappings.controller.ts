@@ -4,6 +4,7 @@ import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { assertWithinWeek, capacityForClassSections } from "./capacity.util";
 
 /**
  * Subject Mapping — teacher_subject_class_section (§3, §8.1b) plus merged
@@ -98,6 +99,7 @@ export class MappingsController {
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     const preferredRoomId =
       body.preferredRoomId != null ? toInt(body.preferredRoomId, "preferredRoomId") : null;
+    assertWithinWeek(periodsPerWeek, await capacityForClassSections(this.prisma, ids));
 
     const existing = await this.prisma.teacherSubjectClassSection.findMany({
       where: { subjectId, classSectionId: { in: ids } },
@@ -131,6 +133,18 @@ export class MappingsController {
 
   @Put(":id")
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    if (body.periodsPerWeek !== undefined) {
+      const row = await this.prisma.teacherSubjectClassSection.findUnique({
+        where: { id: toInt(id, "id") },
+        select: { classSectionId: true },
+      });
+      if (row) {
+        assertWithinWeek(
+          toInt(body.periodsPerWeek, "periodsPerWeek"),
+          await capacityForClassSections(this.prisma, [row.classSectionId]),
+        );
+      }
+    }
     const updated = await uniq(
       () =>
         this.prisma.teacherSubjectClassSection.update({
@@ -173,6 +187,10 @@ export class MergedGroupsController {
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["teacherId", "subjectId", "periodsPerWeek", "classSectionIds"]);
     const ids = this.memberIds(body);
+    assertWithinWeek(
+      toInt(body.periodsPerWeek, "periodsPerWeek"),
+      await capacityForClassSections(this.prisma, ids),
+    );
     const group = await uniq(
       () =>
         this.prisma.mergedTeachingGroup.create({
@@ -198,6 +216,17 @@ export class MergedGroupsController {
     if (body.teacherId !== undefined) data.teacherId = toInt(body.teacherId, "teacherId");
     if (body.periodsPerWeek !== undefined) data.periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     if (body.roomId !== undefined) data.roomId = body.roomId === null ? null : toInt(body.roomId, "roomId");
+    if (body.periodsPerWeek !== undefined) {
+      const memberIds =
+        body.classSectionIds !== undefined
+          ? this.memberIds(body)
+          : (await this.prisma.mergedTeachingGroupMember.findMany({ where: { mergedGroupId: groupId } }))
+              .map((m) => m.classSectionId);
+      assertWithinWeek(
+        toInt(body.periodsPerWeek, "periodsPerWeek"),
+        await capacityForClassSections(this.prisma, memberIds),
+      );
+    }
 
     await uniq(async () => {
       await this.prisma.mergedTeachingGroup.update({ where: { id: groupId }, data });

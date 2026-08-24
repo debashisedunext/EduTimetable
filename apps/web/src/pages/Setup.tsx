@@ -5,15 +5,18 @@ import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
 
+// Capacity-first order: Timetable Config (periods/week capacity) precedes
+// Curriculum and Teacher Mapping so their periods/week entries validate
+// against an already-defined week.
 const STEPS = [
   "Academic Year",
   "Classes & Sections",
   "Rooms",
   "Subjects",
-  "Curriculum",
   "Teachers",
-  "Teacher Mapping",
   "Timetable Config",
+  "Curriculum",
+  "Teacher Mapping",
 ];
 
 /** Setup Wizard (§8.1) — list-first, form-second on every step. */
@@ -47,7 +50,7 @@ export function Setup() {
         ))}
       </div>
 
-      {current && step >= 4 && (
+      {current && step >= 5 && (
         <p className="screen-sub">Editing timetable: <b>{current.name}</b></p>
       )}
 
@@ -55,10 +58,10 @@ export function Setup() {
       {step === 1 && <StepClasses />}
       {step === 2 && <StepRooms />}
       {step === 3 && <StepSubjects />}
-      {step === 4 && <StepCurriculum />}
-      {step === 5 && <StepTeachers onNext={() => setStep(6)} />}
-      {step === 6 && <StepTeacherMapping />}
-      {step === 7 && <StepConfig />}
+      {step === 4 && <StepTeachers onNext={() => setStep(5)} />}
+      {step === 5 && <StepConfig />}
+      {step === 6 && <StepCurriculum />}
+      {step === 7 && <StepTeacherMapping />}
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
         <button className="btn" style={{ border: "1px solid var(--line)" }} disabled={step === 0} onClick={() => setStep(step - 1)}>← Back</button>

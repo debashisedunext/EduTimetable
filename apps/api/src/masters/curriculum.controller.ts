@@ -4,6 +4,7 @@ import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { assertWithinWeek, capacityForClass } from "./capacity.util";
 
 /** Curriculum mapping — class_subjects (§3), with §4.8 block validation at entry. */
 @Controller("class-subjects")
@@ -39,6 +40,7 @@ export class CurriculumController {
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["classId", "subjectId", "periodsPerWeek"]);
     const data = this.normalize(body);
+    assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, toInt(body.classId, "classId")));
     const created = await uniq(
       () => this.prisma.classSubject.create({ data: { ...data, classId: toInt(body.classId, "classId"), subjectId: toInt(body.subjectId, "subjectId") } }),
       "Curriculum row for that class & subject",
@@ -52,6 +54,7 @@ export class CurriculumController {
     const existing = await this.prisma.classSubject.findUnique({ where: { id: toInt(id, "id") } });
     if (!existing) throw new BadRequestException("Curriculum row not found");
     const data = this.normalize({ ...existing, ...body });
+    assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, existing.classId));
     const updated = await this.prisma.classSubject.update({
       where: { id: existing.id },
       data,
