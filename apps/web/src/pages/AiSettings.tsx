@@ -22,6 +22,49 @@ const AI_PERMS = [
   { key: "ai.configure", label: "Configure", desc: "this screen: keys, budget, access" },
 ];
 
+/** Where each provider issues API keys, so an admin never has to go hunting.
+ *  `implemented` reflects what the gateway actually speaks today — the chat
+ *  loop is Anthropic-only; the others are listed because the provider
+ *  abstraction is in place, not because they are wired. */
+const PROVIDERS = [
+  {
+    value: "anthropic",
+    label: "Anthropic (Claude)",
+    implemented: true,
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    keyLabel: "Anthropic Console → Settings → API Keys",
+    keyPrefix: "sk-ant-…",
+    hint: "Requires prepaid credit under Plans & Billing. A Claude.ai Pro/Max subscription does NOT include API access.",
+  },
+  {
+    value: "openai",
+    label: "OpenAI",
+    implemented: false,
+    keyUrl: "https://platform.openai.com/api-keys",
+    keyLabel: "OpenAI Platform → API keys",
+    keyPrefix: "sk-…",
+    hint: "Requires a funded billing account on the OpenAI Platform (separate from ChatGPT Plus).",
+  },
+  {
+    value: "google",
+    label: "Google (Gemini)",
+    implemented: false,
+    keyUrl: "https://aistudio.google.com/apikey",
+    keyLabel: "Google AI Studio → Get API key",
+    keyPrefix: "AIza…",
+    hint: "Google AI Studio issues the key. Vertex AI on Google Cloud uses service-account credentials instead, not a key.",
+  },
+  {
+    value: "azure_openai",
+    label: "Azure OpenAI",
+    implemented: false,
+    keyUrl: "https://portal.azure.com/#browse/Microsoft.CognitiveServices%2Faccounts",
+    keyLabel: "Azure Portal → your Azure OpenAI resource → Keys and Endpoint",
+    keyPrefix: "32-char hex",
+    hint: "Azure keys are per-resource: also paste that resource's endpoint into API base URL below, and use your deployment name as the model.",
+  },
+] as const;
+
 const FEATURES = [
   { key: "chat", name: "Ask AI chat", desc: "Conversational queries over the timetable (§13.1)." },
   { key: "reports", name: "Report generation from chat", desc: "Let the assistant render the standard reports." },
@@ -77,6 +120,7 @@ export function AiSettings() {
     } catch (e) { setError(asMessage(e)); load(); }
   };
 
+  const provider = PROVIDERS.find((p) => p.value === s.provider);
   const budgetPct = s.monthlyTokenBudget
     ? Math.min(100, Math.round((s.usage.totalTokens / s.monthlyTokenBudget) * 100))
     : 0;
@@ -102,10 +146,11 @@ export function AiSettings() {
               <div className="field">
                 <label>Provider</label>
                 <select style={inputStyle} value={s.provider} onChange={(e) => save({ provider: e.target.value }, "Provider updated")}>
-                  <option value="anthropic">Anthropic (recommended)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="google">Google</option>
-                  <option value="azure_openai">Azure OpenAI</option>
+                  {PROVIDERS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}{p.value === "anthropic" ? " — recommended" : " — not yet wired"}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="field">
@@ -117,6 +162,30 @@ export function AiSettings() {
                 </select>
               </div>
             </div>
+            {provider && (
+              <div style={{
+                display: "flex", gap: 10, alignItems: "flex-start", padding: "11px 13px", marginBottom: 14,
+                background: provider.implemented ? "var(--steel-pale)" : "var(--amber-bg)",
+                border: `1px solid ${provider.implemented ? "var(--steel-light)" : "var(--amber)"}`,
+                borderRadius: 9,
+              }}>
+                <div style={{ fontSize: 15 }}>{provider.implemented ? "🔑" : "⚠"}</div>
+                <div style={{ flex: 1, fontSize: 11.5, lineHeight: 1.55, color: "var(--ink-soft)" }}>
+                  {!provider.implemented && (
+                    <div style={{ fontWeight: 700, color: "var(--amber)", marginBottom: 3 }}>
+                      The assistant currently speaks Anthropic only — a {provider.label} key will be stored but not used yet.
+                    </div>
+                  )}
+                  <div>
+                    Get a key: <a href={provider.keyUrl} target="_blank" rel="noreferrer"
+                      style={{ color: "var(--brand)", fontWeight: 700 }}>{provider.keyLabel} ↗</a>
+                    {" "}· keys look like <span className="mono">{provider.keyPrefix}</span>
+                  </div>
+                  <div style={{ color: "var(--ink-faint)", marginTop: 2 }}>{provider.hint}</div>
+                </div>
+              </div>
+            )}
+
             <div className="field">
               <label>API key {s.hasKey && <span className="chip" style={{ marginLeft: 6 }}>{s.keySource === "database" ? `stored ${s.keyHint}` : "from environment"}</span>}</label>
               <div className="key-row">
@@ -136,6 +205,18 @@ export function AiSettings() {
                   {test.ok ? `Connected — ${test.model} responded to a 1-token ping.` : `Failed: ${test.error}`}
                 </div>
               )}
+            </div>
+
+            <div className="field">
+              <label>API base URL <span style={{ fontWeight: 400, color: "var(--ink-faint)" }}>— only for Azure or a self-hosted gateway</span></label>
+              <div className="key-row">
+                <input style={inputStyle} id="base-url-input" placeholder="https://my-resource.openai.azure.com"
+                  defaultValue={s.apiBaseUrl ?? ""} />
+                <button className="btn btn-secondary" onClick={() => {
+                  const el = document.getElementById("base-url-input") as HTMLInputElement;
+                  save({ apiBaseUrl: el.value.trim() || null }, el.value.trim() ? "Base URL saved" : "Base URL cleared");
+                }}>Save</button>
+              </div>
               <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 8 }}>
                 Encryption key: {s.encryptionKeySource}.
                 {s.keySource === "database" && (
