@@ -53,6 +53,13 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    label: "Intelligence",
+    items: [
+      { label: "Ask AI", to: "/ask-ai", requires: PERMISSIONS.AI_CHAT },
+      { label: "AI Settings", to: "/ai-settings", requires: PERMISSIONS.AI_CONFIGURE },
+    ],
+  },
+  {
     label: "Administration",
     items: [{ label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE }],
   },
@@ -76,6 +83,8 @@ const TITLES: Record<string, [string, string]> = {
   "/notifications": ["Reference", "Notification Center"],
   "/my-timetable": ["My Timetable", "My Weekly Timetable"],
   "/my-classes": ["My Timetable", "My Classes"],
+  "/ask-ai": ["Intelligence", "Ask AI"],
+  "/ai-settings": ["Intelligence", "AI Settings"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };

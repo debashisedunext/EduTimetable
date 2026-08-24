@@ -496,3 +496,57 @@ model Notification {
   @@index([userId, isRead, createdAt])
   @@map("notifications")
 }
+
+// ===== Phase 7 — AI Assistant (§13.2) =====
+
+enum AiProvider {
+  anthropic
+  openai
+  google
+  azure_openai
+}
+
+enum AiChatRole {
+  user
+  assistant
+  tool
+}
+
+/// One row per school. The API key is AES-256-GCM encrypted at rest and is
+/// write-only in the UI — it is never selected into a response or a log line.
+model AiSettings {
+  id                 Int        @id @default(autoincrement())
+  schoolId           Int        @unique @map("school_id")
+  provider           AiProvider @default(anthropic)
+  model              String     @default("claude-opus-5") @db.VarChar(60)
+  apiKeyEncrypted    Bytes?     @map("api_key_encrypted") @db.VarBinary(512)
+  apiBaseUrl         String?    @map("api_base_url") @db.VarChar(255)
+  monthlyTokenBudget Int?       @map("monthly_token_budget")
+  /// {"chat":true,"reports":true,"nl_data_entry":false,"conflict_explain":true}
+  features           Json?
+  isActive           Boolean    @default(true) @map("is_active")
+  updatedById        Int?       @map("updated_by")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+
+  @@map("ai_settings")
+}
+
+/// Full audit trail (§13.2, required): every turn of every conversation with
+/// the tools it ran and the tokens it cost. Drives the usage meter and budget.
+model AiChatLog {
+  id             BigInt     @id @default(autoincrement())
+  schoolId       Int        @map("school_id")
+  userId         Int        @map("user_id")
+  conversationId String     @map("conversation_id") @db.Char(36)
+  role           AiChatRole
+  content        String?    @db.MediumText
+  /// which tools ran, with the SCOPED arguments they actually executed with
+  toolsCalled    Json?      @map("tools_called")
+  inputTokens    Int        @default(0) @map("input_tokens")
+  outputTokens   Int        @default(0) @map("output_tokens")
+  createdAt      DateTime   @default(now()) @map("created_at")
+
+  @@index([schoolId, createdAt])
+  @@index([conversationId, id])
+  @@map("ai_chat_log")
+}

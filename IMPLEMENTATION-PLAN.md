@@ -192,6 +192,8 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 
 ## Phase 7 — AI Assistant (4 weeks)
 
+> **Status: ✅ complete** (branch `phase7/ai-assistant`). `ai_settings` + `ai_chat_log`; AES-256-GCM key custody (write-only in the UI, ciphertext in the DB, masked hint only); 11-tool read-only registry wrapping the §10 query layer with scope injected server-side; AI Gateway with the Anthropic tool-use loop (streaming, adaptive thinking, `claude-opus-5`), per-turn audit logging with token counts and a monthly budget cutoff; `/ai` Socket.IO namespace refusing any client without `ai.chat` at handshake; Ask AI screen (streaming bubbles, collapsible tool traces, report cards, suggestion chips, scope selector, read-only pill) and AI Settings screen (provider/model, Test Connection 1-token ping, feature toggles, usage meter, role access matrix). Verified: 16 unit tests (key custody + adversarial scope), `scripts/ai-smoke.sh` (RBAC 403s, key never echoed, DB holds ciphertext only), `scripts/ai-socket-check.cjs` (teacher and forged tokens refused, admin connects). **Not verified end-to-end: live LLM answers** — no `ANTHROPIC_API_KEY` was available in this environment, so the chat loop was exercised only to its "no provider key configured" error path. Deferred: 7.8 groundedness evaluation pass (needs a live key), 5.7 NL data entry (toggle ships off).
+
 **Objective:** Role-gated conversational layer: chat over timetable data, AI-triggered reports, provider configuration (§13).
 **Dependencies:** Phase 5 (tool layer = 5.1's query service; provider abstraction = 5.6; roles from 0.3/0.4).
 

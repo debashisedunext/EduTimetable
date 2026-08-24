@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { asMessage, Card, DataTable, ErrorNote, Field } from "../components";
 import { useConfigCtx } from "../hooks";
@@ -18,10 +19,12 @@ interface Options {
  *  payloads), Print (browser print-style PDF) and CSV export. */
 export function Reports() {
   const { current } = useConfigCtx();
+  // a report card from Ask AI deep-links here with the filters it chose (§13.1)
+  const [params] = useSearchParams();
   const [options, setOptions] = useState<Options | null>(null);
-  const [kind, setKind] = useState<ReportKind>("class-section");
-  const [sectionId, setSectionId] = useState("");
-  const [teacherId, setTeacherId] = useState("");
+  const [kind, setKind] = useState<ReportKind>((params.get("kind") as ReportKind) || "class-section");
+  const [sectionId, setSectionId] = useState(params.get("sectionId") ?? "");
+  const [teacherId, setTeacherId] = useState(params.get("teacherId") ?? "");
   const [date, setDate] = useState("");
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,8 +33,9 @@ export function Reports() {
     api<Options>("/reports/options")
       .then((o) => {
         setOptions(o);
-        if (o.sections[0]) setSectionId(String(o.sections[0].id));
-        if (o.teachers[0]) setTeacherId(String(o.teachers[0].id));
+        // deep-linked ids win; otherwise fall back to the first visible option
+        if (!params.get("sectionId") && o.sections[0]) setSectionId(String(o.sections[0].id));
+        if (!params.get("teacherId") && o.teachers[0]) setTeacherId(String(o.teachers[0].id));
       })
       .catch((e) => setError(asMessage(e)));
   }, []);

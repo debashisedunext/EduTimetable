@@ -18,6 +18,8 @@ import { Substitutes } from "./pages/Substitutes";
 import { Reports } from "./pages/Reports";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
+import { AskAi } from "./pages/AskAi";
+import { AiSettings } from "./pages/AiSettings";
 
 /** Captures the session token from the SSO redirect fragment (§15.1). */
 function SsoCapture() {
@@ -120,6 +122,8 @@ export default function App() {
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />
+          <Route path="/ask-ai" element={<AskAi />} />
+          <Route path="/ai-settings" element={<AiSettings />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
