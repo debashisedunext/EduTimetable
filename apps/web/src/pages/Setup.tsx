@@ -22,14 +22,16 @@ export function Setup() {
   const { current } = useConfigCtx();
 
   return (
-    <div style={{ maxWidth: 980 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 22, overflowX: "auto", paddingBottom: 4 }}>
+    <div>
+      {/* stepper spans the full width: connector lines flex-grow so all steps
+          stay visible without horizontal scroll; wraps on narrow screens */}
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 10, marginBottom: 22 }}>
         {STEPS.map((label, i) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-            {i > 0 && <div style={{ width: 26, height: 1.5, background: "var(--line)", margin: "0 6px" }} />}
+          <div key={label} style={{ display: "flex", alignItems: "center", flex: i > 0 ? "1 1 auto" : "0 0 auto", minWidth: 0 }}>
+            {i > 0 && <div style={{ flex: 1, minWidth: 12, height: 1.5, background: "var(--line)", margin: "0 8px" }} />}
             <button
               onClick={() => setStep(i)}
-              style={{ display: "flex", alignItems: "center", gap: 7, background: "none", border: "none", padding: 0 }}
+              style={{ display: "flex", alignItems: "center", gap: 7, background: "none", border: "none", padding: 0, flexShrink: 0, cursor: "pointer" }}
             >
               <span style={{
                 width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center",
