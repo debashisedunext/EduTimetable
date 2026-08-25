@@ -14,6 +14,7 @@ services:
              pnpm --filter @edutimetable/api run migrate:control &&
              pnpm --filter @edutimetable/api run seed &&
              pnpm --filter @edutimetable/api run seed:control &&
+             pnpm --filter @edutimetable/api run migrate:all &&
              pnpm --filter @edutimetable/api run start:dev"
     environment:
       NODE_ENV: development

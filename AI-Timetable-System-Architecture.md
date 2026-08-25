@@ -1287,6 +1287,20 @@ A school in `shared` mode lives in the application database and is separated by 
 
 **Per-installation ERP keys.** A single `ERP_PUBLIC_KEY` is fine with one ERP and wrong with two: any installation holding it could mint a token for any school. `erp_instances` holds one key per installation and a token selects its own by the `kid` in its JWT header (or its `iss` claim). A token naming a `kid` that is not registered is **rejected**, never silently fallen back to the global key — falling back is precisely how one installation would end up trusted to sign for another's schools. Choosing the key from unauthenticated header data is safe: it only decides which public key to try, and the signature check is what grants anything.
 
+**Migrating N databases, and refusing the one you forgot.** Once schools can have their own databases, "run the migrations" stops being one command and becomes N — and the one you forget fails *quietly*: not on deploy, but later, inside a query, as `Unknown column 'trust_code' in 'field list'`, on whichever screen happens to touch the new column first, with nothing pointing at the cause.
+
+So the version is checked at the door. The application knows which migrations it ships (the folders in the image); each database knows which it has (`_prisma_migrations`); a database that is behind is **refused on connect**, with a message naming the school, the gap, the missing migration and the command that fixes it. The database is asked directly rather than trusting `tenants.schema_version` — that column is a cached summary for the Platform Console and would be wrong the moment anyone migrated out of band.
+
+- A database that is *ahead* is tolerated and logged: that happens mid-rollout, when the schema is migrated before every instance is replaced, and refusing would take the deployment down for a condition that resolves itself.
+- The **shared** database is held to the same rule, for the same reason. `GET /health` is public and bypasses it, so a deployment in this state can still be asked what is wrong; it reports `schema: "behind"` and degrades.
+
+```
+pnpm --filter @edutimetable/api migrate:all             # every school's database
+pnpm --filter @edutimetable/api migrate:all -- --dry-run # report only, change nothing
+```
+
+`migrate:all` walks the registry so nothing is forgotten, migrates the shared database **once** however many schools live in it, and stamps each tenant's applied version. One school's failure does not stop the rest — an unreachable database should not block every other school's upgrade — and it is reported at the end with a non-zero exit. Idempotent, so running it twice is a no-op and running it after a partial failure resumes.
+
 **Provisioning a dedicated school is an operator command, not an API call** — creating a database carries credentials and is nothing a login should trigger implicitly:
 
 ```
@@ -1297,6 +1311,8 @@ It creates the database, applies the application migrations, seeds the school ro
 
 ### 17.6 Verification
 
+
+`scripts/migrate-all-smoke.cjs` proves the migration loop end to end: it provisions a real dedicated school, genuinely rolls its database back one migration — dropping the columns, not just the bookkeeping row — then asserts the dry run names the school and the pending migration, that signing in is **refused** rather than half-working until it reaches the new column, that `migrate:all` repairs it and stamps the registry, that the school then works, and that the shared database was migrated once rather than once per school.
 
 `scripts/dedicated-tenant-smoke.cjs` proves connection routing against a real second database, built around the school-id collision described above: the session lands in the tenant's database, its user row and every write land there and nowhere else, neither school can see the other despite sharing a local id, a session cannot switch into an ungranted tenant, and the connection budget is reported.
 

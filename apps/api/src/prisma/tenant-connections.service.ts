@@ -29,18 +29,20 @@
  *     filtering by school_id: it is defence in depth, and nothing stops a
  *     dedicated database from later holding a second school.
  */
-import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 import { PrismaBaseService } from "./prisma-base.service";
 import { withSchoolScope } from "./school-scope";
 import { TenantContextService } from "../tenant/tenant-context.service";
 import { TenantRegistryService } from "../control/tenant-registry.service";
+import { behindMessage, expectedVersion, schemaStatus, type SchemaStatus } from "./schema-version";
 
 interface Entry {
   base: PrismaClient;
   scoped: PrismaClient;
   lastUsedAt: number;
   displayName: string;
+  schema: SchemaStatus;
 }
 
 const num = (name: string, fallback: number) => {
@@ -49,7 +51,7 @@ const num = (name: string, fallback: number) => {
 };
 
 @Injectable()
-export class TenantConnectionsService implements OnModuleDestroy {
+export class TenantConnectionsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TenantConnectionsService.name);
   private readonly clients = new Map<number, Entry>();
   /** In-flight opens, so a burst of requests for one tenant opens one client. */
@@ -63,6 +65,8 @@ export class TenantConnectionsService implements OnModuleDestroy {
   private readonly idleMs = num("TENANT_IDLE_MS", 10 * 60 * 1000);
 
   private defaultScoped: PrismaClient | null = null;
+  /** Checked once at boot; the shared database serves most schools. */
+  private defaultSchema: SchemaStatus | null = null;
 
   constructor(
     private readonly base: PrismaBaseService,
@@ -76,9 +80,47 @@ export class TenantConnectionsService implements OnModuleDestroy {
     return this.defaultScoped;
   }
 
+  /**
+   * The shared database, refused if it is behind this build.
+   *
+   * The same rule as a dedicated tenant, for the same reason: serving from a
+   * database that is missing columns the code references produces cryptic
+   * failures scattered across whichever screens happen to touch them first.
+   * `GET /health` is public and does not go through this, so the deployment can
+   * still be asked what is wrong.
+   */
+  private sharedClientChecked(): PrismaClient {
+    if (this.defaultSchema && !this.defaultSchema.ok) {
+      throw new Error(behindMessage("The shared application database", this.defaultSchema));
+    }
+    return this.defaultClient();
+  }
+
+  /**
+   * Verify the shared database against this build, once. Called at boot so a
+   * deployment that forgot to migrate says so immediately rather than at the
+   * first request that touches a new column (9.3 / §17.3).
+   */
+  async checkDefaultSchema(): Promise<SchemaStatus> {
+    this.defaultSchema ??= await schemaStatus(this.base);
+    if (!this.defaultSchema.ok) {
+      this.logger.error(behindMessage("The shared application database", this.defaultSchema));
+    } else if (this.defaultSchema.ahead.length > 0) {
+      this.logger.warn(
+        `The shared database has ${this.defaultSchema.ahead.length} migration(s) this build does not ship — ` +
+          `it was migrated by a newer version. Tolerated during a rollout.`,
+      );
+    }
+    return this.defaultSchema;
+  }
+
   /** How many dedicated clients are open, for the health endpoint and alarms. */
   stats() {
     return {
+      expectedSchema: expectedVersion(),
+      sharedSchema: this.defaultSchema
+        ? { ok: this.defaultSchema.ok, applied: this.defaultSchema.applied, missing: this.defaultSchema.missing.length }
+        : null,
       open: this.clients.size,
       maxClients: this.maxClients,
       poolLimit: this.poolLimit,
@@ -88,6 +130,7 @@ export class TenantConnectionsService implements OnModuleDestroy {
         tenantId: id,
         displayName: e.displayName,
         idleMs: Date.now() - e.lastUsedAt,
+        schema: { ok: e.schema.ok, applied: e.schema.applied, missing: e.schema.missing.length },
       })),
     };
   }
@@ -123,12 +166,12 @@ export class TenantConnectionsService implements OnModuleDestroy {
   }
 
   async clientFor(tenantId: number | null | undefined): Promise<PrismaClient> {
-    if (tenantId == null || !this.registry.available) return this.defaultClient();
+    if (tenantId == null || !this.registry.available) return this.sharedClientChecked();
 
     const tenant = await this.registry.byId(tenantId);
     // Unknown tenant, or one that lives in the shared database: the default
     // connection is the correct answer, not an error.
-    if (!tenant || tenant.mode !== "dedicated") return this.defaultClient();
+    if (!tenant || tenant.mode !== "dedicated") return this.sharedClientChecked();
 
     const existing = this.clients.get(tenantId);
     if (existing) {
@@ -166,11 +209,29 @@ export class TenantConnectionsService implements OnModuleDestroy {
       throw new Error(`Could not connect to tenant ${tenantId} (${displayName}): ${(e as Error).message}`);
     }
 
+    // The version gate (9.3 / §17.3). A tenant whose database is behind this
+    // build does not fail on connect — it fails later, inside a query, as
+    // "Unknown column …", on whichever screen happens to touch the new column
+    // first, with nothing pointing at the real cause. Refuse it here instead,
+    // with a message that names the missing migration and the fix.
+    const schema = await schemaStatus(base);
+    if (!schema.ok) {
+      await base.$disconnect().catch(() => undefined);
+      throw new Error(behindMessage(`${displayName} (tenant ${tenantId})`, schema));
+    }
+    if (schema.ahead.length > 0) {
+      this.logger.warn(
+        `Tenant ${tenantId} (${displayName}) has ${schema.ahead.length} migration(s) this build does not ship — ` +
+          `migrated by a newer version. Tolerated during a rollout.`,
+      );
+    }
+
     const entry: Entry = {
       base,
       scoped: withSchoolScope(base, this.tenant),
       lastUsedAt: Date.now(),
       displayName,
+      schema,
     };
     this.clients.set(tenantId, entry);
     this.logger.log(
@@ -221,6 +282,13 @@ export class TenantConnectionsService implements OnModuleDestroy {
       }
     }
     if (oldestId !== null) await this.close(oldestId, "evicted at the connection cap");
+  }
+
+  async onModuleInit() {
+    // Say it at boot, not at the first request that touches a new column.
+    await this.checkDefaultSchema().catch((e) =>
+      this.logger.error(`Could not verify the shared database's schema version: ${(e as Error).message}`),
+    );
   }
 
   async onModuleDestroy() {

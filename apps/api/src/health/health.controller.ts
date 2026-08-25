@@ -22,9 +22,18 @@ export class HealthController {
       this.prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false),
       this.redis.ping().then((r) => r === "PONG").catch(() => false),
     ]);
-    // Connection-pool headroom (§17.5): the budget is
-    // TENANT_MAX_CLIENTS × TENANT_POOL_LIMIT against MySQL's max_connections,
-    // so it belongs somewhere an alarm can watch it.
-    return { status: db && redis ? "ok" : "degraded", db, redis, connections: this.connections.stats() };
+    // Connection-pool headroom (§17.5) and schema versions (§17.3): the
+    // connection budget is TENANT_MAX_CLIENTS × TENANT_POOL_LIMIT against
+    // MySQL's max_connections, and a database behind this build is a release
+    // that half-deployed. Both belong somewhere an alarm can watch them.
+    const connections = this.connections.stats();
+    const schemaOk = connections.sharedSchema?.ok !== false;
+    return {
+      status: db && redis && schemaOk ? "ok" : "degraded",
+      db,
+      redis,
+      schema: schemaOk ? "ok" : "behind",
+      connections,
+    };
   }
 }

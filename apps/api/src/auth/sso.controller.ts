@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res } from "@nestjs/common";
+import { Controller, Get, Logger, Query, Res } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { Response } from "express";
 import { Public } from "./decorators";
@@ -12,6 +12,8 @@ import { AuthService } from "./auth.service";
  */
 @Controller("sso")
 export class SsoController {
+  private readonly logger = new Logger(SsoController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly config: ConfigService,
@@ -25,7 +27,12 @@ export class SsoController {
     try {
       const { sessionToken } = await this.authService.handleSsoToken(token);
       return res.redirect(`${webUrl}/sso#token=${sessionToken}`);
-    } catch {
+    } catch (e) {
+      // The browser deliberately learns nothing beyond "it failed" — but the
+      // operator has to learn why, or an operational fault (a school whose
+      // database is behind this build, §17.3) is indistinguishable from a bad
+      // token, and "fail loudly" fails quietly instead.
+      this.logger.warn(`SSO refused: ${(e as Error).message}`);
       return res.redirect(`${webUrl}/sso-error`);
     }
   }
