@@ -9,6 +9,8 @@ interface DevErpTokenBody {
   name: string;
   email: string;
   teacherId?: number;
+  /** 9.1: lets the isolation suite sign in as a second school. Defaults to 1. */
+  schoolId?: number;
 }
 
 /**
@@ -35,7 +37,7 @@ export class DevErpController {
       erpRole: body.erpRole,
       name: body.name,
       email: body.email,
-      schoolId: 1,
+      schoolId: Number(body.schoolId ?? 1),
       teacherId: body.teacherId ?? null,
     });
     return { token };

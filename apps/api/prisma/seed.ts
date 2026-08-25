@@ -1,8 +1,15 @@
 import { PrismaClient } from "@prisma/client";
 import { DEFAULT_ROLES } from "@edutimetable/shared";
+import { TenantContextService } from "../src/tenant/tenant-context.service";
+import { withSchoolScope } from "../src/prisma/school-scope";
 
-const prisma = new PrismaClient();
 const SCHOOL_ID = 1;
+
+// Seeding runs through the same school-scoped client the app uses (9.1 / §17),
+// so the denormalized school_id on child tables like role_permissions is
+// stamped here exactly as it would be at runtime — one code path, not two.
+const tenant = new TenantContextService();
+const prisma = withSchoolScope(new PrismaClient(), tenant);
 
 async function main() {
   for (const [name, permissions] of Object.entries(DEFAULT_ROLES)) {
@@ -17,7 +24,7 @@ async function main() {
     for (const permission of permissions) {
       await prisma.rolePermission.upsert({
         where: { roleId_permission: { roleId: role.id, permission } },
-        create: { roleId: role.id, permission },
+        create: { roleId: role.id, permission, schoolId: SCHOOL_ID },
         update: {},
       });
     }
@@ -45,7 +52,8 @@ async function main() {
   console.log("Seed complete: roles, permissions, ERP role mappings (school 1).");
 }
 
-main()
+tenant
+  .runAs({ schoolId: SCHOOL_ID, origin: "seed" }, main)
   .catch((e) => {
     console.error(e);
     process.exit(1);

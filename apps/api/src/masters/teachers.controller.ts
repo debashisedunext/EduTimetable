@@ -103,6 +103,7 @@ export class TeachersController {
       this.prisma.teacherUnavailability.deleteMany({ where: { teacherId } }),
       this.prisma.teacherUnavailability.createMany({
         data: rows.map((r) => ({
+          schoolId: req.user.schoolId,
           teacherId,
           dayOfWeek: toInt(r.dayOfWeek, "dayOfWeek"),
           periodNumber: r.periodNumber != null ? toInt(r.periodNumber, "periodNumber") : null,

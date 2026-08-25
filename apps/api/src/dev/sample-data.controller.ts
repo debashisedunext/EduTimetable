@@ -106,7 +106,9 @@ export class SampleDataController {
       { sortOrder: 5, periodNumber: 5, startTime: "11:00", endTime: "11:40", isBreak: false, breakName: null },
       { sortOrder: 6, periodNumber: 6, startTime: "11:40", endTime: "12:20", isBreak: false, breakName: null },
     ];
-    await this.prisma.period.createMany({ data: periodRows.map((r) => ({ ...r, timetableConfigId: cfg.id })) });
+    await this.prisma.period.createMany({
+      data: periodRows.map((r) => ({ ...r, timetableConfigId: cfg.id, schoolId })),
+    });
     await this.prisma.timetableConfig.update({ where: { id: cfg.id }, data: { endTime: "12:20" } });
 
     const sectionIds: Record<string, number> = {};
@@ -128,14 +130,20 @@ export class SampleDataController {
       for (const [subj, pw, maxDay] of plan) {
         await this.prisma.classSubject.upsert({
           where: { classId_subjectId: { classId: klass.id, subjectId: subjects[subj] } },
-          create: { classId: klass.id, subjectId: subjects[subj], periodsPerWeek: pw, maxPeriodsPerDay: maxDay },
+          create: {
+            schoolId,
+            classId: klass.id,
+            subjectId: subjects[subj],
+            periodsPerWeek: pw,
+            maxPeriodsPerDay: maxDay,
+          },
           update: {},
         });
       }
       for (const sec of ["A", "B"]) {
         const section = await this.prisma.section.upsert({
           where: { classId_name: { classId: klass.id, name: sec } },
-          create: { classId: klass.id, name: sec },
+          create: { schoolId, classId: klass.id, name: sec },
           update: {},
         });
         const cs = await this.prisma.classSection.upsert({
@@ -147,6 +155,7 @@ export class SampleDataController {
             },
           },
           create: {
+            schoolId,
             classId: klass.id,
             sectionId: section.id,
             academicYearId: year.id,
@@ -181,6 +190,7 @@ export class SampleDataController {
           subjectId_classSectionId: { subjectId: subjects[subj], classSectionId: sectionIds[section] },
         },
         create: {
+          schoolId,
           teacherId: teachers[teacher],
           subjectId: subjects[subj],
           classSectionId: sectionIds[section],

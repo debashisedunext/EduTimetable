@@ -74,9 +74,9 @@ export class SubstitutesService {
     const date = parseDateOnly(body.date);
     try {
       const absence = await this.prisma.teacherAbsence.create({
-        data: { teacherId: body.teacherId, date, reason: body.reason ?? null },
+        data: { schoolId, teacherId: body.teacherId, date, reason: body.reason ?? null },
       });
-      this.events.server?.emit("substitutions:changed", { date: body.date });
+      this.events.emitToCurrentSchool("substitutions:changed", { date: body.date });
       // §9 trigger "Teacher marked absent" → substitute managers, urgent
       const affected = await this.prisma.timetableSlot.count({
         where: {
@@ -109,7 +109,7 @@ export class SubstitutesService {
     if (!absence) throw new NotFoundException("Absence not found");
     await this.prisma.teacherAbsence.delete({ where: { id } });
     await this.invalidateSlotCaches();
-    this.events.server?.emit("substitutions:changed", { date: absence.date.toISOString().slice(0, 10) });
+    this.events.emitToCurrentSchool("substitutions:changed", { date: absence.date.toISOString().slice(0, 10) });
     return { ok: true };
   }
 
@@ -309,6 +309,7 @@ export class SubstitutesService {
       await this.prisma.$transaction([
         this.prisma.substitutionLog.createMany({
           data: assignments.map((a) => ({
+            schoolId,
             timetableSlotId: BigInt(a.slotId),
             absenceId: absence.id,
             originalTeacherId: bySlot.get(a.slotId)!.slot.absentTeacherId,
@@ -330,7 +331,7 @@ export class SubstitutesService {
       throw e;
     }
     await this.invalidateSlotCaches();
-    this.events.server?.emit("substitutions:changed", { date: absence.date });
+    this.events.emitToCurrentSchool("substitutions:changed", { date: absence.date });
 
     // §9 trigger "Substitute assigned" — one ping per substitute, listing their covers
     const bySub = new Map<number, string[]>();

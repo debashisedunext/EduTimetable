@@ -10,9 +10,65 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ===================== PHASE 9.2 (§17): THE SCHOOL ITSELF =====================
+
+/// Until Phase 9.2, `school_id` was a bare Int on 30 tables with no parent row
+/// anywhere — no name, no code, and nothing stopping a typo from inventing a
+/// school. This is that missing parent: every school_id column now has a real
+/// foreign key to it, so a row can only belong to a school that exists.
+///
+/// `code` is the stable identifier the ERP knows this school by, and is what
+/// the control-plane tenant registry (prisma/control/schema.prisma) resolves an
+/// incoming SSO token against — a numeric id is meaningless across databases.
+model School {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(40)
+  name      String   @db.VarChar(120)
+  shortName String?  @map("short_name") @db.VarChar(40)
+  logoUrl   String?  @map("logo_url") @db.VarChar(255)
+  timezone  String   @default("Asia/Kolkata") @db.VarChar(40)
+  address   String?  @db.VarChar(255)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  roles                       Role[]
+  rolePermissions             RolePermission[]
+  users                       User[]
+  erpRoleMappings             ErpRoleMapping[]
+  academicYears               AcademicYear[]
+  classes                     SchoolClass[]
+  sections                    Section[]
+  classSections               ClassSection[]
+  rooms                       Room[]
+  subjects                    Subject[]
+  teachers                    Teacher[]
+  teacherUnavailability       TeacherUnavailability[]
+  classSubjects               ClassSubject[]
+  teacherSubjectClassSections TeacherSubjectClassSection[]
+  timetableConfigs            TimetableConfig[]
+  periods                     Period[]
+  holidays                    Holiday[]
+  mergedTeachingGroups        MergedTeachingGroup[]
+  mergedTeachingGroupMembers  MergedTeachingGroupMember[]
+  electiveBlocks              ElectiveBlock[]
+  electiveBlockMembers        ElectiveBlockMember[]
+  electiveOptions             ElectiveOption[]
+  auditLogs                   AuditLog[]
+  timetableSlots              TimetableSlot[]
+  timetablePublications       TimetablePublication[]
+  teacherAbsences             TeacherAbsence[]
+  substitutionLogs            SubstitutionLog[]
+  notifications               Notification[]
+  aiSettings                  AiSettings[]
+  aiChatLogs                  AiChatLog[]
+
+  @@map("schools")
+}
+
 model Role {
   id          Int              @id @default(autoincrement())
   schoolId    Int              @map("school_id")
+  school      School           @relation(fields: [schoolId], references: [id])
   name        String           @db.VarChar(50)
   isSystem    Boolean          @default(false) @map("is_system")
   permissions RolePermission[]
@@ -27,28 +83,35 @@ model RolePermission {
   roleId     Int    @map("role_id")
   permission String @db.VarChar(40)
   role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  // §17 / 9.1: denormalized from the parent so scoping is always a direct
+  // indexed predicate rather than a join. Maintained by the Prisma scope
+  // extension, never written by callers.
+  schoolId   Int    @map("school_id")
+  school     School @relation(fields: [schoolId], references: [id])
 
   @@id([roleId, permission])
+  @@index([schoolId])
   @@map("role_permissions")
 }
 
 model User {
-  id          Int       @id @default(autoincrement())
-  schoolId    Int       @map("school_id")
-  erpUserId   String    @map("erp_user_id") @db.VarChar(50)
-  name        String    @db.VarChar(100)
-  email       String    @db.VarChar(120)
+  id             Int            @id @default(autoincrement())
+  schoolId       Int            @map("school_id")
+  school         School         @relation(fields: [schoolId], references: [id])
+  erpUserId      String         @map("erp_user_id") @db.VarChar(50)
+  name           String         @db.VarChar(100)
+  email          String         @db.VarChar(120)
   // FK to teachers arrives in Phase 1; kept as a plain nullable column until then.
-  teacherId   Int?      @map("teacher_id")
-  roleId      Int       @map("role_id")
-  role        Role      @relation(fields: [roleId], references: [id])
-  isActive    Boolean   @default(true) @map("is_active")
+  teacherId      Int?           @map("teacher_id")
+  roleId         Int            @map("role_id")
+  role           Role           @relation(fields: [roleId], references: [id])
+  isActive       Boolean        @default(true) @map("is_active")
   /// set by an Admin override on the Roles & Responsibility page; when true,
   /// sync-on-login must NOT reset the role from the ERP mapping (§15.1)
-  roleOverridden Boolean @default(false) @map("role_overridden")
-  lastLoginAt DateTime? @map("last_login_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  notifications Notification[]
+  roleOverridden Boolean        @default(false) @map("role_overridden")
+  lastLoginAt    DateTime?      @map("last_login_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  notifications  Notification[]
 
   @@unique([schoolId, erpUserId])
   @@map("users")
@@ -57,6 +120,7 @@ model User {
 model ErpRoleMapping {
   id       Int    @id @default(autoincrement())
   schoolId Int    @map("school_id")
+  school   School @relation(fields: [schoolId], references: [id])
   erpRole  String @map("erp_role") @db.VarChar(50)
   roleId   Int    @map("role_id")
   role     Role   @relation(fields: [roleId], references: [id])
@@ -96,26 +160,28 @@ enum TimetableConfigStatus {
 }
 
 model AcademicYear {
-  id        Int      @id @default(autoincrement())
-  schoolId  Int      @map("school_id")
-  name      String   @db.VarChar(20)
-  startDate DateTime @map("start_date") @db.Date
-  endDate   DateTime @map("end_date") @db.Date
-  isActive  Boolean  @default(true) @map("is_active")
-  classSections ClassSection[]
+  id               Int               @id @default(autoincrement())
+  schoolId         Int               @map("school_id")
+  school           School            @relation(fields: [schoolId], references: [id])
+  name             String            @db.VarChar(20)
+  startDate        DateTime          @map("start_date") @db.Date
+  endDate          DateTime          @map("end_date") @db.Date
+  isActive         Boolean           @default(true) @map("is_active")
+  classSections    ClassSection[]
   timetableConfigs TimetableConfig[]
-  holidays  Holiday[]
+  holidays         Holiday[]
 
   @@unique([schoolId, name])
   @@map("academic_years")
 }
 
 model SchoolClass {
-  id       Int    @id @default(autoincrement())
-  schoolId Int    @map("school_id")
-  name     String @db.VarChar(20)
-  sequence Int    @default(0)
-  sections Section[]
+  id            Int            @id @default(autoincrement())
+  schoolId      Int            @map("school_id")
+  school        School         @relation(fields: [schoolId], references: [id])
+  name          String         @db.VarChar(20)
+  sequence      Int            @default(0)
+  sections      Section[]
   classSections ClassSection[]
   classSubjects ClassSubject[]
 
@@ -124,50 +190,57 @@ model SchoolClass {
 }
 
 model Section {
-  id      Int         @id @default(autoincrement())
-  classId Int         @map("class_id")
-  class   SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
-  name    String      @db.VarChar(10)
+  id            Int            @id @default(autoincrement())
+  classId       Int            @map("class_id")
+  class         SchoolClass    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  name          String         @db.VarChar(10)
+  schoolId      Int            @map("school_id")
+  school        School         @relation(fields: [schoolId], references: [id])
   classSections ClassSection[]
 
   @@unique([classId, name])
+  @@index([schoolId])
   @@map("sections")
 }
 
 model ClassSection {
-  id             Int          @id @default(autoincrement())
-  classId        Int          @map("class_id")
-  class          SchoolClass  @relation(fields: [classId], references: [id])
-  sectionId      Int          @map("section_id")
-  section        Section      @relation(fields: [sectionId], references: [id])
-  academicYearId Int          @map("academic_year_id")
-  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  id                       Int                          @id @default(autoincrement())
+  classId                  Int                          @map("class_id")
+  class                    SchoolClass                  @relation(fields: [classId], references: [id])
+  sectionId                Int                          @map("section_id")
+  section                  Section                      @relation(fields: [sectionId], references: [id])
+  academicYearId           Int                          @map("academic_year_id")
+  academicYear             AcademicYear                 @relation(fields: [academicYearId], references: [id])
   // §3.10: a class-section belongs to exactly ONE timetable config (null = unassigned)
-  timetableConfigId Int?      @map("timetable_config_id")
-  timetableConfig   TimetableConfig? @relation(fields: [timetableConfigId], references: [id])
-  homeRoomId     Int?         @map("home_room_id")
-  homeRoom       Room?        @relation(fields: [homeRoomId], references: [id])
-  strength       Int?
-  classTeacherId Int?         @map("class_teacher_id")
-  classTeacher   Teacher?     @relation("classTeacherOf", fields: [classTeacherId], references: [id])
-  mappings       TeacherSubjectClassSection[]
-  mergedGroupMemberships MergedTeachingGroupMember[]
+  timetableConfigId        Int?                         @map("timetable_config_id")
+  timetableConfig          TimetableConfig?             @relation(fields: [timetableConfigId], references: [id])
+  homeRoomId               Int?                         @map("home_room_id")
+  homeRoom                 Room?                        @relation(fields: [homeRoomId], references: [id])
+  strength                 Int?
+  schoolId                 Int                          @map("school_id")
+  school                   School                       @relation(fields: [schoolId], references: [id])
+  classTeacherId           Int?                         @map("class_teacher_id")
+  classTeacher             Teacher?                     @relation("classTeacherOf", fields: [classTeacherId], references: [id])
+  mappings                 TeacherSubjectClassSection[]
+  mergedGroupMemberships   MergedTeachingGroupMember[]
   electiveBlockMemberships ElectiveBlockMember[]
 
   @@unique([classId, sectionId, academicYearId])
+  @@index([schoolId])
   @@map("class_sections")
 }
 
 model Room {
-  id       Int      @id @default(autoincrement())
-  schoolId Int      @map("school_id")
-  name     String   @db.VarChar(50)
-  capacity Int?
-  roomType RoomType @default(classroom) @map("room_type")
-  isShared Boolean  @default(false) @map("is_shared")
-  homeRoomOf ClassSection[]
-  preferredFor TeacherSubjectClassSection[]
-  mergedGroups MergedTeachingGroup[]
+  id              Int                          @id @default(autoincrement())
+  schoolId        Int                          @map("school_id")
+  school          School                       @relation(fields: [schoolId], references: [id])
+  name            String                       @db.VarChar(50)
+  capacity        Int?
+  roomType        RoomType                     @default(classroom) @map("room_type")
+  isShared        Boolean                      @default(false) @map("is_shared")
+  homeRoomOf      ClassSection[]
+  preferredFor    TeacherSubjectClassSection[]
+  mergedGroups    MergedTeachingGroup[]
   electiveOptions ElectiveOption[]
 
   @@unique([schoolId, name])
@@ -175,38 +248,40 @@ model Room {
 }
 
 model Subject {
-  id                    Int     @id @default(autoincrement())
-  schoolId              Int     @map("school_id")
-  name                  String  @db.VarChar(50)
-  code                  String? @db.VarChar(10)
-  isLab                 Boolean @default(false) @map("is_lab")
-  requiresDoublePeriod  Boolean @default(false) @map("requires_double_period")
-  classSubjects         ClassSubject[]
-  mappings              TeacherSubjectClassSection[]
-  mergedGroups          MergedTeachingGroup[]
-  electiveOptions       ElectiveOption[]
+  id                   Int                          @id @default(autoincrement())
+  schoolId             Int                          @map("school_id")
+  school               School                       @relation(fields: [schoolId], references: [id])
+  name                 String                       @db.VarChar(50)
+  code                 String?                      @db.VarChar(10)
+  isLab                Boolean                      @default(false) @map("is_lab")
+  requiresDoublePeriod Boolean                      @default(false) @map("requires_double_period")
+  classSubjects        ClassSubject[]
+  mappings             TeacherSubjectClassSection[]
+  mergedGroups         MergedTeachingGroup[]
+  electiveOptions      ElectiveOption[]
 
   @@unique([schoolId, name])
   @@map("subjects")
 }
 
 model Teacher {
-  id                  Int     @id @default(autoincrement())
-  schoolId            Int     @map("school_id")
-  employeeCode        String  @map("employee_code") @db.VarChar(20)
-  name                String  @db.VarChar(100)
-  maxPeriodsPerDay    Int     @default(6) @map("max_periods_per_day")
-  maxPeriodsPerWeek   Int     @default(30) @map("max_periods_per_week")
-  classTeacherPeriodRule ClassTeacherPeriodRule @default(none) @map("class_teacher_period_rule")
-  periodPattern       PeriodPattern @default(every_period) @map("period_pattern")
-  alternateDaySet     Json?   @map("alternate_day_set")
-  isActive            Boolean @default(true) @map("is_active")
-  unavailability      TeacherUnavailability[]
-  mappings            TeacherSubjectClassSection[]
-  classTeacherOf      ClassSection[] @relation("classTeacherOf")
-  mergedGroups        MergedTeachingGroup[]
-  electiveOptions     ElectiveOption[]
-  absences            TeacherAbsence[]
+  id                     Int                          @id @default(autoincrement())
+  schoolId               Int                          @map("school_id")
+  school                 School                       @relation(fields: [schoolId], references: [id])
+  employeeCode           String                       @map("employee_code") @db.VarChar(20)
+  name                   String                       @db.VarChar(100)
+  maxPeriodsPerDay       Int                          @default(6) @map("max_periods_per_day")
+  maxPeriodsPerWeek      Int                          @default(30) @map("max_periods_per_week")
+  classTeacherPeriodRule ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
+  periodPattern          PeriodPattern                @default(every_period) @map("period_pattern")
+  alternateDaySet        Json?                        @map("alternate_day_set")
+  isActive               Boolean                      @default(true) @map("is_active")
+  unavailability         TeacherUnavailability[]
+  mappings               TeacherSubjectClassSection[]
+  classTeacherOf         ClassSection[]               @relation("classTeacherOf")
+  mergedGroups           MergedTeachingGroup[]
+  electiveOptions        ElectiveOption[]
+  absences               TeacherAbsence[]
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
@@ -219,61 +294,71 @@ model TeacherUnavailability {
   dayOfWeek    Int     @map("day_of_week") @db.TinyInt
   periodNumber Int?    @map("period_number")
   reason       String? @db.VarChar(100)
+  schoolId     Int     @map("school_id")
+  school       School  @relation(fields: [schoolId], references: [id])
 
+  @@index([schoolId])
   @@map("teacher_unavailability")
 }
 
 model ClassSubject {
-  id                      Int         @id @default(autoincrement())
-  classId                 Int         @map("class_id")
-  class                   SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subjectId               Int         @map("subject_id")
-  subject                 Subject     @relation(fields: [subjectId], references: [id])
-  periodsPerWeek          Int         @map("periods_per_week")
-  maxPeriodsPerDay        Int         @default(1) @map("max_periods_per_day")
-  samePeriodAcrossWeek    Boolean     @default(false) @map("same_period_across_week")
-  consecutiveBlockSize    Int         @default(1) @map("consecutive_block_size")
-  consecutiveBlocksPerWeek Int?       @map("consecutive_blocks_per_week")
+  id                       Int         @id @default(autoincrement())
+  classId                  Int         @map("class_id")
+  class                    SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subjectId                Int         @map("subject_id")
+  subject                  Subject     @relation(fields: [subjectId], references: [id])
+  periodsPerWeek           Int         @map("periods_per_week")
+  maxPeriodsPerDay         Int         @default(1) @map("max_periods_per_day")
+  samePeriodAcrossWeek     Boolean     @default(false) @map("same_period_across_week")
+  consecutiveBlockSize     Int         @default(1) @map("consecutive_block_size")
+  consecutiveBlocksPerWeek Int?        @map("consecutive_blocks_per_week")
+  schoolId                 Int         @map("school_id")
+  school                   School      @relation(fields: [schoolId], references: [id])
 
   @@unique([classId, subjectId])
+  @@index([schoolId])
   @@map("class_subjects")
 }
 
 model TeacherSubjectClassSection {
-  id             Int          @id @default(autoincrement())
-  teacherId      Int          @map("teacher_id")
-  teacher        Teacher      @relation(fields: [teacherId], references: [id])
-  subjectId      Int          @map("subject_id")
-  subject        Subject      @relation(fields: [subjectId], references: [id])
-  classSectionId Int          @map("class_section_id")
-  classSection   ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
-  periodsPerWeek Int          @map("periods_per_week")
-  preferredRoomId Int?        @map("preferred_room_id")
-  preferredRoom  Room?        @relation(fields: [preferredRoomId], references: [id])
+  id              Int          @id @default(autoincrement())
+  teacherId       Int          @map("teacher_id")
+  teacher         Teacher      @relation(fields: [teacherId], references: [id])
+  subjectId       Int          @map("subject_id")
+  subject         Subject      @relation(fields: [subjectId], references: [id])
+  classSectionId  Int          @map("class_section_id")
+  classSection    ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  periodsPerWeek  Int          @map("periods_per_week")
+  preferredRoomId Int?         @map("preferred_room_id")
+  preferredRoom   Room?        @relation(fields: [preferredRoomId], references: [id])
+  schoolId        Int          @map("school_id")
+  school          School       @relation(fields: [schoolId], references: [id])
 
   @@unique([subjectId, classSectionId])
+  @@index([schoolId])
   @@map("teacher_subject_class_section")
 }
 
 model TimetableConfig {
-  id               Int      @id @default(autoincrement())
-  schoolId         Int      @map("school_id")
-  academicYearId   Int      @map("academic_year_id")
-  academicYear     AcademicYear @relation(fields: [academicYearId], references: [id])
-  name             String   @db.VarChar(50)
-  description      String?  @db.Text
-  workingDays      Json     @map("working_days")
-  periodsPerDay    Int      @default(8) @map("periods_per_day")
-  periodDurationMins Int    @default(40) @map("period_duration_mins")
-  hasZeroPeriod    Boolean  @default(false) @map("has_zero_period")
-  zeroPeriodDurationMins Int? @map("zero_period_duration_mins")
-  allowConsecutivePeriods Boolean @default(true) @map("allow_consecutive_periods")
-  classTeacherGetsFirstPeriod Boolean @default(false) @map("class_teacher_gets_first_period")
-  startTime        String   @default("08:00") @map("start_time") @db.VarChar(5)
-  endTime          String?  @map("end_time") @db.VarChar(5)
-  status           TimetableConfigStatus @default(draft)
-  periods          Period[]
-  classSections    ClassSection[]
+  id                          Int                   @id @default(autoincrement())
+  schoolId                    Int                   @map("school_id")
+  school                      School                @relation(fields: [schoolId], references: [id])
+  academicYearId              Int                   @map("academic_year_id")
+  academicYear                AcademicYear          @relation(fields: [academicYearId], references: [id])
+  name                        String                @db.VarChar(50)
+  description                 String?               @db.Text
+  workingDays                 Json                  @map("working_days")
+  periodsPerDay               Int                   @default(8) @map("periods_per_day")
+  periodDurationMins          Int                   @default(40) @map("period_duration_mins")
+  hasZeroPeriod               Boolean               @default(false) @map("has_zero_period")
+  zeroPeriodDurationMins      Int?                  @map("zero_period_duration_mins")
+  allowConsecutivePeriods     Boolean               @default(true) @map("allow_consecutive_periods")
+  classTeacherGetsFirstPeriod Boolean               @default(false) @map("class_teacher_gets_first_period")
+  startTime                   String                @default("08:00") @map("start_time") @db.VarChar(5)
+  endTime                     String?               @map("end_time") @db.VarChar(5)
+  status                      TimetableConfigStatus @default(draft)
+  periods                     Period[]
+  classSections               ClassSection[]
 
   @@unique([schoolId, name, academicYearId])
   @@map("timetable_config")
@@ -289,8 +374,11 @@ model Period {
   endTime           String          @map("end_time") @db.VarChar(5)
   isBreak           Boolean         @default(false) @map("is_break")
   breakName         String?         @map("break_name") @db.VarChar(30)
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableConfigId, sortOrder])
+  @@index([schoolId])
   @@map("periods")
 }
 
@@ -300,21 +388,25 @@ model Holiday {
   academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
   date           DateTime     @db.Date
   name           String       @db.VarChar(100)
+  schoolId       Int          @map("school_id")
+  school         School       @relation(fields: [schoolId], references: [id])
 
+  @@index([schoolId])
   @@map("holidays")
 }
 
 model MergedTeachingGroup {
-  id                   Int     @id @default(autoincrement())
-  schoolId             Int     @map("school_id")
-  subjectId            Int     @map("subject_id")
-  subject              Subject @relation(fields: [subjectId], references: [id])
-  teacherId            Int     @map("teacher_id")
-  teacher              Teacher @relation(fields: [teacherId], references: [id])
-  periodsPerWeek       Int     @map("periods_per_week")
-  roomId               Int?    @map("room_id")
-  room                 Room?   @relation(fields: [roomId], references: [id])
-  consecutiveBlockSize Int     @default(1) @map("consecutive_block_size")
+  id                   Int                         @id @default(autoincrement())
+  schoolId             Int                         @map("school_id")
+  school               School                      @relation(fields: [schoolId], references: [id])
+  subjectId            Int                         @map("subject_id")
+  subject              Subject                     @relation(fields: [subjectId], references: [id])
+  teacherId            Int                         @map("teacher_id")
+  teacher              Teacher                     @relation(fields: [teacherId], references: [id])
+  periodsPerWeek       Int                         @map("periods_per_week")
+  roomId               Int?                        @map("room_id")
+  room                 Room?                       @relation(fields: [roomId], references: [id])
+  consecutiveBlockSize Int                         @default(1) @map("consecutive_block_size")
   members              MergedTeachingGroupMember[]
 
   @@map("merged_teaching_groups")
@@ -325,16 +417,20 @@ model MergedTeachingGroupMember {
   mergedGroup    MergedTeachingGroup @relation(fields: [mergedGroupId], references: [id], onDelete: Cascade)
   classSectionId Int                 @map("class_section_id")
   classSection   ClassSection        @relation(fields: [classSectionId], references: [id])
+  schoolId       Int                 @map("school_id")
+  school         School              @relation(fields: [schoolId], references: [id])
 
   @@id([mergedGroupId, classSectionId])
+  @@index([schoolId])
   @@map("merged_teaching_group_members")
 }
 
 model ElectiveBlock {
-  id             Int    @id @default(autoincrement())
-  schoolId       Int    @map("school_id")
-  name           String @db.VarChar(50)
-  periodsPerWeek Int    @map("periods_per_week")
+  id             Int                   @id @default(autoincrement())
+  schoolId       Int                   @map("school_id")
+  school         School                @relation(fields: [schoolId], references: [id])
+  name           String                @db.VarChar(50)
+  periodsPerWeek Int                   @map("periods_per_week")
   members        ElectiveBlockMember[]
   options        ElectiveOption[]
 
@@ -346,8 +442,11 @@ model ElectiveBlockMember {
   electiveBlock   ElectiveBlock @relation(fields: [electiveBlockId], references: [id], onDelete: Cascade)
   classSectionId  Int           @map("class_section_id")
   classSection    ClassSection  @relation(fields: [classSectionId], references: [id])
+  schoolId        Int           @map("school_id")
+  school          School        @relation(fields: [schoolId], references: [id])
 
   @@id([electiveBlockId, classSectionId])
+  @@index([schoolId])
   @@map("elective_block_members")
 }
 
@@ -361,13 +460,17 @@ model ElectiveOption {
   teacher         Teacher       @relation(fields: [teacherId], references: [id])
   roomId          Int           @map("room_id")
   room            Room          @relation(fields: [roomId], references: [id])
+  schoolId        Int           @map("school_id")
+  school          School        @relation(fields: [schoolId], references: [id])
 
+  @@index([schoolId])
   @@map("elective_options")
 }
 
 model AuditLog {
   id        BigInt   @id @default(autoincrement())
   schoolId  Int      @map("school_id")
+  school    School   @relation(fields: [schoolId], references: [id])
   userId    Int      @map("user_id")
   action    String   @db.VarChar(80)
   detail    Json?
@@ -410,11 +513,17 @@ model TimetableSlot {
   teacherOccupancyKey String?    @map("teacher_occupancy_key") @db.VarChar(30)
   isLocked            Boolean    @default(false) @map("is_locked")
   source              SlotSource @default(auto)
+  schoolId            Int        @map("school_id")
+  school              School     @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableConfigId, status, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
   @@unique([timetableConfigId, status, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
   @@unique([timetableConfigId, status, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
   @@index([timetableConfigId, status, teacherId])
+  // Scoped reads are always `school_id = ? AND timetable_config_id = ? AND
+  // status = ?` — this is the index EXPLAIN must pick for the matrix and board
+  // queries, the hottest path in the app (§14).
+  @@index([schoolId, timetableConfigId, status])
   @@map("timetable_slots")
 }
 
@@ -431,8 +540,11 @@ model TimetablePublication {
   unallocatedCount  Int      @map("unallocated_count")
   publishedById     Int?     @map("published_by_id")
   publishedAt       DateTime @default(now()) @map("published_at")
+  schoolId          Int      @map("school_id")
+  school            School   @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableConfigId, version], map: "uq_config_version")
+  @@index([schoolId])
   @@map("timetable_publications")
 }
 
@@ -452,10 +564,13 @@ model TeacherAbsence {
   reason    String?       @db.VarChar(100)
   status    AbsenceStatus @default(reported)
   createdAt DateTime      @default(now()) @map("created_at")
+  schoolId  Int           @map("school_id")
+  school    School        @relation(fields: [schoolId], references: [id])
 
   substitutions SubstitutionLog[]
 
   @@unique([teacherId, date], map: "uq_teacher_absence_date")
+  @@index([schoolId])
   @@map("teacher_absences")
 }
 
@@ -475,9 +590,12 @@ model SubstitutionLog {
   reason              String?        @db.VarChar(100)
   createdById         Int?           @map("created_by")
   createdAt           DateTime       @default(now()) @map("created_at")
+  schoolId            Int            @map("school_id")
+  school              School         @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableSlotId, date], map: "uq_slot_substitution_date")
   @@index([date, substituteTeacherId])
+  @@index([schoolId])
   @@map("substitution_log")
 }
 
@@ -492,8 +610,11 @@ model Notification {
   link      String?  @db.VarChar(120)
   isRead    Boolean  @default(false) @map("is_read")
   createdAt DateTime @default(now()) @map("created_at")
+  schoolId  Int      @map("school_id")
+  school    School   @relation(fields: [schoolId], references: [id])
 
   @@index([userId, isRead, createdAt])
+  @@index([schoolId])
   @@map("notifications")
 }
 
@@ -517,6 +638,7 @@ enum AiChatRole {
 model AiSettings {
   id                 Int        @id @default(autoincrement())
   schoolId           Int        @unique @map("school_id")
+  school             School     @relation(fields: [schoolId], references: [id])
   provider           AiProvider @default(anthropic)
   model              String     @default("claude-opus-5") @db.VarChar(60)
   apiKeyEncrypted    Bytes?     @map("api_key_encrypted") @db.VarBinary(512)
@@ -536,6 +658,7 @@ model AiSettings {
 model AiChatLog {
   id             BigInt     @id @default(autoincrement())
   schoolId       Int        @map("school_id")
+  school         School     @relation(fields: [schoolId], references: [id])
   userId         Int        @map("user_id")
   conversationId String     @map("conversation_id") @db.Char(36)
   role           AiChatRole

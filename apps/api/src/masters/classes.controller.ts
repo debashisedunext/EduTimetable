@@ -46,13 +46,16 @@ export class ClassesController {
     requireFields(body, ["name", "academicYearId"]);
     const classId = toInt(id, "class id");
     const section = await uniq(
-      () => this.prisma.section.create({ data: { classId, name: String(body.name) } }),
+      () => this.prisma.section.create({
+          data: { classId, name: String(body.name), schoolId: req.user.schoolId },
+        }),
       `Section '${body.name}'`,
     );
     const classSection = await uniq(
       () =>
         this.prisma.classSection.create({
           data: {
+            schoolId: req.user.schoolId,
             classId,
             sectionId: section.id,
             academicYearId: toInt(body.academicYearId, "academicYearId"),

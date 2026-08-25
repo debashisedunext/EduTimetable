@@ -1,8 +1,17 @@
 /**
- * §13.2 — AES-256-GCM at rest for provider API keys. The encryption key comes
- * from the environment (AI_ENCRYPTION_KEY, 32 bytes hex/base64); if unset we
- * derive a stable key from JWT_SECRET so dev works out of the box, and the
- * settings screen says so. Ciphertext layout: iv(12) | tag(16) | payload.
+ * AES-256-GCM at rest for the application's secrets. Ciphertext layout:
+ * iv(12) | tag(16) | payload.
+ *
+ * Two things are protected with it: AI provider API keys (§13.2) and, since
+ * Phase 9.2, the connection URLs of tenants that have their own database
+ * (§17.3) — both are credentials that must never be selected into a response
+ * or written to a log.
+ *
+ * The key comes from AI_ENCRYPTION_KEY (32 bytes, hex or base64); if unset we
+ * derive a stable one from JWT_SECRET so dev works out of the box, and the AI
+ * Settings screen says so. The env var name and the derivation salt are kept
+ * exactly as they were when this only covered AI keys — changing either would
+ * make every already-encrypted secret undecryptable.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 

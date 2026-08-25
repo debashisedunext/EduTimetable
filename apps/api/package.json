@@ -8,7 +8,10 @@
     "start:worker:dev": "tsx watch src/worker.ts",
     "seed": "tsx prisma/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate:control": "prisma generate --schema prisma/control/schema.prisma",
+    "migrate:control": "prisma migrate deploy --schema prisma/control/schema.prisma",
+    "seed:control": "tsx prisma/control/seed.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

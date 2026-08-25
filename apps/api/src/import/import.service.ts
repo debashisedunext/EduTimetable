@@ -327,9 +327,10 @@ export class ImportService {
           const classId = classes.get(lc(r.data.className))!;
           const section =
             (await tx.section.findFirst({ where: { classId, name: r.data.sectionName } })) ??
-            (await tx.section.create({ data: { classId, name: r.data.sectionName } }));
+            (await tx.section.create({ data: { schoolId, classId, name: r.data.sectionName } }));
           await tx.classSection.create({
             data: {
+              schoolId,
               classId,
               sectionId: section.id,
               academicYearId: years.get(lc(r.data.academicYear))!,
@@ -360,6 +361,7 @@ export class ImportService {
           existingUnavail.add(key);
           await tx.teacherUnavailability.create({
             data: {
+              schoolId,
               teacherId,
               dayOfWeek: dayNumber(r.data.day)!,
               periodNumber: r.data.period ?? null,
@@ -374,6 +376,7 @@ export class ImportService {
           const blockSize = r.data.consecutiveBlockSize ?? 1;
           await tx.classSubject.create({
             data: {
+              schoolId,
               classId: classes.get(lc(r.data.className))!,
               subjectId: subjects.get(lc(r.data.subjectName))!,
               periodsPerWeek: r.data.periodsPerWeek,
@@ -424,7 +427,7 @@ export class ImportService {
             await tx.mergedTeachingGroup.create({
               data: {
                 schoolId, teacherId, subjectId, periodsPerWeek: r.data.periodsPerWeek, roomId,
-                members: { create: ids.map((classSectionId) => ({ classSectionId })) },
+                members: { create: ids.map((classSectionId) => ({ classSectionId, schoolId })) },
               },
             });
             bump("mergedGroups");
@@ -437,7 +440,10 @@ export class ImportService {
             if (mappedAlready.has(key)) continue;
             mappedAlready.add(key);
             await tx.teacherSubjectClassSection.create({
-              data: { teacherId, subjectId, classSectionId, periodsPerWeek: r.data.periodsPerWeek, preferredRoomId: roomId },
+              data: {
+                schoolId, teacherId, subjectId, classSectionId,
+                periodsPerWeek: r.data.periodsPerWeek, preferredRoomId: roomId,
+              },
             });
             bump("mappings");
           }

@@ -95,6 +95,18 @@ export * from "./import/contract";
 export * from "./import/types";
 export * from "./import/validate";
 
+/** The school a session belongs to (§17, Phase 9.2). */
+export interface SessionSchool {
+  id: number;
+  /** stable code the ERP knows this school by — the identifier that survives
+   *  across databases, unlike the numeric id */
+  code: string;
+  name: string;
+  shortName: string | null;
+  logoUrl: string | null;
+  timezone: string;
+}
+
 export interface MeResponse {
   id: number;
   name: string;
@@ -102,4 +114,7 @@ export interface MeResponse {
   role: string;
   permissions: Permission[];
   teacherId: number | null;
+  /** Which school this session is scoped to. Every row the user can see
+   *  belongs to it, and the top bar names it (§17). */
+  school: SessionSchool;
 }

@@ -1148,3 +1148,62 @@ The template is generated with exceljs: locked styled headers, frozen panes, a n
 - **Idempotent.** Natural-key matching means re-uploading the same file is a no-op — verified by `scripts/import-smoke.cjs`.
 - **Fix in place.** `POST /import/annotate` returns the uploaded file with an `Import Errors` column per sheet and the offending cells tinted red.
 - Endpoints are `masters.manage`-gated, capped at 10 MB and 5,000 rows per sheet, and `readiness.invalidate()` runs once at the end.
+
+---
+
+## 17. Multi-School / Multi-Tenancy (Phase 9)
+
+One deployment serves many schools. The three shapes a customer can present — a single school, a trust group running several schools, and a school that requires its own database with its own credentials — are **not three architectures**. They are two physical modes behind one tenant registry:
+
+| Deployment shape | Mode | Mechanism |
+|---|---|---|
+| Each school its own DB + credentials | `dedicated` | the registry holds an encrypted connection URL per school; requests route to it |
+| One trust, several schools | `shared` | one database, many `school_id`s, in-app school switcher |
+| Single school | `shared`, one tenant | zero configuration — the pre-Phase-9 behaviour |
+
+A trust wanting isolation *inside* one MySQL server (a database plus a MySQL user per school) is `dedicated` with different URLs, not a third code path. Mode is a property of the school in the registry and is resolved at runtime, so one API instance serves both.
+
+### 17.1 Row ownership — the scoping extension (9.1, implemented)
+
+`school_id` is on **every one of the 30 tables**. Phase 9.1's migration denormalized it onto the 16 that previously reached their school only through a parent join — including `timetable_slots`, the largest and hottest table, where a join would have breached the §14 100ms DB budget. Every scoped query is therefore a direct indexed predicate, and moving one school to its own database later is a plain `WHERE school_id = ?` export.
+
+Scoping is enforced in **one module** (`apps/api/src/prisma/school-scope.ts`), a Prisma client extension over `$allModels` — the row-ownership counterpart to §15.3's `ScopeService` for user visibility. It reads the ambient school from an `AsyncLocalStorage` tenant context (**not** a Nest request-scoped provider, which would cascade through the ~40 classes injecting `PrismaService` and threaten the §14 300ms API budget) and applies it per operation:
+
+- **reads with a flexible where** — the school is ANDed in, never merged, so a caller's own filters survive and a caller cannot widen the query by passing a different school.
+- **`findUnique` / `findUniqueOrThrow`** — cannot carry a non-unique predicate, so the school is applied to the *result*. The original operation runs on whatever client the caller used, which matters inside an interactive transaction where a re-issued read would not see that transaction's own writes.
+- **creates** — the school is stamped into the payload, recursively through nested relation writes (a merged group's `members: { create: [...] }` never arrives as its own operation).
+- **`update` / `delete` / `upsert`** — the row is read first and the write refused when it demonstrably belongs to another school. `upsert` with no row of ours becomes a plain create, because a stock upsert would silently **update** a colliding foreign row.
+- **cross-school references** — every id a write points at is checked. Row scoping alone does not cover this: a write stamped as School B can still *name* School A's class id, producing a row B owns that points into A's data. Scoped reads hide it from A, so nothing looks wrong — but B's readiness and solver would then pull A's class-section into B's timetable. The reference map is built from Prisma's own DMMF, so it cannot drift from the schema.
+
+The rule for both the ownership and reference checks is **"reject what is provably foreign", not "require proof of ownership"**. These checks read through the un-extended client, so inside an interactive transaction they cannot see rows that transaction has just written — and the bulk import (§16) legitimately creates a class and then a class-section referencing it in one transaction. Nothing is lost: another school's row is by definition already committed, hence always visible and always caught.
+
+Outside a tenant context the extension is a pass-through, and says so in the log unless the caller announced itself via `runUnscoped()`. Only genuinely cross-school work qualifies — the health probe, migrations, and SSO provisioning, which resolves the user's school as its *input*.
+
+### 17.2 Cache and event isolation (9.1, implemented)
+
+- **Redis keys are namespaced per school** (`s{schoolId}:…`), defined once in `redis/cache-keys.ts` and shared by the API and the solver worker. Invalidation SCANs only its own prefix. Previously keys were global and `invalidate()` ran `redis.keys("readiness:*")`, so one school's subject edit flushed every school's readiness and slot caches.
+- **Socket.IO events are addressed to a `school:{id}` room.** The gateway previously used `server.emit(...)`, broadcasting solver progress, completion summaries, failure reasons and readiness invalidations to every connected client in the deployment. Job events carry only a job id, so the school is resolved from the job's own data and memoised for the run.
+- **Background jobs carry their school.** BullMQ is one queue across all schools: job data carries `{ schoolId, configId }`, the worker opens its tenant context from it before touching the database, and a job without one is refused rather than guessed at. The "latest job" lookup matches school as well as config — a config id alone would expose another school's summary and failure reason.
+
+### 17.3 The control plane (9.2, implemented)
+
+**`school_id` has a parent row.** Before 9.2 it was a bare `Int` on 30 tables — no name, no code, and nothing preventing a typo from inventing school 4711. The `schools` table now holds each school's identity (code, name, short name, logo, timezone) and **all 30 `school_id` columns carry a real foreign key to it**, `ON DELETE RESTRICT`. A row can only belong to a school that exists, and a school holding data cannot be deleted out from under it. `GET /me` carries the session's school; `GET`/`PUT /school` reads and renames it. There is deliberately no `POST` or `DELETE`: creating a school is provisioning (it must register in the tenant registry in the same breath, or it would be a school nobody can sign in to) and deleting one is a platform operation — the scoping extension refuses both at the data layer regardless. `code` is not editable from inside the school, because it is what the registry resolves incoming logins against.
+
+**The registry** (`trusts`, `tenants`, `erp_instances`) answers the question "an SSO token arrived claiming ERP installation X, school code Y — which database, and which `school_id` inside it?". `tenants` carries the mode, the AES-256-GCM-encrypted connection URL for dedicated schools (same key custody as AI provider keys, §13.2 — never selected into a response, never logged), the local `school_id`, the applied schema version and the status. `erp_instances` holds one public key per ERP installation, which is what will confine an ERP to its own schools once 9.5 selects keys by `kid`.
+
+The registry is **load-bearing, not decorative**: SSO consults it on every login and refuses a suspended school — before burning the token's nonce, so the login can simply be retried once the school is reinstated. It is also **optional**: a deployment with no `CONTROL_DATABASE_URL` degrades to "no registry" and behaves exactly as it did before Phase 9, which is what a single school has.
+
+> **Deviation from the Phase 9 plan, recorded per the CLAUDE.md convention.** The plan said the control plane would default to living *in* the application database. It cannot, for two reasons that only surfaced in implementation: (1) **chicken and egg** — under `dedicated` mode the registry cannot live inside a tenant database, because you need the registry to *find* that database, so it must be reachable from a single boot-time env var; and (2) **Prisma cannot host two migration histories in one database** — both schemas would write `_prisma_migrations` and each would read the other's rows as drift. It is therefore a separate schema (`prisma/control/schema.prisma`, its own generated client and migration folder) on the *same* MySQL server, created automatically by `docker/mysql-init/`. The cost in practice is nil: no new container, no new credentials, no operator action.
+
+Commands: `pnpm migrate:control`, `pnpm generate:control`, `pnpm seed:control` — the last being idempotent and safe on every boot; it registers every school the application database already has and never invents or removes one.
+
+### 17.4 Routing and switching (9.3–9.6, planned)
+
+`PrismaService` resolves its connection from the tenant context through a bounded LRU of clients, subject to `active_tenants × connection_limit ≤ max_connections`. SSO gains `erpInstanceId` + `schoolCode` and verifies per-instance public keys — the property that stops one ERP minting tokens for another's school — and a user granted several schools switches in-app, with their role re-resolved inside the target school's data. Until connection routing lands, a `dedicated` tenant is refused rather than silently served from the shared database: quietly reading the wrong school's data is a far worse failure than a clear "not supported here yet".
+
+### 17.5 Verification
+
+
+`scripts/control-plane-smoke.cjs` asserts the schools table is populated, all 30 foreign keys exist, a row naming a nonexistent school is refused by the database, every school is registered as a tenant, a shared tenant stores no credentials, a suspended school cannot sign in and a reinstated one can, and the control plane is unreachable from the application API.
+
+`scripts/tenant-isolation.cjs` stands up a real second school against the live stack and attempts, from School B's session, every cross-school read, edit, delete, reference and nested-write laundering; asserts B's own writes land stamped as B's on parent and child tables; runs a real solver generation for B and checks every slot it wrote; and asserts School A is **byte-identical** afterwards. `scripts/tenant-socket-check.cjs` connects one client per school and asserts B's socket receives nothing when A acts. `school-scope.spec.ts` unit-pins the extension's reasoning.

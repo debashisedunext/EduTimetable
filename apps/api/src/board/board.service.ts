@@ -23,6 +23,8 @@ import {
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
+import { CacheKeysService } from "../redis/cache-keys.service";
+import { TenantContextService } from "../tenant/tenant-context.service";
 import { EventsGateway } from "../events/events.gateway";
 import { buildSolverInput } from "../solver/input";
 
@@ -45,12 +47,14 @@ export class BoardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
+    private readonly keys: CacheKeysService,
+    private readonly tenant: TenantContextService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
   /** SolverInput for the client-side engine — cached under the slots:* sweep. */
   async context(configId: number): Promise<SolverInput> {
-    const cacheKey = `slots:${configId}:ctx`;
+    const cacheKey = this.keys.slots(configId, "ctx");
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
     let input: SolverInput;
@@ -131,11 +135,11 @@ export class BoardService {
 
   private async finish(configId: number) {
     await this.redis.del(
-      `slots:${configId}:draft`,
-      `slots:${configId}:published`,
-      `slots:${configId}:ctx`,
+      this.keys.slots(configId, "draft"),
+      this.keys.slots(configId, "published"),
+      this.keys.slots(configId, "ctx"),
     );
-    this.events.server?.emit("slots:changed", { configId });
+    this.events.emitToCurrentSchool("slots:changed", { configId });
   }
 
   async move(configId: number, from: CellRef, expect: CellExpectation, to: { day: number; period: number }) {
@@ -200,6 +204,7 @@ export class BoardService {
       roomId: number | null,
     ) =>
       src.map((r) => ({
+        schoolId: r.schoolId,
         timetableConfigId: configId,
         status: "draft" as const,
         classSectionId: r.classSectionId,
@@ -243,6 +248,7 @@ export class BoardService {
     await this.prisma.timetableSlot
       .create({
         data: {
+          schoolId: this.tenant.requireSchoolId(),
           timetableConfigId: configId,
           status: "draft",
           classSectionId: body.classSectionId,

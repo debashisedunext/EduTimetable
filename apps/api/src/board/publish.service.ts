@@ -9,6 +9,8 @@ import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 import type Redis from "ioredis";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
+import { CacheKeysService } from "../redis/cache-keys.service";
+import { TenantContextService } from "../tenant/tenant-context.service";
 import { EventsGateway } from "../events/events.gateway";
 import { NotificationsService } from "../notifications/notifications.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
@@ -31,6 +33,8 @@ export class PublishService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
+    private readonly keys: CacheKeysService,
+    private readonly tenant: TenantContextService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -157,6 +161,7 @@ export class PublishService {
       }),
       this.prisma.timetablePublication.create({
         data: {
+          schoolId: this.tenant.requireSchoolId(),
           timetableConfigId: configId,
           version: diff.nextVersion,
           slotCount: diff.draftCount,
@@ -167,12 +172,12 @@ export class PublishService {
       }),
     ]);
     await this.redis.del(
-      `slots:${configId}:draft`,
-      `slots:${configId}:published`,
-      `slots:${configId}:ctx`,
+      this.keys.slots(configId, "draft"),
+      this.keys.slots(configId, "published"),
+      this.keys.slots(configId, "ctx"),
     );
-    this.events.server?.emit("slots:changed", { configId });
-    this.events.server?.emit("timetable:published", { configId, version: pub.version });
+    this.events.emitToCurrentSchool("slots:changed", { configId });
+    this.events.emitToCurrentSchool("timetable:published", { configId, version: pub.version });
     // §9 trigger "Timetable published" — every teacher whose slots are in this
     // config + the timetable admins get the in-app notification
     const cfg = await this.prisma.timetableConfig.findUnique({ where: { id: configId } });
@@ -202,6 +207,7 @@ export class PublishService {
     if (published.length === 0) throw new BadRequestException("Nothing published yet to draft from.");
     await this.prisma.timetableSlot.createMany({
       data: published.map((s) => ({
+        schoolId: s.schoolId,
         timetableConfigId: s.timetableConfigId,
         status: "draft" as const,
         classSectionId: s.classSectionId,
@@ -216,8 +222,8 @@ export class PublishService {
         source: s.source,
       })),
     });
-    await this.redis.del(`slots:${configId}:draft`, `slots:${configId}:ctx`);
-    this.events.server?.emit("slots:changed", { configId });
+    await this.redis.del(this.keys.slots(configId, "draft"), this.keys.slots(configId, "ctx"));
+    this.events.emitToCurrentSchool("slots:changed", { configId });
     return { ok: true, rows: published.length };
   }
 }

@@ -93,7 +93,7 @@ export class RolesAdminController {
     await this.prisma.$transaction([
       this.prisma.rolePermission.deleteMany({ where: { roleId } }),
       this.prisma.rolePermission.createMany({
-        data: requested.map((permission) => ({ roleId, permission })),
+        data: requested.map((permission) => ({ roleId, permission, schoolId: req.user.schoolId })),
       }),
     ]);
     this.permissions.invalidate(roleId);

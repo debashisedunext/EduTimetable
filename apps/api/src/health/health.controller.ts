@@ -1,13 +1,15 @@
 import { Controller, Get, Inject } from "@nestjs/common";
 import type Redis from "ioredis";
-import { PrismaService } from "../prisma/prisma.service";
+import { PrismaBaseService } from "../prisma/prisma-base.service";
 import { REDIS } from "../redis/redis.module";
 import { Public } from "../auth/decorators";
 
 @Controller("health")
 export class HealthController {
   constructor(
-    private readonly prisma: PrismaService,
+    // The liveness probe is deliberately school-agnostic — it asks the pool
+    // whether it is up, not what any one school can see.
+    private readonly prisma: PrismaBaseService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 

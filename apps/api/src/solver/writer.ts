@@ -11,8 +11,11 @@ export async function writeDraftSlots(
   prisma: PrismaClient,
   configId: number,
   placements: Placement[],
+  /** Stamped onto every row: school_id is NOT NULL on timetable_slots (9.1 / §17). */
+  schoolId: number,
 ): Promise<{ rows: number }> {
   const rows: Array<{
+    schoolId: number;
     timetableConfigId: number;
     status: "draft";
     classSectionId: number;
@@ -31,6 +34,7 @@ export async function writeDraftSlots(
       p.classSectionIds.forEach((classSectionId, idx) => {
         const primary = idx === 0;
         rows.push({
+          schoolId,
           timetableConfigId: configId,
           status: "draft",
           classSectionId,

@@ -9,8 +9,11 @@ services:
       sh -c "pnpm install &&
              pnpm --filter @edutimetable/shared build &&
              pnpm --filter @edutimetable/api exec prisma generate &&
+             pnpm --filter @edutimetable/api run generate:control &&
              pnpm --filter @edutimetable/api exec prisma migrate deploy &&
+             pnpm --filter @edutimetable/api run migrate:control &&
              pnpm --filter @edutimetable/api run seed &&
+             pnpm --filter @edutimetable/api run seed:control &&
              pnpm --filter @edutimetable/api run start:dev"
     environment:
       NODE_ENV: development
@@ -33,6 +36,7 @@ services:
       sh -c "pnpm install &&
              pnpm --filter @edutimetable/shared build &&
              pnpm --filter @edutimetable/api exec prisma generate &&
+             pnpm --filter @edutimetable/api run generate:control &&
              pnpm --filter @edutimetable/api run start:worker:dev"
     environment:
       NODE_ENV: development

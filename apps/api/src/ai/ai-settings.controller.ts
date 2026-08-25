@@ -69,7 +69,7 @@ export class AiSettingsController {
       if (want) {
         await this.prisma.rolePermission.upsert({
           where: { roleId_permission: { roleId, permission: perm } },
-          create: { roleId, permission: perm },
+          create: { roleId, permission: perm, schoolId: req.user.schoolId },
           update: {},
         });
       } else {

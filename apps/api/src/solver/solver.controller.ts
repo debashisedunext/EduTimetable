@@ -6,6 +6,7 @@ import { DEFAULT_WEIGHTS, PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
+import { CacheKeysService } from "../redis/cache-keys.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
 
@@ -17,6 +18,7 @@ export class SolverController {
     @InjectQueue(SOLVER_QUEUE) private readonly queue: Queue,
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly keys: CacheKeysService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -40,6 +42,10 @@ export class SolverController {
     };
     const job = await this.queue.add("solve", {
       configId,
+      // The worker opens its tenant context from this, and the gateway routes
+      // progress events by it — a solver job is not school-agnostic work
+      // (9.1 / §17).
+      schoolId: _req.user.schoolId,
       userId: _req.user.sub,
       mode,
       weights: {
@@ -64,7 +70,7 @@ export class SolverController {
     // §6 overlay (task 4.5): a date on the published view layers that day's
     // substitutions over the base grid — the stored rows are never mutated
     const date = status === "published" && dateQ && /^\d{4}-\d{2}-\d{2}$/.test(dateQ) ? dateQ : null;
-    const cacheKey = `slots:${configId}:${status}${date ? `:${date}` : ""}`;
+    const cacheKey = this.keys.slots(configId, `${status}${date ? `:${date}` : ""}`);
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -141,11 +147,14 @@ export class SolverController {
   /** Latest solver job summary for the Generate screen's result panel. */
   @Get("generate/latest")
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
-  async latest(@Param("id") id: string) {
+  async latest(@Req() req: AuthedRequest, @Param("id") id: string) {
     const configId = toInt(id, "id");
     const jobs = await this.queue.getJobs(["completed", "failed", "active", "waiting"], 0, 20);
     const mine = jobs
-      .filter((j) => j.data?.configId === configId)
+      // BullMQ is one shared queue across every school, so the school must be
+      // matched as well as the config — a config id alone would expose another
+      // school's job summary, unplaced list and failure reason (9.1 / §17).
+      .filter((j) => j.data?.configId === configId && j.data?.schoolId === req.user.schoolId)
       .sort((a, b) => Number(b.id) - Number(a.id))[0];
     if (!mine) return { state: "none" };
     const state = await mine.getState();

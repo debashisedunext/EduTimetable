@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AcademicYearsController } from "./academic-years.controller";
+import { SchoolController } from "./school.controller";
 import { ClassesController, ClassSectionsController } from "./classes.controller";
 import { RoomsController } from "./rooms.controller";
 import { SubjectsController } from "./subjects.controller";
@@ -16,6 +17,7 @@ import { ReadinessService } from "../readiness/readiness.service";
  */
 @Module({
   controllers: [
+    SchoolController,
     AcademicYearsController,
     ClassesController,
     ClassSectionsController,

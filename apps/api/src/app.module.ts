@@ -1,8 +1,11 @@
-import { Module } from "@nestjs/common";
+import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { BullModule } from "@nestjs/bullmq";
 import { PrismaModule } from "./prisma/prisma.module";
+import { TenantModule } from "./tenant/tenant.module";
+import { ControlModule } from "./control/control.module";
+import { TenantContextMiddleware } from "./tenant/tenant-context.middleware";
 import { RedisModule } from "./redis/redis.module";
 import { AuthModule } from "./auth/auth.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
@@ -33,6 +36,12 @@ import { ReadinessService } from "./readiness/readiness.service";
         port: Number(process.env.REDIS_PORT ?? 6379),
       },
     }),
+    // TenantModule before PrismaModule: the scoped client is built from the
+    // tenant context, so the context service must already exist (9.1 / §17).
+    TenantModule,
+    // The tenant registry (§17.3). Optional at runtime — a deployment without
+    // CONTROL_DATABASE_URL keeps working as a single school.
+    ControlModule,
     PrismaModule,
     RedisModule,
     AuthModule,
@@ -55,4 +64,11 @@ import { ReadinessService } from "./readiness/readiness.service";
     { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Every route, including the public ones: the context must be open before
+    // the guards run so JwtAuthGuard can attach the school to the same store
+    // the route handler will query in.
+    consumer.apply(TenantContextMiddleware).forRoutes("*");
+  }
+}

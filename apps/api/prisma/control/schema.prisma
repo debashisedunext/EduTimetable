@@ -1,0 +1,133 @@
+// ============================ THE CONTROL PLANE (§17.3, Phase 9.2) ============================
+//
+// The tenant registry: which schools exist, which ERP signed their users in,
+// and — for schools that have their own database — how to reach it.
+//
+// WHY THIS IS A SEPARATE DATABASE, not extra tables in the app schema:
+//
+//   1. Chicken and egg. Under `dedicated` mode the registry cannot live inside
+//      a tenant database, because you need the registry to *find* that
+//      database. It has to be reachable from a single boot-time env var.
+//   2. Prisma cannot host two migration histories in one database — both
+//      schemas would write `_prisma_migrations` and each would read the
+//      other's rows as drift.
+//
+// This is a deviation from the Phase 9 plan, which said the control plane would
+// default to living in the app database; the reasons above only became clear
+// during implementation and are recorded in §17.3. The cost is nil in practice:
+// it is a second schema on the *same* MySQL server (CONTROL_DATABASE_URL
+// defaults alongside DATABASE_URL), so a single-school install still needs no
+// new container, credentials or operator action.
+//
+// Nothing here is school-scoped — this schema is *about* schools — so the 9.1
+// scoping extension is deliberately not applied to this client.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/control-client"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("CONTROL_DATABASE_URL")
+}
+
+enum TenantMode {
+  /// Rows live in the shared application database, separated by school_id.
+  /// A trust group's schools share one database this way.
+  shared
+  /// This school has its own database and its own credentials.
+  dedicated
+}
+
+enum TenantStatus {
+  provisioning
+  active
+  suspended
+}
+
+/// One Edunext ERP installation. Different installations sign their SSO tokens
+/// with different keys, so a single global ERP_PUBLIC_KEY (the pre-9.2 model)
+/// cannot serve more than one — and, worse, would let any ERP mint a token for
+/// any school. The key is selected per instance by the token's `kid`/`iss`
+/// (§17.3), which is what confines an ERP to its own schools.
+model ErpInstance {
+  id           Int      @id @default(autoincrement())
+  /// human label, e.g. "Edunext Cloud (IN)"
+  name         String   @db.VarChar(120)
+  /// JWT `iss` claim this installation stamps, when it sets one
+  issuer       String?  @db.VarChar(160)
+  /// JWT header `kid` — the primary way a token selects its verification key
+  kid          String?  @unique @db.VarChar(80)
+  publicKeyPem String   @map("public_key_pem") @db.Text
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenants Tenant[]
+  trusts  Trust[]
+
+  @@map("erp_instances")
+}
+
+/// A group of schools under one management body. Scenario 2 of §17: the trust
+/// shares a database and its schools are separated by school_id. Optional — a
+/// standalone school has no trust.
+model Trust {
+  id            Int         @id @default(autoincrement())
+  erpInstanceId Int         @map("erp_instance_id")
+  erpInstance   ErpInstance @relation(fields: [erpInstanceId], references: [id])
+  name          String      @db.VarChar(120)
+  /// stable identifier from the ERP, unique within the installation
+  code          String      @db.VarChar(40)
+  isActive      Boolean     @default(true) @map("is_active")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  tenants Tenant[]
+
+  @@unique([erpInstanceId, code])
+  @@map("trusts")
+}
+
+/// One school, as the platform sees it from outside any database.
+///
+/// This is the row that answers "an SSO token arrived claiming ERP instance X,
+/// school code Y — which database, and which school_id inside it?".
+model Tenant {
+  id            Int          @id @default(autoincrement())
+  erpInstanceId Int          @map("erp_instance_id")
+  erpInstance   ErpInstance  @relation(fields: [erpInstanceId], references: [id])
+  trustId       Int?         @map("trust_id")
+  trust         Trust?       @relation(fields: [trustId], references: [id])
+
+  /// The ERP's stable code for this school. Together with the installation it
+  /// is the only identifier meaningful across databases — a numeric id is not,
+  /// since ids repeat between them.
+  schoolCode  String @map("school_code") @db.VarChar(40)
+  displayName String @map("display_name") @db.VarChar(120)
+
+  mode TenantMode @default(shared)
+
+  /// Connection URL for `dedicated` schools, AES-256-GCM encrypted at rest with
+  /// the same custody as AI provider keys (§13.2): never selected into a
+  /// response, never logged. NULL for `shared` schools, which use the
+  /// application's own DATABASE_URL.
+  dbUrlEncrypted Bytes? @map("db_url_encrypted") @db.VarBinary(1024)
+
+  /// The `schools.id` this tenant maps to *inside* its database. For a
+  /// dedicated school this is usually 1; for a shared one it is that school's
+  /// row in the shared database.
+  localSchoolId Int @map("local_school_id")
+
+  /// Last migration applied to this tenant's database. The API refuses to serve
+  /// a tenant whose schema is behind the application, failing loudly at the
+  /// door rather than crashing mid-query (§17.3, task 9.3).
+  schemaVersion String? @map("schema_version") @db.VarChar(80)
+
+  status    TenantStatus @default(active)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  @@unique([erpInstanceId, schoolCode])
+  @@index([trustId])
+  @@map("tenants")
+}

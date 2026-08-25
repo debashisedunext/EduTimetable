@@ -8,6 +8,8 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-edutimetable}
     volumes:
       - mysql-data:/var/lib/mysql
+      # creates the control-plane schema on first start (§17.3)
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-edutimetable_dev}"]
       interval: 5s
@@ -34,6 +36,9 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${MYSQL_DATABASE:-edutimetable}
+      # §17.3: the tenant registry. A separate schema on the same server, because
+      # a dedicated tenant's connection details cannot live inside a tenant DB.
+      CONTROL_DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${CONTROL_DATABASE:-edutimetable_control}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       JWT_SECRET: ${JWT_SECRET:-change_me_in_prod}
@@ -59,6 +64,9 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${MYSQL_DATABASE:-edutimetable}
+      # §17.3: the tenant registry. A separate schema on the same server, because
+      # a dedicated tenant's connection details cannot live inside a tenant DB.
+      CONTROL_DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${CONTROL_DATABASE:-edutimetable_control}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://optimizer:8000}

@@ -9,6 +9,7 @@ import { QueueEvents } from "bullmq";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { EventsGateway } from "../events/events.gateway";
+import { TenantContextService } from "../tenant/tenant-context.service";
 
 export interface NotifyInput {
   type: string;
@@ -25,6 +26,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
+    private readonly tenant: TenantContextService,
   ) {}
 
   /** Create rows for explicit user ids + push each over their socket room. */
@@ -33,6 +35,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     if (ids.length === 0) return { created: 0 };
     await this.prisma.notification.createMany({
       data: ids.map((userId) => ({
+        schoolId: this.tenant.requireSchoolId(),
         userId,
         type: n.type,
         title: n.title,
@@ -41,7 +44,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       })),
     });
     for (const id of ids) {
-      this.events.server?.to(`user:${id}`).emit("notification:new", { ...n });
+      this.events.emitToUser(id, "notification:new", { ...n });
     }
     // email/push channel: reuse the Edunext parent-app provider when wired (§9)
     this.logger.log(`notify[${n.type}] → ${ids.length} user(s): ${n.title}`);
@@ -95,14 +98,23 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
           unplaced?: number;
         };
         if (!r || r.userId === undefined) return;
+        if (typeof r.schoolId !== "number") {
+          this.logger.warn("solver summary carried no schoolId — skipping notification");
+          return;
+        }
         const unplacedCount = Array.isArray(r.unplaced) ? r.unplaced.length : (r.unplaced ?? 0);
         const pct = r.total ? Math.round(((r.placements ?? 0) / r.total) * 1000) / 10 : 100;
-        await this.notifyUsers([r.userId], {
+        // Queue events arrive outside any request, so the context the
+        // notification row and its socket push need is opened here from the
+        // job summary (9.1 / §17).
+        await this.tenant.runAs({ schoolId: r.schoolId, origin: "solver-completed" }, () =>
+          this.notifyUsers([r.userId as number], {
           type: "solver_completed",
           title: "Timetable generated",
           body: `${r.placements ?? 0}/${r.total ?? 0} variables placed (${pct}%).${unplacedCount > 0 ? ` ${unplacedCount} need manual placement on the Draft Board.` : " Conflict-free draft is ready to review."}`,
           link: "/matrix",
-        });
+          }),
+        );
       } catch (e) {
         this.logger.warn(`solver-completed notification failed: ${(e as Error).message}`);
       }

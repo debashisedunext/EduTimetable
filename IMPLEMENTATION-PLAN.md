@@ -241,3 +241,69 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 | 8.8 | Tests | 27 validator unit tests (one per rule) + the live smoke script |
 
 **Exit criteria:** an admin can take a school from empty to ready-to-generate by downloading the template, filling it, and uploading once; no invalid, duplicate or garbage row can enter; every rejection names the sheet, row, cell, value and the fix.
+
+---
+
+## Phase 9 — Multi-School / Multi-Tenancy (5 weeks)
+
+> **Status: planned.** Decisions taken with the product owner: trust groups share one database and are separated by `school_id`; **one API deployment serves both shared-DB and dedicated-DB schools simultaneously** (mode is a per-school property of the registry, resolved at runtime); a user may hold access to several schools in one session and switch in-app.
+
+**Objective:** Serve many schools from one deployment — whether each school has its own database and credentials, a trust group shares one database, or there is a single school — without a second code path and without a single row, cache entry or socket event ever crossing a school boundary (§17).
+**Dependencies:** Phases 0–8 (the whole app is being retro-fitted).
+
+### The model
+
+Three deployment shapes, **two physical modes**, one registry:
+
+| Shape | Mode | Mechanism |
+|---|---|---|
+| Each school its own DB + credentials | `dedicated` | registry holds an encrypted connection URL per school; requests route to it |
+| One trust, several schools | `shared` | one DB, many `school_id`s, in-app school switcher |
+| Single school | `shared`, one tenant | today's behaviour, zero configuration |
+
+A trust wanting isolation within one MySQL server (a database + MySQL user per school) is `dedicated` with different URLs — not a third code path.
+
+### Starting position (audited 2026-08-25)
+
+`school_id` already exists on 14 of 30 models and rides in the SSO token and session JWT, but: there is **no `schools` table** (the column is a dangling `Int` with no FK); the other 16 models — including `timetable_slots` — carry no `school_id` at all; **75 `where: { id }` queries do not filter by school** (a live cross-tenant IDOR the moment a second school exists); `readiness.invalidate()` runs `redis.keys("readiness:*")` and flushes **every** school's cache; `EventsGateway` uses `server.emit()` so solver progress **broadcasts to all schools**; the worker holds one global `PrismaClient` and its job data carries no school; and `ERP_PUBLIC_KEY` is a single global env var (one signing key for one ERP installation).
+
+| # | Task | Detail |
+|---|------|--------|
+| 9.1 ✅ | **Harden the single tenant** | Ships value with one school and is a hard prerequisite. One Prisma client extension (`$allModels.$allOperations`) injects the school filter from AsyncLocalStorage — `findUnique`→`findFirst`, `update`/`delete` guarded via `updateMany` returning 0 → 404 — replacing 75 hand-edits with one module, per invariant 11's "one scoping module". Migration denormalizing `school_id` onto the 16 child tables (`timetable_slots`, `periods`, `class_sections`, `substitution_log`, …) with backfill and leading-position indexes, so scoping is an indexed predicate rather than a join (invariant 10). Redis keys namespaced `t{tenant}:…` with prefix-scoped invalidation. Socket.IO `tenant:{id}` rooms replacing every broadcast. Worker job data carries `{ tenantId, schoolId, configId }` and opens the ALS context before touching Prisma. Existing unique keys are untouched — `config_id` already implies the school |
+| 9.2 ✅ | **Control plane** | `schema.control.prisma` + its own client: `trusts`, `tenants` (trust, ERP school code, `mode`, AES-256-GCM-encrypted DB URL reusing `ai/crypto.util.ts`, local school id, `schema_version`, status), `erp_instances` (per-ERP public key + `kid`). Defaults to living in the app database so a single-school install needs no new configuration; `CONTROL_DATABASE_URL` separates it. A real local **`schools`** table inside each tenant DB gives `school_id` its missing FK and carries name/code/logo/timezone |
+| 9.3 | **Provisioning + migrations** | `pnpm tenant:create` and `POST /admin/tenants`: create database, run migrations, seed system roles + permission registry + ERP role mappings. `pnpm migrate:all` iterates the registry and stamps `schema_version`; the API **refuses to serve a tenant whose version ≠ the app's**, failing loudly rather than crashing mid-query |
+| 9.4 | **Tenant context + connection routing** | `TenantContext` on AsyncLocalStorage (**not** Nest request scope — that would cascade through ~40 injecting classes, kill singleton caching and threaten the 300ms p95 budget). `PrismaService` becomes a Proxy typed as `PrismaClient` resolving its client from ALS per access, so **every existing call site compiles and runs unchanged**. Bounded LRU of clients keyed by tenant, small per-tenant pool, idle eviction, hard cap, with `active_tenants × connection_limit ≤ max_connections` documented and alarmed |
+| 9.5 | **SSO for multiple ERP installations** | Token gains `erpInstanceId` + `schoolCode` (a bare numeric `schoolId` is meaningless across databases). Public key selected per instance by `kid`/`iss` — the property that stops ERP A minting tokens for ERP B's school. Nonce key becomes `sso:nonce:{erpInstance}:{jti}`. Session JWT gains `tenantId`; the guard rejects suspended tenants |
+| 9.6 | **School switching** | ERP token may carry `schools: [...]`; `POST /auth/switch-school` re-issues the session for another school in that list and **re-resolves the role inside the target school's data** — a user can be Admin in one school and Teacher in another. Sync-on-login semantics preserved per school |
+| 9.7 | **UI** | School name beside the timetable-config selector in the top bar; switcher rendered only when the session grants more than one; per-school display name/logo from the tenant row |
+| 9.8 | **Platform Console** | A level above school Admin: tenant list, connection test, migration/health status, suspend. Gated by a control-plane `platform_users` table — school roles live inside tenants and cannot govern the registry |
+| 9.9 | **Ops + noisy neighbour** | Every log line and metric tagged with `tenantId`; connection-pool saturation alarm. The solver worker runs `concurrency: 1` today, so one long job would block every school — needs per-tenant job grouping or fair scheduling |
+| 9.10 | **Isolation test suite** | Two-school fixture where School B hits every REST endpoint, socket event, report, AI tool and import route with School A's ids and must get 404/403; assertions that Redis keys and socket emissions never cross; a dedicated-mode integration test against a second real MySQL database added to the dev compose stack (a change that only works outside Docker is broken) |
+
+> **9.1 status: ✅ complete.** `school_id` is now on **all 30 tables** (migration `20260825035721_phase9_1_school_scope`: add-nullable → backfill by join → `MODIFY NOT NULL`, so an un-attributable orphan aborts the migration under `STRICT_TRANS_TABLES` rather than silently landing in school 0). Scoping lives in one Prisma client extension over `$allModels`, driven by an `AsyncLocalStorage` tenant context — **no call site changed**, because a query is scoped by where it runs, not by how it is written. Redis keys namespaced `s{schoolId}:…` with SCAN-based per-school invalidation; Socket.IO events addressed to `school:{id}` rooms; BullMQ jobs carry their school and the worker opens its own context from it.
+>
+> Two holes were found and closed *during* the work, neither of which row scoping alone would have covered: (a) a write stamped as School B could still **name** School A's class or class-section id, producing a row B owns that points into A's data — now blocked by a reference check built from Prisma's DMMF, including through nested relation writes; (b) `upsert` on a unique key not containing the school would silently **update** a colliding foreign row — now a plain create, so it collides as a 409 instead.
+>
+> Compile-time backstop: because `school_id` is NOT NULL everywhere, Prisma's generated types now *require* it on every create, so a new write cannot silently depend on the extension.
+>
+> Verified: `scripts/tenant-isolation.cjs` (39 live checks across two real schools — IDOR, cross-school references, nested-write laundering, child-table stamping, a full solver generation for School B, and School A byte-identical afterwards), `scripts/tenant-socket-check.cjs` (6 checks: B's socket silent while A acts), 18 new unit tests in `school-scope.spec.ts` (**50 api / 111 shared passing**), all pre-existing smokes green (board, RBAC, AI, import), lint clean, web build passing, and `EXPLAIN` on the scoped `timetable_slots` read still an index lookup (`type: ref`), no full scan.
+>
+> Deliberately deferred to a later hardening pass: composite foreign keys (`FOREIGN KEY (class_id, school_id) REFERENCES classes(id, school_id)`) would make cross-school references structurally impossible at the DB level, in the spirit of invariant 1 — but Prisma requires every field of an optional relation to be nullable together, which `homeRoomId` + non-null `schoolId` violates. The application-level reference check covers the same ground today.
+
+> **9.2 status: ✅ complete.** Two halves, both landed.
+>
+> **`school_id` finally has a parent.** The `schools` table holds each school's identity, and all **30** `school_id` columns now carry a real foreign key to it (`ON DELETE RESTRICT`) — migration `20260825045259_phase9_2_schools_table` creates the table, backfills one row per school already present in the data (id preserved, so every existing FK resolves), and only then adds the constraints. A row naming a school that does not exist is now refused by MySQL, not by convention. `GET /me` carries the session's school; `GET`/`PUT /school` reads and renames it, with `code` deliberately not editable from inside the school and no `POST`/`DELETE` at all.
+>
+> **The registry** (`trusts`, `tenants`, `erp_instances`) lives in `prisma/control/schema.prisma` with its own client, migration history and seed. It is load-bearing rather than decorative: SSO consults it on every login and refuses a suspended school — checked *before* the nonce is burned, so a refused login can be retried once the school is reinstated rather than needing a fresh token. It is also optional: no `CONTROL_DATABASE_URL` means no registry and pre-Phase-9 behaviour, which is what a single-school install has.
+>
+> **Deviation, recorded in §17.3:** the plan said the control plane would default to living *in* the app database. It cannot — (a) under `dedicated` mode the registry cannot live inside a tenant database, since you need the registry to find that database, and (b) Prisma cannot host two migration histories in one database (both would write `_prisma_migrations` and read each other's rows as drift). It is therefore a separate schema on the *same* MySQL server, created automatically by `docker/mysql-init/`: no new container, no new credentials, no operator action.
+>
+> The scoping extension learned that `schools` is the tenant *root* — scoped by its own `id`, never stamped, and skipped by the reference check, since its ownership is now a real foreign key.
+>
+> Verified: `scripts/control-plane-smoke.cjs` (22 live checks, including all 30 FKs present, a row naming a nonexistent school refused by the database, suspension actually blocking a login and reinstatement restoring it, and the control plane unreachable from the application API), 3 new SSO unit tests (**53 api / 111 shared passing**), both 9.1 isolation suites still green against the new FK, all pre-existing smokes green, lint clean, web build passing.
+>
+> Known follow-ups: the backfilled school is named `School 1` with code `SCHOOL-1` — placeholders, because inventing a school's real name in a migration would be a guess; `PUT /school` fixes it and 9.7 surfaces it in the UI. `TenantRegistryService.byLocalSchoolId()` is unambiguous only while every tenant is `shared` and returns null rather than a guess otherwise; 9.5 replaces it by putting `tenantId` in the session token. `connectionUrlFor()` has no caller until 9.4.
+
+**Exit criteria:** one deployment concurrently serves a single school, a trust group sharing a database, and a school on its own database with its own credentials; a user with access to two schools switches between them in the top bar and gets the correct role in each; the isolation suite passes with zero cross-school reads, writes, cache hits or socket events; per-tenant p95 still meets the §14 budget; and onboarding a new school is one command.
+
+**Risks:** the `school_id` backfill on `timetable_slots` (largest table — one transaction, unique keys verified after), and the extension's `findUnique`→`findFirst` rewrite changing return-type nullability at ~20 call sites — the two-school IDOR suite is its proof.

@@ -10,6 +10,7 @@ import type Redis from "ioredis";
 import type { ViewScope } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
+import { CacheKeysService } from "../redis/cache-keys.service";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -34,10 +35,14 @@ function scopedSectionIds(scope: ViewScope): number[] | "all" | "none" {
 export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly keys: CacheKeysService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
-  private async cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
+  /** `name` identifies the report and its arguments; the school namespace is
+   *  added here so no report call site can forget it (9.1 / §17). */
+  private async cached<T>(name: string, compute: () => Promise<T>): Promise<T> {
+    const key = this.keys.report(name);
     const hit = await this.redis.get(key);
     if (hit) return JSON.parse(hit);
     const value = await compute();
@@ -83,7 +88,7 @@ export class ReportsService {
     if (allowed === "none" || (allowed !== "all" && !allowed.includes(classSectionId))) {
       throw new ForbiddenException("This class-section is outside your view scope (§15.3)");
     }
-    return this.cached(`slots:rpt:cs:${classSectionId}:${date ?? "base"}`, async () => {
+    return this.cached(`cs:${classSectionId}:${date ?? "base"}`, async () => {
       const cs = await this.prisma.classSection.findUnique({
         where: { id: classSectionId },
         include: { class: true, section: true, classTeacher: true },
@@ -137,7 +142,7 @@ export class ReportsService {
     if (scope.level === "class" && scope.teacherId !== teacherId) {
       throw new ForbiddenException("Class-scope users can view class grids, not other teachers (§15.3)");
     }
-    return this.cached(`slots:rpt:t:${teacherId}:${date ?? "base"}`, async () => {
+    return this.cached(`t:${teacherId}:${date ?? "base"}`, async () => {
       const teacher = await this.prisma.teacher.findUnique({ where: { id: teacherId } });
       if (!teacher) throw new NotFoundException("Teacher not found");
       // own primary occupancies across all configs
@@ -215,7 +220,7 @@ export class ReportsService {
   /** §10 report 3 — Room Utilization across the week. */
   async roomUtilization(scope: ViewScope, configId: number) {
     if (scope.level !== "all") throw new ForbiddenException("Room utilization needs view.all (§15.3)");
-    return this.cached(`slots:rpt:rooms:${configId}`, async () => {
+    return this.cached(`rooms:${configId}`, async () => {
       const shape = await this.dayShape(configId);
       const teaching = shape.periods.filter((p) => !p.isBreak && p.periodNumber !== 0 && p.periodNumber !== null).length;
       const capacity = shape.workingDays.length * teaching;
@@ -244,7 +249,7 @@ export class ReportsService {
   /** §10 report 4 — Teacher Load Summary (doubles as feasibility health). */
   async teacherLoadSummary(scope: ViewScope, configId: number) {
     if (scope.level !== "all") throw new ForbiddenException("Load summary needs view.all (§15.3)");
-    return this.cached(`slots:rpt:load:${configId}`, async () => {
+    return this.cached(`load:${configId}`, async () => {
       const shape = await this.dayShape(configId);
       const teachers = await this.prisma.teacher.findMany({ where: { isActive: true } });
       const slots = await this.prisma.timetableSlot.findMany({

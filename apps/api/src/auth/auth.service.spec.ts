@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ForbiddenException, UnauthorizedException } from "@nestjs/common";
 import { AuthService } from "./auth.service";
+import { TenantContextService } from "../tenant/tenant-context.service";
 
 const payload = {
   erpUserId: "E-100",
@@ -42,8 +43,26 @@ function build(overrides: Partial<Record<string, any>> = {}) {
     verifyErpToken: vi.fn().mockReturnValue(payload),
     ...overrides.erpKeys,
   };
-  const svc = new AuthService(prisma as any, jwtService as any, erpKeys as any, redis as any);
-  return { svc, prisma, jwtService, redis, erpKeys };
+  // 9.1: provisioning runs inside a tenant context opened from the verified
+  // token, so the service now takes the context service too.
+  const tenant = new TenantContextService();
+  // 9.2: the registry gates suspended schools. Default to "no registry
+  // configured", which is what a single-school deployment has, so these tests
+  // stay about SSO; the suspension path has its own case below.
+  const registry = {
+    available: false,
+    byLocalSchoolId: vi.fn().mockResolvedValue(null),
+    ...overrides.registry,
+  };
+  const svc = new AuthService(
+    prisma as any,
+    jwtService as any,
+    erpKeys as any,
+    tenant,
+    registry as any,
+    redis as any,
+  );
+  return { svc, prisma, jwtService, redis, erpKeys, registry };
 }
 
 describe("AuthService.handleSsoToken (§15.1)", () => {
@@ -105,5 +124,49 @@ describe("AuthService.handleSsoToken (§15.1)", () => {
       prisma: { erpRoleMapping: { findUnique: vi.fn().mockResolvedValue(null) } },
     });
     await expect(svc.handleSsoToken("erp-token")).rejects.toThrow(ForbiddenException);
+  });
+
+  // ---- Phase 9.2 (§17.3): the tenant registry gates the door ----
+
+  it("refuses a login to a suspended school", async () => {
+    const { svc, redis } = build({
+      registry: {
+        available: true,
+        byLocalSchoolId: vi.fn().mockResolvedValue({
+          tenantId: 7,
+          schoolId: 1,
+          displayName: "Springfield High",
+          status: "suspended",
+        }),
+      },
+    });
+    await expect(svc.handleSsoToken("erp-token")).rejects.toThrow(/suspended/);
+    // Refused before the nonce is burned, so the login can be retried once the
+    // school is reinstated rather than needing a fresh token from the ERP.
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it("lets an active school straight through", async () => {
+    const { svc, registry } = build({
+      registry: {
+        available: true,
+        byLocalSchoolId: vi.fn().mockResolvedValue({
+          tenantId: 7,
+          schoolId: 1,
+          displayName: "Springfield High",
+          status: "active",
+        }),
+      },
+    });
+    await expect(svc.handleSsoToken("erp-token")).resolves.toEqual({ sessionToken: "session-jwt" });
+    expect(registry.byLocalSchoolId).toHaveBeenCalledWith(1);
+  });
+
+  it("does not consult a registry that is not configured", async () => {
+    // A single-school deployment has no CONTROL_DATABASE_URL and must keep
+    // working exactly as it did before Phase 9.
+    const { svc, registry } = build();
+    await expect(svc.handleSsoToken("erp-token")).resolves.toEqual({ sessionToken: "session-jwt" });
+    expect(registry.byLocalSchoolId).not.toHaveBeenCalled();
   });
 });

@@ -42,7 +42,14 @@ export class CurriculumController {
     const data = this.normalize(body);
     assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, toInt(body.classId, "classId")));
     const created = await uniq(
-      () => this.prisma.classSubject.create({ data: { ...data, classId: toInt(body.classId, "classId"), subjectId: toInt(body.subjectId, "subjectId") } }),
+      () => this.prisma.classSubject.create({
+          data: {
+            ...data,
+            schoolId: req.user.schoolId,
+            classId: toInt(body.classId, "classId"),
+            subjectId: toInt(body.subjectId, "subjectId"),
+          },
+        }),
       "Curriculum row for that class & subject",
     );
     await this.readiness.invalidate(req.user.schoolId);

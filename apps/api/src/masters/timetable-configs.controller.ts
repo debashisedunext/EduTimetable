@@ -130,7 +130,7 @@ export class TimetableConfigsController {
     await this.prisma.$transaction([
       this.prisma.period.deleteMany({ where: { timetableConfigId: configId } }),
       this.prisma.period.createMany({
-        data: built.rows.map((r) => ({ ...r, timetableConfigId: configId })),
+        data: built.rows.map((r) => ({ ...r, timetableConfigId: configId, schoolId: req.user.schoolId })),
       }),
       this.prisma.timetableConfig.update({
         where: { id: configId },

@@ -8,3 +8,6 @@ coverage/
 .DS_Store
 .pnpm-store/
 apps/api/prisma/*.db
+
+# Phase 9.2: control-plane Prisma client is generated, not committed
+apps/api/prisma/generated/

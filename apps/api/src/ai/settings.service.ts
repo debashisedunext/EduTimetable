@@ -6,7 +6,7 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import { PrismaService } from "../prisma/prisma.service";
-import { decryptSecret, encryptSecret, maskKey } from "./crypto.util";
+import { decryptSecret, encryptSecret, maskKey } from "../common/crypto.util";
 
 export interface AiFeatures {
   chat: boolean;

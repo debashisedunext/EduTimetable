@@ -112,6 +112,7 @@ export class MappingsController {
       () =>
         this.prisma.teacherSubjectClassSection.createMany({
           data: toCreate.map((classSectionId) => ({
+            schoolId: req.user.schoolId,
             teacherId,
             subjectId,
             classSectionId,
@@ -200,7 +201,12 @@ export class MergedGroupsController {
             subjectId: toInt(body.subjectId, "subjectId"),
             periodsPerWeek: toInt(body.periodsPerWeek, "periodsPerWeek"),
             roomId: body.roomId != null ? toInt(body.roomId, "roomId") : null,
-            members: { create: ids.map((classSectionId) => ({ classSectionId })) },
+            members: {
+              create: ids.map((classSectionId) => ({
+                classSectionId,
+                schoolId: req.user.schoolId,
+              })),
+            },
           },
         }),
       "Merged group",
@@ -235,7 +241,11 @@ export class MergedGroupsController {
         await this.prisma.$transaction([
           this.prisma.mergedTeachingGroupMember.deleteMany({ where: { mergedGroupId: groupId } }),
           this.prisma.mergedTeachingGroupMember.createMany({
-            data: ids.map((classSectionId) => ({ mergedGroupId: groupId, classSectionId })),
+            data: ids.map((classSectionId) => ({
+              mergedGroupId: groupId,
+              classSectionId,
+              schoolId: req.user.schoolId,
+            })),
           }),
         ]);
       }
