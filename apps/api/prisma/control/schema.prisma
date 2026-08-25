@@ -63,8 +63,9 @@ model ErpInstance {
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  tenants Tenant[]
-  trusts  Trust[]
+  tenants       Tenant[]
+  trusts        Trust[]
+  platformUsers PlatformUser[]
 
   @@map("erp_instances")
 }
@@ -130,4 +131,34 @@ model Tenant {
   @@unique([erpInstanceId, schoolCode])
   @@index([trustId])
   @@map("tenants")
+}
+
+/// Who may administer the platform itself (§17.6, Phase 9.8).
+///
+/// This table exists in the control plane, not in any school's database,
+/// because of a containment rule: a school's own Super Admin manages that
+/// school's roles, and must not be able to grant themselves authority over the
+/// registry — over other schools' status, connections or existence. Those are
+/// different jobs at different levels, and a permission granted inside a tenant
+/// can never reach outside it.
+///
+/// Identity is the ERP's, since that is the only identity that survives across
+/// schools: the same person is a different `users` row in every school they
+/// work in. Bootstrapping is deliberately a command, not a screen — the first
+/// platform admin cannot be granted through a UI that requires being one.
+model PlatformUser {
+  id            Int         @id @default(autoincrement())
+  erpInstanceId Int         @map("erp_instance_id")
+  erpInstance   ErpInstance @relation(fields: [erpInstanceId], references: [id])
+  /// matches SessionTokenPayload.erpUserId
+  erpUserId     String      @map("erp_user_id") @db.VarChar(50)
+  /// for display in the console only; never used to authorise
+  name          String?     @db.VarChar(100)
+  email         String?     @db.VarChar(120)
+  isActive      Boolean     @default(true) @map("is_active")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  lastSeenAt    DateTime?   @map("last_seen_at")
+
+  @@unique([erpInstanceId, erpUserId])
+  @@map("platform_users")
 }

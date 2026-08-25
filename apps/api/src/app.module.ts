@@ -10,6 +10,7 @@ import { RedisModule } from "./redis/redis.module";
 import { AuthModule } from "./auth/auth.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
+import { PlatformGuard } from "./control/platform.guard";
 import { HealthController } from "./health/health.controller";
 import { MeController } from "./me/me.controller";
 import { DemoModule } from "./demo/demo.module";
@@ -62,6 +63,10 @@ import { ReadinessService } from "./readiness/readiness.service";
     // Order matters: authentication first, then permission checks.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // ...and the platform level above every school (§17.6). Separate from
+    // permissions on purpose: a school's admin must not be able to grant
+    // themselves authority over the registry.
+    { provide: APP_GUARD, useClass: PlatformGuard },
   ],
 })
 export class AppModule implements NestModule {

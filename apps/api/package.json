@@ -13,7 +13,8 @@
     "migrate:control": "prisma migrate deploy --schema prisma/control/schema.prisma",
     "seed:control": "tsx prisma/control/seed.ts",
     "tenant:create": "tsx prisma/control/create-tenant.ts",
-    "migrate:all": "tsx prisma/control/migrate-all.ts"
+    "migrate:all": "tsx prisma/control/migrate-all.ts",
+    "platform:admin": "tsx prisma/control/platform-admin.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

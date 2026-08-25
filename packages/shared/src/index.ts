@@ -195,4 +195,10 @@ export interface MeResponse {
   schools: SessionSchool[];
   /** The trust these schools belong to, when they belong to one. */
   trust: { code: string; name: string } | null;
+  /**
+   * Whether this account administers the platform itself (§17.6) — a level
+   * above every school, granted outside any of them. Cosmetic here: the server
+   * re-checks it on every platform request.
+   */
+  platformAdmin: boolean;
 }

@@ -9,6 +9,9 @@ interface NavEntry {
   label: string;
   to: string;
   requires?: Permission;
+  /** platform administration sits above every school, so it is not a school
+   *  permission — see §17.6 */
+  requiresPlatform?: boolean;
   /** personal views only make sense for a login linked to a teacher record */
   requiresTeacher?: boolean;
 }
@@ -69,7 +72,10 @@ const NAV: NavGroup[] = [
   },
   {
     label: "System",
-    items: [{ label: "Status & Jobs", to: "/system" }],
+    items: [
+      { label: "Status & Jobs", to: "/system" },
+      { label: "Platform Console", to: "/platform", requiresPlatform: true },
+    ],
   },
   // Manage / My Timetable / Intelligence / Reference groups arrive with Phases 2-7.
 ];
@@ -91,6 +97,7 @@ const TITLES: Record<string, [string, string]> = {
   "/ask-ai": ["Intelligence", "Ask AI"],
   "/ai-settings": ["Intelligence", "AI Settings"],
   "/school": ["Administration", "School Profile"],
+  "/platform": ["System", "Platform Console"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };
@@ -230,7 +237,10 @@ export function Shell({ me }: { me: MeResponse }) {
   const groups = NAV.map((g) => ({
     ...g,
     items: g.items.filter(
-      (i) => (!i.requires || held.has(i.requires)) && (!i.requiresTeacher || me.teacherId !== null),
+      (i) =>
+        (!i.requires || held.has(i.requires)) &&
+        (!i.requiresTeacher || me.teacherId !== null) &&
+        (!i.requiresPlatform || me.platformAdmin),
     ),
   })).filter((g) => g.items.length > 0);
 

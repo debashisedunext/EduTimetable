@@ -9,6 +9,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { PermissionsService } from "../auth/permissions.service";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
 import { TenantRegistryService } from "../control/tenant-registry.service";
+import { PlatformAccessService } from "../control/platform-access.service";
 
 @Controller("me")
 export class MeController {
@@ -17,6 +18,7 @@ export class MeController {
     private readonly permissionsService: PermissionsService,
     private readonly base: PrismaBaseService,
     private readonly registry: TenantRegistryService,
+    private readonly platform: PlatformAccessService,
   ) {}
 
   @Get()
@@ -94,6 +96,8 @@ export class MeController {
       teacherId: user.teacherId,
       school: active,
       schools,
+      // Renders the nav item only; the guard is the authority (§17.6).
+      platformAdmin: await this.platform.isPlatformAdmin(req.user),
       trust:
         school.trustCode && school.trustName
           ? { code: school.trustCode, name: school.trustName }

@@ -1319,8 +1319,39 @@ pnpm --filter @edutimetable/api tenant:create --code SCH-042 --name "St. Xavier'
 
 It creates the database, applies the application migrations, seeds the school row and its permission registry, and registers the tenant with its connection URL encrypted at rest. A school the ERP mentions that nobody has provisioned lands in the **shared** database — the safe default, since the app cannot conjure a database.
 
-### 17.6 Verification
+### 17.6 The Platform Console (9.8, implemented)
 
+A level above every school: which schools exist, are they reachable, are their databases current, and should this one be served right now.
+
+**Platform access is not a permission**, and that is the load-bearing decision. Every permission in this app lives in a school's own `roles`/`role_permissions` (§15.2), granted by that school's Super Admin. If platform access were one of them, the admin who manages their own roles could grant it to themselves — authority over other schools' status, connections and existence, obtained from inside the thing it governs. So it lives in the control plane's `platform_users`, keyed by **ERP identity**, since that is the only identity that survives across schools: the same person is a different `users` row in every school they work in.
+
+**It is not carried in the session token either.** A flag minted at sign-in would stay true for the token's whole 8-hour life, so revoking someone's access would not actually revoke it until they signed out. It is re-checked per request behind a 30-second memo, so a grant or a revocation takes effect on an existing session without anyone signing in again.
+
+**Granting is a command, not a screen** — the first platform administrator cannot be granted through a console that requires already being one, and afterwards authority over the registry should take a deliberate act on the host rather than a click by whoever currently holds it:
+
+```
+pnpm --filter @edutimetable/api platform:admin -- --list
+pnpm --filter @edutimetable/api platform:admin -- --grant ERP-1 --name "R. Ahuja"
+pnpm --filter @edutimetable/api platform:admin -- --revoke ERP-1
+```
+
+`PLATFORM_ADMIN_ERP_USER_IDS` is a bootstrap escape hatch for an operator locked out of their own console; the listing shows when one is in play, so an env grant is never invisible.
+
+The console is **deliberately narrow**, and says so on the screen rather than leaving an operator hunting for missing buttons:
+
+| It cannot | Because |
+|---|---|
+| Create a school | That provisions a database, which carries credentials — `pnpm tenant:create`. A console button that quietly creates databases is how you end up with databases nobody remembers creating. |
+| Delete a school | A school holding data is not something to remove through a web form. **Suspend** is the reversible equivalent, and is what an operator actually wants. |
+| Show a connection URL | Those are credentials (§13.2 custody). It reports *whether* one is stored and whether it works, never what it is. |
+| Grant platform access | See above. |
+
+What it does: a deployment summary (schools by mode and status, how many are behind this build, the connection budget), the school list grouped by trust with mode / schema / status, an on-demand **connection test** per school (on demand rather than on the listing, because a hundred schools would mean a hundred connections to render a table), and **suspend / reinstate**, which stops and restores sign-in for that school (§17.3).
+
+### 17.7 Verification
+
+
+`scripts/platform-console-smoke.cjs` proves the containment property the console rests on: a school's own Super Admin, holding all 15 of that school's permissions, is refused 403 on every platform route; the CLI grant then admits **the same session token** without a fresh sign-in, and revoking refuses it again — demonstrating that access is re-checked rather than minted. It also suspends a real school, confirms its users can no longer sign in, reinstates it, and asserts no connection URL or credential appears in any response.
 
 `scripts/migrate-all-smoke.cjs` proves the migration loop end to end: it provisions a real dedicated school, genuinely rolls its database back one migration — dropping the columns, not just the bookkeeping row — then asserts the dry run names the school and the pending migration, that signing in is **refused** rather than half-working until it reaches the new column, that `migrate:all` repairs it and stamps the registry, that the school then works, and that the shared database was migrated once rather than once per school.
 
