@@ -79,7 +79,17 @@ export function AskAi() {
       setMessages((m) => {
         const next = [...m];
         const last = next[next.length - 1];
-        if (last?.role === "ai") next[next.length - 1] = { ...last, streaming: false };
+        if (last?.role === "ai") {
+          // A turn that finished with nothing to say must not leave a silent
+          // blank bubble — that reads as "broken" with no way to tell why.
+          next[next.length - 1] = {
+            ...last,
+            streaming: false,
+            text: last.text.trim()
+              ? last.text
+              : "The assistant finished without an answer. This usually means the model used its whole output budget; try a shorter question, or a lighter model on AI Settings.",
+          };
+        }
         return next;
       });
     });

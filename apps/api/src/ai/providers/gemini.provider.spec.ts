@@ -8,7 +8,13 @@
  * that takes down the *entire* tool registry, not one tool.
  */
 import { describe, expect, it } from "vitest";
-import { toGeminiContents, toGeminiSchema, toGeminiTools } from "./gemini.provider";
+import {
+  parseSseEvent,
+  splitSseEvents,
+  toGeminiContents,
+  toGeminiSchema,
+  toGeminiTools,
+} from "./gemini.provider";
 import { TOOL_DEFS } from "../tools";
 import type { LlmMessage } from "./types";
 
@@ -130,5 +136,46 @@ describe("toGeminiContents", () => {
     // An empty `parts` array is rejected; a turn that produced neither text nor
     // a call has nothing to replay anyway.
     expect(toGeminiContents([{ role: "assistant", text: "   " }])).toEqual([]);
+  });
+});
+
+describe("SSE framing", () => {
+  // Captured from a real gemini-3.7-flash streamGenerateContent response.
+  // Google separates events with CRLF, which is what broke the first cut: a
+  // reader looking for "\n\n" finds no boundary in "\r\n\r\n" (there is a \r
+  // between the two newlines), so it yields nothing at all — no text, no tool
+  // calls, no token counts, and an empty answer bubble with no error to explain
+  // it. That is the single most important case in this file.
+  const REAL = 'data: {"candidates": [{"content": {"parts": [{"text": "Hello"}],"role": "model"},"index": 0}]}\r\n\r\n';
+
+  it("splits CRLF-separated events, as Google actually sends them", () => {
+    const { events, rest } = splitSseEvents(REAL);
+    expect(events).toHaveLength(1);
+    expect(rest).toBe("");
+    expect((parseSseEvent(events[0]) as any).candidates[0].content.parts[0].text).toBe("Hello");
+  });
+
+  it("splits LF-separated events too", () => {
+    const { events } = splitSseEvents('data: {"a":1}\n\ndata: {"a":2}\n\n');
+    expect(events).toHaveLength(2);
+    expect(parseSseEvent(events[1])).toEqual({ a: 2 });
+  });
+
+  it("keeps a partial event buffered rather than dropping it", () => {
+    // A network chunk can split mid-event; the remainder must survive to be
+    // completed by the next read.
+    const { events, rest } = splitSseEvents('data: {"a":1}\r\n\r\ndata: {"b":');
+    expect(events).toHaveLength(1);
+    expect(rest).toBe('data: {"b":');
+  });
+
+  it("ignores comments, keep-alives and [DONE]", () => {
+    expect(parseSseEvent(": keep-alive")).toBeNull();
+    expect(parseSseEvent("data: [DONE]")).toBeNull();
+    expect(parseSseEvent("")).toBeNull();
+  });
+
+  it("does not throw on a malformed payload", () => {
+    expect(parseSseEvent("data: {not json")).toBeNull();
   });
 });

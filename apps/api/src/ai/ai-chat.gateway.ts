@@ -14,6 +14,8 @@ import { PermissionsService } from "../auth/permissions.service";
 import { ScopeService } from "../auth/scope.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AiChatService } from "./chat.service";
+import { TenantContextService } from "../tenant/tenant-context.service";
+import { TenantConnectionsService } from "../prisma/tenant-connections.service";
 
 @WebSocketGateway({ namespace: "/ai", cors: { origin: process.env.WEB_APP_URL ?? true } })
 export class AiChatGateway implements OnGatewayConnection {
@@ -25,9 +27,21 @@ export class AiChatGateway implements OnGatewayConnection {
     private readonly scopes: ScopeService,
     private readonly prisma: PrismaService,
     private readonly chat: AiChatService,
+    private readonly tenant: TenantContextService,
+    private readonly connections: TenantConnectionsService,
   ) {}
 
   async handleConnection(client: Socket) {
+    // Socket.IO delivers messages as soon as the transport is up, without
+    // waiting for this async handshake — so a client that asks immediately on
+    // `connect` could arrive before the session was attached and be told it is
+    // "not authorised", which is both wrong and confusing. Messages await this.
+    const ready = this.authenticate(client);
+    client.data.ready = ready;
+    await ready;
+  }
+
+  private async authenticate(client: Socket) {
     try {
       const token = client.handshake.auth?.token as string | undefined;
       const session = await this.jwt.verifyAsync<SessionTokenPayload>(token ?? "");
@@ -50,6 +64,8 @@ export class AiChatGateway implements OnGatewayConnection {
     client: Socket,
     body: { question?: string; conversationId?: string; timetableConfigId?: number | null },
   ) {
+    // Wait for the handshake rather than racing it (see handleConnection).
+    await client.data.ready;
     const session = client.data.session as SessionTokenPayload | undefined;
     const perms = (client.data.permissions ?? []) as Permission[];
     if (!session || !perms.includes(PERMISSIONS.AI_CHAT)) {
@@ -60,13 +76,40 @@ export class AiChatGateway implements OnGatewayConnection {
     if (!question) return;
     const conversationId = body?.conversationId || randomUUID();
 
+    // A Socket.IO message never passes through the HTTP middleware, so nothing
+    // has opened a tenant context for it (9.1 / §17). Without this, every query
+    // below — including the conversation history and the audit log — runs
+    // unscoped, and for a school with its own database would run against the
+    // wrong one entirely (9.4 / §17.5). The school comes from the signed
+    // session token, exactly as it does for REST.
+    const client_ = await this.connections.clientFor(session.tenantId);
+    await this.tenant.runAs(
+      {
+        schoolId: session.schoolId,
+        tenantId: session.tenantId ?? null,
+        client: client_,
+        userId: session.sub,
+        origin: "ai:ask",
+      },
+      () => this.handleAsk(client, session, perms, question, conversationId, body),
+    );
+  }
+
+  private async handleAsk(
+    client: Socket,
+    session: SessionTokenPayload,
+    perms: Permission[],
+    question: string,
+    conversationId: string,
+    body: { timetableConfigId?: number | null },
+  ) {
     try {
       const user = await this.prisma.user.findUnique({ where: { id: session.sub } });
       const scope = await this.scopes.resolve(perms, user?.teacherId ?? null);
       const configId = Number(body?.timetableConfigId) || null;
-      const config = configId
-        ? await this.prisma.timetableConfig.findFirst({ where: { id: configId, schoolId: session.schoolId } })
-        : null;
+      // Scoped by the context opened above, so a config from another school
+      // simply is not found.
+      const config = configId ? await this.prisma.timetableConfig.findFirst({ where: { id: configId } }) : null;
 
       client.emit("ai:start", { conversationId });
       const { answer, tools } = await this.chat.ask(

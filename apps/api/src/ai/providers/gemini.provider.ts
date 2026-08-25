@@ -37,6 +37,9 @@ interface GeminiPart {
   text?: string;
   functionCall?: { name: string; args?: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
+  /** Opaque token a thinking model attaches to its own parts; must be replayed
+   *  verbatim or a follow-up request carrying a functionCall is rejected. */
+  thoughtSignature?: string;
 }
 interface GeminiContent {
   role: "user" | "model";
@@ -44,7 +47,13 @@ interface GeminiContent {
 }
 interface GeminiChunk {
   candidates?: Array<{ content?: { parts?: GeminiPart[] }; finishReason?: string }>;
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    /** Gemini 3.x is a thinking model; these are billed as output but are
+     *  reported separately from candidatesTokenCount. */
+    thoughtsTokenCount?: number;
+  };
   error?: { message?: string; status?: string };
 }
 
@@ -124,6 +133,14 @@ export function toGeminiContents(messages: LlmMessage[]): GeminiContent[] {
       continue;
     }
     if (m.role === "assistant") {
+      // Replay the model's own parts when we have them — they carry the
+      // thought signatures Gemini 3.x demands back, and rebuilding the parts
+      // from text + tool calls would silently drop them.
+      const raw = Array.isArray(m.providerRaw) ? (m.providerRaw as GeminiPart[]) : null;
+      if (raw && raw.length > 0) {
+        out.push({ role: "model", parts: raw });
+        continue;
+      }
       const parts: GeminiPart[] = [];
       if (m.text.trim()) parts.push({ text: m.text });
       for (const call of m.toolCalls ?? []) {
@@ -193,12 +210,16 @@ export class GeminiLlmProvider implements LlmProvider {
     const res = await this.call("streamGenerateContent", this.requestBody(req), true);
 
     let text = "";
+    let finishReason: string | undefined;
     const toolCalls: LlmToolCall[] = [];
+    /** Every part the model emitted, kept verbatim for replay (see types.ts). */
+    const modelParts: GeminiPart[] = [];
     const usage = { inputTokens: 0, outputTokens: 0 };
 
     for await (const chunk of readSse(res)) {
       if (chunk.error) throw new Error(`Gemini: ${chunk.error.message ?? chunk.error.status}`);
       for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
+        modelParts.push(part);
         if (typeof part.text === "string" && part.text.length > 0) {
           text += part.text;
           onText(part.text);
@@ -216,11 +237,29 @@ export class GeminiLlmProvider implements LlmProvider {
       // Usage arrives cumulatively, the last chunk carrying the totals.
       if (chunk.usageMetadata) {
         usage.inputTokens = chunk.usageMetadata.promptTokenCount ?? usage.inputTokens;
-        usage.outputTokens = chunk.usageMetadata.candidatesTokenCount ?? usage.outputTokens;
+        // Thinking tokens are billed as output but reported separately —
+        // counting only `candidatesTokenCount` under-reports a Gemini 3.x turn
+        // by an order of magnitude and would make the §13.2 budget meaningless.
+        usage.outputTokens =
+          (chunk.usageMetadata.candidatesTokenCount ?? 0) +
+          (chunk.usageMetadata.thoughtsTokenCount ?? 0) || usage.outputTokens;
       }
+      const reason = chunk.candidates?.[0]?.finishReason;
+      if (reason && reason !== "STOP") finishReason = reason;
     }
 
-    return { text, toolCalls, usage };
+    if (text.length === 0 && toolCalls.length === 0) {
+      // An empty turn must not surface as a silent blank bubble. The usual
+      // cause is MAX_TOKENS: a thinking model can spend the whole output
+      // budget reasoning and return no answer at all.
+      throw new Error(
+        finishReason === "MAX_TOKENS"
+          ? `Gemini returned no answer: the output budget was used up (${usage.outputTokens} tokens, most of them reasoning). Try a shorter question, or a lighter model such as gemini-3.5-flash-lite.`
+          : `Gemini returned an empty response${finishReason ? ` (${finishReason})` : ""}.`,
+      );
+    }
+
+    return { text, toolCalls, usage, providerRaw: modelParts };
   }
 
   async complete(system: string, user: string, maxTokens = 800): Promise<string> {
@@ -280,6 +319,44 @@ export class GeminiLlmProvider implements LlmProvider {
   }
 }
 
+/**
+ * Split a buffer into complete SSE events.
+ *
+ * The separator is a blank line, and the spec permits CRLF, LF or CR line
+ * endings — Google uses **CRLF**, so a reader that only looks for "\n\n" finds
+ * no boundary in "\r\n\r\n" (there is a \r between the two newlines) and
+ * silently yields nothing at all: no text, no tool calls, no token counts, and
+ * an empty answer bubble with no error to explain it. Exported so the framing
+ * can be tested against real captured output.
+ */
+export function splitSseEvents(buffer: string): { events: string[]; rest: string } {
+  const events: string[] = [];
+  const separator = /\r\n\r\n|\n\n|\r\r/;
+  let rest = buffer;
+  for (;;) {
+    const match = separator.exec(rest);
+    if (!match) break;
+    events.push(rest.slice(0, match.index));
+    rest = rest.slice(match.index + match[0].length);
+  }
+  return { events, rest };
+}
+
+/** The JSON payload of one SSE event, or null for a comment or keep-alive. */
+export function parseSseEvent(event: string): unknown | null {
+  const data = event
+    .split(/\r\n|\n|\r/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("");
+  if (!data || data === "[DONE]") return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
 /** Read an `alt=sse` response as parsed JSON chunks. */
 async function* readSse(res: Response): AsyncGenerator<GeminiChunk> {
   if (!res.body) return;
@@ -291,26 +368,16 @@ async function* readSse(res: Response): AsyncGenerator<GeminiChunk> {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
-    // SSE events are separated by a blank line; a chunk can split mid-event,
-    // so only whole events are consumed and the remainder stays buffered.
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const event = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const data = event
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .join("");
-      if (data && data !== "[DONE]") {
-        try {
-          yield JSON.parse(data) as GeminiChunk;
-        } catch {
-          /* a keep-alive or comment line — ignore */
-        }
-      }
-      boundary = buffer.indexOf("\n\n");
+    // A network chunk can split mid-event, so only whole events are consumed
+    // and the remainder stays buffered for the next read.
+    const { events, rest } = splitSseEvents(buffer);
+    buffer = rest;
+    for (const event of events) {
+      const parsed = parseSseEvent(event);
+      if (parsed) yield parsed as GeminiChunk;
     }
   }
+  // A final event with no trailing blank line still counts.
+  const parsed = parseSseEvent(buffer);
+  if (parsed) yield parsed as GeminiChunk;
 }

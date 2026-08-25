@@ -41,13 +41,32 @@ export interface LlmToolResult {
 
 export type LlmMessage =
   | { role: "user"; text: string }
-  | { role: "assistant"; text: string; toolCalls?: LlmToolCall[] }
+  | {
+      role: "assistant";
+      text: string;
+      toolCalls?: LlmToolCall[];
+      /**
+       * The provider's own representation of this turn, kept verbatim so it can
+       * be replayed exactly as it was received.
+       *
+       * Gemini 3.x requires it: its thinking models attach a `thoughtSignature`
+       * to the parts of a turn, and a follow-up request that replays a
+       * `functionCall` without the signature it came with is rejected outright
+       * ("Function call is missing a thought_signature"). Reconstructing the
+       * parts from the neutral fields above would drop it — and would have to
+       * guess which parts carry one. Keeping the original avoids both problems,
+       * and providers that need nothing of the sort simply ignore it.
+       */
+      providerRaw?: unknown;
+    }
   | { role: "tool"; results: LlmToolResult[] };
 
 export interface LlmTurn {
   text: string;
   toolCalls: LlmToolCall[];
   usage: { inputTokens: number; outputTokens: number };
+  /** See LlmMessage["providerRaw"]. */
+  providerRaw?: unknown;
 }
 
 export interface LlmChatRequest {

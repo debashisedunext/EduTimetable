@@ -144,7 +144,12 @@ export class AiChatService {
       );
       inputTokens += turn.usage.inputTokens;
       outputTokens += turn.usage.outputTokens;
-      messages.push({ role: "assistant", text: turn.text, toolCalls: turn.toolCalls });
+      messages.push({
+        role: "assistant",
+        text: turn.text,
+        toolCalls: turn.toolCalls,
+        providerRaw: turn.providerRaw,
+      });
 
       if (turn.toolCalls.length === 0) break;
 
