@@ -35,6 +35,15 @@ export class AiSettingsController {
     return this.settings.testConnection(req.user.schoolId, body?.apiKey);
   }
 
+  /**
+   * The models this school's key can actually use, asked of the provider.
+   * The catalogue in providers/index.ts is only the fallback — see §13.2.
+   */
+  @Get("models")
+  models(@Req() req: AuthedRequest) {
+    return this.settings.listModels(req.user.schoolId);
+  }
+
   /** The tool whitelist, so admins can see exactly what the model may call. */
   @Get("tools")
   tools() {

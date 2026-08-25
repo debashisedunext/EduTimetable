@@ -85,6 +85,9 @@ export function AiSettings() {
   const [note, setNote] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; error?: string; model?: string } | null>(null);
+  /** Models fetched from the provider itself — authoritative over the
+   *  catalogue, which is only ever as current as the last release (§13.2). */
+  const [live, setLive] = useState<{ source: string; models: Array<{ id: string; label: string }>; error?: string } | null>(null);
 
   const load = () => {
     api<Settings>("/ai/settings").then(setS).catch((e) => setError(asMessage(e)));
@@ -124,6 +127,7 @@ export function AiSettings() {
   };
 
   const catalogue = s.providers.find((p) => p.id === s.provider);
+  const modelOptions = live?.models?.length ? live.models : (catalogue?.models ?? []);
   const provider = KEY_SOURCES.find((p) => p.value === s.provider);
   const wired = catalogue?.implemented ?? false;
   const budgetPct = s.monthlyTokenBudget
@@ -165,13 +169,34 @@ export function AiSettings() {
                     Gemini would fail at the first request. Switching provider
                     resets this to that provider's default, server-side. */}
                 <select style={inputStyle} value={s.model} onChange={(e) => save({ model: e.target.value }, "Model updated")}>
-                  {(catalogue?.models ?? []).map((m) => (
+                  {modelOptions.map((m) => (
                     <option key={m.id} value={m.id}>{m.label}</option>
                   ))}
-                  {catalogue && !catalogue.models.some((m) => m.id === s.model) && (
+                  {!modelOptions.some((m) => m.id === s.model) && (
                     <option value={s.model}>{s.model} (custom)</option>
                   )}
                 </select>
+                <button
+                  className="btn"
+                  style={{ border: "1px solid var(--line)", marginTop: 6, fontSize: 11 }}
+                  onClick={async () => {
+                    try {
+                      setLive(await api("/ai/settings/models"));
+                    } catch (e) {
+                      setError(asMessage(e));
+                    }
+                  }}
+                  title="Ask the provider which models this key can use"
+                >
+                  ⟳ Refresh from provider
+                </button>
+                {live && (
+                  <div style={{ fontSize: 10.5, color: live.error ? "var(--amber)" : "var(--ink-faint)", marginTop: 4, lineHeight: 1.5 }}>
+                    {live.source === "provider"
+                      ? `${live.models.length} model(s) reported by ${catalogue?.label ?? "the provider"}.`
+                      : `Showing the built-in list${live.error ? ` — ${live.error}` : " — add a key to ask the provider directly."}`}
+                  </div>
+                )}
               </div>
             </div>
             {provider && (

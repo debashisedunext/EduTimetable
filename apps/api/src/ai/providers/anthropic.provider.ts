@@ -96,6 +96,12 @@ export class AnthropicLlmProvider implements LlmProvider {
       .trim();
   }
 
+  /** Ask Anthropic what this key can use — same reasoning as the Gemini adapter. */
+  async listModels(): Promise<Array<{ id: string; label: string }>> {
+    const page = await this.client.models.list({ limit: 50 });
+    return page.data.map((m) => ({ id: m.id, label: m.display_name || m.id }));
+  }
+
   async ping(): Promise<{ ok: boolean; detail?: string }> {
     const res = await this.client.messages.create({
       model: this.model,

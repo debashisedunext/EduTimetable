@@ -95,9 +95,51 @@ async function call(method, path, token, body) {
     switched.json?.model,
   );
 
-  const pickFlash = await call("PUT", "/ai/settings", admin, { model: "gemini-2.5-flash" });
-  check(pickFlash.json?.model === "gemini-2.5-flash", "a specific Gemini model can be chosen", pickFlash.json?.model);
-  check(pickFlash.json?.provider === "google", "and the provider stays put", pickFlash.json?.provider);
+  const pickLite = await call("PUT", "/ai/settings", admin, { model: "gemini-3.5-flash-lite" });
+  check(pickLite.json?.model === "gemini-3.5-flash-lite",
+    "gemini-3.5-flash-lite can be chosen", pickLite.json?.model);
+  check(pickLite.json?.provider === "google", "and the provider stays put", pickLite.json?.provider);
+
+  // ------------------------------------------------------------- 2b. MODELS
+  console.log("\nThe model list comes from the provider, not from a hardcoded guess:");
+  const geminiModels = (gemini?.models ?? []).map((m) => m.id);
+  check(geminiModels.includes("gemini-3.5-flash-lite"),
+    "the catalogue offers gemini-3.5-flash-lite", geminiModels.join(", "));
+  check(!geminiModels.some((m) => m.startsWith("gemini-2.")),
+    "and no longer offers the superseded 2.x line");
+
+  // Per-model pricing: flash-lite is ~5x cheaper than 3.5-flash, so one
+  // per-provider figure would misreport the usage meter.
+  const liteUsage = (await call("GET", "/ai/settings", admin)).json?.usage;
+  await call("PUT", "/ai/settings", admin, { model: "gemini-3.5-flash" });
+  const flashUsage = (await call("GET", "/ai/settings", admin)).json?.usage;
+  check(
+    liteUsage?.totalTokens === flashUsage?.totalTokens,
+    "the same tokens are counted whichever model is selected",
+    `${liteUsage?.totalTokens} token(s)`,
+  );
+  if (liteUsage?.totalTokens > 0) {
+    check(
+      liteUsage.estimatedCostUsd < flashUsage.estimatedCostUsd,
+      "but flash-lite is costed more cheaply than flash",
+      `$${liteUsage.estimatedCostUsd} vs $${flashUsage.estimatedCostUsd}`,
+    );
+  } else {
+    // Both are $0 with no usage this month, so the comparison would pass
+    // whatever the pricing did. The real assertion lives in the unit tests,
+    // where priceFor() can be checked without waiting for a month of traffic.
+    console.log("  INFO  no AI usage this month — per-model cost compared in providers/index.spec.ts instead");
+  }
+  await call("PUT", "/ai/settings", admin, { model: "gemini-3.5-flash-lite" });
+
+  // With no valid key the endpoint must degrade to the catalogue and say so,
+  // rather than returning an empty dropdown.
+  const discovered = await call("GET", "/ai/settings/models", admin);
+  check(discovered.status === 200, "the discovery endpoint answers", `${discovered.status}`);
+  check(["provider", "catalogue"].includes(discovered.json?.source),
+    "and says where the list came from", discovered.json?.source);
+  check((discovered.json?.models ?? []).length > 0, "with a non-empty list either way",
+    `${discovered.json?.models?.length} model(s)`);
 
   // ---------------------------------------------------------------- 3. KEY
   console.log("\nThe key is stored the same way, whichever provider it is for:");
@@ -134,14 +176,20 @@ async function call(method, path, token, body) {
 
   // ------------------------------------------------------------ 5. RESTORE
   console.log("\nRestore:");
+  // Restore what was there — except a model the catalogue has since
+  // superseded, which would otherwise be left selected for real users.
+  const stillOffered =
+    (before.providers ?? [])
+      .find((p) => p.id === before.provider)
+      ?.models.some((m) => m.id === before.model) ?? false;
   await call("PUT", "/ai/settings", admin, {
     provider: before.provider,
-    model: before.model,
+    ...(stillOffered ? { model: before.model } : {}),
     apiKey: "",
   });
   const after = (await call("GET", "/ai/settings", admin)).json;
-  check(after?.provider === before.provider && after?.model === before.model,
-    "the school's original provider and model are back", `${after?.provider} / ${after?.model}`);
+  check(after?.provider === before.provider, "the school's original provider is back",
+    `${after?.provider} / ${after?.model}${stillOffered ? "" : " (model refreshed — the old one is superseded)"}`);
   check(after?.keySource !== "database", "and the test key is gone", after?.keySource);
 
   await prisma.$disconnect();

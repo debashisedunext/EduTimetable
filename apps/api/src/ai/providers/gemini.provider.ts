@@ -240,6 +240,32 @@ export class GeminiLlmProvider implements LlmProvider {
       .trim();
   }
 
+  /**
+   * Ask Google what this key can use. Filtered to models that support
+   * `generateContent`, which drops the embedding, text-to-speech, image and
+   * video models — none of which the assistant can drive.
+   */
+  async listModels(): Promise<Array<{ id: string; label: string }>> {
+    const res = await fetch(`${this.baseUrl}/models?pageSize=200`, {
+      headers: { "x-goog-api-key": this.apiKey },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Gemini ${res.status}: ${text.slice(0, 200).replaceAll(this.apiKey, "«key»")}`);
+    }
+    const json = (await res.json()) as {
+      models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }>;
+    };
+    return (json.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes("generateContent"))
+      .map((m) => ({
+        id: (m.name ?? "").replace(/^models\//, ""),
+        label: m.displayName || (m.name ?? "").replace(/^models\//, ""),
+      }))
+      .filter((m) => m.id.length > 0)
+      .sort((a, b) => b.id.localeCompare(a.id, "en", { numeric: true }));
+  }
+
   async ping(): Promise<{ ok: boolean; detail?: string }> {
     const res = await this.call(
       "generateContent",

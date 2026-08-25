@@ -70,6 +70,15 @@ export interface LlmProvider {
 
   /** The §13.2 "Test Connection" ping: cheapest possible round trip. */
   ping(): Promise<{ ok: boolean; detail?: string }>;
+
+  /**
+   * The models this key can actually use, asked of the provider.
+   *
+   * Optional because not every provider exposes one. Where it exists it is the
+   * authority — a hardcoded list is only ever as current as whoever last edited
+   * it, and providers ship models faster than that.
+   */
+  listModels?(): Promise<Array<{ id: string; label: string }>>;
 }
 
 /** Cost estimation is per provider; these are list prices, indicative only. */

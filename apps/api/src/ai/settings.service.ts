@@ -13,7 +13,14 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { decryptSecret, encryptSecret, maskKey } from "../common/crypto.util";
-import { PROVIDERS, createProvider, envKeyFor, providerInfo, type LlmProvider } from "./providers";
+import {
+  PROVIDERS,
+  createProvider,
+  envKeyFor,
+  priceFor,
+  providerInfo,
+  type LlmProvider,
+} from "./providers";
 
 export interface AiFeatures {
   chat: boolean;
@@ -170,6 +177,37 @@ export class AiSettingsService {
     }
   }
 
+  /**
+   * The models this school's key can actually use, asked of the provider.
+   *
+   * Falls back to the catalogue when there is no key or the provider cannot be
+   * reached, and says which it returned — a stale hardcoded list quietly
+   * standing in for the real one is how the screen came to offer Gemini 2.5
+   * months after 3.x shipped.
+   */
+  async listModels(schoolId: number): Promise<{
+    source: "provider" | "catalogue";
+    models: Array<{ id: string; label: string }>;
+    error?: string;
+  }> {
+    const info = providerInfo((await this.raw(schoolId))?.provider);
+    const fallback = { source: "catalogue" as const, models: info.models.map(({ id, label }) => ({ id, label })) };
+    let provider: LlmProvider | null;
+    try {
+      provider = await this.client(schoolId);
+    } catch (e) {
+      return { ...fallback, error: (e as Error).message };
+    }
+    if (!provider?.listModels) return fallback;
+    try {
+      const models = await provider.listModels();
+      return models.length > 0 ? { source: "provider", models } : fallback;
+    } catch (e) {
+      const key = (await this.resolveKey(schoolId)) ?? "";
+      return { ...fallback, error: (e as Error).message.replaceAll(key, "«key»") };
+    }
+  }
+
   private monthStart(): Date {
     const now = new Date();
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -192,9 +230,12 @@ export class AiSettingsService {
     ]);
     const inputTokens = agg._sum.inputTokens ?? 0;
     const outputTokens = agg._sum.outputTokens ?? 0;
-    // List price of the configured provider's flagship model — indicative only,
-    // and wrong for a school that switched provider mid-month.
-    const { price } = providerInfo((await this.raw(schoolId))?.provider);
+    // List price of the configured provider AND model — a lite model can be
+    // five times cheaper than its flagship, so a per-provider figure would be
+    // badly wrong. Indicative only, and still wrong for a school that changed
+    // model mid-month.
+    const s = await this.raw(schoolId);
+    const price = priceFor(s?.provider, s?.model);
     const estimatedCostUsd =
       (inputTokens / 1_000_000) * price.inputPerMillionUsd +
       (outputTokens / 1_000_000) * price.outputPerMillionUsd;
