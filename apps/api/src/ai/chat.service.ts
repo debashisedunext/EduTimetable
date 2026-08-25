@@ -1,7 +1,11 @@
 /**
- * §13.1/13.3 — the AI Gateway: conversation state, the Anthropic tool-use loop
- * with streaming and adaptive thinking, grounded-answers-only prompting, and
- * per-message audit logging with token counts.
+ * §13.1/13.3 — the AI Gateway: conversation state, a provider-neutral tool-use
+ * loop with streaming, grounded-answers-only prompting, and per-message audit
+ * logging with token counts.
+ *
+ * The loop is expressed in the ./providers contract, not in any one vendor's
+ * message shape, so the same grounding prompt, the same whitelisted tools and
+ * the same audit trail apply whether the school chose Claude or Gemini.
  *
  * Hard rules encoded here:
  *  - the model receives NO scope arguments; the gateway injects school + view
@@ -10,11 +14,11 @@
  *  - every turn is written to ai_chat_log with the tools it actually ran.
  */
 import { Injectable, Logger } from "@nestjs/common";
-import type Anthropic from "@anthropic-ai/sdk";
 import { PERMISSIONS, type Permission, type ViewScope } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { AiSettingsService } from "./settings.service";
 import { AiToolsService, TOOL_DEFS, type ToolContext } from "./tools";
+import type { LlmMessage, LlmToolResult } from "./providers";
 
 export interface AskParams {
   schoolId: number;
@@ -76,8 +80,8 @@ export class AiChatService {
     private readonly tools: AiToolsService,
   ) {}
 
-  /** Replay a stored conversation as Anthropic messages (user/assistant text only). */
-  private async history(conversationId: string, schoolId: number): Promise<Anthropic.MessageParam[]> {
+  /** Replay a stored conversation (user/assistant text only, no tool traffic). */
+  private async history(conversationId: string, schoolId: number): Promise<LlmMessage[]> {
     const rows = await this.prisma.aiChatLog.findMany({
       where: { conversationId, schoolId, role: { in: ["user", "assistant"] } },
       orderBy: { id: "asc" },
@@ -85,12 +89,16 @@ export class AiChatService {
     });
     return rows
       .filter((r) => (r.content ?? "").trim().length > 0)
-      .map((r) => ({ role: r.role === "user" ? "user" : "assistant", content: r.content as string }) as Anthropic.MessageParam);
+      .map((r) =>
+        r.role === "user"
+          ? ({ role: "user", text: r.content as string } as const)
+          : ({ role: "assistant", text: r.content as string } as const),
+      );
   }
 
   async ask(p: AskParams, events: AskEvents): Promise<{ answer: string; tools: string[] }> {
-    const resolved = await this.settings.client(p.schoolId);
-    if (!resolved) {
+    const provider = await this.settings.client(p.schoolId);
+    if (!provider) {
       throw new Error(
         "No AI provider key is configured. An administrator can add one on the AI Settings screen (Intelligence → AI Settings).",
       );
@@ -104,9 +112,9 @@ export class AiChatService {
     };
     const toolDefs = TOOL_DEFS.filter((t) => t.name !== "generateReport" || ctx.canReport);
 
-    const messages: Anthropic.MessageParam[] = [
+    const messages: LlmMessage[] = [
       ...(await this.history(p.conversationId, p.schoolId)),
-      { role: "user", content: p.question },
+      { role: "user", text: p.question },
     ];
     await this.settings.log({
       schoolId: p.schoolId,
@@ -122,39 +130,31 @@ export class AiChatService {
     let outputTokens = 0;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const stream = resolved.client.messages.stream({
-        model: resolved.model,
-        max_tokens: 4096,
-        thinking: { type: "adaptive" },
-        system: systemPrompt(p),
-        tools: toolDefs as unknown as Anthropic.Tool[],
-        messages,
-      });
+      const turn = await provider.streamChat(
+        {
+          system: systemPrompt(p),
+          messages,
+          tools: toolDefs,
+          maxTokens: 4096,
+        },
+        (delta) => {
+          answer += delta;
+          events.onDelta(delta);
+        },
+      );
+      inputTokens += turn.usage.inputTokens;
+      outputTokens += turn.usage.outputTokens;
+      messages.push({ role: "assistant", text: turn.text, toolCalls: turn.toolCalls });
 
-      stream.on("text", (delta) => {
-        answer += delta;
-        events.onDelta(delta);
-      });
+      if (turn.toolCalls.length === 0) break;
 
-      const final = await stream.finalMessage();
-      inputTokens += final.usage.input_tokens;
-      outputTokens += final.usage.output_tokens;
-
-      if (final.stop_reason !== "tool_use") {
-        messages.push({ role: "assistant", content: final.content });
-        break;
-      }
-
-      messages.push({ role: "assistant", content: final.content });
-      const results: Anthropic.ToolResultBlockParam[] = [];
-
-      for (const block of final.content) {
-        if (block.type !== "tool_use") continue;
-        const args = (block.input ?? {}) as Record<string, any>;
+      const results: LlmToolResult[] = [];
+      for (const call of turn.toolCalls) {
+        const args = call.args ?? {};
         let ok = true;
         let payload: unknown;
         try {
-          payload = await this.tools.execute(block.name, args, ctx, p.timetableConfigId);
+          payload = await this.tools.execute(call.name, args, ctx, p.timetableConfigId);
           if (payload && typeof payload === "object" && (payload as any).reportCard) {
             events.onCard(payload as Record<string, unknown>);
           }
@@ -162,10 +162,10 @@ export class AiChatService {
           ok = false;
           payload = { error: (e as Error).message };
         }
-        toolsUsed.push({ name: block.name, args });
+        toolsUsed.push({ name: call.name, args });
         const text = JSON.stringify(payload);
         events.onTool({
-          name: block.name,
+          name: call.name,
           args,
           ok,
           summary: ok ? `${text.length.toLocaleString()} bytes` : String((payload as any).error),
@@ -176,16 +176,16 @@ export class AiChatService {
           conversationId: p.conversationId,
           role: "tool",
           content: text.slice(0, 20_000),
-          toolsCalled: [{ name: block.name, args, ok }],
+          toolsCalled: [{ name: call.name, args, ok }],
         });
         results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
+          id: call.id,
+          name: call.name,
           content: text.slice(0, 60_000),
-          ...(ok ? {} : { is_error: true }),
+          ...(ok ? {} : { isError: true }),
         });
       }
-      messages.push({ role: "user", content: results });
+      messages.push({ role: "tool", results });
     }
 
     await this.settings.log({
@@ -199,7 +199,8 @@ export class AiChatService {
       outputTokens,
     });
     this.logger.log(
-      `conversation ${p.conversationId}: ${toolsUsed.length} tool call(s), ${inputTokens} in / ${outputTokens} out`,
+      `conversation ${p.conversationId} [${provider.id}/${provider.model}]: ` +
+        `${toolsUsed.length} tool call(s), ${inputTokens} in / ${outputTokens} out`,
     );
     return { answer, tools: toolsUsed.map((t) => t.name) };
   }

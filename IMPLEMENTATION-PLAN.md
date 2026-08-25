@@ -208,6 +208,14 @@ Phase 0 ──▶ Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 
 | 7.7 | Safety & adversarial tests | Prompt-injection attempts cannot escape tool scope or reach other schools' data; a user without `ai.chat` is rejected at the socket layer even with a hand-crafted request; key never appears in logs/responses; budget cutoff banner works |
 | 7.8 | Evaluation pass | Question bank (~50 real admin questions) scored for groundedness — every numeric claim traceable to a tool result shown in the trace |
 
+> **Provider abstraction (post-Phase-7, §13.2): ✅ Google Gemini wired.** The chat gateway spoke Anthropic's message shape directly, which made "choose your provider" a dropdown that could only really pick one thing. `apps/api/src/ai/providers/` now defines a vendor-neutral contract (system prompt, turn history, whitelisted tools, streamed text, token counts) that the gateway drives, with an adapter per vendor. **Anthropic and Google are both wired**; OpenAI and Azure are catalogued but say plainly they are not.
+>
+> Gemini talks the Generative Language REST API directly (`fetch` + SSE) rather than through an SDK — the needed surface is four stable things, and it avoids a second SDK's major versions to track. Two differences the adapter absorbs: Gemini has **no tool-call ids** (it correlates by function name, so ids are synthesised), and it takes a **stricter schema dialect** — `minimum`/`maximum`/`additionalProperties` are rejected outright, and one of them fails the *whole* request, taking the entire tool registry down rather than one tool. §13.1's definitions use some of those, so they are translated (a numeric range moves into the description, which is what steers the model anyway) and unit-tested against the real registry.
+>
+> Also: keys and env-var fallbacks are per provider (`GEMINI_API_KEY` / `GOOGLE_API_KEY` alongside `ANTHROPIC_API_KEY`), switching provider resets the model to that provider's default (a Claude model against Gemini fails confusingly), the readiness-explanation path (§5.7) routes through the same abstraction so it works on Gemini too, and the env-only `ai/provider.ts` is retired.
+>
+> Verified: `scripts/ai-providers-smoke.cjs` (22 live checks) — the decisive one stores an invalid Gemini key and asserts the error that comes back is **Google's own** ("API key not valid"), proving the request really went to `generativelanguage.googleapis.com` and not quietly to Anthropic. Plus 12 unit tests pinning the schema and message translation (**75 api / 111 shared passing**), every prior suite green, lint clean, web build passing.
+
 **Exit criteria:** a Timetable Admin can ask load/availability/utilization questions and get correct, traceable, streamed answers; can export a report from chat; a Teacher without permission sees nothing and is server-side blocked; Super Admin rotates the API key and adjusts the role matrix without a deploy.
 
 ---

@@ -9,7 +9,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { ReadinessService } from "../readiness/readiness.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
-import { AnthropicProvider } from "./provider";
+import { AiSettingsService } from "./settings.service";
 
 const SYSTEM = `You explain school-timetabling feasibility results to a non-technical school administrator.
 Rules:
@@ -23,12 +23,12 @@ Rules:
 export class ExplainController {
   constructor(
     private readonly readiness: ReadinessService,
-    private readonly provider: AnthropicProvider,
+    private readonly settings: AiSettingsService,
   ) {}
 
   @Post("explain-readiness")
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
-  async explainReadiness(@Req() _req: AuthedRequest, @Body() body: any) {
+  async explainReadiness(@Req() req: AuthedRequest, @Body() body: any) {
     const configId = toInt(body?.configId, "configId");
     const result = await this.readiness.getReadiness(configId);
     if (result.ready && result.blockers.length === 0) {
@@ -43,15 +43,18 @@ export class ExplainController {
       ...result.blockers.map((b, i) => `${i + 1}. ${b.message}`),
       ...(result.warnings.length > 0 ? [`Warnings (non-blocking): ${result.warnings.map((w) => w.message).join(" ")}`] : []),
     ].join("\n");
-    if (!this.provider.available()) {
+    // Whichever provider the school configured (§13.2) — Claude, Gemini, or
+    // none, in which case the engine's own text is already the answer.
+    const provider = await this.settings.client(req.user.schoolId);
+    if (!provider) {
       return { source: "template", text: template };
     }
     try {
-      const text = await this.provider.complete(
+      const text = await provider.complete(
         SYSTEM,
         JSON.stringify({ score: result.score, blockers: result.blockers, warnings: result.warnings }),
       );
-      return { source: "llm", text };
+      return { source: "llm", provider: provider.id, model: provider.model, text };
     } catch {
       return { source: "template", text: template };
     }

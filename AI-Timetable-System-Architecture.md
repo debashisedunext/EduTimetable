@@ -946,8 +946,20 @@ CREATE TABLE ai_chat_log (                      -- full audit trail, required
 );
 ```
 
-- **Default & recommended provider:** Anthropic via the official `@anthropic-ai/sdk` (TypeScript), model `claude-opus-5`, adaptive thinking enabled (`thinking: {type: "adaptive"}`), streaming on. The provider abstraction is a thin interface (`chat(messages, tools) → stream`) so other providers plug in behind the same tool contract.
-- **"Test Connection"** on the settings screen fires a 1-token ping with the entered key before saving; the key is write-only in the UI (masked, never echoed back).
+- **Default & recommended provider:** Anthropic via the official `@anthropic-ai/sdk` (TypeScript), model `claude-opus-5`, adaptive thinking enabled (`thinking: {type: "adaptive"}`), streaming on.
+
+- **The provider abstraction is real, not aspirational.** `apps/api/src/ai/providers/` defines a vendor-neutral contract — system prompt, turn history, whitelisted tools, streamed text, token counts — and the chat gateway drives conversations in those terms rather than in any one vendor's message shape. Each adapter translates to and from its own wire format; anything a single provider does uniquely (Anthropic's thinking blocks, Gemini's safety settings) stays inside its adapter. The same grounding prompt, the same §13.1 tool registry and the same audit trail therefore apply whichever provider a school picks.
+
+  `providers/index.ts` is the single catalogue — which providers are wired, their models, their environment-variable fallbacks and their list prices. `GET /ai/settings` returns it, so the AI Settings screen cannot drift from what the gateway actually speaks, and adding a provider is an adapter plus one entry.
+
+- **Wired today: Anthropic (Claude) and Google (Gemini).** OpenAI and Azure OpenAI are listed and selectable but marked "not yet wired"; choosing one stores the setting and the screen says plainly that the key will not be used.
+
+- **Google Gemini** talks the Generative Language REST API directly (`fetch`, SSE streaming) rather than through an SDK — the surface needed is four stable things (system instruction, contents, function declarations, streaming), and it keeps the api image free of another dependency to track alongside Anthropic's. Two differences the adapter absorbs:
+  - **No tool-call ids.** Gemini correlates a `functionCall` with its `functionResponse` by function *name*; ids are synthesised so the neutral contract still holds.
+  - **A stricter schema dialect.** Function parameters are an OpenAPI 3.0 subset, not full JSON Schema: `minimum`, `maximum` and `additionalProperties` are rejected outright, and a single one of them fails the *whole* request — taking the entire tool registry down, not one tool. §13.1's definitions use some of those, so they are translated rather than dropped: a numeric range moves into the description, which is what actually steers the model. An `OBJECT` with empty `properties` (the no-argument tools) omits the key entirely. Unit-tested against the real registry.
+
+- **Keys are per provider.** Whichever key a school stores is used for its chosen provider; with none stored, the fallback is that provider's own environment variable (`ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) and the screen names which one it found. Switching provider without naming a model resets the model to the new provider's default — a Claude model left selected against Gemini fails at the first request with a confusing "model not found".
+- **"Test Connection"** on the settings screen fires the cheapest round trip the chosen provider offers, with the entered key, before saving; the key is write-only in the UI (masked, never echoed back) and is stripped from any error text the provider returns. Verified by `scripts/ai-providers-smoke.cjs`, which stores a deliberately invalid Gemini key and asserts the failure that comes back is *Google's own message* — proof the request really went to Google and not quietly to Anthropic.
 - **Cost visibility:** the settings screen shows month-to-date tokens/queries/estimated cost from `ai_chat_log` aggregates; crossing `monthly_token_budget` disables chat with an explanatory banner (admins with `ai.configure` can raise it).
 - Same LLM plumbing serves the earlier LLM use cases (§5.7): conflict explanations, NL data entry (still confirmation-gated), substitute rationales — each individually toggleable in `features`.
 

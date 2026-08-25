@@ -7,8 +7,16 @@ interface Usage {
   since: string; inputTokens: number; outputTokens: number; totalTokens: number;
   conversations: number; questions: number; estimatedCostUsd: number;
 }
+interface ProviderCatalogEntry {
+  id: string; label: string; implemented: boolean; defaultModel: string;
+  models: Array<{ id: string; label: string }>; envKeys: string[];
+}
 interface Settings {
   provider: string; model: string; apiBaseUrl: string | null;
+  /** The server's catalogue — which providers are wired and what models each
+   *  offers. Kept there, not here, so adding one is a single change (§13.2). */
+  providers: ProviderCatalogEntry[];
+  envKeyName: string | null;
   monthlyTokenBudget: number | null;
   features: { chat: boolean; reports: boolean; nl_data_entry: boolean; conflict_explain: boolean };
   isActive: boolean; hasKey: boolean; keySource: string; keyHint: string | null;
@@ -23,14 +31,12 @@ const AI_PERMS = [
 ];
 
 /** Where each provider issues API keys, so an admin never has to go hunting.
- *  `implemented` reflects what the gateway actually speaks today — the chat
- *  loop is Anthropic-only; the others are listed because the provider
- *  abstraction is in place, not because they are wired. */
-const PROVIDERS = [
+ *  Whether a provider is actually wired comes from the server's catalogue, not
+ *  from here — this is only the "where do I get a key" guidance. */
+const KEY_SOURCES = [
   {
     value: "anthropic",
     label: "Anthropic (Claude)",
-    implemented: true,
     keyUrl: "https://console.anthropic.com/settings/keys",
     keyLabel: "Anthropic Console → Settings → API Keys",
     keyPrefix: "sk-ant-…",
@@ -39,7 +45,6 @@ const PROVIDERS = [
   {
     value: "openai",
     label: "OpenAI",
-    implemented: false,
     keyUrl: "https://platform.openai.com/api-keys",
     keyLabel: "OpenAI Platform → API keys",
     keyPrefix: "sk-…",
@@ -48,7 +53,6 @@ const PROVIDERS = [
   {
     value: "google",
     label: "Google (Gemini)",
-    implemented: false,
     keyUrl: "https://aistudio.google.com/apikey",
     keyLabel: "Google AI Studio → Get API key",
     keyPrefix: "AIza…",
@@ -57,7 +61,6 @@ const PROVIDERS = [
   {
     value: "azure_openai",
     label: "Azure OpenAI",
-    implemented: false,
     keyUrl: "https://portal.azure.com/#browse/Microsoft.CognitiveServices%2Faccounts",
     keyLabel: "Azure Portal → your Azure OpenAI resource → Keys and Endpoint",
     keyPrefix: "32-char hex",
@@ -120,7 +123,9 @@ export function AiSettings() {
     } catch (e) { setError(asMessage(e)); load(); }
   };
 
-  const provider = PROVIDERS.find((p) => p.value === s.provider);
+  const catalogue = s.providers.find((p) => p.id === s.provider);
+  const provider = KEY_SOURCES.find((p) => p.value === s.provider);
+  const wired = catalogue?.implemented ?? false;
   const budgetPct = s.monthlyTokenBudget
     ? Math.min(100, Math.round((s.usage.totalTokens / s.monthlyTokenBudget) * 100))
     : 0;
@@ -146,34 +151,42 @@ export function AiSettings() {
               <div className="field">
                 <label>Provider</label>
                 <select style={inputStyle} value={s.provider} onChange={(e) => save({ provider: e.target.value }, "Provider updated")}>
-                  {PROVIDERS.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label}{p.value === "anthropic" ? " — recommended" : " — not yet wired"}
+                  {s.providers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                      {p.id === "anthropic" ? " — recommended" : p.implemented ? "" : " — not yet wired"}
                     </option>
                   ))}
                 </select>
               </div>
               <div className="field">
                 <label>Model</label>
+                {/* Models follow the provider — a Claude model selected against
+                    Gemini would fail at the first request. Switching provider
+                    resets this to that provider's default, server-side. */}
                 <select style={inputStyle} value={s.model} onChange={(e) => save({ model: e.target.value }, "Model updated")}>
-                  <option value="claude-opus-5">claude-opus-5</option>
-                  <option value="claude-sonnet-5">claude-sonnet-5</option>
-                  <option value="claude-haiku-4-5-20251001">claude-haiku-4.5</option>
+                  {(catalogue?.models ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                  {catalogue && !catalogue.models.some((m) => m.id === s.model) && (
+                    <option value={s.model}>{s.model} (custom)</option>
+                  )}
                 </select>
               </div>
             </div>
             {provider && (
               <div style={{
                 display: "flex", gap: 10, alignItems: "flex-start", padding: "11px 13px", marginBottom: 14,
-                background: provider.implemented ? "var(--steel-pale)" : "var(--amber-bg)",
-                border: `1px solid ${provider.implemented ? "var(--steel-light)" : "var(--amber)"}`,
+                background: wired ? "var(--steel-pale)" : "var(--amber-bg)",
+                border: `1px solid ${wired ? "var(--steel-light)" : "var(--amber)"}`,
                 borderRadius: 9,
               }}>
-                <div style={{ fontSize: 15 }}>{provider.implemented ? "🔑" : "⚠"}</div>
+                <div style={{ fontSize: 15 }}>{wired ? "🔑" : "⚠"}</div>
                 <div style={{ flex: 1, fontSize: 11.5, lineHeight: 1.55, color: "var(--ink-soft)" }}>
-                  {!provider.implemented && (
+                  {!wired && (
                     <div style={{ fontWeight: 700, color: "var(--amber)", marginBottom: 3 }}>
-                      The assistant currently speaks Anthropic only — a {provider.label} key will be stored but not used yet.
+                      The assistant does not speak {provider.label} yet — a key will be stored but not used.
+                      Anthropic (Claude) and Google (Gemini) are both wired.
                     </div>
                   )}
                   <div>
@@ -182,6 +195,12 @@ export function AiSettings() {
                     {" "}· keys look like <span className="mono">{provider.keyPrefix}</span>
                   </div>
                   <div style={{ color: "var(--ink-faint)", marginTop: 2 }}>{provider.hint}</div>
+                  {s.keySource === "environment" && s.envKeyName && (
+                    <div style={{ color: "var(--ink-faint)", marginTop: 2 }}>
+                      Currently using the <span className="mono">{s.envKeyName}</span> environment
+                      variable. A key saved here takes precedence over it.
+                    </div>
+                  )}
                 </div>
               </div>
             )}
