@@ -21,6 +21,7 @@ import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
 import { AiSettings } from "./pages/AiSettings";
 import { ImportMasters } from "./pages/ImportMasters";
+import { SchoolProfile } from "./pages/SchoolProfile";
 
 /** Captures the session token from the SSO redirect fragment (§15.1). */
 function SsoCapture() {
@@ -126,6 +127,7 @@ export default function App() {
           <Route path="/my-classes" element={<MyClasses />} />
           <Route path="/ask-ai" element={<AskAi />} />
           <Route path="/ai-settings" element={<AiSettings />} />
+          <Route path="/school" element={<SchoolProfile me={me} />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />

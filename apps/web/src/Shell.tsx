@@ -62,7 +62,10 @@ const NAV: NavGroup[] = [
   },
   {
     label: "Administration",
-    items: [{ label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE }],
+    items: [
+      { label: "School Profile", to: "/school", requires: PERMISSIONS.MASTERS_MANAGE },
+      { label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE },
+    ],
   },
   {
     label: "System",
@@ -87,6 +90,7 @@ const TITLES: Record<string, [string, string]> = {
   "/my-classes": ["My Timetable", "My Classes"],
   "/ask-ai": ["Intelligence", "Ask AI"],
   "/ai-settings": ["Intelligence", "AI Settings"],
+  "/school": ["Administration", "School Profile"],
   "/roles": ["Administration", "Roles & Access"],
   "/system": ["System", "Status & Jobs"],
 };
@@ -170,7 +174,15 @@ function SchoolPicker({ me }: { me: MeResponse }) {
           ))}
         </select>
       ) : (
-        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--brand-deep)", padding: "5px 0" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700, fontSize: 13, color: "var(--brand-deep)", padding: "5px 0" }}>
+          {me.school.logoUrl && (
+            <img
+              src={me.school.logoUrl}
+              alt=""
+              style={{ width: 18, height: 18, objectFit: "contain", borderRadius: 4 }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            />
+          )}
           {me.school.name}
         </span>
       )}
@@ -226,12 +238,26 @@ export function Shell({ me }: { me: MeResponse }) {
     <div className="app">
       <nav className="sidebar">
         <div className="brand">
-          <div className="brand-mark">
-            <span /><span /><span /><span />
-          </div>
-          <div>
+          {/* The school's own logo when it has one (§17.4), falling back to the
+              product mark. `onError` hides a URL the browser cannot reach so a
+              broken image never sits in the sidebar. */}
+          {me.school.logoUrl ? (
+            <img
+              src={me.school.logoUrl}
+              alt=""
+              className="brand-logo"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : (
+            <div className="brand-mark">
+              <span /><span /><span /><span />
+            </div>
+          )}
+          <div style={{ minWidth: 0 }}>
             <div className="brand-name">Timetable AI</div>
-            <div className="brand-sub">Edunext ERP</div>
+            <div className="brand-sub" title={me.school.name}>
+              {me.school.shortName || me.school.name}
+            </div>
           </div>
         </div>
         <div className="sidebar-nav">

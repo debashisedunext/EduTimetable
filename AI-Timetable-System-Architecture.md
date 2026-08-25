@@ -1271,7 +1271,17 @@ Commands: `pnpm migrate:control`, `pnpm generate:control`, `pnpm seed:control` �
 
 Because the server takes the school from the session and never from a request body, "create a timetable for another school" means *being* in that school: the Timetables screen offers the school alongside the name, switches first, then creates. There is no way to create a timetable somewhere you are not.
 
-`GET /me` carries the active school, the switchable list and the trust, so the top bar names the school and shows a switcher only when there is more than one.
+`GET /me` carries the active school, the switchable list and the trust, so the top bar names the school and shows a switcher only when there is more than one. The sidebar shows the school's own logo in place of the product mark when one is set, with its short name beneath — and hides a logo URL the browser cannot reach rather than leaving a broken image in the chrome.
+
+**School Profile** (Administration → School Profile, `masters.manage`) is where the local settings live, and its job is to be honest about a split that is otherwise invisible:
+
+| Field | Owner |
+|---|---|
+| `code` | ERP — not editable at all: it is what an incoming sign-in is matched against, so changing it would lock the school's own users out |
+| `name` | ERP — editable, but refreshed from the token on every sign-in, and the screen says so |
+| short name, logo, address, timezone | **local** — only overwritten when the ERP explicitly sends them, so what an admin sets here sticks |
+
+Showing an editable name with no warning would be the worst of both worlds: the admin renames the school, signs in again, and it silently reverts. That ownership split is asserted by `scripts/sso-schools-smoke.cjs`, which sets the local fields, signs in again with a token carrying only code and name, and checks the ERP's name won while the short name, logo, timezone and address survived untouched.
 
 ### 17.5 Connection routing (9.4, implemented)
 

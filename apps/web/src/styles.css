@@ -51,7 +51,16 @@ button { font-family: inherit; cursor: pointer; }
 }
 .brand-mark span { background: var(--brand-deep); border-radius: 1px; }
 .brand-name { font-family: var(--font-display); font-weight: 700; font-size: 16.5px; color: #fff; line-height: 1.1; }
-.brand-sub { font-size: 10px; color: var(--steel); letter-spacing: 0.06em; text-transform: uppercase; }
+.brand-sub {
+  font-size: 10px; color: var(--steel); letter-spacing: 0.06em; text-transform: uppercase;
+  /* the school's name goes here (§17.4) and can be long — the sidebar is 236px */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+}
+/* a school's own logo, standing in for the product mark when one is set */
+.brand-logo {
+  width: 30px; height: 30px; object-fit: contain; border-radius: 7px;
+  background: #fff; padding: 2px; flex-shrink: 0;
+}
 .nav-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: #6b84a8; margin: 16px 10px 6px; }
 .nav-item {
   display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 8px; color: #c4d4ea;

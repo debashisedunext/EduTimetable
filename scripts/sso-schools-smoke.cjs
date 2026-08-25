@@ -142,6 +142,46 @@ async function call(method, path, token, body) {
   check(Array.isArray(roomsHere.json) && roomsHere.json.length === 0,
     "it sees the new school's data, not the old school's", `${roomsHere.json?.length} room(s)`);
 
+  // ------------------------------------------- 4b. what the ERP does NOT own
+  // The School Profile screen tells the admin that name and code come from the
+  // ERP, while short name / logo / address / timezone are local and will stick.
+  // That is a promise about behaviour, so it gets a test.
+  console.log("\nLocal presentation survives a sign-in; ERP-owned identity does not:");
+  const sess = switched.json?.sessionToken;
+  const presentation = await call("PUT", "/school", sess, {
+    shortName: `${P}-SB`,
+    logoUrl: "https://example.test/logo.png",
+    address: "12 Test Road",
+    timezone: "Asia/Dubai",
+  });
+  check(presentation.status === 200, "an admin can set the local presentation fields", `${presentation.status}`);
+
+  // Sign in again with a token that carries ONLY code and name — the shape a
+  // typical ERP sends.
+  const again = await signIn({
+    erpUserId: `${P}-admin`, erpRole: "ADMIN", name: "Trust Admin", email: "ta@zz.test",
+    school: { code: CODES[1], name: `${P} Second Branch RENAMED` },
+    trust: TRUST,
+    schools: [
+      { code: CODES[0], name: `${P} Renamed By ERP` },
+      { code: CODES[1], name: `${P} Second Branch RENAMED` },
+      { code: CODES[2], name: `${P} Third Branch` },
+    ],
+  });
+  const after = await prisma.school.findUnique({ where: { code: CODES[1] } });
+  check(after?.name === `${P} Second Branch RENAMED`,
+    "the ERP's name wins, as the screen warns it will", after?.name);
+  check(after?.shortName === `${P}-SB` && after?.logoUrl === "https://example.test/logo.png",
+    "but the local short name and logo are untouched", `${after?.shortName} · ${after?.logoUrl}`);
+  check(after?.timezone === "Asia/Dubai" && after?.address === "12 Test Road",
+    "and so are timezone and address", `${after?.timezone}`);
+
+  // The shell renders the logo and short name from /me, so they must reach it.
+  const meAgain = await call("GET", "/me", again.token);
+  check(meAgain.json?.school?.logoUrl === "https://example.test/logo.png",
+    "/me carries the logo the sidebar renders", meAgain.json?.school?.logoUrl);
+  check(meAgain.json?.school?.shortName === `${P}-SB`, "and the short name", meAgain.json?.school?.shortName);
+
   // ------------------------------------------------------------ 5. REFUSE
   console.log("\nA school the ERP did not grant is refused:");
   const outsider = await prisma.school.findFirst({ where: { code: { not: { startsWith: P } } } });
