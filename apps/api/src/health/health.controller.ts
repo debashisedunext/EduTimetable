@@ -3,6 +3,7 @@ import type Redis from "ioredis";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
 import { REDIS } from "../redis/redis.module";
 import { Public } from "../auth/decorators";
+import { TenantConnectionsService } from "../prisma/tenant-connections.service";
 
 @Controller("health")
 export class HealthController {
@@ -10,6 +11,7 @@ export class HealthController {
     // The liveness probe is deliberately school-agnostic — it asks the pool
     // whether it is up, not what any one school can see.
     private readonly prisma: PrismaBaseService,
+    private readonly connections: TenantConnectionsService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -20,6 +22,9 @@ export class HealthController {
       this.prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false),
       this.redis.ping().then((r) => r === "PONG").catch(() => false),
     ]);
-    return { status: db && redis ? "ok" : "degraded", db, redis };
+    // Connection-pool headroom (§17.5): the budget is
+    // TENANT_MAX_CLIENTS × TENANT_POOL_LIMIT against MySQL's max_connections,
+    // so it belongs somewhere an alarm can watch it.
+    return { status: db && redis ? "ok" : "degraded", db, redis, connections: this.connections.stats() };
   }
 }

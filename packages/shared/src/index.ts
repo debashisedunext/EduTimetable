@@ -122,10 +122,19 @@ export interface SessionTokenPayload {
    */
   erpUserId?: string;
   erpRole?: string;
+  /** The control-plane tenant of the active school (§17.5). */
+  tenantId?: number | null;
   /**
-   * The schools this session may switch between, resolved to local ids at
-   * login. The switch endpoint refuses anything not in this list, so a user
-   * cannot reach a school the ERP did not grant them.
+   * Tenants this session may switch to. Tenant ids rather than school ids,
+   * because school ids repeat across databases (§17.5). The switch endpoint
+   * refuses anything not in this list, so a user cannot reach a school the ERP
+   * did not grant them.
+   */
+  grants?: number[];
+  /**
+   * The same grant, as local school ids. Used by deployments with no registry —
+   * where there are no tenant ids and every school shares one database — and by
+   * sessions issued before 9.4.
    */
   schoolIds?: number[];
 }
@@ -154,6 +163,12 @@ export * from "./import/validate";
 /** The school a session belongs to (§17, Phase 9.2). */
 export interface SessionSchool {
   id: number;
+  /**
+   * The control-plane tenant (§17.3). This — not `id` — is what identifies a
+   * school across databases: a dedicated tenant's local school id is usually 1,
+   * and so is everyone else's. null when the deployment has no registry.
+   */
+  tenantId: number | null;
   /** stable code the ERP knows this school by — the identifier that survives
    *  across databases, unlike the numeric id */
   code: string;

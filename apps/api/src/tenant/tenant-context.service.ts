@@ -21,6 +21,24 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface TenantStore {
   /** The school every scoped query is filtered to. null = unscoped. */
   schoolId: number | null;
+  /**
+   * The control-plane tenant this school belongs to (§17.3). Unlike schoolId
+   * it is unique across every database, which is what makes it the right key
+   * for the connection registry — a dedicated tenant's local school id is
+   * usually 1, and so is everyone else's.
+   */
+  tenantId?: number | null;
+  /**
+   * The database connection this context works against, resolved once per
+   * request by the connection registry (9.4).
+   *
+   * It lives here because property access on the PrismaService proxy is
+   * synchronous while opening a connection is not — so the async work happens
+   * once, up front, and the proxy only ever does a synchronous read. Absent
+   * means "the default connection", which is every shared-mode tenant and
+   * every deployment with no registry.
+   */
+  client?: unknown;
   /** users.id of the acting session, when there is one. */
   userId?: number;
   /**
@@ -72,7 +90,16 @@ export class TenantContextService {
   }
 
   /** Run `fn` scoped to one school — sockets, queue jobs, scripts, tests. */
-  runAs<T>(scope: { schoolId: number; userId?: number; origin?: string }, fn: () => T): T {
+  runAs<T>(
+    scope: {
+      schoolId: number;
+      tenantId?: number | null;
+      client?: unknown;
+      userId?: number;
+      origin?: string;
+    },
+    fn: () => T,
+  ): T {
     return this.als.run({ ...scope, schoolId: scope.schoolId }, fn);
   }
 
@@ -89,7 +116,7 @@ export class TenantContextService {
    * Fill in the school on the store the middleware already opened. Called by
    * JwtAuthGuard once the session token is verified.
    */
-  attach(schoolId: number, userId?: number): void {
+  attach(schoolId: number, userId?: number, tenantId?: number | null): void {
     const store = this.als.getStore();
     if (!store) {
       // A route reached the guard without the middleware — a wiring bug, and
@@ -101,5 +128,21 @@ export class TenantContextService {
     }
     store.schoolId = schoolId;
     store.userId = userId;
+    store.tenantId = tenantId ?? null;
+  }
+
+  /**
+   * Point the current context at a specific database connection. Called by the
+   * connection registry once the tenant's client is open (9.4); leaving it
+   * unset means the default connection.
+   */
+  bindConnection(client: unknown): void {
+    const store = this.als.getStore();
+    if (store) store.client = client;
+  }
+
+  /** The connection this context works against, or undefined for the default. */
+  connection(): unknown | undefined {
+    return this.als.getStore()?.client;
   }
 }

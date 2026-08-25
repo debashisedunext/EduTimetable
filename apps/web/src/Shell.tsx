@@ -119,6 +119,13 @@ function Bell() {
 
 
 /**
+ * A school's identity for the UI. Tenant id when there is one, because school
+ * ids repeat across databases; the school id otherwise (§17.5).
+ */
+const schoolKey = (s: { id: number; tenantId: number | null }) =>
+  s.tenantId != null ? `t${s.tenantId}` : `s${s.id}`;
+
+/**
  * Which school this session is in (§17.4).
  *
  * The name is never hardcoded here — it comes from the ERP on the SSO token and
@@ -131,11 +138,12 @@ function SchoolPicker({ me }: { me: MeResponse }) {
   const [busy, setBusy] = useState(false);
   const many = me.schools.length > 1;
 
-  const change = async (schoolId: number) => {
-    if (schoolId === me.school.id) return;
+  const change = async (key: string) => {
+    const target = me.schools.find((s) => schoolKey(s) === key);
+    if (!target || schoolKey(target) === schoolKey(me.school)) return;
     setBusy(true);
     try {
-      await switchSchool(schoolId);
+      await switchSchool(target);
       // Everything on screen belongs to the school that was active when it was
       // fetched, so replace all of it at once rather than patching pieces.
       window.location.href = "/";
@@ -151,14 +159,14 @@ function SchoolPicker({ me }: { me: MeResponse }) {
       </span>
       {many ? (
         <select
-          value={me.school.id}
+          value={schoolKey(me.school)}
           disabled={busy}
-          onChange={(e) => change(Number(e.target.value))}
+          onChange={(e) => change(e.target.value)}
           title="Switch school"
           style={{ fontWeight: 700, fontSize: 13, color: "var(--brand-deep)", border: "1px solid var(--line)", background: "#fff", borderRadius: 7, padding: "5px 9px", maxWidth: 220 }}
         >
           {me.schools.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
+            <option key={schoolKey(s)} value={schoolKey(s)}>{s.name}</option>
           ))}
         </select>
       ) : (

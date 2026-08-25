@@ -73,10 +73,18 @@ export async function apiDownload(path: string, fallbackName: string, file?: Fil
  * and every cached view belong to the school that was active when they were
  * fetched, and a full reload is the honest way to replace all of them at once.
  */
-export async function switchSchool(schoolId: number): Promise<void> {
+export async function switchSchool(target: {
+  tenantId?: number | null;
+  id: number;
+}): Promise<void> {
   const { sessionToken } = await api<{ sessionToken: string }>("/auth/switch-school", {
     method: "POST",
-    body: JSON.stringify({ schoolId }),
+    // Prefer the tenant id: it is unique across databases, while a school id is
+    // only unique within one (§17.5). Deployments with no registry have no
+    // tenant ids and fall back to the school id, which is unambiguous there.
+    body: JSON.stringify(
+      target.tenantId != null ? { tenantId: target.tenantId } : { schoolId: target.id },
+    ),
   });
   setToken(sessionToken);
 }

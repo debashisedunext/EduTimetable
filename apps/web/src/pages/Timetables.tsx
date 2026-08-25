@@ -17,7 +17,7 @@ export function Timetables({ me }: { me: MeResponse }) {
   // A trust admin may run timetables for several schools, so the school is part
   // of creating one. Defaults to the school the session is already in, which is
   // the only option for a single-school user (§17.4).
-  const [schoolId, setSchoolId] = useState(me.school.id);
+  const [target, setTarget] = useState(me.school);
   const manySchools = me.schools.length > 1;
 
   const create = async () => {
@@ -25,8 +25,8 @@ export function Timetables({ me }: { me: MeResponse }) {
       // Creating "for another school" means being in that school: the server
       // takes the school from the session, never from the request body, so
       // there is no way to create a timetable somewhere you are not (§17).
-      if (schoolId !== me.school.id) {
-        await switchSchool(schoolId);
+      if (target.id !== me.school.id || target.tenantId !== me.school.tenantId) {
+        await switchSchool(target);
         const moved = await api<{ id: number }[]>("/academic-years");
         if (moved.length === 0) {
           setError("That school has no academic year yet — its Setup Wizard starts there.");
@@ -45,7 +45,7 @@ export function Timetables({ me }: { me: MeResponse }) {
       });
       setCreating(false);
       setName("");
-      if (schoolId !== me.school.id) {
+      if (target.id !== me.school.id || target.tenantId !== me.school.tenantId) {
         // The whole page belongs to the previous school; reload into the new one.
         setCurrentId(created.id);
         window.location.href = "/setup";
@@ -77,9 +77,17 @@ export function Timetables({ me }: { me: MeResponse }) {
         <Card title="New Timetable">
           {manySchools ? (
             <Field label="School">
-              <select value={schoolId} onChange={(e) => setSchoolId(Number(e.target.value))} style={inputStyle}>
+              <select
+                value={String(target.tenantId ?? target.id)}
+                onChange={(e) =>
+                  setTarget(
+                    me.schools.find((s) => String(s.tenantId ?? s.id) === e.target.value) ?? me.school,
+                  )
+                }
+                style={inputStyle}
+              >
                 {me.schools.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                  <option key={s.tenantId ?? s.id} value={String(s.tenantId ?? s.id)}>{s.name}</option>
                 ))}
               </select>
             </Field>

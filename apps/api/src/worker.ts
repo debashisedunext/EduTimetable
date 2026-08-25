@@ -20,6 +20,7 @@ import {
 import { buildSolverInput } from "./solver/input";
 import { TenantContextService } from "./tenant/tenant-context.service";
 import { withSchoolScope } from "./prisma/school-scope";
+import { StandaloneTenantClients } from "./prisma/standalone-tenant-client";
 import { slotsKey } from "./redis/cache-keys";
 import { optimizeWithCpSat, type OptimizeOutcome } from "./solver/optimize";
 import { writeDraftSlots } from "./solver/writer";
@@ -32,7 +33,12 @@ const connection = {
 // TenantContextService has no Nest dependencies, so it is simply instantiated
 // here; each job opens a context from its own job data before touching the DB.
 const tenant = new TenantContextService();
-const prisma = withSchoolScope(new PrismaClient(), tenant);
+const sharedBase = new PrismaClient();
+const sharedScoped = withSchoolScope(sharedBase, tenant);
+// A school with its own database gets its own connection here too (9.4 / §17.5).
+// Without this, a dedicated tenant's generation would write its slots into the
+// shared database, scoped to a school id that means something else there.
+const tenants = new StandaloneTenantClients(sharedBase, sharedScoped, tenant);
 const redis = new Redis(connection);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -64,15 +70,28 @@ new Worker(
         `Solver job ${job.id} carries no schoolId — re-queue it from the Generate screen`,
       );
     }
-    console.log(`[worker] solver job ${job.id}: config ${configId} (school ${schoolId})`);
-    return tenant.runAs({ schoolId, origin: `solver job ${job.id}` }, () =>
-      solve(job, configId, schoolId),
+    const tenantId: number | null =
+      typeof job.data.tenantId === "number" ? job.data.tenantId : null;
+    console.log(
+      `[worker] solver job ${job.id}: config ${configId} (school ${schoolId}` +
+        `${tenantId !== null ? `, tenant ${tenantId}` : ""})`,
+    );
+    const prisma = await tenants.scopedFor(tenantId);
+    return tenant.runAs(
+      { schoolId, tenantId, client: prisma, origin: `solver job ${job.id}` },
+      () => solve(job, configId, schoolId, tenantId, prisma),
     );
   },
   { connection, concurrency: 1 },
 );
 
-async function solve(job: Job, configId: number, schoolId: number) {
+async function solve(
+  job: Job,
+  configId: number,
+  schoolId: number,
+  tenantId: number | null,
+  prisma: PrismaClient,
+) {
   const input = await buildSolverInput(prisma, configId);
 
   // Phase A gate (§1 design thesis): the solver only runs on proven-feasible input.
@@ -135,8 +154,10 @@ async function solve(job: Job, configId: number, schoolId: number) {
   const summary = {
     configId,
     // echoed so the API's solver-completed listener knows whose school to
-    // open a context for before writing the notification (9.1 / §17)
+    // open a context for — and which database to open it against — before
+    // writing the notification (9.1 / §17, 9.4 / §17.5)
     schoolId,
+    tenantId,
     // echoed for the §9 solver-completed notification (NotificationsService)
     userId: job.data.userId ?? undefined,
     mode,

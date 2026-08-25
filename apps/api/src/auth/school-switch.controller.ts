@@ -21,12 +21,19 @@ export class SchoolSwitchController {
   @Post("switch-school")
   async switch(
     @Req() req: { user: SessionTokenPayload },
-    @Body() body: { schoolId?: unknown },
+    @Body() body: { tenantId?: unknown; schoolId?: unknown },
   ) {
-    const target = Number(body?.schoolId);
-    if (!Number.isInteger(target) || target <= 0) {
-      throw new BadRequestException("schoolId is required");
+    // `tenantId` is the identifier that survives schools living in separate
+    // databases; `schoolId` is accepted for deployments with only one (§17.5).
+    const positive = (v: unknown) => {
+      const n = Number(v);
+      return Number.isInteger(n) && n > 0 ? n : undefined;
+    };
+    const tenantId = positive(body?.tenantId);
+    const schoolId = positive(body?.schoolId);
+    if (tenantId === undefined && schoolId === undefined) {
+      throw new BadRequestException("tenantId or schoolId is required");
     }
-    return this.auth.switchSchool(req.user, target);
+    return this.auth.switchSchool(req.user, { tenantId, schoolId });
   }
 }

@@ -80,27 +80,38 @@ export class TenantRegistryService {
   }
 
   /**
-   * Find a school by the `school_id` it uses inside its own database.
+   * By school code alone, across every ERP installation.
    *
-   * This is unambiguous only while every tenant is `shared` — under
-   * `dedicated` mode local ids repeat across databases, which is exactly why
-   * Phase 9.5 puts `tenantId` in the session token and this method goes away.
-   * Until then it returns null rather than a guess when more than one matches,
-   * so it can never resolve to the wrong school.
+   * Provisioning needs this *before* it knows which database to write to, which
+   * is why it cannot go through `resolve()` — that keys on the installation,
+   * and at provisioning time we are still working out where the school lives.
+   * Returns null when more than one installation uses the same code, so it can
+   * never resolve to the wrong one.
    */
-  async byLocalSchoolId(schoolId: number): Promise<ResolvedTenant | null> {
+  async resolveByCode(schoolCode: string): Promise<ResolvedTenant | null> {
     const client = this.control.client;
     if (!client) return null;
-    const rows = await client.tenant.findMany({ where: { localSchoolId: schoolId }, take: 2 });
+    const rows = await client.tenant.findMany({ where: { schoolCode }, take: 2 });
     if (rows.length !== 1) {
       if (rows.length > 1) {
         this.logger.warn(
-          `school_id ${schoolId} maps to ${rows.length} tenants — resolve by school code instead (§17.3)`,
+          `School code '${schoolCode}' is used by ${rows.length} ERP installations — resolve by installation instead`,
         );
       }
       return null;
     }
     return this.toResolved(rows[0]);
+  }
+
+  /** Everything the session is allowed to switch to, by tenant id (§17.5). */
+  async byIds(tenantIds: number[]): Promise<ResolvedTenant[]> {
+    const client = this.control.client;
+    if (!client || tenantIds.length === 0) return [];
+    const rows = await client.tenant.findMany({
+      where: { id: { in: tenantIds } },
+      orderBy: { displayName: "asc" },
+    });
+    return rows.map((r) => this.toResolved(r));
   }
 
   /** By platform id — used by the Platform Console and provisioning (9.3, 9.8). */

@@ -11,7 +11,8 @@
     "test": "vitest run",
     "generate:control": "prisma generate --schema prisma/control/schema.prisma",
     "migrate:control": "prisma migrate deploy --schema prisma/control/schema.prisma",
-    "seed:control": "tsx prisma/control/seed.ts"
+    "seed:control": "tsx prisma/control/seed.ts",
+    "tenant:create": "tsx prisma/control/create-tenant.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

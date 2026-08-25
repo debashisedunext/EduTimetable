@@ -1250,12 +1250,32 @@ Because the server takes the school from the session and never from a request bo
 
 `GET /me` carries the active school, the switchable list and the trust, so the top bar names the school and shows a switcher only when there is more than one.
 
-### 17.5 Connection routing (9.3–9.4, planned)
+### 17.5 Connection routing (9.4, implemented)
 
-`PrismaService` resolves its connection from the tenant context through a bounded LRU of clients, subject to `active_tenants × connection_limit ≤ max_connections`. Per-instance ERP key verification — selecting the public key by the token's `kid`, the property that stops one ERP minting tokens for another's school — lands with it. Until then a `dedicated` tenant is refused rather than silently served from the shared database: quietly reading the wrong school's data is a far worse failure than a clear "not supported here yet".
+A school in `shared` mode lives in the application database and is separated by `school_id`; a school in `dedicated` mode has its own database and its own credentials. One deployment serves both, and which one a request reaches is decided by the tenant registry, not by configuration.
+
+**`PrismaService` is not a connection — it is a pointer.** It is a proxy whose every property access resolves against the tenant context. This is what let 9.4 change *where* queries go without touching any of the ~40 classes that inject it: `this.prisma.room.findMany()` compiles and runs exactly as it did in Phase 1. The lookup is deliberately synchronous, a Map read; the async work — resolving the tenant, decrypting its URL, opening a pool — happens once per request in `JwtAuthGuard`, which binds the resolved client to the context.
+
+**Tenant id, not school id, is the routing key.** A dedicated tenant's local `school_id` is usually 1 — and so is everyone else's. That collision is not hypothetical: `pnpm tenant:create` produces exactly it, and the 9.4 smoke test is built around it, because a routing bug would not error. Every query would succeed against the wrong database and return plausible data. The session token therefore carries `tenantId` and the grant list is tenant ids; `POST /auth/switch-school` takes a `tenantId` and refuses a bare `schoolId` as ambiguous whenever the session spans tenants.
+
+**Connections are bounded**, because every open client holds a pool and `open_clients × connection_limit ≤ MySQL max_connections` is a real constraint. The registry enforces a hard cap (`TENANT_MAX_CLIENTS`, default 20), sets each tenant's pool size itself rather than trusting whatever was typed into a URL (`TENANT_POOL_LIMIT`, default 5), evicts the least-recently-used client past the cap, closes idle ones (`TENANT_IDLE_MS`, default 10 min), and coalesces concurrent opens for the same tenant. `GET /health` reports the budget and the open clients so an alarm can watch it rather than a stall discovering it.
+
+**Everything that writes routes**, not just the request path: the solver worker resolves its own connection from the job's `tenantId` (a dedicated tenant's generation writing into the shared database would produce slots nobody can see), and so does the solver-completed notification listener. Each tenant client is wrapped in the 9.1 scoping extension as well — a dedicated database is not a reason to stop filtering by `school_id`.
+
+**Per-installation ERP keys.** A single `ERP_PUBLIC_KEY` is fine with one ERP and wrong with two: any installation holding it could mint a token for any school. `erp_instances` holds one key per installation and a token selects its own by the `kid` in its JWT header (or its `iss` claim). A token naming a `kid` that is not registered is **rejected**, never silently fallen back to the global key — falling back is precisely how one installation would end up trusted to sign for another's schools. Choosing the key from unauthenticated header data is safe: it only decides which public key to try, and the signature check is what grants anything.
+
+**Provisioning a dedicated school is an operator command, not an API call** — creating a database carries credentials and is nothing a login should trigger implicitly:
+
+```
+pnpm --filter @edutimetable/api tenant:create --code SCH-042 --name "St. Xavier's High School"
+```
+
+It creates the database, applies the application migrations, seeds the school row and its permission registry, and registers the tenant with its connection URL encrypted at rest. A school the ERP mentions that nobody has provisioned lands in the **shared** database — the safe default, since the app cannot conjure a database.
 
 ### 17.6 Verification
 
+
+`scripts/dedicated-tenant-smoke.cjs` proves connection routing against a real second database, built around the school-id collision described above: the session lands in the tenant's database, its user row and every write land there and nowhere else, neither school can see the other despite sharing a local id, a session cannot switch into an ungranted tenant, and the connection budget is reported.
 
 `scripts/sso-schools-smoke.cjs` proves the ERP owns school identity end to end: a school named on the token is created with that name and immediately usable, the same code with a new name renames it rather than duplicating, a trust token provisions every school it lists and groups them under the trust, the user switches between them and lands in the right one with that school's role, an ungranted school is refused, and a timetable created after switching belongs to the new school and is invisible from the other.
 

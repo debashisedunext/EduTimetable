@@ -18,7 +18,9 @@
  */
 import { Injectable, Logger } from "@nestjs/common";
 import { DEFAULT_ROLES, type ErpSchoolClaim, type ErpTrustClaim } from "@edutimetable/shared";
+import { PrismaClient } from "@prisma/client";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
+import { TenantConnectionsService } from "../prisma/tenant-connections.service";
 import { ControlPrismaService } from "./control-prisma.service";
 import { TenantRegistryService } from "./tenant-registry.service";
 
@@ -38,13 +40,27 @@ export class SchoolProvisioningService {
     private readonly prisma: PrismaBaseService,
     private readonly control: ControlPrismaService,
     private readonly registry: TenantRegistryService,
+    private readonly connections: TenantConnectionsService,
   ) {}
 
   /**
    * Find-or-create the school this claim describes, and refresh its details
-   * from the ERP. Returns the local `schools.id`.
+   * from the ERP.
+   *
+   * Returns both ids because they answer different questions: `schoolId` is the
+   * row inside that school's own database, `tenantId` identifies it across all
+   * of them (§17.5).
+   *
+   * A school already registered as `dedicated` is written to **its own**
+   * database, not the shared one. A school nobody has heard of is created in
+   * the shared database: the app cannot conjure a database, so moving a school
+   * to its own is a platform decision (`pnpm tenant:create`), never something a
+   * login does implicitly.
    */
-  async syncSchool(claim: ErpSchoolClaim, trust?: ErpTrustClaim): Promise<number> {
+  async syncSchool(
+    claim: ErpSchoolClaim,
+    trust?: ErpTrustClaim,
+  ): Promise<{ schoolId: number; tenantId: number | null }> {
     const code = claim.code.trim().slice(0, 40);
     const name = claim.name.trim().slice(0, 120);
     if (!code || !name) {
@@ -62,18 +78,28 @@ export class SchoolProvisioningService {
       ...(trust ? { trustCode: trust.code.slice(0, 40), trustName: trust.name.slice(0, 120) } : {}),
     };
 
-    const existing = await this.prisma.school.findUnique({ where: { code } });
+    // Where does this school's data live? Ask the registry before writing.
+    const known = await this.registry.resolveByCode(code);
+    const db: PrismaClient =
+      known?.mode === "dedicated"
+        ? await this.connections.clientForUnscoped(known.tenantId)
+        : this.prisma;
+
+    const existing = await db.school.findUnique({ where: { code } });
     if (existing) {
-      await this.prisma.school.update({ where: { id: existing.id }, data: descriptive });
-      await this.registerTenant(existing.id, code, name, trust);
-      return existing.id;
+      await db.school.update({ where: { id: existing.id }, data: descriptive });
+      const tenantId = await this.registerTenant(existing.id, code, name, trust);
+      return { schoolId: existing.id, tenantId };
     }
 
-    const created = await this.prisma.school.create({ data: { code, ...descriptive } });
-    this.logger.log(`Provisioned new school '${name}' (${code}) as school_id ${created.id}`);
-    await this.seedRoles(created.id);
-    await this.registerTenant(created.id, code, name, trust);
-    return created.id;
+    const created = await db.school.create({ data: { code, ...descriptive } });
+    this.logger.log(
+      `Provisioned new school '${name}' (${code}) as school_id ${created.id}` +
+        (known?.mode === "dedicated" ? ` in its own database (tenant ${known.tenantId})` : ""),
+    );
+    await this.seedRoles(created.id, db);
+    const tenantId = await this.registerTenant(created.id, code, name, trust);
+    return { schoolId: created.id, tenantId };
   }
 
   /**
@@ -81,24 +107,24 @@ export class SchoolProvisioningService {
    * before anyone can be provisioned into it — the same rows `prisma/seed.ts`
    * writes for the first school, applied to every subsequent one.
    */
-  private async seedRoles(schoolId: number): Promise<void> {
+  async seedRoles(schoolId: number, db: PrismaClient = this.prisma): Promise<void> {
     for (const [name, permissions] of Object.entries(DEFAULT_ROLES)) {
-      const role = await this.prisma.role.upsert({
+      const role = await db.role.upsert({
         where: { schoolId_name: { schoolId, name } },
         create: { schoolId, name, isSystem: true },
         update: {},
       });
-      await this.prisma.rolePermission.createMany({
+      await db.rolePermission.createMany({
         data: permissions.map((permission) => ({ roleId: role.id, permission, schoolId })),
         skipDuplicates: true,
       });
     }
     for (const [erpRole, roleName] of ERP_ROLE_DEFAULTS) {
-      const role = await this.prisma.role.findUnique({
+      const role = await db.role.findUnique({
         where: { schoolId_name: { schoolId, name: roleName } },
       });
       if (!role) continue;
-      await this.prisma.erpRoleMapping.upsert({
+      await db.erpRoleMapping.upsert({
         where: { schoolId_erpRole: { schoolId, erpRole } },
         create: { schoolId, erpRole, roleId: role.id },
         update: {},
@@ -106,15 +132,18 @@ export class SchoolProvisioningService {
     }
   }
 
-  /** Mirror the school into the tenant registry, with its trust. No-op without one. */
+  /**
+   * Mirror the school into the tenant registry, with its trust, and return the
+   * tenant id. Null when the deployment has no registry.
+   */
   private async registerTenant(
     localSchoolId: number,
     code: string,
     name: string,
     trust?: ErpTrustClaim,
-  ): Promise<void> {
+  ): Promise<number | null> {
     const control = this.control.client;
-    if (!control) return;
+    if (!control) return null;
 
     const instance =
       (await control.erpInstance.findFirst({ orderBy: { id: "asc" } })) ??
@@ -132,7 +161,7 @@ export class SchoolProvisioningService {
       trustId = row.id;
     }
 
-    await control.tenant.upsert({
+    const tenant = await control.tenant.upsert({
       where: { erpInstanceId_schoolCode: { erpInstanceId: instance.id, schoolCode: code } },
       create: {
         erpInstanceId: instance.id,
@@ -148,5 +177,6 @@ export class SchoolProvisioningService {
       update: { displayName: name, localSchoolId, ...(trustId !== null ? { trustId } : {}) },
     });
     this.registry.invalidate();
+    return tenant.id;
   }
 }

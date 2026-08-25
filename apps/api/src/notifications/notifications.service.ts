@@ -10,6 +10,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { EventsGateway } from "../events/events.gateway";
 import { TenantContextService } from "../tenant/tenant-context.service";
+import { TenantConnectionsService } from "../prisma/tenant-connections.service";
 
 export interface NotifyInput {
   type: string;
@@ -27,6 +28,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly tenant: TenantContextService,
+    private readonly connections: TenantConnectionsService,
   ) {}
 
   /** Create rows for explicit user ids + push each over their socket room. */
@@ -93,6 +95,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
           configId?: number;
           userId?: number;
           schoolId?: number;
+          tenantId?: number | null;
           placements?: number;
           total?: number;
           unplaced?: number;
@@ -107,7 +110,12 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
         // Queue events arrive outside any request, so the context the
         // notification row and its socket push need is opened here from the
         // job summary (9.1 / §17).
-        await this.tenant.runAs({ schoolId: r.schoolId, origin: "solver-completed" }, () =>
+        // Bind the school's own database too: a dedicated tenant's
+        // notification row belongs there, not in the shared one (§17.5).
+        const client = await this.connections.clientFor(r.tenantId ?? null);
+        await this.tenant.runAs(
+          { schoolId: r.schoolId, tenantId: r.tenantId ?? null, client, origin: "solver-completed" },
+          () =>
           this.notifyUsers([r.userId as number], {
           type: "solver_completed",
           title: "Timetable generated",

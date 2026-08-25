@@ -46,6 +46,8 @@ export class SolverController {
       // progress events by it — a solver job is not school-agnostic work
       // (9.1 / §17).
       schoolId: _req.user.schoolId,
+      // ...and which database that school lives in (9.4 / §17.5)
+      tenantId: _req.user.tenantId ?? null,
       userId: _req.user.sub,
       mode,
       weights: {

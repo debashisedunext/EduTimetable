@@ -1,8 +1,14 @@
 import { Controller, Get, NotFoundException, Req } from "@nestjs/common";
-import type { MeResponse, Permission, SessionTokenPayload } from "@edutimetable/shared";
+import type {
+  MeResponse,
+  Permission,
+  SessionSchool,
+  SessionTokenPayload,
+} from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { PermissionsService } from "../auth/permissions.service";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
+import { TenantRegistryService } from "../control/tenant-registry.service";
 
 @Controller("me")
 export class MeController {
@@ -10,6 +16,7 @@ export class MeController {
     private readonly prisma: PrismaService,
     private readonly permissionsService: PermissionsService,
     private readonly base: PrismaBaseService,
+    private readonly registry: TenantRegistryService,
   ) {}
 
   @Get()
@@ -26,23 +33,57 @@ export class MeController {
     const school = await this.prisma.school.findUnique({ where: { id: req.user.schoolId } });
     if (!school) throw new NotFoundException("School not found");
 
-    // The schools this session may switch to (§17.4). Read through the base
-    // client on purpose: the scoped one would only ever return the active
-    // school, and the whole point is to list the others. The ids come from the
-    // signed session token, so this cannot list a school the ERP did not grant.
-    const grantedIds = req.user.schoolIds?.length ? req.user.schoolIds : [school.id];
-    const granted = await this.base.school.findMany({
-      where: { id: { in: grantedIds }, isActive: true },
-      orderBy: { name: "asc" },
-    });
-    const shape = (s: (typeof granted)[number]) => ({
-      id: s.id,
-      code: s.code,
-      name: s.name,
-      shortName: s.shortName,
-      logoUrl: s.logoUrl,
-      timezone: s.timezone,
-    });
+    // The schools this session may switch to (§17.4).
+    //
+    // Sourced from the tenant registry, not from any application database.
+    // That is the whole point of the registry holding a display name: once
+    // schools live in separate databases, listing them from the data would
+    // mean opening every one of those databases to render a dropdown.
+    // The ids come from the signed session token, so this cannot list a school
+    // the ERP did not grant.
+    const active = {
+      id: school.id,
+      tenantId: req.user.tenantId ?? null,
+      code: school.code,
+      name: school.name,
+      shortName: school.shortName,
+      logoUrl: school.logoUrl,
+      timezone: school.timezone,
+    };
+
+    let schools: SessionSchool[] = [active];
+    const grantedTenants = req.user.grants ?? [];
+    if (grantedTenants.length > 1) {
+      const tenants = await this.registry.byIds(grantedTenants);
+      schools = tenants.map((t) =>
+        t.tenantId === active.tenantId
+          ? active
+          : {
+              id: t.schoolId,
+              tenantId: t.tenantId,
+              code: t.schoolCode,
+              name: t.displayName,
+              shortName: null,
+              logoUrl: null,
+              timezone: active.timezone,
+            },
+      );
+    } else if ((req.user.schoolIds?.length ?? 0) > 1) {
+      // No registry: one database, so the schools table can answer directly.
+      const rows = await this.base.school.findMany({
+        where: { id: { in: req.user.schoolIds! }, isActive: true },
+        orderBy: { name: "asc" },
+      });
+      schools = rows.map((s) => ({
+        id: s.id,
+        tenantId: null,
+        code: s.code,
+        name: s.name,
+        shortName: s.shortName,
+        logoUrl: s.logoUrl,
+        timezone: s.timezone,
+      }));
+    }
 
     return {
       id: user.id,
@@ -51,8 +92,8 @@ export class MeController {
       role: user.role.name,
       permissions,
       teacherId: user.teacherId,
-      school: shape(school),
-      schools: granted.map(shape),
+      school: active,
+      schools,
       trust:
         school.trustCode && school.trustName
           ? { code: school.trustCode, name: school.trustName }
