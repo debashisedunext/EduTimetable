@@ -28,6 +28,12 @@ model School {
   logoUrl   String?  @map("logo_url") @db.VarChar(255)
   timezone  String   @default("Asia/Kolkata") @db.VarChar(40)
   address   String?  @db.VarChar(255)
+  /// The trust this school belongs to, as the ERP reports it. Denormalized
+  /// from the control-plane `trusts` table because /me reads it on every page
+  /// load and the ERP is the source of truth for both — refreshed on every
+  /// login, so the two cannot meaningfully drift (§17.4).
+  trustCode String?  @map("trust_code") @db.VarChar(40)
+  trustName String?  @map("trust_name") @db.VarChar(120)
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
 

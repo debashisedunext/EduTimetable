@@ -1,6 +1,7 @@
 import { Global, Module } from "@nestjs/common";
 import { ControlPrismaService } from "./control-prisma.service";
 import { TenantRegistryService } from "./tenant-registry.service";
+import { SchoolProvisioningService } from "./school-provisioning.service";
 
 /**
  * The control plane (§17.3): the tenant registry and its connection.
@@ -11,7 +12,7 @@ import { TenantRegistryService } from "./tenant-registry.service";
  */
 @Global()
 @Module({
-  providers: [ControlPrismaService, TenantRegistryService],
-  exports: [ControlPrismaService, TenantRegistryService],
+  providers: [ControlPrismaService, TenantRegistryService, SchoolProvisioningService],
+  exports: [ControlPrismaService, TenantRegistryService, SchoolProvisioningService],
 })
 export class ControlModule {}

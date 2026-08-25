@@ -1023,8 +1023,8 @@ The Timetable application has **no login screen of its own**. Users authenticate
 ```
 1. User logs into Edunext ERP (existing auth, untouched).
 2. User clicks "Timetable" in the ERP menu.
-3. ERP issues a short-lived signed SSO token (JWT, RS256):
-   { erp_user_id, name, email, erp_role, school_id, teacher_id?, nonce, exp: now+60s }
+3. ERP issues a short-lived signed SSO token (JWT, RS256) — see the claim
+   contract below.
 4. Browser opens the Timetable app at /sso/callback?token=...
 5. Timetable backend: verifies signature (ERP public key) + exp + single-use nonce
    (Redis, replay protection) → finds-or-provisions the local user row → maps
@@ -1033,6 +1033,49 @@ The Timetable application has **no login screen of its own**. Users authenticate
 6. An invalid/expired token, or a deactivated user, lands on a "return to ERP" page —
    never a local password form. Logout / ERP session end invalidates the app session.
 ```
+
+**Token claims (the ERP integration contract).** The ERP is the source of truth for school identity — the Timetable app never hardcodes or invents a school name:
+
+```jsonc
+{
+  "erpUserId": "E-1042",              // required — identity link
+  "name": "R. Sharma",                // required
+  "email": "rsharma@school.edu",      // required
+  "erpRole": "TEACHER",               // required — mapped to a timetable role
+  "teacherId": 42,                    // optional — set for teacher logins (§15.3 scoping)
+
+  // The school this session opens in. `code` is the contract: it is the ERP's
+  // stable identifier and the only one meaningful across databases, since
+  // numeric ids repeat between them. The rest is descriptive and is refreshed
+  // on EVERY login, so renaming a school in the ERP renames it here.
+  "school": {
+    "code": "SCH-001",                // required
+    "name": "St. Xavier's High School", // required
+    "shortName": "SXHS",              // optional
+    "logoUrl": "https://…",           // optional
+    "timezone": "Asia/Kolkata",       // optional
+    "address": "…"                    // optional
+  },
+
+  // Optional — present when the school belongs to a trust (§17, scenario 2).
+  "trust": { "code": "TR-07", "name": "Xavier Education Trust" },
+
+  // Optional — every school this user may work in. A trust administrator gets
+  // several; this is exactly what the in-app school switcher offers, and the
+  // server will not switch to anything outside it.
+  "schools": [
+    { "code": "SCH-001", "name": "St. Xavier's High School" },
+    { "code": "SCH-002", "name": "St. Xavier's Primary" }
+  ],
+
+  "jti": "…",                         // required — single-use nonce, replay-checked
+  "exp": 1234567890                   // required — now + 60s
+}
+```
+
+A school named on the token that this deployment has not seen is **provisioned on the spot**: the `schools` row is created, its permission registry and ERP role mappings are seeded (so its users can sign in immediately), and it is registered in the control-plane tenant registry (§17.3). Every school in `schools[]` is provisioned the same way, so a trust administrator's switcher is populated on first login.
+
+> **Backward compatibility.** A legacy `schoolId` number is still accepted when `school` is absent, but only to *find* a school that already exists — a number carries no name, so nothing can be provisioned from one. A token naming an unknown numeric school is refused with a message telling the ERP to send the code and name.
 
 ```sql
 CREATE TABLE users (
@@ -1197,12 +1240,24 @@ The registry is **load-bearing, not decorative**: SSO consults it on every login
 
 Commands: `pnpm migrate:control`, `pnpm generate:control`, `pnpm seed:control` — the last being idempotent and safe on every boot; it registers every school the application database already has and never invents or removes one.
 
-### 17.4 Routing and switching (9.3–9.6, planned)
+### 17.4 School identity and switching (9.5–9.6, implemented)
 
-`PrismaService` resolves its connection from the tenant context through a bounded LRU of clients, subject to `active_tenants × connection_limit ≤ max_connections`. SSO gains `erpInstanceId` + `schoolCode` and verifies per-instance public keys — the property that stops one ERP minting tokens for another's school — and a user granted several schools switches in-app, with their role re-resolved inside the target school's data. Until connection routing lands, a `dedicated` tenant is refused rather than silently served from the shared database: quietly reading the wrong school's data is a far worse failure than a clear "not supported here yet".
+**The ERP owns school identity.** Names are never hardcoded and never invented by the application: they arrive on the SSO token (§15.1's claim contract) and are refreshed on every login, so renaming a school in the ERP renames it here without anyone re-typing it. A school the deployment has not seen is provisioned on the spot — `schools` row created, permission registry and ERP role mappings seeded so its users can sign in immediately, and registered in the tenant registry with its trust. Descriptive fields are only overwritten when the token actually sends them, so a token omitting a logo does not erase one configured here.
 
-### 17.5 Verification
+**A trust administrator switches schools inside the app.** The token's `schools[]` resolves to local ids at login and rides in the session token; `POST /auth/switch-school` re-issues a session for another of them. The authority is the signed token, not a permission — a permission could be granted by an admin of one school and would say nothing about whether the ERP grants access to another. The user is **re-provisioned in the target school**, because their role there is that school's business: Admin in one and Teacher in another is a normal arrangement in a trust. A new token is issued rather than the current one mutated, so every downstream check — REST scoping, Socket.IO rooms, the AI tool layer — keeps reading the school from exactly one place.
 
+Because the server takes the school from the session and never from a request body, "create a timetable for another school" means *being* in that school: the Timetables screen offers the school alongside the name, switches first, then creates. There is no way to create a timetable somewhere you are not.
+
+`GET /me` carries the active school, the switchable list and the trust, so the top bar names the school and shows a switcher only when there is more than one.
+
+### 17.5 Connection routing (9.3–9.4, planned)
+
+`PrismaService` resolves its connection from the tenant context through a bounded LRU of clients, subject to `active_tenants × connection_limit ≤ max_connections`. Per-instance ERP key verification — selecting the public key by the token's `kid`, the property that stops one ERP minting tokens for another's school — lands with it. Until then a `dedicated` tenant is refused rather than silently served from the shared database: quietly reading the wrong school's data is a far worse failure than a clear "not supported here yet".
+
+### 17.6 Verification
+
+
+`scripts/sso-schools-smoke.cjs` proves the ERP owns school identity end to end: a school named on the token is created with that name and immediately usable, the same code with a new name renames it rather than duplicating, a trust token provisions every school it lists and groups them under the trust, the user switches between them and lands in the right one with that school's role, an ungranted school is refused, and a timetable created after switching belongs to the new school and is invisible from the other.
 
 `scripts/control-plane-smoke.cjs` asserts the schools table is populated, all 30 foreign keys exist, a row naming a nonexistent school is refused by the database, every school is registered as a tenant, a shared tenant stores no credentials, a suspended school cannot sign in and a reinstated one can, and the control plane is unreachable from the application API.
 

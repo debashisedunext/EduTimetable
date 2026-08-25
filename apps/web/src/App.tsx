@@ -108,7 +108,7 @@ export default function App() {
           }
         >
           <Route path="/" element={
-            me.permissions.includes(PERMISSIONS.MASTERS_MANAGE) ? <Timetables />
+            me.permissions.includes(PERMISSIONS.MASTERS_MANAGE) ? <Timetables me={me} />
             : me.permissions.includes(PERMISSIONS.TIMETABLE_VIEW_OWN) ? <MyTimetable />
             : <Dashboard me={me} />
           } />

@@ -1,21 +1,39 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { api, switchSchool } from "../api";
 import { Card, ErrorNote, Field } from "../components";
 import { useConfigCtx } from "../hooks";
+import type { MeResponse } from "@edutimetable/shared";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /** Screen 0 (§8.1): every wing's timetable, built and published independently. */
-export function Timetables() {
+export function Timetables({ me }: { me: MeResponse }) {
   const { configs, setCurrentId, refetch } = useConfigCtx();
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // A trust admin may run timetables for several schools, so the school is part
+  // of creating one. Defaults to the school the session is already in, which is
+  // the only option for a single-school user (§17.4).
+  const [schoolId, setSchoolId] = useState(me.school.id);
+  const manySchools = me.schools.length > 1;
 
   const create = async () => {
     try {
+      // Creating "for another school" means being in that school: the server
+      // takes the school from the session, never from the request body, so
+      // there is no way to create a timetable somewhere you are not (§17).
+      if (schoolId !== me.school.id) {
+        await switchSchool(schoolId);
+        const moved = await api<{ id: number }[]>("/academic-years");
+        if (moved.length === 0) {
+          setError("That school has no academic year yet — its Setup Wizard starts there.");
+          window.location.href = "/setup";
+          return;
+        }
+      }
       const years = await api<{ id: number }[]>("/academic-years");
       if (years.length === 0) {
         setError("Create an academic year first (Setup Wizard → Academic Year).");
@@ -27,6 +45,12 @@ export function Timetables() {
       });
       setCreating(false);
       setName("");
+      if (schoolId !== me.school.id) {
+        // The whole page belongs to the previous school; reload into the new one.
+        setCurrentId(created.id);
+        window.location.href = "/setup";
+        return;
+      }
       refetch();
       setCurrentId(created.id);
       navigate("/setup");
@@ -51,6 +75,19 @@ export function Timetables() {
 
       {creating && (
         <Card title="New Timetable">
+          {manySchools ? (
+            <Field label="School">
+              <select value={schoolId} onChange={(e) => setSchoolId(Number(e.target.value))} style={inputStyle}>
+                {me.schools.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <p style={{ fontSize: 12.5, color: "var(--ink-soft)", margin: "0 0 12px" }}>
+              For <strong>{me.school.name}</strong>
+            </p>
+          )}
           <Field label="Name (e.g. Senior Wing)">
             <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
           </Field>

@@ -2,6 +2,7 @@ import { Body, Controller, NotFoundException, Post } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Public } from "./decorators";
 import { ErpKeysService } from "./erp-keys.service";
+import type { ErpSchoolClaim, ErpTrustClaim } from "@edutimetable/shared";
 
 interface DevErpTokenBody {
   erpUserId: string;
@@ -9,8 +10,14 @@ interface DevErpTokenBody {
   name: string;
   email: string;
   teacherId?: number;
-  /** 9.1: lets the isolation suite sign in as a second school. Defaults to 1. */
+  /** Legacy numeric id — still honoured, but names no school. Defaults to 1. */
   schoolId?: number;
+  /** §17.4: the school this session opens in, as the ERP describes it. */
+  school?: ErpSchoolClaim;
+  /** Every school the user may work in — what the in-app switcher offers. */
+  schools?: ErpSchoolClaim[];
+  /** The trust these schools belong to. */
+  trust?: ErpTrustClaim;
 }
 
 /**
@@ -37,7 +44,11 @@ export class DevErpController {
       erpRole: body.erpRole,
       name: body.name,
       email: body.email,
-      schoolId: Number(body.schoolId ?? 1),
+      // The real ERP sends `school` (and `schools`/`trust` for a trust user);
+      // `schoolId` remains for the pre-9.5 shape.
+      ...(body.school ? { school: body.school } : { schoolId: Number(body.schoolId ?? 1) }),
+      ...(body.schools ? { schools: body.schools } : {}),
+      ...(body.trust ? { trust: body.trust } : {}),
       teacherId: body.teacherId ?? null,
     });
     return { token };

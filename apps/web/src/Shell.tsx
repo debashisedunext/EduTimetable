@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { io } from "socket.io-client";
 import { PERMISSIONS, type MeResponse, type Permission } from "@edutimetable/shared";
-import { api, clearToken, getToken } from "./api";
+import { api, clearToken, getToken, switchSchool } from "./api";
 import { useConfigCtx } from "./hooks";
 
 interface NavEntry {
@@ -117,6 +117,59 @@ function Bell() {
   );
 }
 
+
+/**
+ * Which school this session is in (§17.4).
+ *
+ * The name is never hardcoded here — it comes from the ERP on the SSO token and
+ * is refreshed on every login, so renaming a school in the ERP renames it here.
+ * The dropdown appears only when the ERP granted more than one school; a
+ * single-school user just sees the name, and a trust administrator can move
+ * between their schools without going back to the ERP menu.
+ */
+function SchoolPicker({ me }: { me: MeResponse }) {
+  const [busy, setBusy] = useState(false);
+  const many = me.schools.length > 1;
+
+  const change = async (schoolId: number) => {
+    if (schoolId === me.school.id) return;
+    setBusy(true);
+    try {
+      await switchSchool(schoolId);
+      // Everything on screen belongs to the school that was active when it was
+      // fetched, so replace all of it at once rather than patching pieces.
+      window.location.href = "/";
+    } catch {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+      <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", fontWeight: 700, marginBottom: 2 }}>
+        {me.trust ? me.trust.name : "School"}
+      </span>
+      {many ? (
+        <select
+          value={me.school.id}
+          disabled={busy}
+          onChange={(e) => change(Number(e.target.value))}
+          title="Switch school"
+          style={{ fontWeight: 700, fontSize: 13, color: "var(--brand-deep)", border: "1px solid var(--line)", background: "#fff", borderRadius: 7, padding: "5px 9px", maxWidth: 220 }}
+        >
+          {me.schools.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      ) : (
+        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--brand-deep)", padding: "5px 0" }}>
+          {me.school.name}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Topbar({ me }: { me: MeResponse }) {
   const { pathname } = useLocation();
   const { configs, current, setCurrentId } = useConfigCtx();
@@ -128,6 +181,7 @@ function Topbar({ me }: { me: MeResponse }) {
         <div className="topbar-title">{title}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <SchoolPicker me={me} />
         {configs.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
             <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", fontWeight: 700, marginBottom: 2 }}>

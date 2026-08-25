@@ -55,12 +55,55 @@ export const DEFAULT_ROLES: Record<string, Permission[]> = {
 };
 
 /** Claims inside the short-lived RS256 token the ERP sends us (§15.1). */
+/**
+ * A school as the ERP describes it (§15.1, extended in Phase 9.5).
+ *
+ * `code` is the contract: it is the ERP's stable identifier for the school and
+ * the only one meaningful across databases — numeric ids repeat between them.
+ * Everything else is descriptive and refreshed on every login, so a school
+ * renamed in the ERP is renamed here without anyone re-typing it.
+ */
+export interface ErpSchoolClaim {
+  code: string;
+  name: string;
+  shortName?: string | null;
+  logoUrl?: string | null;
+  timezone?: string | null;
+  address?: string | null;
+}
+
+/** The management body a group of schools belongs to (§17: scenario 2). */
+export interface ErpTrustClaim {
+  code: string;
+  name: string;
+}
+
 export interface ErpSsoTokenPayload {
   erpUserId: string;
   name: string;
   email: string;
   erpRole: string;
-  schoolId: number;
+  /**
+   * The school this session opens in. Preferred over `schoolId`: the ERP knows
+   * its schools by code, and a numeric id cannot survive a move to a separate
+   * database.
+   */
+  school?: ErpSchoolClaim;
+  /**
+   * Legacy numeric id, still honoured when `school` is absent so a deployment
+   * whose ERP has not been updated keeps working. Never used to *name* a
+   * school — only to find one that already exists.
+   */
+  schoolId?: number;
+  /** The trust this school belongs to, when it belongs to one. */
+  trust?: ErpTrustClaim;
+  /**
+   * Every school this user may work in. A trust administrator gets several; a
+   * single-school user gets one or none (in which case `school` is the only
+   * one). This is what the in-app school switcher offers, and the server will
+   * not switch to anything outside it.
+   */
+  schools?: ErpSchoolClaim[];
   teacherId?: number | null;
   /** single-use nonce — replay-checked against Redis */
   jti: string;
@@ -72,6 +115,19 @@ export interface SessionTokenPayload {
   sub: number; // users.id
   schoolId: number;
   roleId: number;
+  /**
+   * Identity carried forward from the ERP token so a school switch can
+   * re-provision this user in the target school without a fresh SSO round trip
+   * (§17.4). Not secret — this token is signed by us.
+   */
+  erpUserId?: string;
+  erpRole?: string;
+  /**
+   * The schools this session may switch between, resolved to local ids at
+   * login. The switch endpoint refuses anything not in this list, so a user
+   * cannot reach a school the ERP did not grant them.
+   */
+  schoolIds?: number[];
 }
 
 /** Row-level visibility scope, resolved server-side per request (§15.3). */
@@ -117,4 +173,11 @@ export interface MeResponse {
   /** Which school this session is scoped to. Every row the user can see
    *  belongs to it, and the top bar names it (§17). */
   school: SessionSchool;
+  /**
+   * Every school this user may switch to, the active one included. One entry
+   * means no switcher — the common single-school case (§17.4).
+   */
+  schools: SessionSchool[];
+  /** The trust these schools belong to, when they belong to one. */
+  trust: { code: string; name: string } | null;
 }

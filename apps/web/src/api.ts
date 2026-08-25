@@ -63,3 +63,20 @@ export async function apiDownload(path: string, fallbackName: string, file?: Fil
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Switch the session to another of the user's schools (§17.4).
+ *
+ * The server re-issues the session token — it does not mutate the current one —
+ * so everything downstream keeps reading the school from exactly one place.
+ * The caller reloads afterwards: `me`, the timetable list, the readiness score
+ * and every cached view belong to the school that was active when they were
+ * fetched, and a full reload is the honest way to replace all of them at once.
+ */
+export async function switchSchool(schoolId: number): Promise<void> {
+  const { sessionToken } = await api<{ sessionToken: string }>("/auth/switch-school", {
+    method: "POST",
+    body: JSON.stringify({ schoolId }),
+  });
+  setToken(sessionToken);
+}
