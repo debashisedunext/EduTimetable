@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
@@ -98,6 +98,17 @@ export class TeachersController {
   @Put(":id/unavailability")
   async setUnavailability(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const teacherId = toInt(id, "id");
+    // A write carrying rows is already refused for another school's teacher —
+    // the reference check on `createMany` catches it (§17, invariant 13). An
+    // *empty* rows array writes nothing, so nothing is checked, and this used
+    // to answer `{ok: true}` for a teacher belonging to someone else. Ask
+    // first, so the answer is the same either way: not found (§17.8).
+    const teacher = await this.prisma.teacher.findFirst({
+      where: { id: teacherId },
+      select: { id: true },
+    });
+    if (!teacher) throw new NotFoundException(`Teacher ${teacherId} not found`);
+
     const rows: any[] = Array.isArray(body.rows) ? body.rows : [];
     await this.prisma.$transaction([
       this.prisma.teacherUnavailability.deleteMany({ where: { teacherId } }),

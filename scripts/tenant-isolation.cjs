@@ -317,8 +317,13 @@ const refused = (status) => status === 404 || status === 403 || status === 400;
 
       // One BullMQ queue serves every school, so A must not be able to read
       // B's job summary, unplaced list or failure reason through it.
+      // 9.10 tightened this from `{state: "none"}` to a 404: answering "no such
+      // job" made "that timetable is not yours" and "that timetable has never
+      // been generated" the same reply, and a success status for another
+      // school's id is not something a caller should have to read the body to
+      // interpret (§17.8).
       const aPeek = await call("GET", `/timetable-configs/${cfgB.id}/generate/latest`, admA);
-      check(aPeek.json?.state === "none", "A cannot read B's solver job", `${aPeek.json?.state}`);
+      check(refused(aPeek.status), "A cannot read B's solver job", `${aPeek.status}`);
     }
   }
 

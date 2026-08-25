@@ -47,6 +47,38 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** How many jobs may run at once, across all schools (§17.7). */
 const SOLVER_CONCURRENCY = Number(process.env.SOLVER_CONCURRENCY ?? 3);
 
+/**
+ * How long BullMQ treats a running job's lock as valid.
+ *
+ * The default is 30 seconds, renewed halfway through by a timer — and that
+ * assumption does not hold here. Generation is **synchronous CPU work**: a
+ * solve running its full `budgetMs` blocks the event loop, so the renewal timer
+ * never fires and the lock expires underneath a job that is working perfectly
+ * well. BullMQ then treats it as stalled and may hand it to another worker
+ * while the first is still solving — duplicate generation, or a job that
+ * reports neither completed nor failed to the Generate screen ("Missing lock
+ * for job N"). Raising `SOLVER_CONCURRENCY` above one in 9.9 made this more
+ * likely, not less: three CPU-bound solves timesharing one loop each take
+ * roughly three times as long in wall-clock.
+ *
+ * Five minutes covers a 30s solve plus a 120s CP-SAT pass plus writes, with
+ * contention. The asymmetry justifies erring long: too long only delays the
+ * retry of a job whose worker really did die, while too short duplicates work
+ * that is still running.
+ *
+ * It stays below the per-school slot TTL in `fair-scheduling.ts` (15 minutes),
+ * so a job always loses its BullMQ lock before it loses its school's slot.
+ */
+const LOCK_DURATION_MS = Number(process.env.WORKER_LOCK_DURATION_MS ?? 300_000);
+const workerOptions = {
+  connection,
+  concurrency: SOLVER_CONCURRENCY,
+  lockDuration: LOCK_DURATION_MS,
+  // Checking for stalled jobs more often than the lock can expire just burns
+  // Redis round-trips.
+  stalledInterval: LOCK_DURATION_MS,
+};
+
 // Phase 0 pipeline demo — kept as the smoke path for the queue infrastructure,
 // which now includes fair scheduling, so it runs under the same rules.
 new Worker(
@@ -64,7 +96,7 @@ new Worker(
     },
     (job, schoolId) => console.log(`[worker] demo job ${job.id} deferred — school ${schoolId} already has one running`),
   ),
-  { connection, concurrency: SOLVER_CONCURRENCY },
+  workerOptions,
 );
 
 new Worker(
@@ -103,7 +135,7 @@ new Worker(
   // Concurrency above one so a long generation in one school does not block
   // every other school behind it; the per-school cap inside withFairScheduling
   // stops one school taking every slot (§17.7).
-  { connection, concurrency: SOLVER_CONCURRENCY },
+  workerOptions,
 );
 
 async function solve(

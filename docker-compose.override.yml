@@ -1,6 +1,34 @@
 # Dev overrides — auto-loaded by `docker compose up`, so plain `docker compose up`
 # is always the dev stack. Production uses `docker compose -f docker-compose.yml up`.
 services:
+  # A second, genuinely separate MySQL server (§17.5, §17.8 — Phase 9.10).
+  #
+  # Not a second database on the same server: a different **host** and
+  # different **credentials**. That distinction is the whole point. With one
+  # server, a routing bug that quietly fell back to the default connection
+  # still finds the right database name and every assertion passes; the test
+  # would be measuring nothing. Here the fallback cannot even connect, so
+  # "the registry's stored URL is actually used" becomes something the suite
+  # can fail on.
+  #
+  # Dev-only, deliberately: this is the fixture the isolation suite needs, and
+  # `docker compose up` must be enough to run that suite (a test that needs a
+  # database somebody set up by hand is a test nobody runs).
+  mysql-b:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_B_ROOT_PASSWORD:-edutimetable_dev_b}
+      MYSQL_DATABASE: ${MYSQL_B_DATABASE:-edutimetable_branch}
+      MYSQL_USER: ${MYSQL_B_USER:-branch_app}
+      MYSQL_PASSWORD: ${MYSQL_B_PASSWORD:-branch_dev_pw}
+    volumes:
+      - mysql-b-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_B_ROOT_PASSWORD:-edutimetable_dev_b}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   api:
     image: edutimetable/api:dev
     build:
@@ -21,6 +49,17 @@ services:
       # bind-mount file events are unreliable on macOS — poll (tsc --watch & chokidar)
       CHOKIDAR_USEPOLLING: "1"
       TSC_WATCHFILE: DynamicPriorityPolling
+      # Where the 9.10 dedicated-mode test provisions its school. Read only by
+      # `scripts/dedicated-db-smoke.cjs`; the app never uses it directly — it
+      # learns the URL from the tenant registry, which is the property tested.
+      TENANT_B_DATABASE_URL: mysql://${MYSQL_B_USER:-branch_app}:${MYSQL_B_PASSWORD:-branch_dev_pw}@mysql-b:3306/${MYSQL_B_DATABASE:-edutimetable_branch}
+    # Merged with the base file's mysql/redis dependencies. The dev startup
+    # runs `migrate:all`, which walks the registry — and once the 9.10 school
+    # is registered that includes this server, so it has to be up (§17.3: a
+    # migration is not deployed until every school's database has it).
+    depends_on:
+      mysql-b:
+        condition: service_healthy
     volumes:
       - .:/app
       - node-modules:/app/node_modules
@@ -43,6 +82,7 @@ services:
       NODE_ENV: development
       CHOKIDAR_USEPOLLING: "1"
       TSC_WATCHFILE: DynamicPriorityPolling
+      TENANT_B_DATABASE_URL: mysql://${MYSQL_B_USER:-branch_app}:${MYSQL_B_PASSWORD:-branch_dev_pw}@mysql-b:3306/${MYSQL_B_DATABASE:-edutimetable_branch}
     volumes:
       - .:/app
       - node-modules:/app/node_modules
@@ -80,6 +120,7 @@ services:
       - pnpm-store:/root/.local/share/pnpm/store
 
 volumes:
+  mysql-b-data:
   node-modules:
   api-node-modules:
   web-node-modules:

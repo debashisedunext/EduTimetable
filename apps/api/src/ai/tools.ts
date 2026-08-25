@@ -326,8 +326,15 @@ export class AiToolsService {
 
       case "getSubstitutionHistory": {
         if (ctx.scope.level === "none") return { absences: [], substitutions: [] };
+        // `required` in the schema is a request, not a guarantee — a model can
+        // still omit or malform these, and `new Date("undefinedT00:00…")`
+        // reaches Prisma as an Invalid Date and comes back as a 500 the model
+        // cannot act on. Say what is wrong instead, so it can retry.
         const from = new Date(`${String(args.date_from)}T00:00:00.000Z`);
         const to = new Date(`${String(args.date_to)}T00:00:00.000Z`);
+        if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+          return { error: "date_from and date_to are required, as YYYY-MM-DD." };
+        }
         const teacherFilter =
           ctx.scope.level === "all"
             ? args.teacher_id

@@ -135,7 +135,14 @@ async function call(method, path, token, body) {
 
   // ----------------------------------------------------------- 4. SUSPENDS
   console.log("\nSuspending a school actually stops its users signing in:");
-  const target = tenants.json.find((t) => t.localSchoolId === school.id) ?? first;
+  // Matched on tenant id, not on `localSchoolId`: under §17.5 a school with
+  // its own database usually has local id 1 — the same id the shared school
+  // has — so `localSchoolId === school.id` can match somebody else's tenant
+  // entirely, and this test would then suspend a school whose users it is not
+  // about to sign in. The tenant id is the routing key; it is the only thing
+  // here that identifies one school across databases.
+  const session = JSON.parse(Buffer.from(before.token.split(".")[1], "base64url").toString());
+  const target = tenants.json.find((t) => t.id === session.tenantId) ?? first;
   const suspended = await call("POST", `/platform/tenants/${target.id}/status`, before.token, { status: "suspended" });
   check(suspended.json?.status === "suspended", "the console suspends it", suspended.json?.displayName);
 

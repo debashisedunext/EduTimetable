@@ -2,7 +2,7 @@
  * §13.2/13.4 — AI Settings REST surface, gated on `ai.configure`, plus the
  * conversation history endpoint for the Ask AI screen (gated on `ai.chat`).
  */
-import { Body, Controller, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
+import { Body, Controller, Get, NotFoundException, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { ALL_PERMISSIONS, PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
@@ -72,7 +72,10 @@ export class AiSettingsController {
   async setRoleAi(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const roleId = toInt(id, "id");
     const role = await this.prisma.role.findFirst({ where: { id: roleId, schoolId: req.user.schoolId } });
-    if (!role) return { ok: false };
+    // 200 {ok:false} was the old answer for a role belonging to another school.
+    // Same reply as "that role does not exist", but with a success status the
+    // caller has to look inside the body to interpret (§17.8).
+    if (!role) throw new NotFoundException(`Role ${roleId} not found`);
     for (const perm of AI_PERMISSIONS) {
       const want = Boolean(body?.ai?.[perm]);
       if (want) {

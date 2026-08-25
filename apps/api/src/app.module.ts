@@ -1,5 +1,5 @@
 import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, DiscoveryModule } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { BullModule } from "@nestjs/bullmq";
 import { PrismaModule } from "./prisma/prisma.module";
@@ -26,11 +26,14 @@ import { ImportModule } from "./import/import.module";
 import { SolverController } from "./solver/solver.controller";
 import { RolesAdminController } from "./admin/roles-admin.controller";
 import { SampleDataController } from "./dev/sample-data.controller";
+import { RouteCensusController } from "./dev/route-census.controller";
 import { ReadinessService } from "./readiness/readiness.service";
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Supplies DiscoveryService/MetadataScanner to the dev route census (9.10).
+    DiscoveryModule,
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST ?? "redis",
@@ -57,7 +60,16 @@ import { ReadinessService } from "./readiness/readiness.service";
     ImportModule,
     BullQueueModule.registerQueue({ name: "solver" }),
   ],
-  controllers: [HealthController, MeController, RolesAdminController, SampleDataController, SolverController],
+  controllers: [
+    HealthController,
+    MeController,
+    RolesAdminController,
+    SampleDataController,
+    // Dev-only. Lets the 9.10 isolation suite enumerate what actually exists,
+    // so a new endpoint cannot go un-swept unnoticed (§17.8).
+    RouteCensusController,
+    SolverController,
+  ],
   providers: [
     ReadinessService,
     // Order matters: authentication first, then permission checks.

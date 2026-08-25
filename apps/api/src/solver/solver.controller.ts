@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Inject, Param, Post, Query, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Post, Query, Req } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import type Redis from "ioredis";
@@ -151,6 +151,16 @@ export class SolverController {
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
   async latest(@Req() req: AuthedRequest, @Param("id") id: string) {
     const configId = toInt(id, "id");
+    // Scoped, so another school's config simply is not here. Without this the
+    // endpoint answered `{state: "none"}` for it — truthful about the job, but
+    // it makes "that timetable is not yours" and "that timetable has never
+    // been generated" the same reply (§17.8).
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
     const jobs = await this.queue.getJobs(["completed", "failed", "active", "waiting"], 0, 20);
     const mine = jobs
       // BullMQ is one shared queue across every school, so the school must be

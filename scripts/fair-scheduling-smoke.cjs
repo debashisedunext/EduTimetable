@@ -52,13 +52,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(400); // let it be picked up first
   const short = await queue.add("demo", { steps: 4, schoolId: SCHOOL_B }); // ~0.6s
 
-  const deadline = Date.now() + 30_000;
+  // Generous: these jobs take ~6s and ~0.6s idle, but this suite runs them on a
+  // box that may be solving timetables at the same time, and a slow machine is
+  // not a scheduling failure.
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline && !(finished.has(long.id) && finished.has(short.id))) {
     await sleep(150);
   }
   const longMs = finished.get(long.id);
   const shortMs = finished.get(short.id);
-  check(shortMs !== undefined && longMs !== undefined, "both jobs completed", `A ${longMs}ms · B ${shortMs}ms`);
+  // Say *why* when a job never arrives: "undefined ms" sends you looking at the
+  // scheduling logic when the answer is usually the job's own state.
+  const why = async (job, label) =>
+    finished.has(job.id) ? "" : ` · ${label} is '${await job.getState()}'${job.failedReason ? `: ${job.failedReason}` : ""}`;
+  check(shortMs !== undefined && longMs !== undefined, "both jobs completed",
+    `A ${longMs ?? "—"}ms · B ${shortMs ?? "—"}ms${await why(long, "A")}${await why(short, "B")}`);
+  if (shortMs === undefined || longMs === undefined) {
+    console.log("\nCannot measure fairness without both jobs — is the worker running?");
+    process.exit(1);
+  }
   check(shortMs < longMs, "school B finished FIRST, while A was still running",
     `B at ${shortMs}ms vs A at ${longMs}ms`);
   // Under the old concurrency:1 behaviour B could not have finished before A
@@ -79,7 +91,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(300);
   const interloper = await queue.add("demo", { steps: 3, schoolId: SCHOOL_B });
 
-  const burstDeadline = Date.now() + 60_000;
+  const burstDeadline = Date.now() + 120_000;
   while (Date.now() < burstDeadline && ![...burst, interloper].every((j) => finished.has(j.id))) {
     await sleep(150);
   }

@@ -8,11 +8,14 @@ import { AiChatService } from "./chat.service";
 import { ExplainController } from "./explain.controller";
 import { AiSettingsService } from "./settings.service";
 import { AiToolsService } from "./tools";
+import { DevAiToolsController } from "./dev-tools.controller";
 
 /** Phase 5 explanation layer + Phase 7 assistant (§13). */
 @Module({
   imports: [AuthModule, ReportsModule],
-  controllers: [ExplainController, AiSettingsController, AiChatController],
+  // DevAiToolsController is dev-gated: it exists so the 9.10 suite can assert
+  // tool scoping without an LLM in the loop (§17.8).
+  controllers: [ExplainController, AiSettingsController, AiChatController, DevAiToolsController],
   providers: [
     ReadinessService,
     AiSettingsService,
