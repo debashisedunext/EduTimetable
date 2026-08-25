@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Logger,
   ForbiddenException,
   Inject,
   Injectable,
@@ -20,6 +21,8 @@ const NONCE_TTL_SECONDS = 120;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -207,6 +210,11 @@ export class AuthService {
         });
 
     if (!user.isActive) throw new ForbiddenException("User is deactivated");
+
+    // Runs inside the school's tenant context, so the tenant-aware logger tags
+    // this line with the school it belongs to (§17.7) — which is the first
+    // thing anyone asks of a sign-in line once there is more than one school.
+    this.logger.log(`${user.name} signed in as ${erpRole} (user ${user.id})`);
 
     const session: SessionTokenPayload = {
       sub: user.id,

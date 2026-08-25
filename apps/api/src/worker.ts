@@ -22,6 +22,7 @@ import { TenantContextService } from "./tenant/tenant-context.service";
 import { withSchoolScope } from "./prisma/school-scope";
 import { StandaloneTenantClients } from "./prisma/standalone-tenant-client";
 import { slotsKey } from "./redis/cache-keys";
+import { withFairScheduling } from "./solver/fair-scheduling";
 import { optimizeWithCpSat, type OptimizeOutcome } from "./solver/optimize";
 import { writeDraftSlots } from "./solver/writer";
 
@@ -43,23 +44,35 @@ const redis = new Redis(connection);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Phase 0 pipeline demo — kept as the smoke path for the queue infrastructure.
+/** How many jobs may run at once, across all schools (§17.7). */
+const SOLVER_CONCURRENCY = Number(process.env.SOLVER_CONCURRENCY ?? 3);
+
+// Phase 0 pipeline demo — kept as the smoke path for the queue infrastructure,
+// which now includes fair scheduling, so it runs under the same rules.
 new Worker(
   "demo",
-  async (job) => {
-    const steps: number = job.data.steps ?? 20;
-    for (let i = 1; i <= steps; i++) {
-      await sleep(150);
-      await job.updateProgress(Math.round((i / steps) * 100));
-    }
-    return { placed: steps };
-  },
-  { connection },
+  withFairScheduling(
+    redis,
+    "demo",
+    async (job) => {
+      const steps: number = job.data.steps ?? 20;
+      for (let i = 1; i <= steps; i++) {
+        await sleep(150);
+        await job.updateProgress(Math.round((i / steps) * 100));
+      }
+      return { placed: steps };
+    },
+    (job, schoolId) => console.log(`[worker] demo job ${job.id} deferred — school ${schoolId} already has one running`),
+  ),
+  { connection, concurrency: SOLVER_CONCURRENCY },
 );
 
 new Worker(
   "solver",
-  async (job) => {
+  withFairScheduling(
+    redis,
+    "solver",
+    async (job) => {
     const configId: number = job.data.configId;
     const schoolId: unknown = job.data.schoolId;
     if (typeof schoolId !== "number") {
@@ -81,8 +94,16 @@ new Worker(
       { schoolId, tenantId, client: prisma, origin: `solver job ${job.id}` },
       () => solve(job, configId, schoolId, tenantId, prisma),
     );
-  },
-  { connection, concurrency: 1 },
+    },
+    (job, schoolId) =>
+      console.log(
+        `[worker] solver job ${job.id} deferred — school ${schoolId} already has a generation running`,
+      ),
+  ),
+  // Concurrency above one so a long generation in one school does not block
+  // every other school behind it; the per-school cap inside withFairScheduling
+  // stops one school taking every slot (§17.7).
+  { connection, concurrency: SOLVER_CONCURRENCY },
 );
 
 async function solve(
@@ -182,4 +203,6 @@ async function solve(
   return summary;
 }
 
-console.log("[worker] listening on queues 'demo', 'solver'");
+console.log(
+  `[worker] listening on queues 'demo', 'solver' — concurrency ${SOLVER_CONCURRENCY}, one job per school at a time`,
+);

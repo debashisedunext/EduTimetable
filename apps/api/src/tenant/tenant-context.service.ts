@@ -51,10 +51,23 @@ export interface TenantStore {
   origin?: string;
 }
 
+/**
+ * The storage itself, at module level rather than per-instance.
+ *
+ * Two things need it outside dependency injection: the worker, which is a plain
+ * Node process, and the tenant-aware logger, which has to exist before the Nest
+ * container does. A per-instance AsyncLocalStorage would give each of them its
+ * own — so a context opened by one would be invisible to the others, silently.
+ */
+export const tenantStorage = new AsyncLocalStorage<TenantStore>();
+
+/** The ambient school, for code that cannot inject the service (loggers). */
+export const currentTenantStore = (): TenantStore | undefined => tenantStorage.getStore();
+
 @Injectable()
 export class TenantContextService {
   private readonly logger = new Logger(TenantContextService.name);
-  private readonly als = new AsyncLocalStorage<TenantStore>();
+  private readonly als = tenantStorage;
 
   /** The active store, or undefined outside any context. */
   current(): TenantStore | undefined {

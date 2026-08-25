@@ -1348,8 +1348,23 @@ The console is **deliberately narrow**, and says so on the screen rather than le
 
 What it does: a deployment summary (schools by mode and status, how many are behind this build, the connection budget), the school list grouped by trust with mode / schema / status, an on-demand **connection test** per school (on demand rather than on the listing, because a hundred schools would mean a hundred connections to render a table), and **suspend / reinstate**, which stops and restores sign-in for that school (§17.3).
 
-### 17.7 Verification
+### 17.7 Operations: tagging and fairness (9.9, implemented)
 
+**Every log line names its school.** With one school, "which school was this?" is not a question; with many it is the *first* question about any line. Answering it by hand at every call site would mean editing hundreds and getting the next one wrong — the same trap 9.1 avoided for query scoping. So it is done once: a `TenantAwareLogger` set at `NestFactory.create` wraps Nest's console logger and prefixes each line with the ambient school read from the same AsyncLocalStorage the request, socket message or queue job already runs inside. No call site changes; a line simply gains `[school 1 · tenant 7]` when there is a school to name, and gains nothing when there is not (boot, health, the control plane — all genuinely school-agnostic). The tenant is included alongside because school ids repeat across databases (§17.5), so the school id alone would be ambiguous in exactly the situation the line is most needed.
+
+**One school can no longer monopolise the worker.** `concurrency: 1` is right for a single school — generation is CPU-bound and single-threaded — but with many it is a head-of-line block: a school whose generation takes a minute stalls every other school's five-second job behind it, and the smaller school's wait is entirely someone else's doing. Two changes together fix it, and neither works alone:
+
+1. **Concurrency above one** (`SOLVER_CONCURRENCY`, default 3). Even on one core, timesharing beats queueing for fairness: a 5-second job behind a 60-second job finishes at 65 seconds with concurrency 1 and at roughly 10 with concurrency 2. Nobody finishes later than they would have; the small job finishes far sooner.
+2. **A per-school cap of one running job.** Concurrency alone is not fairness — one school queueing four jobs would simply take all four slots. With the cap, the slots go to *different* schools.
+
+A capped-out job is **deferred, not failed**: BullMQ's `moveToDelayed` + `DelayedError` returns it to the queue after a short wait without consuming a retry or recording a failure. It is not starvation, because the running job releases the slot when it finishes. The slot is a Redis key with a TTL, so a worker that dies mid-job cannot lock a school out permanently, and it is released only by the job that holds it — releasing unconditionally would let a job whose lock had already expired free the slot of the *next* job for the same school, and two of that school's jobs would then run at once. BullMQ's own job groups would do this natively but are a Pro feature; this is the OSS equivalent.
+
+**Saturation and fairness are reported, not inferred.** `GET /health` and the Platform Console carry `connections.saturated` (at the cap, every new school evicts another's connection) alongside the `TENANT_MAX_CLIENTS × TENANT_POOL_LIMIT` budget, and the solver's waiting / active / delayed counts with **which schools are actually running** — a long queue held by one school is a very different situation from the same queue spread across many.
+
+### 17.8 Verification
+
+
+`scripts/fair-scheduling-smoke.cjs` measures the noisy-neighbour fix with real jobs and real timings, using the `demo` queue because generation has no predictable duration: school B's short job finished at **1,025ms while school A's 6,129ms job was still running** — under the old `concurrency: 1` it could not have finished before roughly 6,700ms — and school A's three queued jobs ran one at a time (~3s apart) rather than taking every slot, with school B still getting through in the middle and nothing failing while it waited.
 
 `scripts/platform-console-smoke.cjs` proves the containment property the console rests on: a school's own Super Admin, holding all 15 of that school's permissions, is refused 403 on every platform route; the CLI grant then admits **the same session token** without a fresh sign-in, and revoking refuses it again — demonstrating that access is re-checked rather than minted. It also suspends a real school, confirms its users can no longer sign in, reinstates it, and asserts no connection URL or credential appears in any response.
 

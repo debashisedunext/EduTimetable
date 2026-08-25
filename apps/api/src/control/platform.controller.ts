@@ -1,4 +1,7 @@
-import { Body, Controller, Get, Param, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Param, Post, Req } from "@nestjs/common";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
+import type Redis from "ioredis";
 import type { SessionTokenPayload } from "@edutimetable/shared";
 import { ControlPrismaService } from "./control-prisma.service";
 import { TenantRegistryService } from "./tenant-registry.service";
@@ -7,6 +10,8 @@ import { RequirePlatformAdmin } from "./platform.guard";
 import { TenantConnectionsService } from "../prisma/tenant-connections.service";
 import { expectedVersion, schemaStatus } from "../prisma/schema-version";
 import { toInt } from "../masters/crud.util";
+import { REDIS } from "../redis/redis.tokens";
+import { schedulingStats } from "../solver/fair-scheduling";
 
 /**
  * The Platform Console (§17.6, Phase 9.8) — the view from above every school.
@@ -34,6 +39,8 @@ export class PlatformController {
     private readonly registry: TenantRegistryService,
     private readonly connections: TenantConnectionsService,
     private readonly access: PlatformAccessService,
+    @InjectQueue("solver") private readonly solverQueue: Queue,
+    @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
   /** Deployment-wide state: schools, connection budget, schema version. */
@@ -54,6 +61,30 @@ export class PlatformController {
         behind: tenants.filter((t) => t.schemaVersion && t.schemaVersion !== expectedVersion()).length,
       },
       connections: this.connections.stats(),
+      // Queue fairness (§17.7): whether one school is monopolising the worker.
+      solver: await this.solverStats(),
+    };
+  }
+
+  /**
+   * Queue depth and which schools are actually running. `runningSchools` is the
+   * useful number: with a per-school cap of one, a long queue held by a single
+   * school is a very different situation from the same queue spread across many.
+   */
+  private async solverStats() {
+    const [waiting, active, delayed] = await Promise.all([
+      this.solverQueue.getWaitingCount(),
+      this.solverQueue.getActiveCount(),
+      this.solverQueue.getDelayedCount(),
+    ]);
+    const { runningSchools } = await schedulingStats(this.redis, "solver");
+    return {
+      waiting,
+      active,
+      /** Jobs deferred because their school already had one running. */
+      delayed,
+      runningSchools,
+      concurrency: Number(process.env.SOLVER_CONCURRENCY ?? 3),
     };
   }
 

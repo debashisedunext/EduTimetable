@@ -1,4 +1,5 @@
 import { Global, Module } from "@nestjs/common";
+import { BullModule } from "@nestjs/bullmq";
 import { ControlPrismaService } from "./control-prisma.service";
 import { TenantRegistryService } from "./tenant-registry.service";
 import { SchoolProvisioningService } from "./school-provisioning.service";
@@ -14,6 +15,7 @@ import { PlatformController } from "./platform.controller";
  */
 @Global()
 @Module({
+  imports: [BullModule.registerQueue({ name: "solver" })],
   controllers: [PlatformController],
   providers: [
     ControlPrismaService,

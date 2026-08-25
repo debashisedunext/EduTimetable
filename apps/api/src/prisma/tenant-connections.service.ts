@@ -124,6 +124,8 @@ export class TenantConnectionsService implements OnModuleInit, OnModuleDestroy {
       open: this.clients.size,
       maxClients: this.maxClients,
       poolLimit: this.poolLimit,
+      /** At the cap, every new school evicts another's connection (§17.7). */
+      saturated: this.clients.size >= this.maxClients,
       /** Worst-case connections this process can hold against all databases. */
       maxConnections: this.maxClients * this.poolLimit,
       tenants: [...this.clients.entries()].map(([id, e]) => ({
