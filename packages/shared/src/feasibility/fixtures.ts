@@ -74,8 +74,48 @@ export function cleanSchool(): FeasibilitySnapshot {
       },
     ]),
     mergedGroups: [],
+    electiveBlocks: [],
     crossConfigTeacherLoad: {},
     labRoomCount: 1,
     labSubjectIds: [],
   };
+}
+
+/**
+ * `cleanSchool()` with a §4.9 split elective bolted on: both sections drop one
+ * subject to 4 periods, freeing 2 slots each, and a 2-period "Class 5 Third
+ * Language" block fills them with three parallel lessons.
+ *
+ * The block's periods are deliberately NOT in `subjectRequirements` — a section
+ * spends 2 periods on "a language", not 2 on each of three — which is exactly
+ * what `runFeasibility` has to account for on its own.
+ */
+export function schoolWithElective(): FeasibilitySnapshot {
+  const snap = cleanSchool();
+  // free 2 periods per section by trimming Art from 6 to 4
+  const art = snap.subjectRequirements.find((r) => r.subjectName === "Art")!;
+  art.periodsPerWeek = 4;
+  for (const m of snap.mappings) if (m.subjectName === "Art") m.periodsPerWeek = 4;
+
+  snap.teachers.push(
+    teacher(201, "Mme Dubois"),
+    teacher(202, "Shri Joshi"),
+    teacher(203, "Hr. Bauer"),
+  );
+  snap.electiveBlocks = [
+    {
+      id: 7,
+      name: "Class 5 Third Language",
+      periodsPerWeek: 2,
+      maxPeriodsPerDay: 1,
+      memberClassSectionIds: [11, 12],
+      memberLabels: ["5-A", "5-B"],
+      options: [
+        { id: 21, subjectId: 501, subjectName: "French", teacherId: 201, teacherName: "Mme Dubois", roomId: 801, roomName: "Lang 1" },
+        { id: 22, subjectId: 502, subjectName: "Sanskrit", teacherId: 202, teacherName: "Shri Joshi", roomId: 802, roomName: "Lang 2" },
+        { id: 23, subjectId: 503, subjectName: "German", teacherId: 203, teacherName: "Hr. Bauer", roomId: 803, roomName: "Lang 3" },
+      ],
+    },
+  ];
+  return snap;
 }

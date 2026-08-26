@@ -95,23 +95,34 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
   const vars: SolverVariable[] = [];
   let nextId = 1;
 
+  /**
+   * Legal (day, startPeriod) pairs for a variable, after §4.7 pruning.
+   *
+   * `teacherIds` is a list because a §4.9 elective occupies every option's
+   * teacher at once: the block can only run where *all* of them can, so the
+   * domain is the intersection. One alternate-day teacher therefore narrows
+   * the whole block — which is the point, and why the feasibility engine warns
+   * about it before the search ever starts.
+   */
   const domainFor = (
-    teacherId: number,
+    teacherIds: number[],
     span: number,
     sectionIds: number[],
   ): Array<{ day: number; period: number }> => {
-    const tc = teacherCtx.get(teacherId);
+    const ctxs = teacherIds.map((id) => teacherCtx.get(id)).filter((x): x is TeacherCtx => !!x);
     const domain: Array<{ day: number; period: number }> = [];
-    const ownOnly = sectionIds.every((id) => tc?.p1OwnSections.has(id));
     for (const day of days) {
-      if (tc && !tc.allowedDays.has(day)) continue; // alternate_day pruning (§4.7)
+      if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
       for (let p = 1; p + span - 1 <= perDay; p++) {
         if (seg[p] !== seg[p + span - 1]) continue; // block cannot straddle a break (§4.8)
-        // always_first_period: this teacher never takes P1 in any OTHER section (§4.7)
-        if (tc?.hasP1Rule && p === 1 && !ownOnly) continue;
+        // always_first_period: such a teacher never takes P1 in any OTHER section
+        const p1Blocked = ctxs.some(
+          (tc) => tc.hasP1Rule && p === 1 && !sectionIds.every((id) => tc.p1OwnSections.has(id)),
+        );
+        if (p1Blocked) continue;
         let blockedCell = false;
-        for (let s = 0; s < span; s++) {
-          if (tc?.blocked.has(cellKey(day, p + s))) { blockedCell = true; break; }
+        for (let s = 0; s < span && !blockedCell; s++) {
+          if (ctxs.some((tc) => tc.blocked.has(cellKey(day, p + s)))) blockedCell = true;
         }
         if (!blockedCell) domain.push({ day, period: p });
       }
@@ -146,6 +157,9 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       subjectName: m.subjectName,
       teacherId: m.teacherId,
       mergedGroupId: null,
+      electiveBlockId: null,
+      options: [],
+      dayKey: `S${m.subjectId}`,
       mappingId: m.id,
       needsLabRoom: labSubjects.has(m.subjectId),
       preferredRoomId: input.preferredRoomByMapping[m.id] ?? null,
@@ -153,10 +167,10 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       maxPerDay,
     };
     for (let i = 0; i < blocks; i++) {
-      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor(m.teacherId, blockSize, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds) });
     }
     for (let i = 0; i < singles; i++) {
-      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor(m.teacherId, 1, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds) });
     }
   }
 
@@ -183,13 +197,53 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         subjectName: g.subjectName,
         teacherId: g.teacherId,
         mergedGroupId: g.id,
+        electiveBlockId: null,
+        options: [],
+        dayKey: `S${g.subjectId}`,
         mappingId: null,
         span: 1,
         needsLabRoom: labSubjects.has(g.subjectId),
         preferredRoomId: input.mergedGroupRooms[g.id] ?? null,
         samePeriodKey: null,
         maxPerDay: Math.min(anyReq?.maxPeriodsPerDay ?? 1, perDay),
-        domain: domainFor(g.teacherId, 1, g.memberClassSectionIds),
+        domain: domainFor([g.teacherId], 1, g.memberClassSectionIds),
+      });
+    }
+  }
+
+  // ---- split-elective variables (§4.9): one variable per occurrence, holding
+  // one slot open across every member section while all of its options run ----
+  for (const b of snapshot.electiveBlocks) {
+    const options = b.options.map((o) => ({
+      optionId: o.id,
+      subjectId: o.subjectId,
+      subjectName: o.subjectName,
+      teacherId: o.teacherId,
+      roomId: o.roomId,
+    }));
+    const teacherIds = options.map((o) => o.teacherId);
+    for (let i = 0; i < b.periodsPerWeek; i++) {
+      vars.push({
+        id: nextId++,
+        classSectionIds: b.memberClassSectionIds,
+        classSectionLabels: b.memberLabels,
+        subjectId: null,
+        subjectName: b.name,
+        teacherId: null,
+        mergedGroupId: null,
+        electiveBlockId: b.id,
+        options,
+        // Counted against the block: a section takes one language period a day,
+        // not one of French and one of German.
+        dayKey: `B${b.id}`,
+        mappingId: null,
+        span: 1,
+        // Options carry their own rooms, so the block never draws on the lab pool.
+        needsLabRoom: false,
+        preferredRoomId: null,
+        samePeriodKey: null,
+        maxPerDay: Math.min(b.maxPeriodsPerDay, perDay),
+        domain: domainFor(teacherIds, 1, b.memberClassSectionIds),
       });
     }
   }

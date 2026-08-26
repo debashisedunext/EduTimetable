@@ -34,6 +34,14 @@ export type IssueCode =
   | "SAME_PERIOD_PICK_DAYS"
   | "UNDER_MAPPED"
   | "OVER_MAPPED"
+  // Check 7 — split electives (§4.9)
+  | "ELECTIVE_NO_MEMBERS"
+  | "ELECTIVE_TOO_FEW_OPTIONS"
+  | "ELECTIVE_TEACHER_CLASH"
+  | "ELECTIVE_ROOM_CLASH"
+  | "ELECTIVE_DAILY_PIGEONHOLE"
+  | "ELECTIVE_DAY_INTERSECTION"
+  | "ELECTIVE_SUBJECT_DOUBLE_COUNTED"
   | "NO_DATA";
 
 export interface EntityRef {
@@ -45,7 +53,8 @@ export interface EntityRef {
     | "mapping"
     | "room"
     | "config"
-    | "merged_group";
+    | "merged_group"
+    | "elective_block";
   id: number;
   label: string;
 }
@@ -144,6 +153,30 @@ export interface SnapshotMergedGroup {
   memberClassSectionIds: number[];
 }
 
+/**
+ * §4.9 split elective — the mirror of a merged group. A merged group is one
+ * teacher across several sections; this is several teachers inside one slot,
+ * with every member section holding that slot open exactly once.
+ */
+export interface SnapshotElectiveBlock {
+  id: number;
+  name: string;
+  periodsPerWeek: number;
+  maxPeriodsPerDay: number;
+  memberClassSectionIds: number[];
+  memberLabels: string[];
+  /** the parallel lessons — each its own subject, teacher and room */
+  options: Array<{
+    id: number;
+    subjectId: number;
+    subjectName: string;
+    teacherId: number;
+    teacherName: string;
+    roomId: number;
+    roomName: string;
+  }>;
+}
+
 export interface FeasibilitySnapshot {
   config: SnapshotConfig;
   classSections: SnapshotClassSection[];
@@ -151,6 +184,7 @@ export interface FeasibilitySnapshot {
   teachers: SnapshotTeacher[];
   mappings: SnapshotMapping[];
   mergedGroups: SnapshotMergedGroup[];
+  electiveBlocks: SnapshotElectiveBlock[];
   /** teacher load carried in OTHER timetable configs (§3.10 cross-wing rule) */
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
   labRoomCount: number;

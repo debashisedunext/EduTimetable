@@ -75,9 +75,12 @@ export class BoardService {
 
   private toSlotRows(rows: Awaited<ReturnType<BoardService["draftRows"]>>): SlotRow[] {
     return rows
-      .filter((r) => r.subjectId !== null && r.teacherId !== null)
+      // The board edits cells in a section's grid. An elective option row has
+      // no section (§4.9): it is one of the parallel lessons under a block, and
+      // the block is dragged by its member cells, never by an option.
+      .filter((r) => r.classSectionId !== null && r.subjectId !== null && r.teacherId !== null)
       .map((r) => ({
-        classSectionId: r.classSectionId,
+        classSectionId: r.classSectionId as number,
         dayOfWeek: r.dayOfWeek,
         periodNumber: r.periodNumber,
         subjectId: r.subjectId as number,

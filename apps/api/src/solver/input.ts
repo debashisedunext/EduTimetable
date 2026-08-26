@@ -24,7 +24,7 @@ export async function buildFeasibilitySnapshot(
   const classIds = [...new Set(classSections.map((c) => c.classId))];
   const sectionIds = classSections.map((c) => c.id);
 
-  const [classSubjects, mappings, teachers, mergedGroups, labRooms, labSubjects] =
+  const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects] =
     await Promise.all([
       prisma.classSubject.findMany({
         where: { classId: { in: classIds } },
@@ -41,6 +41,14 @@ export async function buildFeasibilitySnapshot(
       prisma.mergedTeachingGroup.findMany({
         where: { members: { some: { classSectionId: { in: sectionIds } } } },
         include: { members: true, subject: true },
+      }),
+      // §4.9 split electives: any block one of this config's sections attends.
+      prisma.electiveBlock.findMany({
+        where: { members: { some: { classSectionId: { in: sectionIds } } } },
+        include: {
+          members: { include: { classSection: { include: { class: true, section: true } } } },
+          options: { include: { subject: true, teacher: true, room: true } },
+        },
       }),
       prisma.room.count({ where: { schoolId: config.schoolId, roomType: "lab" } }),
       prisma.subject.findMany({ where: { schoolId: config.schoolId, isLab: true } }),
@@ -130,6 +138,25 @@ export async function buildFeasibilitySnapshot(
       periodsPerWeek: g.periodsPerWeek,
       memberClassSectionIds: g.members.map((m) => m.classSectionId),
     })),
+    electiveBlocks: electiveBlocks.map((b) => ({
+      id: b.id,
+      name: b.name,
+      periodsPerWeek: b.periodsPerWeek,
+      maxPeriodsPerDay: b.maxPeriodsPerDay,
+      memberClassSectionIds: b.members.map((m) => m.classSectionId),
+      memberLabels: b.members.map(
+        (m) => `${m.classSection.class.name}-${m.classSection.section.name}`,
+      ),
+      options: b.options.map((o) => ({
+        id: o.id,
+        subjectId: o.subjectId,
+        subjectName: o.subject.name,
+        teacherId: o.teacherId,
+        teacherName: o.teacher.name,
+        roomId: o.roomId,
+        roomName: o.room.name,
+      })),
+    })),
     crossConfigTeacherLoad,
     labRoomCount: labRooms,
     labSubjectIds: labSubjects.map((s) => s.id),
@@ -169,9 +196,13 @@ export async function buildSolverInput(prisma: PrismaClient, configId: number): 
     ),
     mergedGroupRooms: Object.fromEntries(groups.map((g) => [g.id, g.roomId])),
     lockedSlots: locked
-      .filter((l) => l.subjectId !== null && l.teacherId !== null)
+      // A locked cell is something a person pinned in a section's grid, so it
+      // always has a section. An elective *option* row has none (§4.9) — it is
+      // the lesson under a block, not a cell — and the block's own member rows
+      // carry the lock.
+      .filter((l) => l.classSectionId !== null && l.subjectId !== null && l.teacherId !== null)
       .map((l) => ({
-        classSectionId: l.classSectionId,
+        classSectionId: l.classSectionId as number,
         dayOfWeek: l.dayOfWeek,
         periodNumber: l.periodNumber,
         subjectId: l.subjectId as number,

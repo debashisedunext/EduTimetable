@@ -432,13 +432,16 @@ model MergedTeachingGroupMember {
 }
 
 model ElectiveBlock {
-  id             Int                   @id @default(autoincrement())
-  schoolId       Int                   @map("school_id")
-  school         School                @relation(fields: [schoolId], references: [id])
-  name           String                @db.VarChar(50)
-  periodsPerWeek Int                   @map("periods_per_week")
-  members        ElectiveBlockMember[]
-  options        ElectiveOption[]
+  id               Int                   @id @default(autoincrement())
+  schoolId         Int                   @map("school_id")
+  school           School                @relation(fields: [schoolId], references: [id])
+  name             String                @db.VarChar(50)
+  periodsPerWeek   Int                   @map("periods_per_week")
+  /// Occurrences of this block allowed on one day. 1 = the usual "one language
+  /// period a day"; without it a 5-period block could stack on Monday.
+  maxPeriodsPerDay Int                   @default(1) @map("max_periods_per_day")
+  members          ElectiveBlockMember[]
+  options          ElectiveOption[]
 
   @@map("elective_blocks")
 }
@@ -509,13 +512,23 @@ model TimetableSlot {
   id                  BigInt     @id @default(autoincrement())
   timetableConfigId   Int        @map("timetable_config_id")
   status              SlotStatus @default(draft)
-  classSectionId      Int        @map("class_section_id")
+  /// NULL only on a §4.9 elective *option* row, which belongs to a block
+  /// rather than to any one section — there is no enrolment model, so an
+  /// option genuinely has no class-section. NULL also takes the row out of
+  /// `uq_class_slot`, which is what lets several parallel lessons share one
+  /// slot while every member section keeps exactly one guarded cell.
+  classSectionId      Int?       @map("class_section_id")
   dayOfWeek           Int        @map("day_of_week") @db.TinyInt
   periodNumber        Int        @map("period_number")
   subjectId           Int?       @map("subject_id")
   teacherId           Int?       @map("teacher_id")
   roomId              Int?       @map("room_id")
   mergedGroupId       Int?       @map("merged_group_id")
+  /// §4.9 split electives. Set on both the member rows (the shared cell each
+  /// section sees) and the option rows (the parallel lessons underneath).
+  electiveBlockId     Int?       @map("elective_block_id")
+  /// Set on option rows only — which parallel lesson this row is.
+  electiveOptionId    Int?       @map("elective_option_id")
   teacherOccupancyKey String?    @map("teacher_occupancy_key") @db.VarChar(30)
   isLocked            Boolean    @default(false) @map("is_locked")
   source              SlotSource @default(auto)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runFeasibility, teacherWeeklyCapacity } from "./engine";
-import { cleanSchool, teacher } from "./fixtures";
+import { cleanSchool, schoolWithElective, teacher } from "./fixtures";
 import type { IssueCode } from "./types";
 
 const codes = (r: ReturnType<typeof runFeasibility>): IssueCode[] =>
@@ -298,5 +298,95 @@ describe("Feasibility Engine — golden fixtures (§4, task 1.14)", () => {
     snap.classSections[1].classTeacherId = null; // 1 warning
     const r = runFeasibility(snap);
     expect(r.score).toBe(98);
+  });
+});
+
+describe("Check 7 — split electives (§4.9)", () => {
+  it("a well-formed block is feasible, and its periods count against every member section", () => {
+    const snap = schoolWithElective();
+    const r = runFeasibility(snap);
+    expect(r.blockers).toEqual([]);
+    expect(r.ready).toBe(true);
+    // 4 subjects x 6 + Art 4 = 28 curriculum periods, + 2 block periods = 30,
+    // which is exactly the 30 available. Under-counting the block would leave
+    // 2 free slots and a SLOT_UNDERFLOW warning instead.
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("each option's teacher carries the block's full weekly load, once", () => {
+    const snap = schoolWithElective();
+    // Mme Dubois teaches nothing else; her only demand is the 2-period block.
+    // 3 members would make it 6 if the block were counted per section.
+    snap.teachers.find((t) => t.id === 201)!.maxPeriodsPerWeek = 2;
+    expect(runFeasibility(snap).blockers).toEqual([]);
+
+    snap.teachers.find((t) => t.id === 201)!.maxPeriodsPerWeek = 1;
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("TEACHER_OVERLOAD");
+    expect(r.blockers.find((b) => b.code === "TEACHER_OVERLOAD")!.message).toContain("2 periods/week");
+  });
+
+  it("one option is not a choice → blocker", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].options = [snap.electiveBlocks[0].options[0]];
+    expect(codes(runFeasibility(snap))).toContain("ELECTIVE_TOO_FEW_OPTIONS");
+  });
+
+  it("the same teacher on two options cannot be in both at once → blocker naming them", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].options[1].teacherId = 201;
+    snap.electiveBlocks[0].options[1].teacherName = "Mme Dubois";
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("ELECTIVE_TEACHER_CLASH");
+    expect(r.blockers.find((b) => b.code === "ELECTIVE_TEACHER_CLASH")!.message).toContain("Sanskrit");
+  });
+
+  it("two options in one room → blocker", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].options[2].roomId = 801;
+    snap.electiveBlocks[0].options[2].roomName = "Lang 1";
+    expect(codes(runFeasibility(snap))).toContain("ELECTIVE_ROOM_CLASH");
+  });
+
+  it("more weekly periods than days x max/day → blocker with the arithmetic", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].periodsPerWeek = 6; // 5 days x 1/day = 5
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("ELECTIVE_DAILY_PIGEONHOLE");
+    expect(r.blockers.find((b) => b.code === "ELECTIVE_DAILY_PIGEONHOLE")!.message).toContain("at most 5");
+  });
+
+  it("an alternate-day option teacher narrows the WHOLE block, because the options run together", () => {
+    const snap = schoolWithElective();
+    // German only on Monday: every option must meet then too, so the block can
+    // run at most once a week — the check that is hardest to see by eye.
+    const bauer = snap.teachers.find((t) => t.id === 203)!;
+    bauer.periodPattern = "alternate_day";
+    bauer.alternateDaySet = [1];
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("ELECTIVE_DAY_INTERSECTION");
+    const msg = r.blockers.find((b) => b.code === "ELECTIVE_DAY_INTERSECTION")!.message;
+    expect(msg).toContain("Hr. Bauer");
+    expect(msg).toContain("Mon");
+  });
+
+  it("an option subject that is ALSO in the curriculum would be taught twice → blocker", () => {
+    const snap = schoolWithElective();
+    snap.subjectRequirements.push({
+      id: 999,
+      classId: 5,
+      subjectId: 501, // French, already an option
+      subjectName: "French",
+      periodsPerWeek: 2,
+      maxPeriodsPerDay: 1,
+      samePeriodAcrossWeek: false,
+      consecutiveBlockSize: 1,
+      consecutiveBlocksPerWeek: null,
+    });
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("ELECTIVE_SUBJECT_DOUBLE_COUNTED");
+    expect(r.blockers.find((b) => b.code === "ELECTIVE_SUBJECT_DOUBLE_COUNTED")!.fix).toContain(
+      "Remove French from the curriculum",
+    );
   });
 });

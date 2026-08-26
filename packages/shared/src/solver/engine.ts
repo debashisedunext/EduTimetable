@@ -4,7 +4,7 @@
  * fallback with per-variable reasons when the budget runs out.
  */
 import type { Placement, SolverInput, SolveOptions, SolverResult, SolverVariable, UnplacedVariable } from "./types";
-import { SolverState } from "./state";
+import { SolverState, teachersOf } from "./state";
 import { buildTeacherCtx, buildVariables } from "./variables";
 
 /** deterministic PRNG (mulberry32) — reproducible runs per seed (task 2.5) */
@@ -80,6 +80,8 @@ function repair(
     subjectId: v.subjectId,
     teacherId: v.teacherId,
     mergedGroupId: v.mergedGroupId,
+    electiveBlockId: v.electiveBlockId,
+    options: v.options,
     day,
     period,
     span: v.span,
@@ -169,11 +171,13 @@ function attemptSolve(
   // groups early, tie-broken by the teacher's cross-section degree.
   const teacherDegree = new Map<number, number>();
   for (const v of baseVars) {
-    teacherDegree.set(v.teacherId, (teacherDegree.get(v.teacherId) ?? 0) + 1);
+    for (const t of teachersOf(v)) teacherDegree.set(t, (teacherDegree.get(t) ?? 0) + 1);
   }
+  const degreeOf = (v: SolverVariable) =>
+    teachersOf(v).reduce((n, t) => n + (teacherDegree.get(t) ?? 0), 0);
   const unassigned = [...baseVars].sort((a, b) => {
     const score = (v: SolverVariable) =>
-      v.domain.length - v.span * 8 - v.classSectionIds.length * 6 - (v.samePeriodKey ? 10 : 0) - (teacherDegree.get(v.teacherId) ?? 0) * 0.2;
+      v.domain.length - v.span * 8 - v.classSectionIds.length * 6 - (v.samePeriodKey ? 10 : 0) - degreeOf(v) * 0.2;
     return score(a) - score(b);
   });
 
@@ -190,13 +194,16 @@ function attemptSolve(
     }
     // §5.2 value ordering: seeded jitter, then prefer spread (low section/teacher
     // day load); class-teacher own-section variables pull toward Period 1 (§4.7).
-    const tc = state.teacherCtx.get(v.teacherId);
-    const ownP1 = tc?.hasP1Rule && v.classSectionIds.every((id) => tc.p1OwnSections.has(id));
+    const varTeachers = teachersOf(v);
+    const ownP1 = varTeachers.some((t) => {
+      const tc = state.teacherCtx.get(t);
+      return tc?.hasP1Rule && v.classSectionIds.every((id) => tc.p1OwnSections.has(id));
+    });
     const jitter = new Map(values.map((val) => [val, random()]));
     values.sort((a, b) => {
       const load = (val: { day: number; period: number }) =>
-        state.sectionDayLoad(v.classSectionIds[0], v.subjectId, val.day) * 4 +
-        state.teacherDayLoad(v.teacherId, val.day) * 1 +
+        state.sectionDayLoad(v.classSectionIds[0], v.dayKey, val.day) * 4 +
+        varTeachers.reduce((n, t) => n + state.teacherDayLoad(t, val.day), 0) +
         (ownP1 ? (val.period === 1 ? -8 : 0) : 0) +
         (jitter.get(val) ?? 0);
       return load(a) - load(b);
@@ -294,6 +301,8 @@ function finish(
       subjectId: f.variable.subjectId,
       teacherId: f.variable.teacherId,
       mergedGroupId: f.variable.mergedGroupId,
+      electiveBlockId: f.variable.electiveBlockId,
+      options: f.variable.options,
       day: f.placedAt!.day,
       period: f.placedAt!.period,
       span: f.variable.span,

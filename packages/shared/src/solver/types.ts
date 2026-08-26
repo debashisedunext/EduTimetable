@@ -26,16 +26,40 @@ export interface SolverInput {
   seed?: number;
 }
 
-/** One decision unit (§5.1): a single occurrence, a consecutive block, or a
- *  merged-group occurrence spanning several sections at once. */
+/**
+ * One parallel lesson inside a §4.9 elective block: its own subject, teacher
+ * and room, all running in the same slot as its siblings.
+ */
+export interface ElectiveLesson {
+  optionId: number;
+  subjectId: number;
+  subjectName: string;
+  teacherId: number;
+  roomId: number;
+}
+
+/** One decision unit (§5.1): a single occurrence, a consecutive block, a
+ *  merged-group occurrence spanning several sections at once, or a split
+ *  elective occurrence spanning several *teachers* at once (§4.9). */
 export interface SolverVariable {
   id: number;
   classSectionIds: number[];
   classSectionLabels: string[];
-  subjectId: number;
+  /** null on an elective block — the subject lives on each option instead */
+  subjectId: number | null;
   subjectName: string;
-  teacherId: number;
+  /** null on an elective block — see `options` */
+  teacherId: number | null;
   mergedGroupId: number | null;
+  electiveBlockId: number | null;
+  /** empty except on an elective block, where every entry is placed at once */
+  options: ElectiveLesson[];
+  /**
+   * What the per-day cap counts against: a section's subject normally, the
+   * block itself for an elective (a student takes one language a day, not one
+   * of each).
+   */
+  dayKey: string;
   mappingId: number | null;
   /** contiguous periods claimed on one day (1 = normal period) */
   span: number;
@@ -52,9 +76,12 @@ export interface SolverVariable {
 export interface Placement {
   variableId: number;
   classSectionIds: number[];
-  subjectId: number;
-  teacherId: number;
+  subjectId: number | null;
+  teacherId: number | null;
   mergedGroupId: number | null;
+  electiveBlockId: number | null;
+  /** the parallel lessons to write alongside the member rows (§4.9) */
+  options: ElectiveLesson[];
   day: number;
   /** first period of the span */
   period: number;

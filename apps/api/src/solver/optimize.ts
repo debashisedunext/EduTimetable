@@ -34,6 +34,22 @@ export async function optimizeWithCpSat(
   weights: ObjectiveWeights,
   budgetSec: number,
 ): Promise<OptimizeOutcome> {
+  // §4.9 split electives are not modelled in CP-SAT: a variable with several
+  // simultaneous teachers and a fixed room per option has no representation in
+  // the payload. Optimising only the rest and leaving the blocks out would
+  // produce placements that collide with them and fail the §5.6 replay gate —
+  // burning the whole budget to be rejected. Skipping is the same graceful
+  // degradation as the optimizer being down: the fast result is already valid.
+  const blocks = input.snapshot.electiveBlocks.length;
+  if (blocks > 0) {
+    return {
+      attempted: false,
+      adopted: false,
+      status: "SKIPPED",
+      detail: `${blocks} split elective block(s) — CP-SAT does not model them yet, so the fast result stands`,
+    };
+  }
+
   const url = process.env.OPTIMIZER_URL ?? "http://optimizer:8000";
   const model = buildCpSatModel(input, variables, weights, budgetSec);
 

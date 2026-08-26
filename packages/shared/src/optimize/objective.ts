@@ -58,11 +58,16 @@ export function scoreTimetable(
   // ---- teacher gaps + peak daily load ----
   const busy = new Map<number, Map<number, Set<number>>>(); // teacher -> day -> periods
   for (const p of placements) {
-    const byDay = busy.get(p.teacherId) ?? new Map<number, Set<number>>();
-    const set = byDay.get(p.day) ?? new Set<number>();
-    for (const [, period] of cellsOf(p)) set.add(period);
-    byDay.set(p.day, set);
-    busy.set(p.teacherId, byDay);
+    // A §4.9 elective busies every option's teacher at once; an ordinary or
+    // merged placement busies exactly one.
+    const teachers = p.options.length > 0 ? p.options.map((o) => o.teacherId) : p.teacherId !== null ? [p.teacherId] : [];
+    for (const t of teachers) {
+      const byDay = busy.get(t) ?? new Map<number, Set<number>>();
+      const set = byDay.get(p.day) ?? new Set<number>();
+      for (const [, period] of cellsOf(p)) set.add(period);
+      byDay.set(p.day, set);
+      busy.set(t, byDay);
+    }
   }
 
   let teacherGaps = 0;
@@ -89,7 +94,8 @@ export function scoreTimetable(
   const labCells = new Map<number, Map<number, Set<number>>>(); // section -> day -> periods
   for (const p of placements) {
     const v = varById.get(p.variableId);
-    const needsLab = v ? v.needsLabRoom : labSubjects.has(p.subjectId);
+    // Elective options carry fixed rooms, so a block never counts as a lab move.
+    const needsLab = v ? v.needsLabRoom : p.subjectId !== null && labSubjects.has(p.subjectId);
     if (!needsLab) continue;
     for (const cs of p.classSectionIds) {
       const byDay = labCells.get(cs) ?? new Map<number, Set<number>>();

@@ -161,6 +161,12 @@ export class BoardEngine {
       subjectName: this.subjectNames.get(e.subjectId) ?? `subject #${e.subjectId}`,
       teacherId: e.teacherId,
       mergedGroupId: e.mergedGroupId,
+      // The board edits ordinary and merged cells. A §4.9 elective block is
+      // placed by the solver and moved as a whole; its member rows carry no
+      // subject, so they never become a BoardEntry in the first place.
+      electiveBlockId: null,
+      options: [],
+      dayKey: `S${e.subjectId}`,
       mappingId: null,
       span: 1,
       needsLabRoom: labFlexible,

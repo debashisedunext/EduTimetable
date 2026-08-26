@@ -13,7 +13,13 @@
 export interface AffectedSlot {
   /** published timetable_slots id (string — BigInt-safe) */
   slotId: string;
-  classSectionId: number;
+  /**
+   * NULL for a §4.9 elective option: the lesson belongs to a block, not to one
+   * section, so the two section-derived signals below (grade-band eligibility
+   * and the continuity bonus) simply have nothing to say about it. The subject
+   * match still does, and that is the stronger signal anyway.
+   */
+  classSectionId: number | null;
   classSectionLabel: string;
   period: number;
   subjectId: number;
@@ -89,7 +95,7 @@ interface Ctx {
 function eligible(t: SubstituteTeacher, slot: AffectedSlot, ctx: Ctx): boolean {
   const { input, planPeriods } = ctx;
   if (input.absentTeacherIds.includes(t.id)) return false;
-  const classId = input.classIdBySection[slot.classSectionId];
+  const classId = slot.classSectionId === null ? undefined : input.classIdBySection[slot.classSectionId];
   const subjectOk = t.subjectIds.includes(slot.subjectId);
   const gradeBandOk = classId !== undefined && t.classIds.includes(classId);
   if (!subjectOk && !gradeBandOk) return false;
@@ -112,7 +118,7 @@ function scoreOf(t: SubstituteTeacher, slot: AffectedSlot, ctx: Ctx): Candidate 
   } else {
     reasons.push("teaches this grade");
   }
-  if (t.classSectionIds.includes(slot.classSectionId)) {
+  if (slot.classSectionId !== null && t.classSectionIds.includes(slot.classSectionId)) {
     score += 2;
     reasons.push(`already teaches ${slot.classSectionLabel} (continuity)`);
   }

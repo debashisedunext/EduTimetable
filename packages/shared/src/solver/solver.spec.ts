@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runFeasibility } from "../feasibility/engine";
-import { cleanSchool, teacher } from "../feasibility/fixtures";
+import { cleanSchool, schoolWithElective, teacher } from "../feasibility/fixtures";
 import type { FeasibilitySnapshot } from "../feasibility/types";
 import { solveTimetable } from "./engine";
 import type { Placement, SolverInput, SolverResult } from "./types";
@@ -37,21 +37,29 @@ function assertValid(input: SolverInput, result: SolverResult) {
         expect(sectionCells.has(k), `section double-booked at ${k}`).toBe(false);
         sectionCells.add(k);
       }
-      const tk = `${p.teacherId}@${cell}`;
-      expect(teacherCells.has(tk), `teacher double-booked at ${tk}`).toBe(false);
-      teacherCells.add(tk);
-      if (p.roomId !== null) {
-        const rk = `${p.roomId}@${cell}`;
+      // A §4.9 elective occupies every option's teacher and room at once, so
+      // the check has to cover all of them — the interesting failure is
+      // exactly the one where only the first option is verified.
+      const teachers = p.options.length > 0 ? p.options.map((o) => o.teacherId) : [p.teacherId];
+      for (const t of teachers) {
+        const tk = `${t}@${cell}`;
+        expect(teacherCells.has(tk), `teacher double-booked at ${tk}`).toBe(false);
+        teacherCells.add(tk);
+      }
+      for (const r of [...p.options.map((o) => o.roomId), ...(p.roomId !== null ? [p.roomId] : [])]) {
+        const rk = `${r}@${cell}`;
         expect(roomCells.has(rk), `room double-booked at ${rk}`).toBe(false);
         roomCells.add(rk);
       }
     }
     for (const cs of p.classSectionIds) {
-      const k = `${cs}:${p.subjectId}@${p.day}`;
+      const k = `${cs}:${p.electiveBlockId !== null ? `B${p.electiveBlockId}` : p.subjectId}@${p.day}`;
       subjDay.set(k, (subjDay.get(k) ?? 0) + p.span);
     }
-    const tdk = `${p.teacherId}@${p.day}`;
-    teacherDay.set(tdk, (teacherDay.get(tdk) ?? 0) + p.span);
+    for (const t of p.options.length > 0 ? p.options.map((o) => o.teacherId) : [p.teacherId]) {
+      const tdk = `${t}@${p.day}`;
+      teacherDay.set(tdk, (teacherDay.get(tdk) ?? 0) + p.span);
+    }
   }
 
   for (const [k, n] of teacherDay) {
@@ -71,12 +79,14 @@ function assertValid(input: SolverInput, result: SolverResult) {
     if (req) expect(n, `subject max/day at ${k}`).toBeLessThanOrEqual(req.maxPeriodsPerDay);
   }
 
-  // alternate-period teachers: no adjacent cells
+  // alternate-period teachers: no adjacent cells (every option's teacher, §4.9)
   for (const p of result.placements) {
-    const t = teacherByIdx.get(p.teacherId)!;
-    if (t.periodPattern === "alternate_period") {
-      expect(teacherCells.has(`${p.teacherId}@${p.day}:${p.period - 1}`)).toBe(false);
-      expect(teacherCells.has(`${p.teacherId}@${p.day}:${p.period + p.span}`)).toBe(false);
+    for (const tid of p.options.length > 0 ? p.options.map((o) => o.teacherId) : [p.teacherId]) {
+      const t = tid === null ? undefined : teacherByIdx.get(tid);
+      if (t?.periodPattern === "alternate_period") {
+        expect(teacherCells.has(`${tid}@${p.day}:${p.period - 1}`)).toBe(false);
+        expect(teacherCells.has(`${tid}@${p.day}:${p.period + p.span}`)).toBe(false);
+      }
     }
   }
   // same-period rule
@@ -234,7 +244,7 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
     const snap: FeasibilitySnapshot = {
       config: { id: 1, name: "Big School", workingDays: [1, 2, 3, 4, 5], periodsPerDay: perDay, daySegments: [4, 4] },
       classSections: [], subjectRequirements: [], teachers: [], mappings: [],
-      mergedGroups: [], crossConfigTeacherLoad: {}, labRoomCount: 0, labSubjectIds: [],
+      mergedGroups: [], electiveBlocks: [], crossConfigTeacherLoad: {}, labRoomCount: 0, labSubjectIds: [],
     };
     let csId = 1, mapId = 1, tId = 1;
     for (let c = 1; c <= classes; c++) {
@@ -272,4 +282,76 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
     expect(ms, `solved in ${ms}ms`).toBeLessThan(30_000);
     assertValid(inputFor(snap), result);
   }, 40_000);
+});
+
+describe("split electives (§4.9)", () => {
+  it("places every option of a block in one shared slot, across every member section", () => {
+    const snap = schoolWithElective();
+    expect(runFeasibility(snap).ready, "fixture must be feasible before solving").toBe(true);
+
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const blockPlacements = result.placements.filter((p) => p.electiveBlockId === 7);
+    expect(blockPlacements).toHaveLength(2); // periodsPerWeek
+
+    for (const p of blockPlacements) {
+      // one slot, held open by BOTH member sections
+      expect([...p.classSectionIds].sort()).toEqual([11, 12]);
+      // all three languages run in it, each with its own teacher and room
+      expect(p.options.map((o) => o.subjectName).sort()).toEqual(["French", "German", "Sanskrit"]);
+      expect(new Set(p.options.map((o) => o.teacherId)).size).toBe(3);
+      expect(new Set(p.options.map((o) => o.roomId)).size).toBe(3);
+      // the member cell itself carries no subject or teacher — the lessons do
+      expect(p.subjectId).toBeNull();
+      expect(p.teacherId).toBeNull();
+    }
+
+    // maxPeriodsPerDay 1: the two occurrences cannot share a day
+    expect(blockPlacements[0].day).not.toBe(blockPlacements[1].day);
+  });
+
+  it("keeps a language teacher's other lessons out of the block's slot", () => {
+    const snap = schoolWithElective();
+    // Mme Dubois also teaches 2 periods of Art to 5-A, so the solver has to
+    // keep her free for the block: the failure this catches is the block being
+    // placed on top of a teacher who is already busy in an ordinary lesson.
+    snap.subjectRequirements.find((r) => r.subjectName === "Art")!.periodsPerWeek = 4;
+    const artB = snap.mappings.find((m) => m.subjectName === "Art" && m.classSectionId === 12)!;
+    artB.teacherId = 201;
+    artB.teacherName = "Mme Dubois";
+
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const blockCells = new Set(
+      result.placements.filter((p) => p.electiveBlockId !== null).map((p) => `${p.day}:${p.period}`),
+    );
+    const dubois = result.placements.filter((p) => p.teacherId === 201);
+    for (const p of dubois) {
+      expect(blockCells.has(`${p.day}:${p.period}`), "Mme Dubois teaching Art during her own block").toBe(false);
+    }
+  });
+
+  it("is never handed a block that cannot fit — Phase A refuses it first", () => {
+    const snap = schoolWithElective();
+    // Give 5-A back its full curriculum so it has no spare slot. The block needs
+    // the same cell free in every member section, so this school is impossible —
+    // and the contract (§1) is that the *feasibility engine* says so, rather
+    // than the solver discovering it after burning its budget.
+    snap.subjectRequirements.find((r) => r.subjectName === "Art")!.periodsPerWeek = 6;
+    for (const m of snap.mappings) if (m.subjectName === "Art") m.periodsPerWeek = 6;
+
+    const result = runFeasibility(snap);
+    expect(result.ready).toBe(false);
+    const overflow = result.blockers.filter((b) => b.code === "SLOT_OVERFLOW");
+    expect(overflow.length).toBeGreaterThan(0);
+    // and it names the real cause: the block's periods, on top of the curriculum
+    expect(overflow[0].message).toMatch(/needs 32 periods\/week but only 30 slots exist/);
+  });
+
 });

@@ -123,7 +123,7 @@ export class SubstitutesService {
     const date = absence.date;
     const day = dayOfWeekOf(date);
 
-    const [absencesToday, subsToday, teachers, sections, configs, unavail, publishedToday] =
+    const [absencesToday, subsToday, teachers, sections, configs, unavail, publishedToday, blocks] =
       await Promise.all([
         this.prisma.teacherAbsence.findMany({ where: { date, teacher: { schoolId } } }),
         this.prisma.substitutionLog.findMany({ where: { date } }),
@@ -140,13 +140,25 @@ export class SubstitutesService {
         this.prisma.timetableSlot.findMany({
           where: { status: "published", dayOfWeek: day, subjectId: { not: null }, teacherId: { not: null } },
         }),
+        this.prisma.electiveBlock.findMany({ select: { id: true, name: true } }),
       ]);
 
     const periodsPerDay = Math.max(1, ...configs.map((c) => c.periodsPerDay));
     const sectionById = new Map(sections.map((cs) => [cs.id, cs]));
-    const label = (id: number) => {
-      const cs = sectionById.get(id);
-      return cs ? `${cs.class.name}-${cs.section.name}` : `#${id}`;
+    const blockName = new Map(blocks.map((b) => [b.id, b.name]));
+    /**
+     * What to call the class being covered. A §4.9 elective option has no
+     * section — it is one parallel lesson under a block — so it is named by the
+     * block. Saying "5-A" there would be wrong (the students come from every
+     * member section) and saying nothing would leave the cover teacher with no
+     * idea what they are walking into.
+     */
+    const label = (s: { classSectionId: number | null; electiveBlockId: number | null }) => {
+      if (s.classSectionId === null) {
+        return s.electiveBlockId !== null ? (blockName.get(s.electiveBlockId) ?? "elective") : "—";
+      }
+      const cs = sectionById.get(s.classSectionId);
+      return cs ? `${cs.class.name}-${cs.section.name}` : `#${s.classSectionId}`;
     };
     const subjectNames = new Map<number, string>();
     const subjects = await this.prisma.subject.findMany({ where: { schoolId } });
@@ -169,9 +181,9 @@ export class SubstitutesService {
           s.mergedGroupId !== null
             ? publishedToday
                 .filter((x) => x.mergedGroupId === s.mergedGroupId && x.dayOfWeek === s.dayOfWeek && x.periodNumber === s.periodNumber)
-                .map((x) => label(x.classSectionId))
+                .map((x) => label(x))
                 .join(" + ")
-            : label(s.classSectionId),
+            : label(s),
         period: s.periodNumber,
         subjectId: s.subjectId as number,
         subjectName: subjectNames.get(s.subjectId as number) ?? `subject #${s.subjectId}`,
@@ -183,7 +195,7 @@ export class SubstitutesService {
       affectedSlots.push({
         slotId: s.id.toString(),
         classSectionId: s.classSectionId,
-        classSectionLabel: label(s.classSectionId),
+        classSectionLabel: label(s),
         period: s.periodNumber,
         subjectId: s.subjectId as number,
         subjectName: subjectNames.get(s.subjectId as number) ?? `subject #${s.subjectId}`,
@@ -261,7 +273,7 @@ export class SubstitutesService {
         return {
           slotId: r.timetableSlotId.toString(),
           period: s?.periodNumber ?? 0,
-          classSectionLabel: s ? label(s.classSectionId) : "?",
+          classSectionLabel: s ? label(s) : "?",
           subjectName: s?.subjectId ? (subjectNames.get(s.subjectId) ?? "?") : "?",
           substituteTeacherId: r.substituteTeacherId,
           substituteName: teachers.find((t) => t.id === r.substituteTeacherId)?.name ?? `#${r.substituteTeacherId}`,

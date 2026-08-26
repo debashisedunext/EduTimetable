@@ -168,10 +168,24 @@ export class ReportsService {
 
       const all = [...slots, ...dutySlots];
       const sectionRows = await this.prisma.classSection.findMany({
-        where: { id: { in: [...new Set(all.map((s) => s.classSectionId))] } },
+        where: { id: { in: [...new Set(all.map((s) => s.classSectionId).filter((x): x is number => x !== null))] } },
         include: { class: true, section: true },
       });
       const sectionLabel = new Map(sectionRows.map((cs) => [cs.id, `${cs.class.name}-${cs.section.name}`]));
+      // A §4.9 elective option is a real lesson for the teacher taking it, and
+      // it belongs to a block rather than to any one section — so it is named
+      // by its block ("Class 5 Third Language") rather than left blank.
+      const blockRows = await this.prisma.electiveBlock.findMany({
+        where: { id: { in: [...new Set(all.map((s) => s.electiveBlockId).filter((x): x is number => x !== null))] } },
+        select: { id: true, name: true },
+      });
+      const blockName = new Map(blockRows.map((b) => [b.id, b.name]));
+      const whereTaught = (s: { classSectionId: number | null; electiveBlockId: number | null }) =>
+        s.classSectionId !== null
+          ? (sectionLabel.get(s.classSectionId) ?? null)
+          : s.electiveBlockId !== null
+            ? (blockName.get(s.electiveBlockId) ?? null)
+            : null;
       const subjects = new Map(
         (await this.prisma.subject.findMany({ where: { id: { in: all.map((s) => s.subjectId).filter((x): x is number => x !== null) } } })).map((s) => [s.id, s.name]),
       );
@@ -187,7 +201,7 @@ export class ReportsService {
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
           teacher: null,
           room: s.roomId !== null ? (rooms.get(s.roomId) ?? null) : null,
-          classSection: sectionLabel.get(s.classSectionId) ?? null,
+          classSection: whereTaught(s),
           substituted: false,
         };
       }
@@ -197,7 +211,7 @@ export class ReportsService {
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
           teacher: null,
           room: s.roomId !== null ? (rooms.get(s.roomId) ?? null) : null,
-          classSection: sectionLabel.get(s.classSectionId) ?? null,
+          classSection: whereTaught(s),
           substituted: true,
           duty: true,
         };

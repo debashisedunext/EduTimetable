@@ -49,8 +49,15 @@ export class PublishService {
         orderBy: { version: "desc" },
       }),
     ]);
-    const draft = slots.filter((s) => s.status === "draft");
-    const published = slots.filter((s) => s.status === "published");
+    // The diff is per class-section, so it works on cells. An elective option
+    // row is not a cell — it has no section (§4.9) — and a block that moves
+    // already shows up here through the member rows of every section that
+    // attends it, which is what a reader wants to see anyway.
+    const cells = slots.filter((s): s is (typeof slots)[number] & { classSectionId: number } =>
+      s.classSectionId !== null,
+    );
+    const draft = cells.filter((s) => s.status === "draft");
+    const published = cells.filter((s) => s.status === "published");
 
     const subjectNames = new Map<number, string>();
     for (const r of snapshot.subjectRequirements) subjectNames.set(r.subjectId, r.subjectName);

@@ -97,7 +97,17 @@ export function buildCpSatModel(
     lockedSubjectDay.set(sdk, (lockedSubjectDay.get(sdk) ?? 0) + 1);
   }
 
-  const cpVars: CpSatVariable[] = variables.map((v) => {
+  // §4.9 split electives are deliberately NOT modelled in CP-SAT: a variable
+  // with several simultaneous teachers and fixed per-option rooms has no
+  // representation in the payload below. `optimizeWithCpSat` skips the whole
+  // pass when a config has blocks, so this filter should never actually drop
+  // anything — it is here so the payload cannot silently misrepresent one.
+  const solo = variables.filter(
+    (v): v is SolverVariable & { teacherId: number; subjectId: number } =>
+      v.teacherId !== null && v.subjectId !== null && v.options.length === 0,
+  );
+
+  const cpVars: CpSatVariable[] = solo.map((v) => {
     const domain: Array<[number, number]> = [];
     for (const { day, period } of v.domain) {
       let ok = true;
@@ -217,6 +227,8 @@ export function verifyAssignment(
       subjectId: v.subjectId,
       teacherId: v.teacherId,
       mergedGroupId: v.mergedGroupId,
+      electiveBlockId: v.electiveBlockId,
+      options: v.options,
       day: a.day,
       period: a.period,
       span: v.span,
