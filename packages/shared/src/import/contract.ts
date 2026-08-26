@@ -109,6 +109,8 @@ export const SHEETS: SheetDef[] = [
       { header: "Type", key: "roomType", type: "enum", values: ROOM_TYPES, aliases: { classroom: "classroom", "class room": "classroom", laboratory: "lab", lab: "lab" }, width: 14, help: "One of: " + ROOM_TYPES.join(", "), sample: ["classroom"] },
       { header: "Capacity", key: "capacity", type: "int", min: 1, max: 500, width: 11, help: "Seats (optional)", sample: [40] },
       { header: "Shared", key: "isShared", type: "enum", values: YES_NO, width: 10, help: "Shared between classes? Labs default to Yes", sample: ["No"] },
+      { header: "Home Room For", key: "homeFor", type: "string", maxLength: 40, refSheet: "Class Sections", width: 18, help: "The class-section that sits here all week, e.g. Class 1-A. One only", sample: [""] },
+      { header: "Lab For Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 26, help: "Which subjects this lab is set up for. Leave blank for a general lab that serves any of them", sample: [""] },
     ],
   },
   {

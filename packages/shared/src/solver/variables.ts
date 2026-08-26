@@ -162,6 +162,8 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       dayKey: `S${m.subjectId}`,
       mappingId: m.id,
       needsLabRoom: labSubjects.has(m.subjectId),
+      labRoomIds: snapshot.labRoomsBySubject[m.subjectId] ?? [],
+      homeRoomId: snapshot.homeRoomBySection[m.classSectionId] ?? null,
       preferredRoomId: input.preferredRoomByMapping[m.id] ?? null,
       samePeriodKey,
       maxPerDay,
@@ -203,6 +205,11 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         mappingId: null,
         span: 1,
         needsLabRoom: labSubjects.has(g.subjectId),
+        labRoomIds: snapshot.labRoomsBySubject[g.subjectId] ?? [],
+        // A merged lesson happens in one place. With no room of its own it
+        // falls back to the first member's room, which is where a school would
+        // in practice hold it.
+        homeRoomId: snapshot.homeRoomBySection[g.memberClassSectionIds[0]] ?? null,
         preferredRoomId: input.mergedGroupRooms[g.id] ?? null,
         samePeriodKey: null,
         maxPerDay: Math.min(anyReq?.maxPeriodsPerDay ?? 1, perDay),
@@ -238,8 +245,11 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         dayKey: `B${b.id}`,
         mappingId: null,
         span: 1,
-        // Options carry their own rooms, so the block never draws on the lab pool.
+        // Options carry their own rooms, so the block never draws on the lab
+        // pool and the member sections' own rooms stay free.
         needsLabRoom: false,
+        labRoomIds: [],
+        homeRoomId: null,
         preferredRoomId: null,
         samePeriodKey: null,
         maxPerDay: Math.min(b.maxPeriodsPerDay, perDay),

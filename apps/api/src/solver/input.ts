@@ -54,6 +54,22 @@ export async function buildFeasibilitySnapshot(
       prisma.subject.findMany({ where: { schoolId: config.schoolId, isLab: true } }),
     ]);
 
+    // §19 rooms. `homeRoomBySection` is what makes a recorded home room
+    // actually appear on the timetable; `labRoomsBySubject` is what stops a
+    // biology period being sent to the physics lab because it was free.
+    const allRooms = await prisma.room.findMany({
+      where: { schoolId: config.schoolId },
+      include: { subjects: true },
+    });
+    const labRoomsBySubject: Record<number, number[]> = {};
+    const generalLabs = allRooms.filter((r) => r.roomType === "lab" && r.subjects.length === 0).map((r) => r.id);
+    for (const s of labSubjects) {
+      const dedicated = allRooms.filter((r) => r.subjects.some((x) => x.subjectId === s.id)).map((r) => r.id);
+      // A lab with no subjects listed is a general lab and serves everything,
+      // which is exactly what every school had before this existed.
+      labRoomsBySubject[s.id] = [...dedicated, ...generalLabs];
+    }
+
   // §3.10: a teacher's load in OTHER configs counts toward their capacity here.
   const crossRows = await prisma.teacherSubjectClassSection.findMany({
     where: {
@@ -163,6 +179,9 @@ export async function buildFeasibilitySnapshot(
     crossConfigTeacherLoad,
     labRoomCount: labRooms,
     labSubjectIds: labSubjects.map((s) => s.id),
+    homeRoomBySection: Object.fromEntries(classSections.map((cs) => [cs.id, cs.homeRoomId])),
+    labRoomsBySubject,
+    roomNames: Object.fromEntries(allRooms.map((r) => [r.id, r.name])),
   };
 }
 

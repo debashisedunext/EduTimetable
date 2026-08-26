@@ -150,17 +150,35 @@ export class SolverState {
       }
       roomId = v.preferredRoomId;
     } else if (v.needsLabRoom) {
-      roomId = this.findFreeLab(day, period, v.span, blockers);
+      // §19: only the labs that serve THIS subject. A free physics lab is not
+      // a place to teach biology, however empty it is. `labRoomIds` on the
+      // variable narrows to the subject's own labs; falling back to every lab
+      // when the school has not mapped any keeps older data working.
+      const pool = v.labRoomIds.length > 0 ? v.labRoomIds : this.labRoomIds;
+      roomId = this.findFreeRoom(pool, day, period, v.span, blockers);
       if (roomId === null) {
         return { ok: false, roomId: null, reason: "no lab room free", blockers };
       }
+    } else if (v.homeRoomId !== null) {
+      // §19: the class-section's own room. Claimed rather than left null, so
+      // the timetable actually says where the lesson is — and so a room that
+      // is home to two sections collides here instead of silently double-
+      // booking a physical room the school believes is theirs.
+      for (let s = 0; s < v.span; s++) {
+        const holder = this.room.get(`${v.homeRoomId}@${cellKey(day, period + s)}`);
+        if (holder !== undefined) {
+          if (holder > 0) blockers.push(holder);
+          return { ok: false, roomId: null, reason: "home room occupied", blockers };
+        }
+      }
+      roomId = v.homeRoomId;
     }
 
     return { ok: true, roomId, blockers: [] };
   }
 
-  private findFreeLab(day: number, period: number, span: number, blockers: number[]): number | null {
-    for (const r of this.labRoomIds) {
+  private findFreeRoom(pool: number[], day: number, period: number, span: number, blockers: number[]): number | null {
+    for (const r of pool) {
       let free = true;
       for (let s = 0; s < span; s++) {
         const holder = this.room.get(`${r}@${cellKey(day, period + s)}`);

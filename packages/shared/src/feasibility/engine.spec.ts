@@ -455,3 +455,61 @@ describe("Check 8 — teaching scope and engagement (§18)", () => {
     expect(b?.message).toContain("French in Class 5 Third Language");
   });
 });
+
+describe("Check 9 — fixed room assignment (§19)", () => {
+  it("two sections sharing a home room is a blocker naming both", () => {
+    const snap = cleanSchool();
+    snap.homeRoomBySection = { 11: 701, 12: 701 };
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("HOME_ROOM_SHARED");
+    const b = r.blockers.find((x) => x.code === "HOME_ROOM_SHARED")!;
+    expect(b.message).toContain("5-A");
+    expect(b.message).toContain("5-B");
+    expect(b.message).toContain("Room 1");
+  });
+
+  it("sections without a home room are one warning, not a blocker", () => {
+    const snap = cleanSchool();
+    snap.homeRoomBySection = {};
+    const r = runFeasibility(snap);
+    const w = r.warnings.filter((x) => x.code === "HOME_ROOM_UNSET");
+    expect(w).toHaveLength(1);
+    expect(w[0].message).toContain("2 class-sections");
+    expect(r.ready).toBe(true); // a missing room does not stop a timetable existing
+  });
+
+  it("a lab subject with no lab that teaches it is a blocker", () => {
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302]; // Science
+    snap.labRoomsBySubject = {}; // nothing serves it
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("LAB_SUBJECT_UNSERVED");
+    expect(r.blockers.find((x) => x.code === "LAB_SUBJECT_UNSERVED")!.message).toContain("Science");
+  });
+
+  it("and one whose own labs cannot hold its periods is a blocker with the arithmetic", () => {
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302];
+    // 2 sections x 6 periods = 12 Science lab periods, against one lab that is
+    // only free... well, 30 slots — so widen the demand instead.
+    snap.subjectRequirements.find((r) => r.subjectId === 302)!.periodsPerWeek = 6;
+    snap.labRoomsBySubject = { 302: [901] };
+    snap.roomNames = { ...snap.roomNames, 901: "Science Lab" };
+    expect(runFeasibility(snap).blockers.filter((b) => b.code === "LAB_SUBJECT_OVERFLOW")).toHaveLength(0);
+
+    // now make it genuinely impossible: 40 periods against one 30-slot lab
+    snap.subjectRequirements.find((r) => r.subjectId === 302)!.periodsPerWeek = 20;
+    const r = runFeasibility(snap);
+    const b = r.blockers.find((x) => x.code === "LAB_SUBJECT_OVERFLOW");
+    expect(b?.message).toContain("Science Lab");
+    expect(b?.message).toContain("supply only 30");
+  });
+
+  it("a general lab — one with no subjects listed — still serves everything", () => {
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302];
+    // This is what every school had before §19 existed, and it must keep working.
+    snap.labRoomsBySubject = { 302: [901] };
+    expect(runFeasibility(snap).blockers.filter((b) => b.code.startsWith("LAB_SUBJECT"))).toEqual([]);
+  });
+});

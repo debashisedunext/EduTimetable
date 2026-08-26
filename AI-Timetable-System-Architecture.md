@@ -1381,6 +1381,22 @@ An extra class is stored as an ordinary `timetable_slots` row with `source = 'ex
 
 They are placed by hand, not solved: an extra class is a specific arrangement — this teacher, this group, this slot — and there is nothing for a search to decide. Scope still applies; the guest restriction is the one rule this screen exists to lift.
 
+## 19. Fixed Room Assignment (Phase 12)
+
+Two facts were recordable and had no effect on anything.
+
+**`class_sections.home_room_id` has existed since Phase 1 and the solver never read it.** Every ordinary lesson was written with `room_id = NULL`, so a school that carefully noted that Class 1-A sits in Room 12 all week got a timetable that never mentioned Room 12. The solver now claims the home room for any lesson that does not need a lab, which does three things at once: the timetable says where each lesson is, `uq_room_slot` starts guarding physical rooms rather than only labs, and a room accidentally assigned to two class-sections becomes a real collision instead of a paper one.
+
+That last point is why **Check 9** exists. Two sections both timetabled 40/40 cannot share a room, so `HOME_ROOM_SHARED` is a blocker naming both — caught in Phase A rather than as a late solver failure. A section with no home room is a single aggregated warning (`HOME_ROOM_UNSET`): its lessons simply show no room, which is the pre-Phase-12 behaviour and not something to refuse over.
+
+**Labs were interchangeable.** `findFreeLab` returned the first free room of type `lab`, so a biology period could be held in the physics lab because it happened to be empty. `room_subjects` records which subjects a room is set up for, and the solver now draws from that subject's own labs. Crucially, **a lab with no subjects listed is a general lab and still serves every lab subject** — so every school that existed before this keeps working unchanged until it says otherwise, and the migration's name-matching backfill (`%biology%` → Biology) is deliberately narrow for the same reason: anything it misses stays general.
+
+Check 5 asks whether there are enough lab periods in total; Check 9 asks whether the *right* labs exist, which is the question a school with one Bio lab and one Physics lab actually has — `LAB_SUBJECT_UNSERVED` when nothing teaches a lab subject, `LAB_SUBJECT_OVERFLOW` when its own labs cannot hold its periods, both naming the rooms.
+
+**The mapping is set from either side.** `class_sections.home_room_id` stays the single source of truth, but the Rooms screen writes it too — "which room is this class in" and "which class is in this room" are the same fact, and a school thinks of it both ways. The Rooms sheet of the import workbook gained `Home Room For` and `Lab For Subjects` for the same reason. A room may be home to exactly one class-section, refused at the endpoint with both names rather than left to the solver.
+
+Merged groups fall back to the first member's room when they have none of their own; elective options already carry their own rooms, and the member sections' rooms stay free because those students are in the option rooms.
+
 ### 17.8 Verification (9.10, implemented)
 
 **The isolation suite is one gate, and it is self-maintaining.** `pnpm test:isolation` (`scripts/isolation-suite.sh`, run inside the stack) executes every check below in one command with one exit code, so "is tenancy still sound?" has a single answer rather than nine scripts somebody has to remember. CI fails on it the way it fails on a unit test.

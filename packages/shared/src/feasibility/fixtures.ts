@@ -82,6 +82,11 @@ export function cleanSchool(): FeasibilitySnapshot {
     crossConfigTeacherLoad: {},
     labRoomCount: 1,
     labSubjectIds: [],
+    // §19: each section has its own room, so the golden school stays clean
+    // under Check 9 and its lessons actually say where they are.
+    homeRoomBySection: { 11: 701, 12: 702 },
+    labRoomsBySubject: {},
+    roomNames: { 701: "Room 1", 702: "Room 2", 901: "Science Lab" },
   };
 }
 

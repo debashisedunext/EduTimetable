@@ -26,6 +26,11 @@ export type IssueCode =
   | "LAB_NONE"
   | "LAB_OVERFLOW"
   | "LAB_TIGHT"
+  // Check 9 — fixed room assignment (§19)
+  | "LAB_SUBJECT_UNSERVED"
+  | "LAB_SUBJECT_OVERFLOW"
+  | "HOME_ROOM_SHARED"
+  | "HOME_ROOM_UNSET"
   // Check 6 — structural conflicts (§4.6, §8.1b)
   | "CT_P1_DEADLOCK"
   | "CT_RULE_INERT"
@@ -197,4 +202,11 @@ export interface FeasibilitySnapshot {
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
   labRoomCount: number;
   labSubjectIds: number[];
+  /** §19: the fixed room each class-section sits in, when one is recorded. */
+  homeRoomBySection: Record<number, number | null>;
+  /** §19: which lab rooms serve each lab subject. A lab with no subjects
+   *  listed is general and appears under every lab subject. */
+  labRoomsBySubject: Record<number, number[]>;
+  /** Room names, for messages that have to name one. */
+  roomNames: Record<number, string>;
 }

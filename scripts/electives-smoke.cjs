@@ -78,6 +78,7 @@ async function call(method, path, token, body) {
       prisma.electiveBlock.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.teacherClassEligibility.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.teacherSubjectClassSection.deleteMany({ where: { schoolId: SCHOOL } }),
+      prisma.roomSubject.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.classSubject.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.classSection.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.section.deleteMany({ where: { schoolId: SCHOOL } }),
@@ -124,8 +125,16 @@ async function call(method, path, token, body) {
   const sections = [];
   for (const name of ["A", "B"]) {
     const sec = await prisma.section.create({ data: { classId: cls.id, name, schoolId: SCHOOL } });
+    // §19: its own room, or Check 9 warns that this section's lessons will
+    // show no room and the readiness assertion below measures that instead.
+    const home = await prisma.room.create({
+      data: { schoolId: SCHOOL, name: `${P} Room ${name}`, roomType: "classroom" },
+    });
     sections.push(await prisma.classSection.create({
-      data: { classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
+      data: {
+        classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL,
+        timetableConfigId: config.id, strength: 30, homeRoomId: home.id,
+      },
     }));
   }
 

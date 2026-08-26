@@ -149,10 +149,20 @@ function buildRows() {
   // over, once per section, which is a limitation of the check rather than a
   // real demand.
   const rooms = [
-    ...secs.map((s) => ({ name: s.homeRoom, roomType: "classroom", capacity: 40, isShared: "No" })),
-    ...[1, 2, 3, 4, 5].map((i) => ({ name: `Computer Lab ${i}`, roomType: "lab", capacity: 40, isShared: "Yes" })),
-    { name: "Senior Hall 1", roomType: "auditorium", capacity: 160, isShared: "Yes" },
-    { name: "Senior Hall 2", roomType: "auditorium", capacity: 160, isShared: "Yes" },
+    // §19: each section's own room, named from this side of the relation so the
+    // file reads the way a school thinks — "Room 12 is Class 1-A's".
+    ...secs.map((s) => ({
+      name: s.homeRoom, roomType: "classroom", capacity: 40, isShared: "No",
+      homeFor: s.label, subjectNames: "",
+    })),
+    // The computer labs teach Computer and nothing else, so a Computer period
+    // can only ever land in one of these five.
+    ...[1, 2, 3, 4, 5].map((i) => ({
+      name: `Computer Lab ${i}`, roomType: "lab", capacity: 40, isShared: "Yes",
+      homeFor: "", subjectNames: "Computer",
+    })),
+    { name: "Senior Hall 1", roomType: "auditorium", capacity: 160, isShared: "Yes", homeFor: "", subjectNames: "" },
+    { name: "Senior Hall 2", roomType: "auditorium", capacity: 160, isShared: "Yes", homeFor: "", subjectNames: "" },
   ];
 
   const curriculum = [];

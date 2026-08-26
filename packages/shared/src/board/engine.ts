@@ -191,6 +191,8 @@ export class BoardEngine {
       // subject, so they never become a BoardEntry in the first place.
       electiveBlockId: null,
       options: [],
+      labRoomIds: [],
+      homeRoomId: null,
       dayKey: `S${e.subjectId}`,
       mappingId: null,
       span: 1,

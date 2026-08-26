@@ -256,17 +256,27 @@ function StepClasses() {
 
 function StepRooms() {
   const { data, refetch } = useApi<any[]>("/rooms");
-  const [form, setForm] = useState({ name: "", roomType: "classroom", capacity: "" });
+  const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
+  const { data: subjects } = useApi<any[]>("/subjects");
+  const blank = { name: "", roomType: "classroom", capacity: "", homeFor: "", subjectIds: [] as number[] };
+  const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const reset = () => { setForm({ name: "", roomType: "classroom", capacity: "" }); setEditId(null); };
+  const reset = () => { setForm(blank); setEditId(null); };
   const save = async () => {
     try {
-      const body = JSON.stringify({ ...form, capacity: form.capacity ? Number(form.capacity) : null });
+      const body = JSON.stringify({
+        name: form.name, roomType: form.roomType,
+        capacity: form.capacity ? Number(form.capacity) : null,
+        // §19: both mappings the solver honours — which class sits here all
+        // week, and which subjects this room is set up for.
+        homeForIds: form.homeFor ? [Number(form.homeFor)] : [],
+        subjectIds: form.subjectIds,
+      });
       if (editId) await api(`/rooms/${editId}`, { method: "PUT", body });
       else await api("/rooms", { method: "POST", body });
-      reset(); setError(null); refetch();
+      reset(); setError(null); refetch(); refetchSections();
     } catch (e) { setError(asMessage(e)); }
   };
   const remove = async (r: any) => {
@@ -276,18 +286,32 @@ function StepRooms() {
   };
 
   return (
-    <Card title="Rooms" sub="Labs and other shared rooms get their own contention check (§4.5).">
+    <Card title="Rooms" sub="Which class sits here, and which subjects it is set up for — the solver puts lessons in the room you name (§19).">
       <ErrorNote message={error} />
       <DataTable
-        headers={["Room", "Type", "Capacity", "Shared", ""]}
+        headers={["Room", "Type", "Home room for", "Set up for", "Capacity", ""]}
         rows={(data ?? []).map((r) => [
-          r.name, <span key="t" className="chip mono">{r.roomType}</span>, r.capacity ?? "—", r.isShared ? "yes" : "—",
+          r.name,
+          <span key="t" className="chip mono">{r.roomType}</span>,
+          r.homeForLabels?.length ? <b key="h">{r.homeForLabels.join(", ")}</b> : <span key="h" style={{ color: "var(--ink-faint)" }}>—</span>,
+          r.subjectNames?.length
+            ? r.subjectNames.join(", ")
+            : <span key="s" style={{ color: "var(--ink-faint)" }}>{r.roomType === "lab" ? "any lab subject" : "—"}</span>,
+          r.capacity ?? "—",
           <RowActions key="x"
-            onEdit={() => { setEditId(r.id); setForm({ name: r.name, roomType: r.roomType, capacity: r.capacity == null ? "" : String(r.capacity) }); }}
+            onEdit={() => {
+              setEditId(r.id);
+              setForm({
+                name: r.name, roomType: r.roomType,
+                capacity: r.capacity == null ? "" : String(r.capacity),
+                homeFor: r.homeForIds?.[0] ? String(r.homeForIds[0]) : "",
+                subjectIds: r.subjectIds ?? [],
+              });
+            }}
             onDelete={() => remove(r)} />,
         ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.4fr", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Type">
           <select style={inputStyle} value={form.roomType} onChange={(e) => setForm({ ...form, roomType: e.target.value })}>
@@ -295,10 +319,41 @@ function StepRooms() {
           </select>
         </Field>
         <Field label="Capacity"><input type="number" style={inputStyle} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name}>
+        <Field label="Home room for" hint="The class-section that sits here all week">
+          <select style={inputStyle} value={form.homeFor} onChange={(e) => setForm({ ...form, homeFor: e.target.value })}>
+            <option value="">— none —</option>
+            {(sections ?? []).map((cs) => (
+              <option key={cs.id} value={cs.id}>{cs.label ?? `${cs.className}-${cs.sectionName}`}</option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <Field label="Set up for (labs and special rooms)"
+        hint="Leave empty for a general room. A lab listed for Biology will only ever take Biology periods.">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {(subjects ?? []).map((sub) => {
+            const on = form.subjectIds.includes(sub.id);
+            return (
+              <label key={sub.id} className="chip" style={{
+                cursor: "pointer", userSelect: "none",
+                background: on ? "var(--brand)" : undefined, color: on ? "#fff" : undefined,
+              }}>
+                <input type="checkbox" style={{ display: "none" }} checked={on}
+                  onChange={() => setForm({
+                    ...form,
+                    subjectIds: on ? form.subjectIds.filter((x) => x !== sub.id) : [...form.subjectIds, sub.id],
+                  })} />
+                {sub.name}
+              </label>
+            );
+          })}
+        </div>
+      </Field>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btn-primary" onClick={save} disabled={!form.name}>
           {editId ? "✓ Save changes" : "＋ Add"}
         </button>
-        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
+        {editId && <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
       </div>
     </Card>
   );

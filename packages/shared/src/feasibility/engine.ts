@@ -489,6 +489,89 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  // ---------- Check 9 — fixed room assignment (§19) ----------
+  //
+  // Until Phase 12 a recorded home room was decorative: the solver wrote
+  // `room_id = NULL` for every ordinary lesson. Now it claims the room, which
+  // makes two things checkable that were previously invisible.
+  const roomName = (id: number) => snap.roomNames[id] ?? `room #${id}`;
+
+  // (a) Two sections cannot sit in the same room all week. Before the room was
+  // claimed this was merely wrong on paper; now it is a hard collision the
+  // solver would hit late, so it is caught here with both names.
+  const sectionsByHomeRoom = new Map<number, string[]>();
+  for (const cs of snap.classSections) {
+    const room = snap.homeRoomBySection[cs.id];
+    if (room == null) continue;
+    const list = sectionsByHomeRoom.get(room) ?? [];
+    list.push(cs.label);
+    sectionsByHomeRoom.set(room, list);
+  }
+  for (const [room, labels] of sectionsByHomeRoom) {
+    if (labels.length > 1) {
+      issues.push({
+        code: "HOME_ROOM_SHARED",
+        severity: "blocker",
+        message: `${roomName(room)} is the home room of ${labels.join(" and ")} — both are timetabled all week, so they cannot share it.`,
+        entity: { type: "room", id: room, label: roomName(room) },
+        fix: `Give ${labels.slice(1).join(" and ")} a different home room on the Class-Sections screen.`,
+      });
+    }
+  }
+
+  const unroomed = snap.classSections.filter((cs) => snap.homeRoomBySection[cs.id] == null);
+  if (unroomed.length > 0) {
+    issues.push({
+      code: "HOME_ROOM_UNSET",
+      severity: "warning",
+      message:
+        unroomed.length === 1
+          ? `${unroomed[0].label} has no home room, so its lessons will show no room.`
+          : `${unroomed.length} class-sections have no home room (${unroomed.slice(0, 3).map((c) => c.label).join(", ")}${unroomed.length > 3 ? ", …" : ""}), so their lessons will show no room.`,
+      entity: { type: "class_section", id: unroomed[0].id, label: unroomed[0].label },
+      fix: "Set a home room for each class-section — the Rooms screen can do it from either side.",
+    });
+  }
+
+  // (b) A lab subject needs a lab that actually teaches it. Check 5 above asks
+  // whether there are enough lab periods in total; this asks whether the RIGHT
+  // labs exist, which is the question a school with a Bio lab and a Physics lab
+  // actually has.
+  for (const subjectId of snap.labSubjectIds) {
+    const rooms = snap.labRoomsBySubject[subjectId] ?? [];
+    let demandForSubject = 0;
+    let subjectName = `subject #${subjectId}`;
+    for (const cs of snap.classSections) {
+      for (const r of reqsByClass.get(cs.classId) ?? []) {
+        if (r.subjectId !== subjectId) continue;
+        subjectName = r.subjectName;
+        demandForSubject += r.periodsPerWeek;
+      }
+    }
+    if (demandForSubject === 0) continue;
+
+    if (rooms.length === 0) {
+      issues.push({
+        code: "LAB_SUBJECT_UNSERVED",
+        severity: "blocker",
+        message: `${subjectName} needs a lab for ${demandForSubject} periods/week, but no lab room is set up for it.`,
+        entity: { type: "config", id: snap.config.id, label: snap.config.name },
+        fix: `Add a lab room for ${subjectName}, or mark an existing lab as serving it on the Rooms screen.`,
+      });
+      continue;
+    }
+    const supply = rooms.length * available;
+    if (demandForSubject > supply) {
+      issues.push({
+        code: "LAB_SUBJECT_OVERFLOW",
+        severity: "blocker",
+        message: `${subjectName} needs ${demandForSubject} lab periods/week but its ${rooms.length} lab(s) — ${rooms.map(roomName).join(", ")} — supply only ${supply}.`,
+        entity: { type: "config", id: snap.config.id, label: snap.config.name },
+        fix: `Add another lab for ${subjectName}, mark an existing lab as also serving it, or reduce its periods.`,
+      });
+    }
+  }
+
   // ---------- Check 6a/6b — class-teacher structure (§4.6, §8.1b) ----------
   const p1Teachers = new Map<number, string[]>(); // teacherId -> section labels where CT with P1 rule
   const teacherById = new Map(snap.teachers.map((t) => [t.id, t]));

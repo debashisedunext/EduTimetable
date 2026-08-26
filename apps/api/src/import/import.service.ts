@@ -126,7 +126,11 @@ export class ImportService {
           include: { class: true, section: true, academicYear: true, homeRoom: true, timetableConfig: true, classTeacher: true },
           orderBy: [{ class: { sequence: "asc" } }, { section: { name: "asc" } }],
         }),
-        this.prisma.room.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
+        this.prisma.room.findMany({
+          where: { schoolId },
+          include: { subjects: { include: { subject: true } }, homeRoomOf: { include: { class: true, section: true } } },
+          orderBy: { name: "asc" },
+        }),
         this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
         this.prisma.teacher.findMany({
           where: { schoolId },
@@ -171,7 +175,11 @@ export class ImportService {
           className: cs.class.name, sectionName: cs.section.name, academicYear: cs.academicYear.name,
           strength: cs.strength, homeRoom: cs.homeRoom?.name ?? null, timetable: cs.timetableConfig?.name ?? null,
         })),
-        Rooms: rooms.map((r) => ({ name: r.name, roomType: r.roomType, capacity: r.capacity, isShared: r.isShared })),
+        Rooms: rooms.map((r) => ({
+          name: r.name, roomType: r.roomType, capacity: r.capacity, isShared: r.isShared,
+          homeFor: r.homeRoomOf[0] ? this.label(r.homeRoomOf[0]) : null,
+          subjectNames: r.subjects.map((x) => x.subject.name),
+        })),
         Subjects: subjects.map((s) => ({ name: s.name, code: s.code, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod })),
         Teachers: teachers.map((t) => ({
           employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay, maxPeriodsPerWeek: t.maxPeriodsPerWeek,
@@ -369,6 +377,23 @@ export class ImportService {
         }
         const rooms = new Map((await tx.room.findMany({ where: { schoolId } })).map((x) => [lc(x.name), x.id]));
 
+        // §19: which subjects each lab teaches. Written after both rooms and
+        // subjects exist. Home rooms are set later, once class-sections do.
+        const subjectIdByName0 = new Map(
+          (await tx.subject.findMany({ where: { schoolId } })).map((s) => [lc(s.name), s.id]),
+        );
+        for (const r of at("Rooms")) {
+          const names = (r.data.subjectNames as string[] | undefined) ?? [];
+          if (names.length === 0) continue;
+          const roomId = rooms.get(lc(r.data.name));
+          if (!roomId) continue;
+          const ids = [...new Set(names.map((n) => subjectIdByName0.get(lc(n))).filter((x): x is number => !!x))];
+          if (ids.length === 0) continue;
+          await tx.roomSubject.deleteMany({ where: { roomId } });
+          await tx.roomSubject.createMany({ data: ids.map((subjectId) => ({ roomId, subjectId, schoolId })) });
+          bump("roomSubjects", ids.length);
+        }
+
         // ---- 4. subjects ----
         for (const r of at("Subjects").filter(isNew)) {
           await tx.subject.create({
@@ -445,6 +470,20 @@ export class ImportService {
           include: { class: true, section: true },
         });
         const sections = new Map(sectionRows.map((cs) => [lc(`${cs.class.name}-${cs.section.name}`), cs.id]));
+
+        // §19 home rooms, written from the Rooms sheet's own column. The Class
+        // Sections sheet can also set it; this is the same fact from the other
+        // side, which is how a school that thinks in rooms fills the file in.
+        for (const r of at("Rooms")) {
+          const label = r.data.homeFor as string | undefined;
+          if (!label) continue;
+          const roomId = rooms.get(lc(r.data.name));
+          const csId = sections.get(lc(label));
+          if (!roomId || !csId) continue;
+          await tx.classSection.update({ where: { id: csId }, data: { homeRoomId: roomId } });
+          bump("homeRooms");
+        }
+
 
         // ---- 7. teacher unavailability (no DB unique key — dedupe here) ----
         const existingUnavail = new Set(

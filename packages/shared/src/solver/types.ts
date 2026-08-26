@@ -64,6 +64,13 @@ export interface SolverVariable {
   /** contiguous periods claimed on one day (1 = normal period) */
   span: number;
   needsLabRoom: boolean;
+  /**
+   * §19: the labs this subject may use. Empty when the school has not said,
+   * in which case any lab will do — the pre-Phase-12 behaviour.
+   */
+  labRoomIds: number[];
+  /** §19: the room this class-section sits in, claimed when no lab is needed. */
+  homeRoomId: number | null;
   preferredRoomId: number | null;
   /** all occurrences sharing this key must land on the same period number (§4.6) */
   samePeriodKey: string | null;

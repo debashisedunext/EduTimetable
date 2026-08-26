@@ -245,6 +245,7 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
       config: { id: 1, name: "Big School", workingDays: [1, 2, 3, 4, 5], periodsPerDay: perDay, daySegments: [4, 4] },
       classSections: [], subjectRequirements: [], teachers: [], mappings: [],
       mergedGroups: [], electiveBlocks: [], crossConfigTeacherLoad: {}, labRoomCount: 0, labSubjectIds: [],
+      homeRoomBySection: {}, labRoomsBySubject: {}, roomNames: {},
     };
     let csId = 1, mapId = 1, tId = 1;
     for (let c = 1; c <= classes; c++) {
@@ -354,4 +355,51 @@ describe("split electives (§4.9)", () => {
     expect(overflow[0].message).toMatch(/needs 32 periods\/week but only 30 slots exist/);
   });
 
+});
+
+describe("fixed rooms (§19)", () => {
+  it("every ordinary lesson is placed in its own class-section's room", () => {
+    const snap = cleanSchool();
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    // Before Phase 12 every one of these carried roomId null: the home room was
+    // recorded and never used.
+    const withoutRoom = result.placements.filter((p) => p.roomId === null);
+    expect(withoutRoom).toEqual([]);
+    for (const p of result.placements) {
+      const expected = snap.homeRoomBySection[p.classSectionIds[0]];
+      expect(p.roomId, `${p.classSectionIds[0]} should be in its own room`).toBe(expected);
+    }
+  });
+
+  it("a lab subject goes to a lab that teaches it, never to another subject's", () => {
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302]; // Science
+    snap.labRoomsBySubject = { 302: [902] }; // only the science lab
+    snap.roomNames = { ...snap.roomNames, 901: "Physics Lab", 902: "Science Lab" };
+    // 901 is free all week and would have been chosen by the old findFreeLab.
+    const input = inputFor(snap, { labRoomIds: [901, 902] });
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const science = result.placements.filter((p) => p.subjectId === 302);
+    expect(science.length).toBeGreaterThan(0);
+    expect(science.every((p) => p.roomId === 902), "science must not sit in the physics lab").toBe(true);
+  });
+
+  it("a section in the lab leaves its own room free rather than claiming both", () => {
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302];
+    snap.labRoomsBySubject = { 302: [902] };
+    const input = inputFor(snap, { labRoomIds: [902] });
+    const result = solveTimetable(input);
+    assertValid(input, result);
+    for (const p of result.placements.filter((x) => x.subjectId === 302)) {
+      expect(p.roomId).toBe(902);
+    }
+  });
 });

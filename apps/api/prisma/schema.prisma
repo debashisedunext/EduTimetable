@@ -50,6 +50,7 @@ model School {
   teachers                    Teacher[]
   teacherUnavailability       TeacherUnavailability[]
   teacherClassEligibility     TeacherClassEligibility[]
+  roomSubjects                RoomSubject[]
   extraClasses                ExtraClass[]
   classSubjects               ClassSubject[]
   teacherSubjectClassSections TeacherSubjectClassSection[]
@@ -258,6 +259,9 @@ model Room {
   roomType        RoomType                     @default(classroom) @map("room_type")
   isShared        Boolean                      @default(false) @map("is_shared")
   homeRoomOf      ClassSection[]
+  /// §19: which subjects this room serves. Only meaningful for special rooms —
+  /// a lab with no subjects listed is a general lab and serves any lab subject.
+  subjects        RoomSubject[]
   preferredFor    TeacherSubjectClassSection[]
   mergedGroups    MergedTeachingGroup[]
   electiveOptions ElectiveOption[]
@@ -265,6 +269,21 @@ model Room {
 
   @@unique([schoolId, name])
   @@map("rooms")
+}
+
+/// §19 — a room dedicated to a subject. "Bio Lab teaches Biology", so a
+/// Biology period can never be sent to the Physics lab just because it was free.
+model RoomSubject {
+  roomId    Int     @map("room_id")
+  room      Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  subjectId Int     @map("subject_id")
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  schoolId  Int     @map("school_id")
+  school    School  @relation(fields: [schoolId], references: [id])
+
+  @@id([roomId, subjectId])
+  @@index([schoolId])
+  @@map("room_subjects")
 }
 
 model Subject {
@@ -280,6 +299,7 @@ model Subject {
   mergedGroups         MergedTeachingGroup[]
   electiveOptions      ElectiveOption[]
   extraClasses         ExtraClass[]
+  rooms                RoomSubject[]
 
   @@unique([schoolId, name])
   @@map("subjects")

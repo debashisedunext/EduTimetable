@@ -468,6 +468,34 @@ Three gaps, all of the same kind: something the data *described* but could not *
 
 ---
 
+## Phase 12 — Fixed room assignment (§19)
+
+Two facts were recordable and changed nothing.
+
+| Task | What |
+|---|---|
+| 12.1 ✅ | **Schema.** `room_subjects`, plus a narrow name-matching backfill for labs |
+| 12.2 ✅ | **Solver.** Claim the class-section's home room; draw labs from the subject's own |
+| 12.3 ✅ | **Feasibility Check 9.** `HOME_ROOM_SHARED`, `HOME_ROOM_UNSET`, `LAB_SUBJECT_UNSERVED`, `LAB_SUBJECT_OVERFLOW` |
+| 12.4 ✅ | **API.** Rooms accepts `homeForIds` and `subjectIds`, and reports both back |
+| 12.5 ✅ | **Importer.** `Home Room For` and `Lab For Subjects` columns, plus round-trip export |
+| 12.6 ✅ | **UI.** Rooms form sets both; the list shows which class sits where |
+| 12.7 ✅ | **Tests.** 8 unit tests, a live smoke, School 2 regenerated |
+
+> **Status: ✅ complete.**
+>
+> **`homeRoomId` had existed since Phase 1 and the solver never read it.** Every ordinary lesson was written with `room_id = NULL`. School 2 had 56 carefully recorded home rooms and 1,960 lessons that mentioned none of them. The solver now claims the room, which also puts `uq_room_slot` to work on physical rooms rather than only labs — and turns a room assigned to two class-sections from a paper mistake into a real collision, which is why `HOME_ROOM_SHARED` had to become a blocker in the same change.
+>
+> **Labs were interchangeable** — `findFreeLab` took the first free room of type `lab`, so a biology period could be held in the physics lab because it was empty. The subject's own labs are used now, with one deliberate escape hatch: **a lab with no subjects listed is general and still serves everything**. That is what every school had before, so nothing breaks until someone chooses to be specific, and the migration's backfill (`%biology%` → Biology) is narrow for the same reason — anything it misses stays general rather than being guessed at.
+>
+> Check 5 asks whether there are enough lab periods in total; Check 9 asks whether the *right* labs exist, which is the question a school with one Bio lab and one Physics lab actually has.
+>
+> The mapping is settable from **either side**: `class_sections.home_room_id` remains the single source of truth, and the Rooms screen writes it too, because "which room is this class in" and "which class is in this room" are the same fact.
+>
+> Verified: `scripts/room-assignment-smoke.cjs` (14 live checks) builds a school with a Bio Lab and a Physics Lab where "any free lab" and "the right lab" give different answers — and asserts all 40 ordinary lessons land in their own section's room, all 10 Biology periods in the Bio Lab and never the Physics Lab, the two sections never sharing the lab in one period, a second home-room assignment refused at the endpoint, both Check 9 blockers firing, and the pre-§19 general-lab arrangement still feasible. School 2 regenerated: **1,960 of 1,960 ordinary lessons now carry a room** (all were null before), all 144 Computer periods across the 5 computer labs, 2,110 room-periods claimed with zero collisions. **142 shared / 116 api tests**, lint and typechecks clean.
+
+---
+
 ## School 2 — a full school as test data (§16)
 
 A generated, importable school for Second Branch (`SCHOOL-2`): 14 classes (Pre-Nursery to Class 12) x 4 sections, Mon–Fri, 8 periods of 37 minutes from 08:00 to 14:01 with breaks after periods 3, 5 (lunch, 45 min) and 7.

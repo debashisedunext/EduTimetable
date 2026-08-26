@@ -92,7 +92,11 @@ run "10   split electives" \
 run "11   teaching scope and extra classes" \
   node "$API_DIR/scripts/teacher-scope-smoke.cjs"
 
-# 10. The exhaustive sweep, last: it is the slowest, and the most likely to be
+# 10. Fixed rooms: home rooms and subject-specific labs (§19).
+run "12   fixed room assignment" \
+  node "$API_DIR/scripts/room-assignment-smoke.cjs"
+
+# 11. The exhaustive sweep, last: it is the slowest, and the most likely to be
 #    the thing you are iterating on.
 run "9.10 exhaustive route / list / body / tool sweep" \
   node "$API_DIR/scripts/isolation-sweep.cjs"
