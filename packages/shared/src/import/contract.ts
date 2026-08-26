@@ -195,6 +195,23 @@ export const SHEETS: SheetDef[] = [
       { header: "Merged", key: "merged", type: "enum", values: YES_NO, width: 10, help: "Yes = one lesson taught to all the listed sections together (needs 2+)", sample: ["No"] },
     ],
   },
+  {
+    name: "Electives",
+    title: "Split electives (one slot, parallel choices)",
+    help:
+      "For subjects students choose between — a third language, say. Every option runs at the SAME time, so the listed class-sections keep one period free and their students go to whichever option they picked. One row per option: repeat the block name, sections and periods on each.",
+    keyLabel: "Block + Option Subject",
+    naturalKey: ["blockName", "subjectName"],
+    columns: [
+      { header: "Block Name", key: "blockName", type: "string", required: true, maxLength: 50, width: 26, help: "The choice as a whole, e.g. Class 5 Third Language. Repeat it on every option row", sample: ["e.g. Class 5 Third Language"] },
+      { header: "Class-Sections", key: "classSections", type: "list", required: true, separator: ",", refSheet: "Class Sections", width: 28, help: "Whose students take it, comma separated. Must be the same on every row of this block", sample: ["Class 5-A, Class 5-B"] },
+      { header: "Periods/Week", key: "periodsPerWeek", type: "int", required: true, min: 1, max: 20, width: 14, help: "For the block as a whole. Must be the same on every row of this block", sample: [5] },
+      { header: "Max Periods/Day", key: "maxPeriodsPerDay", type: "int", min: 1, max: 12, width: 16, help: "Defaults to 1 — one language period a day", sample: [1] },
+      { header: "Option Subject", key: "subjectName", type: "string", required: true, maxLength: 50, refSheet: "Subjects", width: 20, help: "One of the choices, e.g. French", sample: ["French"] },
+      { header: "Option Teacher", key: "employeeCode", type: "string", required: true, maxLength: 20, refSheet: "Teachers", width: 22, help: "Who teaches this option. Each option needs a different teacher — they all teach at once", sample: ["EDX-1042"] },
+      { header: "Option Room", key: "room", type: "string", required: true, maxLength: 50, refSheet: "Rooms", width: 18, help: "Where this option meets. Each option needs a different room", sample: ["Lang 1"] },
+    ],
+  },
 ];
 
 export const SHEET_BY_NAME = new Map(SHEETS.map((s) => [s.name.toLowerCase(), s]));

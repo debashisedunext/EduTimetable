@@ -7,6 +7,7 @@ import { SubjectsController } from "./subjects.controller";
 import { TeachersController } from "./teachers.controller";
 import { CurriculumController } from "./curriculum.controller";
 import { MappingsController, MergedGroupsController } from "./mappings.controller";
+import { ElectiveBlocksController } from "./electives.controller";
 import { TimetableConfigsController } from "./timetable-configs.controller";
 import { ReadinessService } from "../readiness/readiness.service";
 
@@ -27,6 +28,7 @@ import { ReadinessService } from "../readiness/readiness.service";
     CurriculumController,
     MappingsController,
     MergedGroupsController,
+    ElectiveBlocksController,
     TimetableConfigsController,
   ],
   providers: [ReadinessService],

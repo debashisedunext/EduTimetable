@@ -98,7 +98,21 @@ export class BoardService {
       }),
       this.draftRows(configId),
     ]);
-    return { engine: new BoardEngine(input, this.toSlotRows(rows)), rows };
+    // §4.9: the member cells of an elective block. They are not entries — a
+    // block is not a draggable card — but the client must know they are taken,
+    // or it will offer a drop the server then refuses (invariant 7).
+    const blockNames = new Map(
+      (await this.prisma.electiveBlock.findMany({ select: { id: true, name: true } })).map((b) => [b.id, b.name]),
+    );
+    const reserved = rows
+      .filter((r) => r.electiveBlockId !== null && r.classSectionId !== null)
+      .map((r) => ({
+        classSectionId: r.classSectionId as number,
+        day: r.dayOfWeek,
+        period: r.periodNumber,
+        label: blockNames.get(r.electiveBlockId as number) ?? "an elective block",
+      }));
+    return { engine: new BoardEngine(input, this.toSlotRows(rows), reserved), rows };
   }
 
   /** DB rows forming one board entry (merged unit = all member rows of the cell). */

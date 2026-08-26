@@ -286,3 +286,38 @@ describe("BoardEngine.checkPlace (unplaced tray)", () => {
     expect(free.ok).toBe(true);
   });
 });
+
+describe("BoardEngine — reserved elective cells (§4.9)", () => {
+  it("refuses a drop onto a cell an elective block holds, and names the block", () => {
+    const eng = new BoardEngine(
+      inputFor(),
+      [row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
+      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
+    );
+    const verdict = eng.checkMove(K(11, 1, 1), 2, 3);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain("Class 5 Third Language");
+    // Without this the client would offer the drop and the server would refuse
+    // it — the exact split invariant 7 exists to prevent.
+    expect(verdict.reason).toContain("moves as a whole");
+  });
+
+  it("leaves every other cell alone", () => {
+    const eng = new BoardEngine(
+      inputFor(),
+      [row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
+      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
+    );
+    expect(eng.checkMove(K(11, 1, 1), 2, 4).ok).toBe(true);
+  });
+
+  it("only reserves the sections that actually attend the block", () => {
+    const eng = new BoardEngine(
+      inputFor(),
+      [row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
+      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
+    );
+    // 5-B does not attend, so its own grid is untouched at that cell
+    expect(eng.checkMove(K(12, 1, 1), 2, 3).ok).toBe(true);
+  });
+});

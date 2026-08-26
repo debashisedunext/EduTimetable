@@ -128,6 +128,7 @@ const PARAM_RESOURCE = [
   ["/admin/users/:id", "user"],
   ["/ai/settings/roles/:id", "role"],
   ["/class-sections/:id", "classSection"],
+  ["/elective-blocks/:id", "electiveBlock"],
   ["/class-subjects/:id", "curriculum"],
   ["/classes/:id", "class"],
   ["/mappings/:id", "mapping"],
@@ -161,6 +162,7 @@ const BODY_FOR = (key, n, A) => ({
   "POST /classes/:id/sections": { name: `S${n}`, academicYearId: A.rows.year.id },
   "PUT /mappings/:id": { periodsPerWeek: 3 },
   "PUT /merged-groups/:id": { periodsPerWeek: 3 },
+  "PUT /elective-blocks/:id": { name: `${P} Elective ${n}` },
   "PUT /rooms/:id": { name: `${P} R${n}`, roomType: "classroom" },
   "PUT /subjects/:id": { name: `${P} S${n}` },
   "PUT /teachers/:id": { employeeCode: `${P}T${n}`, name: `${P} T${n}`, maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30 },
@@ -223,6 +225,7 @@ const NO_ID = {
   "POST /class-subjects": { how: "body", reason: "takes the other school's classId in the body" },
   "POST /mappings": { how: "body", reason: "takes the other school's class-section in the body" },
   "POST /merged-groups": { how: "body", reason: "takes the other school's ids in the body" },
+  "POST /elective-blocks": { how: "body", reason: "takes the other school's class-sections and option ids in the body" },
   "PUT /admin/erp-mappings": { how: "body", reason: "takes the other school's roleId in the body" },
   "POST /ai/explain-readiness": { how: "body", reason: "takes a configId in the body" },
   "POST /auth/switch-school": { how: "body", reason: "names a school the session was never granted" },
@@ -383,6 +386,18 @@ const LIST_NO_IDS = {
     const mapping = await prisma.teacherSubjectClassSection.create({
       data: { teacherId: teacher.id, subjectId: subject.id, classSectionId: classSection.id, periodsPerWeek: 4, schoolId: id },
     });
+    const electiveBlock = await prisma.electiveBlock.create({
+      data: {
+        schoolId: id, name: `${P} ${tag} Third Language`, periodsPerWeek: 2, maxPeriodsPerDay: 1,
+        members: { create: [{ classSectionId: classSection.id, schoolId: id }] },
+        options: {
+          create: [
+            { subjectId: subject.id, teacherId: teacher.id, roomId: room.id, schoolId: id },
+            { subjectId: subject.id, teacherId: teacher.id, roomId: room.id, schoolId: id },
+          ],
+        },
+      },
+    });
     const mergedGroup = await prisma.mergedTeachingGroup.create({
       data: {
         schoolId: id, subjectId: subject.id, teacherId: teacher.id, periodsPerWeek: 2,
@@ -415,7 +430,7 @@ const LIST_NO_IDS = {
 
     return {
       id, tag, token,
-      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, absence, notification, role, user },
+      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, electiveBlock, absence, notification, role, user },
     };
   }
 
@@ -467,6 +482,21 @@ const LIST_NO_IDS = {
         const cs = await freshRow(school, "classSection");
         return prisma.teacherSubjectClassSection.create({
           data: { teacherId: base.teacher.id, subjectId: base.subject.id, classSectionId: cs.id, periodsPerWeek: 3, schoolId: id },
+        });
+      }
+      case "electiveBlock": {
+        const cs = await freshRow(school, "classSection");
+        return prisma.electiveBlock.create({
+          data: {
+            schoolId: id, name: `${P} ${t} Elective ${n}`, periodsPerWeek: 2, maxPeriodsPerDay: 1,
+            members: { create: [{ classSectionId: cs.id, schoolId: id }] },
+            options: {
+              create: [
+                { subjectId: base.subject.id, teacherId: base.teacher.id, roomId: base.room.id, schoolId: id },
+                { subjectId: base.subject.id, teacherId: base.teacher.id, roomId: base.room.id, schoolId: id },
+              ],
+            },
+          },
         });
       }
       case "mergedGroup": {
@@ -662,6 +692,12 @@ const LIST_NO_IDS = {
       { teacherId: A.rows.teacher.id, date: "2026-09-02" }],
     ["PUT /admin/erp-mappings", "PUT", "/admin/erp-mappings",
       { mappings: [{ erpRole: "ADMIN", roleId: A.rows.role.id }] }],
+    ["POST /elective-blocks", "POST", "/elective-blocks",
+      { name: `${P} Cross`, periodsPerWeek: 2, classSectionIds: [A.rows.classSection.id],
+        options: [
+          { subjectId: B.rows.subject.id, teacherId: B.rows.teacher.id, roomId: B.rows.room.id },
+          { subjectId: B.rows.subject.id, teacherId: B.rows.teacher.id, roomId: B.rows.room.id },
+        ] }],
     ["POST /ai/explain-readiness", "POST", "/ai/explain-readiness",
       { configId: A.rows.config.id }],
     ["POST /auth/switch-school", "POST", "/auth/switch-school",

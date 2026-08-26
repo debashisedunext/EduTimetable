@@ -38,6 +38,15 @@ export type CellVerdict =
   | { kind: "swap"; withKey: string; roomAtTarget: number | null; otherRoomAtSource: number | null }
   | { kind: "illegal"; reason: string };
 
+/** A cell held by something the board cannot move — see the constructor. */
+export interface ReservedCell {
+  classSectionId: number;
+  day: number;
+  period: number;
+  /** what to tell the user is already there, e.g. "Class 5 Third Language" */
+  label: string;
+}
+
 export interface SlotRow {
   classSectionId: number;
   dayOfWeek: number;
@@ -91,6 +100,7 @@ export function rowsToEntries(rows: SlotRow[]): BoardEntry[] {
 export class BoardEngine {
   private state: SolverState;
   private entries = new Map<string, BoardEntry>();
+  private reservedByCell = new Map<string, string>();
   /** numeric pseudo-variable id per entry key (SolverState indexes by id) */
   private idByKey = new Map<string, number>();
   private keyById = new Map<number, string>();
@@ -104,10 +114,25 @@ export class BoardEngine {
   private teacherNames = new Map<number, string>();
   private sectionLabels = new Map<number, string>();
 
-  constructor(private readonly input: SolverInput, rows: SlotRow[]) {
+  /**
+   * `reserved` marks cells the board cannot touch but must not pretend are
+   * free — today, the member cells of a §4.9 elective block. They are not
+   * entries because there is nothing draggable about them: a block moves as a
+   * whole or not at all, and half of one is not a card. Without them the
+   * client would happily offer a drop the server then refuses, which is the
+   * one thing invariant 7's client-first legality is supposed to prevent.
+   */
+  constructor(
+    private readonly input: SolverInput,
+    rows: SlotRow[],
+    reserved: ReservedCell[] = [],
+  ) {
     // locked cells are modelled as regular entries here (so blockers resolve
     // to a nameable card), never through SolverState's lockedSlots seeding.
     this.state = new SolverState({ ...input, lockedSlots: [] });
+    for (const c of reserved) {
+      this.reservedByCell.set(`${c.classSectionId}@${c.day}:${c.period}`, c.label);
+    }
     const snap = input.snapshot;
     this.seg = segmentOfPeriod(snap.config.daySegments, snap.config.periodsPerDay);
     this.labSubjects = new Set(snap.labSubjectIds);
@@ -203,6 +228,15 @@ export class BoardEngine {
     const name = this.teacherNames.get(e.teacherId) ?? "This teacher";
     if (!this.input.snapshot.config.workingDays.includes(day)) return "Not a working day";
     if (period < 1 || period > this.input.snapshot.config.periodsPerDay) return "No such period";
+    // A §4.9 block holds this cell in every section that attends it, and it is
+    // not a card that can be pushed aside.
+    for (const csId of e.classSectionIds) {
+      const held = this.reservedByCell.get(`${csId}@${day}:${period}`);
+      if (held) {
+        const label = this.sectionLabels.get(csId) ?? `#${csId}`;
+        return `${label} is in ${held} in this slot — an elective block moves as a whole, not card by card`;
+      }
+    }
     if (tc) {
       if (!tc.allowedDays.has(day)) return `${name} teaches on alternate days only — this day is not in their set`;
       if (tc.blocked.has(cellKey(day, period))) return `${name} is marked unavailable in this slot`;

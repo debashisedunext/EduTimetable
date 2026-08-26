@@ -400,6 +400,39 @@ A trust wanting isolation within one MySQL server (a database + MySQL user per s
 >
 > Verified: 108 routes classified, 49 discriminating by session, 26 collections disjoint, 7 body-smuggling attempts refused, 11 AI tools clean, Redis prefixes intact — plus every prior suite green under the one gate. Deliberately unglamorous detail: the sweep purges its fixtures at *both* ends, because a run that dies half-way must not make the next run fail on a unique key and read as a broken suite. **116 api / 111 shared tests passing**, lint clean, typechecks clean, web build passing.
 
+---
+
+## Phase 10 — Split electives (§4.9)
+
+The three `elective_*` tables were migrated in Phase 1 and specced in detail at §4.9. Nothing was ever built on them: no solver handling, no API, no importer, no UI. A real requirement — "students pick one of French, Sanskrit or German, all taught in the same period, and go to their own room" — cannot be expressed without them, and cannot be faked: `uq_class_slot` makes three parallel lessons for one section impossible as ordinary rows, and the tempting workaround (pseudo class-sections) would let the solver schedule a section's Maths opposite its own language period, emitting timetables that put students in two places at once.
+
+| Task | What |
+|---|---|
+| 10.1 ✅ | **Storage.** `class_section_id` nullable + `elective_block_id` / `elective_option_id`, `max_periods_per_day` on the block |
+| 10.2 ✅ | **Feasibility.** Seven checks, block periods in capacity and teacher load |
+| 10.3 ✅ | **Solver.** Block as a macro-variable over several sections *and* several teachers |
+| 10.4 ✅ | **Writer.** Member rows + option rows, atomically |
+| 10.5 ✅ | **API.** `/elective-blocks` CRUD with the mistakes refused at entry |
+| 10.6 ✅ | **Importer.** `Electives` sheet, one row per option, plus round-trip export |
+| 10.7 ✅ | **UI.** Matrix cell with its options on hover; board reserves the cell |
+| 10.8 ✅ | **Tests.** 3 solver + 8 feasibility + 3 board unit tests, and a live smoke |
+
+> **Status: ✅ complete.**
+>
+> **The storage decision is the load-bearing one.** An occurrence is one *member row per attending section* — carrying the block and no subject, teacher or room — plus one *option row per parallel lesson* with `class_section_id = NULL`. That NULL is deliberate: MySQL unique indexes ignore NULLs, so option rows drop out of `uq_class_slot` while every member section keeps exactly one guarded cell, and `uq_teacher_slot` / `uq_room_slot` still refuse a double-booked language teacher or room. It is the same device merged groups already use for `teacher_occupancy_key`, and it means invariant 1 keeps its teeth and it stays one table (invariant 3). Rejected: a side table for option placements (moves the double-booking guard off `timetable_slots`, which invariant 1 forbids) and a non-null discriminator in `uq_class_slot` (widens the hottest unique key and weakens the guard for ordinary rows).
+>
+> **Nullable `class_section_id` rippled to 18 sites in 5 files**, and every one was a real decision rather than a cast: does this code mean *a cell* or *a lesson*? The board, the publish diff, the matrix payload and locked-slot loading filter option rows out. The teacher's own timetable and the substitute plan keep them — a language teacher's absence still needs cover — labelled by their block, because "5-A" would be wrong (the students come from every member section) and blank would leave the cover teacher with no idea what they are walking into. `AffectedSlot.classSectionId` became nullable in the substitute engine, so the two section-derived signals (grade-band eligibility, the continuity bonus) simply abstain; the subject match still applies and is the stronger signal anyway.
+>
+> **The domain is an intersection over teachers, not just sections.** A block can only run where every option teacher can, so one alternate-day language teacher narrows the whole thing — the check that is genuinely hard to see by eye, and `ELECTIVE_DAY_INTERSECTION` now names the teacher and the days. Per-day caps count against the block, not each option: a student takes one language period a day, not one of French and one of German.
+>
+> **CP-SAT skips a config that has blocks** rather than optimising around them. A payload that cannot express several simultaneous teachers would propose placements colliding with the blocks and fail the §5.6 replay gate — burning the whole budget to be rejected. The fast result is already valid, so this is the same graceful degradation as the optimizer being down. Reinstating it means modelling multi-teacher variables in the Python service; deferred, and the outcome string says so rather than going quiet.
+>
+> **The board reserves block cells.** They are not entries — a block is not a draggable card, and half of one is not a card at all — but without telling the client they are taken, it would cheerfully offer a drop the server then refuses, which is the exact split invariant 7 exists to prevent. Moving a block by dragging it is not implemented; the refusal says so ("an elective block moves as a whole, not card by card").
+>
+> **The 9.10 gate did its job unprompted:** the three new `/elective-blocks` routes failed the isolation sweep as unclassified until they were swept, which is what a self-maintaining suite is for.
+>
+> Verified: `scripts/electives-smoke.cjs` builds a school with no slack — 20 curriculum periods and a 5-period block filling a 25-slot week exactly — and asserts the API refuses a one-option block, a repeated teacher and an over-long block; readiness reaches 100% *with the block counted* (and drops to two `SLOT_UNDERFLOW` warnings when a period is freed, proving it is counted); the worker places it on five different days; 10 member rows and 15 option rows land with the right columns; the DB still refuses a double-booked option teacher; and the language teacher's own timetable shows the lesson named by its block. **125 shared / 116 api tests**, lint and typechecks clean, web build passing.
+
 **Exit criteria:** one deployment concurrently serves a single school, a trust group sharing a database, and a school on its own database with its own credentials; a user with access to two schools switches between them in the top bar and gets the correct role in each; the isolation suite passes with zero cross-school reads, writes, cache hits or socket events; per-tenant p95 still meets the §14 budget; and onboarding a new school is one command.
 
 **Risks:** the `school_id` backfill on `timetable_slots` (largest table — one transaction, unique keys verified after), and the extension's `findUnique`→`findFirst` rewrite changing return-type nullability at ~20 call sites — the two-school IDOR suite is its proof.

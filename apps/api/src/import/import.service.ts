@@ -115,7 +115,7 @@ export class ImportService {
   /** The same workbook, filled with the school's current masters (round-trip). */
   async exportCurrent(schoolId: number): Promise<Buffer> {
     const e = await this.existingData(schoolId);
-    const [years, classes, sections, rooms, subjects, teachers, unavailability, curriculum, mappings, merged] =
+    const [years, classes, sections, rooms, subjects, teachers, unavailability, curriculum, mappings, merged, blocks] =
       await Promise.all([
         this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
         this.prisma.schoolClass.findMany({ where: { schoolId }, orderBy: { sequence: "asc" } }),
@@ -136,6 +136,14 @@ export class ImportService {
         this.prisma.mergedTeachingGroup.findMany({
           where: { schoolId },
           include: { teacher: true, subject: true, room: true, members: { include: { classSection: { include: { class: true, section: true } } } } },
+        }),
+        this.prisma.electiveBlock.findMany({
+          where: { schoolId },
+          include: {
+            members: { include: { classSection: { include: { class: true, section: true } } } },
+            options: { include: { subject: true, teacher: true, room: true } },
+          },
+          orderBy: { name: "asc" },
         }),
       ]);
 
@@ -188,6 +196,19 @@ export class ImportService {
             periodsPerWeek: g.periodsPerWeek, room: g.room?.name ?? null, merged: true,
           })),
         ],
+        // One row per option, with the block's own columns repeated — the shape
+        // a person would fill in by hand, and the shape the importer reads back.
+        Electives: blocks.flatMap((b) =>
+          b.options.map((o) => ({
+            blockName: b.name,
+            classSections: b.members.map((mm) => this.label(mm.classSection)),
+            periodsPerWeek: b.periodsPerWeek,
+            maxPeriodsPerDay: b.maxPeriodsPerDay,
+            subjectName: o.subject.name,
+            employeeCode: o.teacher.employeeCode,
+            room: o.room.name,
+          })),
+        ),
       },
     });
   }
@@ -205,6 +226,7 @@ export class ImportService {
     }
     const existing = await this.existingData(schoolId);
     const { plan, rows } = validateWorkbook(parsed.sheets, existing);
+    this.checkElectiveRowsAgree(rows, plan);
 
     // readiness today, so the preview can say what the import is working toward
     let readinessPreview: DryRunResult["readinessPreview"] = null;
@@ -226,6 +248,54 @@ export class ImportService {
     }
 
     return { plan, rows, unknownSheets: parsed.unknownSheets, truncated: parsed.truncated, readinessPreview };
+  }
+
+  /**
+   * The Electives sheet is one row per *option*, so a block's own columns —
+   * which sections attend and how many periods — are repeated down its rows.
+   * The committer takes the first row's values, which is only safe if they all
+   * agree. Rather than silently picking one, say which row disagrees.
+   *
+   * This lives here rather than in the shared validator because it is the one
+   * rule in the contract that spans rows; everything else is per-cell.
+   */
+  private checkElectiveRowsAgree(rows: Record<string, ValidatedRow[]>, plan: ImportPlan) {
+    const seen = new Map<string, { row: number; sections: string; periods: number }>();
+    for (const r of rows["Electives"] ?? []) {
+      const key = String(r.data.blockName).toLowerCase();
+      const sections = ((r.data.classSections as string[]) ?? [])
+        .map((x) => x.toLowerCase().trim())
+        .sort()
+        .join(", ");
+      const periods = r.data.periodsPerWeek as number;
+      const first = seen.get(key);
+      if (!first) {
+        seen.set(key, { row: r.row, sections, periods });
+        continue;
+      }
+      if (first.sections !== sections) {
+        this.addIssue(plan, r, "classSections",
+          `${r.data.blockName} lists different class-sections here than on row ${first.row} — every option of a block is taught to the same students at the same time.`,
+          `Make this row's Class-Sections match row ${first.row}.`);
+      }
+      if (first.periods !== periods) {
+        this.addIssue(plan, r, "periodsPerWeek",
+          `${r.data.blockName} says ${periods} periods/week here but ${first.periods} on row ${first.row} — the figure belongs to the block, not to one option.`,
+          `Make this row's Periods/Week ${first.periods}, or correct row ${first.row}.`);
+      }
+    }
+  }
+
+  private addIssue(plan: ImportPlan, r: ValidatedRow, column: string, message: string, fix: string) {
+    plan.issues.push({ severity: "error", sheet: "Electives", row: r.row, column, code: "ELECTIVE_ROWS_DISAGREE", message, fix });
+    const sheet = plan.sheets.find((s) => s.sheet === "Electives");
+    if (sheet) {
+      sheet.errors += 1;
+      if (sheet.create > 0) sheet.create -= 1;
+    }
+    plan.totals.errors += 1;
+    if (plan.totals.create > 0) plan.totals.create -= 1;
+    plan.ok = false;
   }
 
   async annotate(file: Buffer, schoolId: number): Promise<Buffer> {
@@ -447,6 +517,52 @@ export class ImportService {
             });
             bump("mappings");
           }
+        }
+
+        // ---- 11. split electives (§4.9) ----
+        // One row per option, so rows are grouped by block name first. The
+        // block's own columns (sections, periods) are repeated on every row of
+        // a block; the first row wins, and `dryRun` has already refused a file
+        // where they disagree rather than silently picking one.
+        const blockKeys = new Set(
+          (await tx.electiveBlock.findMany({ where: { schoolId } })).map((b) => lc(b.name)),
+        );
+        const rowsForElectives = at("Electives");
+        const byBlock = new Map<string, typeof rowsForElectives>();
+        for (const r of rowsForElectives) {
+          const key = lc(r.data.blockName);
+          const list = byBlock.get(key) ?? [];
+          list.push(r);
+          byBlock.set(key, list);
+        }
+        for (const [key, optionRows] of byBlock) {
+          if (blockKeys.has(key)) continue; // skip-existing, like every other sheet
+          const head = optionRows[0];
+          const memberIds = (head.data.classSections as string[])
+            .map((x) => sections.get(lc(x)))
+            .filter((x): x is number => !!x);
+          const options = optionRows
+            .map((r) => ({
+              subjectId: subjects.get(lc(r.data.subjectName)),
+              teacherId: teachers.get(lc(r.data.employeeCode)),
+              roomId: rooms.get(lc(r.data.room)),
+            }))
+            .filter(
+              (o): o is { subjectId: number; teacherId: number; roomId: number } =>
+                !!o.subjectId && !!o.teacherId && !!o.roomId,
+            );
+          if (memberIds.length === 0 || options.length < 2) continue;
+          await tx.electiveBlock.create({
+            data: {
+              schoolId,
+              name: String(head.data.blockName),
+              periodsPerWeek: head.data.periodsPerWeek as number,
+              maxPeriodsPerDay: (head.data.maxPeriodsPerDay as number | null) ?? 1,
+              members: { create: memberIds.map((classSectionId) => ({ classSectionId, schoolId })) },
+              options: { create: options.map((o) => ({ ...o, schoolId })) },
+            },
+          });
+          bump("electiveBlocks");
         }
       },
       { timeout: 120_000, maxWait: 20_000 },

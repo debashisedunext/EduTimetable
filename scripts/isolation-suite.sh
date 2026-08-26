@@ -84,7 +84,11 @@ run "9.8  platform console access" \
 run "9.9  fair scheduling across schools" \
   node "$API_DIR/scripts/fair-scheduling-smoke.cjs"
 
-# 8. The exhaustive sweep, last: it is the slowest, and the most likely to be
+# 8. Split electives (§4.9): one slot, several parallel lessons.
+run "10   split electives" \
+  node "$API_DIR/scripts/electives-smoke.cjs"
+
+# 9. The exhaustive sweep, last: it is the slowest, and the most likely to be
 #    the thing you are iterating on.
 run "9.10 exhaustive route / list / body / tool sweep" \
   node "$API_DIR/scripts/isolation-sweep.cjs"

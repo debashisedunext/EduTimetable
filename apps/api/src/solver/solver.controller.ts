@@ -82,6 +82,7 @@ export class SolverController {
         select: {
           id: true, classSectionId: true, dayOfWeek: true, periodNumber: true,
           subjectId: true, teacherId: true, roomId: true, mergedGroupId: true, isLocked: true,
+          electiveBlockId: true,
         },
       }),
       this.prisma.classSection.findMany({
@@ -95,6 +96,30 @@ export class SolverController {
       }),
     ]);
     if (!config) throw new BadRequestException("Timetable config not found");
+
+    // §4.9 split electives. The grid is per class-section, so only the member
+    // rows are cells; the option rows (class_section_id NULL) are the lessons
+    // underneath, and they travel as a dictionary the cell can point into.
+    const blockIds = [...new Set(slots.map((s) => s.electiveBlockId).filter((x): x is number => x !== null))];
+    const blockRows = blockIds.length
+      ? await this.prisma.electiveBlock.findMany({
+          where: { id: { in: blockIds } },
+          include: { options: { include: { subject: true, teacher: true, room: true } } },
+        })
+      : [];
+    const blocks = Object.fromEntries(
+      blockRows.map((b) => [
+        b.id,
+        {
+          name: b.name,
+          options: b.options.map((o) => ({
+            subject: o.subject.name,
+            teacher: o.teacher.name,
+            room: o.room.name,
+          })),
+        },
+      ]),
+    );
 
     // date overlay: slotId -> substitute teacher for that specific date
     const subBydSlot = new Map<string, number>();
@@ -131,16 +156,22 @@ export class SolverController {
       teachers: Object.fromEntries(teachers.map((t) => [t.id, t.name])),
       rooms: Object.fromEntries(rooms.map((r) => [r.id, r.name])),
       date,
-      // compact tuples: [classSectionId, day, period, subjectId, teacherId, roomId, mergedGroupId, locked, substituted]
+      /** §4.9 blocks referenced by the tuples below: name + its parallel options. */
+      blocks,
+      // compact tuples: [classSectionId, day, period, subjectId, teacherId, roomId, mergedGroupId, locked, substituted, electiveBlockId]
       // with a date overlay, teacherId is the SUBSTITUTE for that date and substituted = 1
-      slots: slots.map((s) => {
-        const sub = subBydSlot.get(s.id.toString());
-        return [
-          s.classSectionId, s.dayOfWeek, s.periodNumber,
-          s.subjectId, sub ?? s.teacherId, s.roomId, s.mergedGroupId, s.isLocked ? 1 : 0,
-          sub !== undefined ? 1 : 0,
-        ];
-      }),
+      slots: slots
+        // Option rows have no section, so they are not cells in this grid —
+        // they are reachable through `blocks[blockId].options`.
+        .filter((s) => s.classSectionId !== null)
+        .map((s) => {
+          const sub = subBydSlot.get(s.id.toString());
+          return [
+            s.classSectionId, s.dayOfWeek, s.periodNumber,
+            s.subjectId, sub ?? s.teacherId, s.roomId, s.mergedGroupId, s.isLocked ? 1 : 0,
+            sub !== undefined ? 1 : 0, s.electiveBlockId,
+          ];
+        }),
     };
     await this.redis.set(cacheKey, JSON.stringify(payload), "EX", 3600);
     return payload;
