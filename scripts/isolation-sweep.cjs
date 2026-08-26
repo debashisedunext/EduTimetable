@@ -43,10 +43,20 @@ const Redis = req("ioredis");
 const ExcelJS = req("exceljs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
-const SCHOOL_A = 99012;
-const SCHOOL_B = 99010;
 const WITNESS = 1; // the seeded school: touched by nothing here
 const P = "ZZSWP";
+/**
+ * The two schools this run owns. Allocated above every id already in use
+ * rather than hardcoded, and — more importantly — only ever purged by their
+ * `ZZSWP-` code, never by id.
+ *
+ * Both rules exist because the first version of this script hardcoded ids in
+ * a range it assumed was free, and one of them was already a real school. The
+ * purge then deleted it. An id is not proof of ownership; a marker you wrote
+ * yourself is. Nothing here may delete a row it did not create.
+ */
+let SCHOOL_A = 0;
+let SCHOOL_B = 0;
 
 let failed = 0;
 const pass = (l, x = "") => console.log(`  PASS  ${l}${x ? ` — ${x}` : ""}`);
@@ -256,7 +266,13 @@ const LIST_NO_IDS = {
    * a broken previous run.
    */
   async function purge() {
-    for (const school of [SCHOOL_A, SCHOOL_B]) {
+    // By code, not by id: these are the schools this suite created, whatever
+    // ids they were given, and nothing else can match.
+    const mine = await prisma.school.findMany({
+      where: { code: { startsWith: `${P}-` } },
+      select: { id: true, code: true },
+    });
+    for (const school of mine.map((m) => m.id)) {
       for (const k of await redis.keys(`s${school}:*`)) await redis.del(k);
       await prisma.$transaction([
         prisma.mergedTeachingGroupMember.deleteMany({ where: { schoolId: school } }),
@@ -297,6 +313,10 @@ const LIST_NO_IDS = {
   // --------------------------------------------------------------- fixtures
   console.log("Two schools built for this run, each with a row of every kind:");
   await purge();
+  const highest = (await prisma.school.aggregate({ _max: { id: true } }))._max.id ?? 0;
+  SCHOOL_A = Math.max(highest + 1, 90000);
+  SCHOOL_B = SCHOOL_A + 1;
+  info("allocated ids above every existing school", `A ${SCHOOL_A} · B ${SCHOOL_B}`);
 
   /** A school with a working role, an ERP mapping, and one of everything. */
   async function buildSchool(id, tag) {
@@ -782,7 +802,7 @@ const LIST_NO_IDS = {
   // ----------------------------------------------------------------- cleanup
   console.log("\nCleanup:");
   await purge();
-  const leftovers = await prisma.school.count({ where: { id: { in: [SCHOOL_A, SCHOOL_B] } } });
+  const leftovers = await prisma.school.count({ where: { code: { startsWith: `${P}-` } } });
   check(leftovers === 0, "both test schools and everything they owned are gone");
 
   await prisma.$disconnect();
