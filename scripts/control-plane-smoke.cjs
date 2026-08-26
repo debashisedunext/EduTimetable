@@ -67,12 +67,26 @@ async function call(method, path, token, body) {
   const schools = await prisma.school.findMany();
   check(schools.length > 0, "the schools table is populated", `${schools.length} school(s)`);
 
+  // Counted, not hardcoded. "30 of 30" was true the day it was written and
+  // became a false alarm the moment Phase 11 added two tables — the question
+  // worth asking is whether any `school_id` column lacks its foreign key, and
+  // that answer stays true however many tables there are.
+  const orphans = await prisma.$queryRawUnsafe(
+    `SELECT c.TABLE_NAME AS t
+       FROM information_schema.COLUMNS c
+       LEFT JOIN information_schema.KEY_COLUMN_USAGE k
+         ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME
+        AND k.COLUMN_NAME = 'school_id' AND k.REFERENCED_TABLE_NAME = 'schools'
+      WHERE c.TABLE_SCHEMA = DATABASE() AND c.COLUMN_NAME = 'school_id'
+        AND c.TABLE_NAME <> '_prisma_migrations' AND k.CONSTRAINT_NAME IS NULL`,
+  );
   const fks = await prisma.$queryRawUnsafe(
     `SELECT COUNT(*) AS n FROM information_schema.KEY_COLUMN_USAGE
      WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME = 'schools' AND COLUMN_NAME = 'school_id'`,
   );
   const fkCount = Number(fks[0].n);
-  check(fkCount === 30, "every school_id column has a foreign key to it", `${fkCount} of 30`);
+  check(orphans.length === 0 && fkCount > 0, "every school_id column has a foreign key to it",
+    orphans.length ? `missing on ${orphans.map((o) => o.t).join(", ")}` : `${fkCount} table(s), none missing`);
 
   // The FK is the structural guarantee: no row can name a school that isn't there.
   let inventedSchool = null;

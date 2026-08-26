@@ -76,6 +76,7 @@ async function call(method, path, token, body) {
       prisma.electiveOption.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.electiveBlockMember.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.electiveBlock.deleteMany({ where: { schoolId: SCHOOL } }),
+      prisma.teacherClassEligibility.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.teacherSubjectClassSection.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.classSubject.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.classSection.deleteMany({ where: { schoolId: SCHOOL } }),
@@ -133,7 +134,14 @@ async function call(method, path, token, body) {
   for (const name of ["Maths", "English", "Science", "Hindi"]) {
     const subject = await prisma.subject.create({ data: { schoolId: SCHOOL, name: `${P} ${name}` } });
     const teacher = await prisma.teacher.create({
-      data: { schoolId: SCHOOL, employeeCode: `${P}-${name}`, name: `${P} T.${name}`, maxPeriodsPerDay: 5, maxPeriodsPerWeek: 30 },
+      // §18 teaching scope: without it every teacher trips the aggregated
+      // TEACHER_SCOPE_UNSET warning and the readiness assertion below would be
+      // measuring that instead of the block.
+      data: {
+        schoolId: SCHOOL, employeeCode: `${P}-${name}`, name: `${P} T.${name}`,
+        maxPeriodsPerDay: 5, maxPeriodsPerWeek: 30,
+        eligibility: { create: [{ classId: cls.id, schoolId: SCHOOL }] },
+      },
     });
     await prisma.classSubject.create({
       data: { schoolId: SCHOOL, classId: cls.id, subjectId: subject.id, periodsPerWeek: 5, maxPeriodsPerDay: 2 },
@@ -151,7 +159,11 @@ async function call(method, path, token, body) {
     langs.push({
       subject: await prisma.subject.create({ data: { schoolId: SCHOOL, name: `${P} ${name}` } }),
       teacher: await prisma.teacher.create({
-        data: { schoolId: SCHOOL, employeeCode: `${P}-${name}`, name: `${P} T.${name}`, maxPeriodsPerDay: 5, maxPeriodsPerWeek: 30 },
+        data: {
+          schoolId: SCHOOL, employeeCode: `${P}-${name}`, name: `${P} T.${name}`,
+          maxPeriodsPerDay: 5, maxPeriodsPerWeek: 30,
+          eligibility: { create: [{ classId: cls.id, schoolId: SCHOOL }] },
+        },
       }),
       room: await prisma.room.create({ data: { schoolId: SCHOOL, name: `${P} ${name} Room`, roomType: "classroom" } }),
     });
