@@ -37,6 +37,9 @@ export class TimetableConfigsController {
       periodDurationMins: c.periodDurationMins,
       hasZeroPeriod: c.hasZeroPeriod,
       zeroPeriodDurationMins: c.zeroPeriodDurationMins,
+      // §18 extra-class window
+      extraPeriodsPerDay: c.extraPeriodsPerDay,
+      extraPeriodDurationMins: c.extraPeriodDurationMins,
       startTime: c.startTime,
       endTime: c.endTime,
       status: c.status,

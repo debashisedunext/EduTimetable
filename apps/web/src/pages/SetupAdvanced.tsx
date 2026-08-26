@@ -657,6 +657,7 @@ export function StepConfig() {
   const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
   const [error, setError] = useState<string | null>(null);
   const [computedEnd, setComputedEnd] = useState<string | null>(current?.endTime ?? null);
+  const [extraEnd, setExtraEnd] = useState<string | null>(null);
   const [form, setForm] = useState<any>(null);
 
   useEffect(() => {
@@ -669,6 +670,8 @@ export function StepConfig() {
         hasZeroPeriod: current.hasZeroPeriod,
         zeroPeriodDurationMins: current.zeroPeriodDurationMins ?? 30,
         breaks: current.breaks.map((b, i) => ({ afterPeriod: i + 3, name: b.name ?? "Break", durationMins: 20 })),
+        extraPeriodsPerDay: current.extraPeriodsPerDay ?? 0,
+        extraPeriodDurationMins: current.extraPeriodDurationMins ?? current.periodDurationMins,
         selected: new Set<number>(),
       });
       setComputedEnd(current.endTime);
@@ -698,20 +701,23 @@ export function StepConfig() {
 
   const save = async () => {
     try {
-      const res = await api<{ endTime: string }>(`/timetable-configs/${current.id}/structure`, {
+      const res = await api<{ endTime: string; extraEndTime: string | null }>(`/timetable-configs/${current.id}/structure`, {
         method: "PUT",
         body: JSON.stringify({
           startTime: form.startTime, periodsPerDay: Number(form.periodsPerDay),
           periodDurationMins: Number(form.periodDurationMins), workingDays: form.workingDays,
           hasZeroPeriod: form.hasZeroPeriod, zeroPeriodDurationMins: Number(form.zeroPeriodDurationMins),
           breaks: form.breaks,
+          // §18: the extra-class window, appended after the teaching day.
+          extraPeriodsPerDay: Number(form.extraPeriodsPerDay) || 0,
+          extraPeriodDurationMins: Number(form.extraPeriodDurationMins) || null,
         }),
       });
       await api(`/timetable-configs/${current.id}/class-sections`, {
         method: "PUT",
         body: JSON.stringify({ classSectionIds: [...form.selected] }),
       });
-      setComputedEnd(res.endTime); setError(null); refetchConfigs(); refetchSections();
+      setComputedEnd(res.endTime); setExtraEnd(res.extraEndTime ?? null); setError(null); refetchConfigs(); refetchSections();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -754,9 +760,39 @@ export function StepConfig() {
           <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setForm({ ...form, breaks: [...form.breaks, { afterPeriod: 3, name: "Break", durationMins: 20 }] })}>＋ Add break</button>
         </Field>
 
+        <Field label="Extra-class window (§18)">
+          <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="number" min={0} max={6} style={{ ...inputStyle, width: 70 }}
+              value={form.extraPeriodsPerDay}
+              onChange={(e) => setForm({ ...form, extraPeriodsPerDay: e.target.value })} />
+            <span style={{ fontSize: 12.5 }}>extra period(s) after the school day, of</span>
+            <input type="number" style={{ ...inputStyle, width: 70 }}
+              value={form.extraPeriodDurationMins}
+              onChange={(e) => setForm({ ...form, extraPeriodDurationMins: e.target.value })} />
+            <span style={{ fontSize: 12.5 }}>mins each</span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 7, maxWidth: 640 }}>
+            {Number(form.extraPeriodsPerDay) > 0 ? (
+              <>Remedial, revision and guest classes are scheduled into these periods on the{" "}
+                <b>Extra &amp; Guest Classes</b> screen. The solver never places into them, so they cannot
+                take a period the curriculum needs.</>
+            ) : (
+              <>Leave at 0 if this timetable has no extra classes. Set it to 1 or 2 to open the{" "}
+                <b>Extra &amp; Guest Classes</b> screen for this timetable.</>
+            )}
+          </div>
+        </Field>
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--brand-deep)", borderRadius: 10, padding: "14px 20px", marginTop: 6 }}>
           <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, color: "var(--steel-light)" }}>Computed end of day</span>
-          <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700, color: "#fff" }}>{computedEnd ?? "—"}</span>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700, color: "#fff" }}>
+            {computedEnd ?? "—"}
+            {extraEnd && (
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--steel-light)", marginLeft: 10 }}>
+                extra until {extraEnd}
+              </span>
+            )}
+          </span>
         </div>
       </Card>
 

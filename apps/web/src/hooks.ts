@@ -37,6 +37,9 @@ export interface TimetableConfigSummary {
   periodDurationMins: number;
   hasZeroPeriod: boolean;
   zeroPeriodDurationMins: number | null;
+  /** §18: periods appended after the school day for extra/guest classes. */
+  extraPeriodsPerDay?: number;
+  extraPeriodDurationMins?: number | null;
   startTime: string;
   endTime: string | null;
   status: string;
