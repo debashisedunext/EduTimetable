@@ -159,11 +159,14 @@ export class PublishService {
     }
     const [, , pub] = await this.prisma.$transaction([
       this.prisma.timetableSlot.deleteMany({
-        where: { timetableConfigId: configId, status: "published" },
+        // §18 extra classes are held in both statuses so they show whichever
+        // the school is looking at, and they are not part of the draft being
+        // promoted — publishing a new timetable does not cancel them.
+        where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
       }),
       // flip the whole draft in place (§3): one table, one status column
       this.prisma.timetableSlot.updateMany({
-        where: { timetableConfigId: configId, status: "draft" },
+        where: { timetableConfigId: configId, status: "draft", source: { not: "extra" } },
         data: { status: "published" },
       }),
       this.prisma.timetablePublication.create({
@@ -207,8 +210,15 @@ export class PublishService {
   /** Start the next editing cycle: copy the live timetable back into a draft. */
   async draftFromPublished(configId: number) {
     const [draftCount, published] = await Promise.all([
-      this.prisma.timetableSlot.count({ where: { timetableConfigId: configId, status: "draft" } }),
-      this.prisma.timetableSlot.findMany({ where: { timetableConfigId: configId, status: "published" } }),
+      // Extra classes always sit in draft, so they must not count as "a draft
+      // already exists" — that would make this button permanently unusable for
+      // any school that runs one.
+      this.prisma.timetableSlot.count({
+        where: { timetableConfigId: configId, status: "draft", source: { not: "extra" } },
+      }),
+      this.prisma.timetableSlot.findMany({
+        where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
+      }),
     ]);
     if (draftCount > 0) throw new BadRequestException("A draft already exists — edit or publish it first.");
     if (published.length === 0) throw new BadRequestException("Nothing published yet to draft from.");

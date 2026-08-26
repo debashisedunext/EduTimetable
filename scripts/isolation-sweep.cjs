@@ -129,6 +129,7 @@ const PARAM_RESOURCE = [
   ["/ai/settings/roles/:id", "role"],
   ["/class-sections/:id", "classSection"],
   ["/elective-blocks/:id", "electiveBlock"],
+  ["/extra-classes/:id", "extraClass"],
   ["/class-subjects/:id", "curriculum"],
   ["/classes/:id", "class"],
   ["/mappings/:id", "mapping"],
@@ -226,6 +227,7 @@ const NO_ID = {
   "POST /mappings": { how: "body", reason: "takes the other school's class-section in the body" },
   "POST /merged-groups": { how: "body", reason: "takes the other school's ids in the body" },
   "POST /elective-blocks": { how: "body", reason: "takes the other school's class-sections and option ids in the body" },
+  "POST /extra-classes": { how: "body", reason: "takes the other school's config, class-section and teacher in the body" },
   "PUT /admin/erp-mappings": { how: "body", reason: "takes the other school's roleId in the body" },
   "POST /ai/explain-readiness": { how: "body", reason: "takes a configId in the body" },
   "POST /auth/switch-school": { how: "body", reason: "names a school the session was never granted" },
@@ -247,6 +249,16 @@ const NO_ID = {
   "POST /demo-jobs": { how: "none", reason: "queue smoke job; carries no id — fair-scheduling-smoke.cjs drives it" },
   "POST /import/commit": { how: "none", reason: "re-validates through the same path as dry-run (asserted below), then writes stamped — import-smoke.cjs covers the write" },
   "POST /import/annotate": { how: "none", reason: "writes the caller's own uploaded file back with error columns — reads no school data" },
+};
+
+/**
+ * GETs that address a resource through the query string rather than the path.
+ * They are not collections, so the disjointness check has nothing to compare —
+ * they are swept exactly like a parameterised route instead: the same request,
+ * once as each school, and only the answer may differ.
+ */
+const QUERY_ROUTES = {
+  "GET /extra-classes/window": { resource: "config", query: (id) => `?configId=${id}` },
 };
 
 /** Collections whose payload legitimately has no school-owned ids to compare. */
@@ -285,6 +297,7 @@ const LIST_NO_IDS = {
         prisma.timetableSlot.deleteMany({ where: { schoolId: school } }),
         prisma.timetablePublication.deleteMany({ where: { schoolId: school } }),
         prisma.teacherSubjectClassSection.deleteMany({ where: { schoolId: school } }),
+        prisma.extraClass.deleteMany({ where: { schoolId: school } }),
         prisma.electiveOption.deleteMany({ where: { schoolId: school } }),
         prisma.electiveBlockMember.deleteMany({ where: { schoolId: school } }),
         prisma.electiveBlock.deleteMany({ where: { schoolId: school } }),
@@ -367,9 +380,11 @@ const LIST_NO_IDS = {
     // Real periods, so the board and readiness routes have something to answer
     // about rather than 404-ing for their owner too.
     await prisma.period.createMany({
-      data: [1, 2, 3, 4].map((n) => ({
+      data: [1, 2, 3, 4, 5].map((n) => ({
         schoolId: id, timetableConfigId: config.id, sortOrder: n, periodNumber: n,
         startTime: `${String(7 + n).padStart(2, "0")}:00`, endTime: `${String(7 + n).padStart(2, "0")}:40`,
+        // P5 is the §18 extra window, so an extra class has somewhere to go.
+        isExtra: n === 5,
       })),
     });
     const cls = await prisma.schoolClass.create({ data: { schoolId: id, name: `${P} ${tag} VI`, sequence: 6 } });
@@ -402,6 +417,13 @@ const LIST_NO_IDS = {
       data: {
         schoolId: id, subjectId: subject.id, teacherId: teacher.id, periodsPerWeek: 2,
         members: { create: [{ classSectionId: classSection.id, schoolId: id }] },
+      },
+    });
+    const extraClass = await prisma.extraClass.create({
+      data: {
+        schoolId: id, timetableConfigId: config.id, classSectionId: classSection.id,
+        subjectId: subject.id, teacherId: teacher.id, dayOfWeek: 1, periodNumber: 5,
+        reason: `${P} ${tag} revision`,
       },
     });
     const absence = await prisma.teacherAbsence.create({
@@ -484,6 +506,15 @@ const LIST_NO_IDS = {
           data: { teacherId: base.teacher.id, subjectId: base.subject.id, classSectionId: cs.id, periodsPerWeek: 3, schoolId: id },
         });
       }
+      case "extraClass": {
+        const cs = await freshRow(school, "classSection");
+        return prisma.extraClass.create({
+          data: {
+            schoolId: id, timetableConfigId: base.config.id, classSectionId: cs.id,
+            subjectId: base.subject.id, teacherId: base.teacher.id, dayOfWeek: (n % 5) + 1, periodNumber: 5,
+          },
+        });
+      }
       case "electiveBlock": {
         const cs = await freshRow(school, "classSection");
         return prisma.electiveBlock.create({
@@ -552,7 +583,12 @@ const LIST_NO_IDS = {
       else unclassified.push(`${key} (parameterised, no resource mapping)`);
       continue;
     }
-    if (r.method === "GET") { buckets.list.push(r); continue; }
+    if (r.method === "GET") {
+      const q = QUERY_ROUTES[key];
+      if (q) buckets.path.push({ ...r, resource: q.resource, query: q.query });
+      else buckets.list.push(r);
+      continue;
+    }
     const decided = NO_ID[key];
     if (!decided) unclassified.push(`${key} (no id in the path, and no decision recorded)`);
     else buckets[decided.how].push({ ...r, ...decided });
@@ -601,7 +637,7 @@ const LIST_NO_IDS = {
     const row = disposable ? await freshRow(A, r.resource) : A.rows[r.resource];
     if (!row) { fail(key, `no ${r.resource} to test with`); continue; }
 
-    const url = r.path.replace(/:(\w+)/, String(row.id));
+    const url = r.query ? `${r.path}${r.query(row.id)}` : r.path.replace(/:(\w+)/, String(row.id));
     const payload = r.method === "GET" ? null : BODY_FOR(key, ++seq, A);
     // A first: if A cannot reach its own row either, the control is worthless,
     // and we want to know that before reading anything into B's refusal.
@@ -692,6 +728,9 @@ const LIST_NO_IDS = {
       { teacherId: A.rows.teacher.id, date: "2026-09-02" }],
     ["PUT /admin/erp-mappings", "PUT", "/admin/erp-mappings",
       { mappings: [{ erpRole: "ADMIN", roleId: A.rows.role.id }] }],
+    ["POST /extra-classes", "POST", "/extra-classes",
+      { timetableConfigId: A.rows.config.id, classSectionId: A.rows.classSection.id,
+        subjectId: B.rows.subject.id, teacherId: B.rows.teacher.id, dayOfWeek: 1, periodNumber: 5 }],
     ["POST /elective-blocks", "POST", "/elective-blocks",
       { name: `${P} Cross`, periodsPerWeek: 2, classSectionIds: [A.rows.classSection.id],
         options: [

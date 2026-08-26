@@ -40,6 +40,7 @@ const NAV: NavGroup[] = [
       { label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
       { label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
       { label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
+      { label: "Extra & Guest Classes", to: "/extra-classes", requires: PERMISSIONS.TIMETABLE_EDIT },
     ],
   },
   {

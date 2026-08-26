@@ -15,6 +15,7 @@ import { Matrix } from "./pages/Matrix";
 import { Board } from "./pages/Board";
 import { Publish } from "./pages/Publish";
 import { Substitutes } from "./pages/Substitutes";
+import { ExtraClasses } from "./pages/ExtraClasses";
 import { Reports } from "./pages/Reports";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
@@ -122,6 +123,7 @@ export default function App() {
           <Route path="/board" element={<Board />} />
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
+          <Route path="/extra-classes" element={<ExtraClasses />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />

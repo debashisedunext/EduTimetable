@@ -14,6 +14,8 @@ export function teacher(id: number, name: string, over: Partial<SnapshotTeacher>
     classTeacherPeriodRule: "none",
     periodPattern: "every_period",
     alternateDaySet: null,
+    eligibleClassIds: [],
+    employmentType: "permanent",
     unavailableFullDays: [],
     unavailablePeriodCount: 0,
     ...over,
@@ -50,7 +52,9 @@ export function cleanSchool(): FeasibilitySnapshot {
       consecutiveBlockSize: 1,
       consecutiveBlocksPerWeek: null,
     })),
-    teachers: subjects.map((s, i) => teacher(101 + i, `T.${s}`)),
+    // Every fixture teacher covers class 5 — the only class here — so the
+    // golden school stays clean under §18's Check 8.
+    teachers: subjects.map((s, i) => teacher(101 + i, `T.${s}`, { eligibleClassIds: [5] })),
     mappings: subjects.flatMap((s, i) => [
       {
         id: 400 + i * 2,
@@ -98,9 +102,9 @@ export function schoolWithElective(): FeasibilitySnapshot {
   for (const m of snap.mappings) if (m.subjectName === "Art") m.periodsPerWeek = 4;
 
   snap.teachers.push(
-    teacher(201, "Mme Dubois"),
-    teacher(202, "Shri Joshi"),
-    teacher(203, "Hr. Bauer"),
+    teacher(201, "Mme Dubois", { eligibleClassIds: [5] }),
+    teacher(202, "Shri Joshi", { eligibleClassIds: [5] }),
+    teacher(203, "Hr. Bauer", { eligibleClassIds: [5] }),
   );
   snap.electiveBlocks = [
     {

@@ -6,7 +6,7 @@ const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 interface SlotsPayload {
   status: string;
   workingDays: number[];
-  periods: { periodNumber: number | null; startTime: string; isBreak: boolean; breakName: string | null }[];
+  periods: { periodNumber: number | null; startTime: string; isBreak: boolean; breakName: string | null; isExtra?: boolean }[];
   sections: { id: number; label: string }[];
   subjects: Record<string, string>;
   teachers: Record<string, string>;
@@ -49,7 +49,11 @@ export function Matrix() {
   if (!current) return <p className="screen-sub">Select a timetable first.</p>;
   if (!data || !index) return <p className="screen-sub">Loading matrix…</p>;
 
-  const teachingPeriods = data.periods.filter((p) => !p.isBreak && p.periodNumber !== 0 && p.periodNumber !== null);
+  // §18: the extra window is teaching, but it is not what the timetable has to
+  // fill — counting it would make a full grid look under-allocated.
+  const teachingPeriods = data.periods.filter(
+    (p) => !p.isBreak && !p.isExtra && p.periodNumber !== 0 && p.periodNumber !== null,
+  );
   const capacity = data.sections.length * data.workingDays.length * teachingPeriods.length;
   const filled = data.slots.length;
 
@@ -143,11 +147,14 @@ export function Matrix() {
               {data.workingDays.map((d) =>
                 data.periods.filter((p) => p.periodNumber !== 0).map((p, i) => (
                   <th key={`${d}:${i}`} style={{
-                    position: "sticky", top: 29, zIndex: 3, background: p.isBreak ? "var(--offwhite)" : "var(--steel-pale)",
-                    color: "var(--brand)", padding: "5px 3px", fontSize: 9.5, fontFamily: "var(--font-mono)",
-                    minWidth: p.isBreak ? 30 : 62, borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                  }}>
-                    {p.isBreak ? "Brk" : `P${p.periodNumber}`}
+                    position: "sticky", top: 29, zIndex: 3,
+                    background: p.isBreak ? "var(--offwhite)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--steel-pale)",
+                    color: p.isExtra ? "var(--amber)" : "var(--brand)", padding: "5px 3px", fontSize: 9.5, fontFamily: "var(--font-mono)",
+                    minWidth: p.isBreak ? 30 : 62,
+                    borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
+                    borderLeft: p.isExtra ? "2px solid var(--amber)" : undefined,
+                  }} title={p.isExtra ? "Extra-class window — after the school day" : undefined}>
+                    {p.isBreak ? "Brk" : p.isExtra ? `X${p.periodNumber}` : `P${p.periodNumber}`}
                   </th>
                 )),
               )}
@@ -172,7 +179,8 @@ export function Matrix() {
                       <td key={`${d}:${i}`} title={cell?.title ?? (cell?.substituted ? `Substitute teacher on ${date}` : (cell?.room ?? undefined))} style={{
                         padding: "5px 7px", minWidth: 62, height: 44, verticalAlign: "middle",
                         borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                        background: cell?.substituted ? "var(--accent-bg)" : cell?.elective ? "var(--brand-pale, var(--steel-pale))" : cell?.merged ? "var(--steel-pale)" : "var(--paper)",
+                        background: cell?.substituted ? "var(--accent-bg)" : cell?.elective ? "var(--brand-pale, var(--steel-pale))" : cell?.merged ? "var(--steel-pale)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--paper)",
+                        borderLeft: p.isExtra ? "2px solid var(--amber)" : undefined,
                       }}>
                         {cell ? (
                           <>

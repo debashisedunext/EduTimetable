@@ -435,6 +435,37 @@ The three `elective_*` tables were migrated in Phase 1 and specced in detail at 
 
 ---
 
+## Phase 11 — Teaching scope, engagement and extra classes (§18)
+
+Three gaps, all of the same kind: something the data *described* but could not *constrain*.
+
+| Task | What |
+|---|---|
+| 11.1 ✅ | **Schema.** `teacher_class_eligibility`, `employment_type`, the config's extra window, `is_extra` on periods, `extra` on `SlotSource`, `extra_classes` |
+| 11.2 ✅ | **One rule, every call site.** `teacher-scope.util.ts` called by mappings, merged groups, elective options, class-teacher, importer |
+| 11.3 ✅ | **Feasibility Check 8.** `TEACHER_NOT_ELIGIBLE`, `GUEST_IN_CURRICULUM`, aggregated `TEACHER_SCOPE_UNSET` |
+| 11.4 ✅ | **Substitution.** Scope is a hard gate, guests excluded, permanent +1 |
+| 11.5 ✅ | **Extra classes.** Window in the structure builder, `/extra-classes` API, slots that survive regeneration and publish |
+| 11.6 ✅ | **Importer.** Teaching Scope and Engagement columns, plus round-trip export |
+| 11.7 ✅ | **UI.** Scope picker with presets, engagement field, Extra & Guest Classes screen, extra band on the Matrix |
+| 11.8 ✅ | **Tests.** 9 unit tests, a live smoke, sweep classification, School 2 regenerated |
+
+> **Status: ✅ complete.**
+>
+> **The gap was that grade band was derived, not declared.** `substitutes.service.ts` built a teacher's `classIds` from the mappings they already had — which describes the data and therefore cannot constrain it. Nothing stopped a Nursery teacher being mapped to Class 12; my own School 2 generator enforced bands in the *script*, which is exactly the kind of rule that exists nowhere the app can see. Eligibility is now a **set** of classes (a range cannot express the PE teacher who covers Nursery and Class 12), with presets in the UI so the ordinary case stays two clicks.
+>
+> **Check 8 is not redundant with the endpoint refusals.** The endpoints cannot see rows that predate the rule, and cannot see a scope *narrowed after* the mappings were made — the mistake a person is most likely to make and least likely to notice. The unstated-scope warning is aggregated to one line for the whole school on purpose: a school that has never filled it in has every teacher unscoped, and a hundred identical rows would drown a dashboard whose value is that each line names a fix.
+>
+> **Engagement does two things and deliberately not a third.** A guest cannot be mapped into the regular curriculum, and guests are never offered as cover while permanent staff take a +1 tie-break. Load caps are *not* derived from the type — a default that silently overrides what an admin typed is worse than no default.
+>
+> **Extra classes needed time the solver could not reach**, because School 2's grid is 40/40 and an extra class taking a regular period would displace a lesson Phase A had proved must exist. The window is appended after the teaching day and is free space *by construction*: the solver's domain is `1..periodsPerDay`. `daySegmentsFromRows` had to exclude it too, or the last teaching run would silently lengthen and a double period could be told it may span into an extra class.
+>
+> Storing them as `source='extra'` slots meant teaching **three** existing paths to leave them alone: regeneration (which wipes non-locked draft rows), publish (which deletes published and promotes draft), and draft-from-published (which would otherwise see them and refuse to make a draft at all, permanently). Each was a real bug found by asking "what happens next time someone presses Generate?"
+>
+> Verified: `scripts/teacher-scope-smoke.cjs` (24 live checks) proves a primary teacher is refused Class 12 by every route, a guest is refused the curriculum and pointed at the right screen, Check 8 catches a scope narrowed after the fact, an extra class is refused a teaching period and accepted in the window, lands as slots in both statuses guarded by `uq_teacher_slot`, and survives both a regeneration and a publish; and that neither the guest nor the out-of-scope teacher appears among cover candidates. The 9.10 gate flagged both new routes as unclassified until swept — including one that addresses its resource by query string, which the sweep now handles as its own bucket. School 2 regenerated with **573 teaching-scope rows** and still reaches 100% readiness with 0 warnings. **134 shared / 116 api tests**, lint and typechecks clean, web build passing.
+
+---
+
 ## School 2 — a full school as test data (§16)
 
 A generated, importable school for Second Branch (`SCHOOL-2`): 14 classes (Pre-Nursery to Class 12) x 4 sections, Mon–Fri, 8 periods of 37 minutes from 08:00 to 14:01 with breaks after periods 3, 5 (lunch, 45 min) and 7.

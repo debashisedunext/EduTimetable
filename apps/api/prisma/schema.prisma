@@ -49,6 +49,8 @@ model School {
   subjects                    Subject[]
   teachers                    Teacher[]
   teacherUnavailability       TeacherUnavailability[]
+  teacherClassEligibility     TeacherClassEligibility[]
+  extraClasses                ExtraClass[]
   classSubjects               ClassSubject[]
   teacherSubjectClassSections TeacherSubjectClassSection[]
   timetableConfigs            TimetableConfig[]
@@ -153,6 +155,15 @@ enum ClassTeacherPeriodRule {
   random
 }
 
+/// §18 — how a teacher is engaged. Recorded on every teacher, and load-bearing
+/// in two places: a guest may not be mapped into the regular curriculum (they
+/// take extra classes only), and guests are not offered as substitutes.
+enum EmploymentType {
+  permanent
+  adhoc
+  guest
+}
+
 enum PeriodPattern {
   every_period
   alternate_period
@@ -190,6 +201,7 @@ model SchoolClass {
   sections      Section[]
   classSections ClassSection[]
   classSubjects ClassSubject[]
+  eligibleTeachers TeacherClassEligibility[]
 
   @@unique([schoolId, name])
   @@map("classes")
@@ -230,6 +242,7 @@ model ClassSection {
   mappings                 TeacherSubjectClassSection[]
   mergedGroupMemberships   MergedTeachingGroupMember[]
   electiveBlockMemberships ElectiveBlockMember[]
+  extraClasses             ExtraClass[]
 
   @@unique([classId, sectionId, academicYearId])
   @@index([schoolId])
@@ -248,6 +261,7 @@ model Room {
   preferredFor    TeacherSubjectClassSection[]
   mergedGroups    MergedTeachingGroup[]
   electiveOptions ElectiveOption[]
+  extraClasses    ExtraClass[]
 
   @@unique([schoolId, name])
   @@map("rooms")
@@ -265,6 +279,7 @@ model Subject {
   mappings             TeacherSubjectClassSection[]
   mergedGroups         MergedTeachingGroup[]
   electiveOptions      ElectiveOption[]
+  extraClasses         ExtraClass[]
 
   @@unique([schoolId, name])
   @@map("subjects")
@@ -281,7 +296,15 @@ model Teacher {
   classTeacherPeriodRule ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
   periodPattern          PeriodPattern                @default(every_period) @map("period_pattern")
   alternateDaySet        Json?                        @map("alternate_day_set")
+  employmentType         EmploymentType               @default(permanent) @map("employment_type")
   isActive               Boolean                      @default(true) @map("is_active")
+  /// §18: which classes this teacher may be given at all. A primary teacher
+  /// cannot be mapped to Class 12 however the mapping is created — and unlike
+  /// the grade band the substitute engine used to derive from existing
+  /// mappings, this is *declared*, so it can constrain the mappings rather
+  /// than merely describe them.
+  eligibility            TeacherClassEligibility[]
+  extraClasses           ExtraClass[]
   unavailability         TeacherUnavailability[]
   mappings               TeacherSubjectClassSection[]
   classTeacherOf         ClassSection[]               @relation("classTeacherOf")
@@ -291,6 +314,21 @@ model Teacher {
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
+}
+
+/// Which classes a teacher may teach (§18). A set rather than a range: the PE
+/// teacher covers Nursery and Class 12, and a range cannot say that.
+model TeacherClassEligibility {
+  teacherId Int         @map("teacher_id")
+  teacher   Teacher     @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classId   Int         @map("class_id")
+  class     SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  schoolId  Int         @map("school_id")
+  school    School      @relation(fields: [schoolId], references: [id])
+
+  @@id([teacherId, classId])
+  @@index([schoolId])
+  @@map("teacher_class_eligibility")
 }
 
 model TeacherUnavailability {
@@ -362,9 +400,18 @@ model TimetableConfig {
   classTeacherGetsFirstPeriod Boolean               @default(false) @map("class_teacher_gets_first_period")
   startTime                   String                @default("08:00") @map("start_time") @db.VarChar(5)
   endTime                     String?               @map("end_time") @db.VarChar(5)
+  /// §18: periods appended after the regular day for extra classes. The solver
+  /// places only into 1..periodsPerDay, so these are a free space by
+  /// construction rather than by a new rule.
+  extraPeriodsPerDay          Int                   @default(0) @map("extra_periods_per_day")
+  extraPeriodDurationMins     Int?                  @map("extra_period_duration_mins")
+  /// Days that exist only for extra classes, e.g. [6] for Saturday. Kept apart
+  /// from `workingDays` precisely so generation cannot reach them.
+  extraDays                   Json?                 @map("extra_days")
   status                      TimetableConfigStatus @default(draft)
   periods                     Period[]
   classSections               ClassSection[]
+  extraClasses                ExtraClass[]
 
   @@unique([schoolId, name, academicYearId])
   @@map("timetable_config")
@@ -379,6 +426,8 @@ model Period {
   startTime         String          @map("start_time") @db.VarChar(5)
   endTime           String          @map("end_time") @db.VarChar(5)
   isBreak           Boolean         @default(false) @map("is_break")
+  /// Part of the §18 extra-class window rather than the teaching day.
+  isExtra           Boolean         @default(false) @map("is_extra")
   breakName         String?         @map("break_name") @db.VarChar(30)
   schoolId          Int             @map("school_id")
   school            School          @relation(fields: [schoolId], references: [id])
@@ -476,6 +525,39 @@ model ElectiveOption {
   @@map("elective_options")
 }
 
+/// §18 — an extra or guest class: the standing arrangement, plus the
+/// `timetable_slots` row (source `extra`) that actually reserves the cell.
+/// Two rows for one thing on purpose: the slot is what the unique keys guard
+/// and what every grid already reads, while the reason and the dates it runs
+/// between belong nowhere near the hottest table in the schema.
+model ExtraClass {
+  id                Int             @id @default(autoincrement())
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  classSectionId    Int             @map("class_section_id")
+  classSection      ClassSection    @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  subjectId         Int             @map("subject_id")
+  subject           Subject         @relation(fields: [subjectId], references: [id])
+  teacherId         Int             @map("teacher_id")
+  teacher           Teacher         @relation(fields: [teacherId], references: [id])
+  roomId            Int?            @map("room_id")
+  room              Room?           @relation(fields: [roomId], references: [id])
+  dayOfWeek         Int             @map("day_of_week") @db.TinyInt
+  periodNumber      Int             @map("period_number")
+  reason            String?         @db.VarChar(160)
+  /// The window it runs between. Advisory — the slot itself is weekly.
+  effectiveFrom     DateTime?       @map("effective_from") @db.Date
+  effectiveTo       DateTime?       @map("effective_to") @db.Date
+  createdBy         Int?            @map("created_by")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@unique([timetableConfigId, classSectionId, dayOfWeek, periodNumber], map: "uq_extra_class_cell")
+  @@index([schoolId])
+  @@map("extra_classes")
+}
+
 model AuditLog {
   id        BigInt   @id @default(autoincrement())
   schoolId  Int      @map("school_id")
@@ -499,6 +581,10 @@ enum SlotSource {
   auto
   manual
   substitute
+  /// §18 extra/guest class. Lives in the same table so the three unique keys
+  /// still refuse a double-booked teacher or room, but occupies the config's
+  /// *extra* window, which the solver never places into.
+  extra
 }
 
 // One row per (class-section, day, period). Merged groups (§4.9) produce one

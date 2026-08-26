@@ -5,6 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClassSections } from "./capacity.util";
+import { assertCanTeach } from "./teacher-scope.util";
 
 /**
  * Split electives (§4.9) — the mirror of a merged group.
@@ -63,6 +64,10 @@ export class ElectiveBlocksController {
     const memberIds = this.memberIds(body);
     const options = this.options(body);
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
+    // Every option teacher takes the block's member classes (§18).
+    for (const o of options) {
+      await assertCanTeach(this.prisma, o.teacherId, memberIds, { what: "this elective option" });
+    }
     // Capacity-first (§8.1): a block cannot ask for more periods than the
     // shortest member's week has left.
     assertWithinWeek(periodsPerWeek, await capacityForClassSections(this.prisma, memberIds));

@@ -4,6 +4,7 @@ import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
+import { assertCanOwnClass } from "./teacher-scope.util";
 
 @Controller("classes")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -228,6 +229,8 @@ export class ClassSectionsController {
         where: { id: teacherId, schoolId: req.user.schoolId, isActive: true },
       });
       if (!teacher) throw new BadRequestException("Teacher not found or inactive");
+      // A class teacher owns the class, so they must be able to teach it (§18).
+      await assertCanOwnClass(this.prisma, teacherId, toInt(id, "id"));
     }
     const updated = await uniq(
       () =>

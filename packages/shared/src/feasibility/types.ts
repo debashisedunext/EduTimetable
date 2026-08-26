@@ -42,6 +42,10 @@ export type IssueCode =
   | "ELECTIVE_DAILY_PIGEONHOLE"
   | "ELECTIVE_DAY_INTERSECTION"
   | "ELECTIVE_SUBJECT_DOUBLE_COUNTED"
+  // Check 8 — teaching scope and engagement (§18)
+  | "TEACHER_NOT_ELIGIBLE"
+  | "TEACHER_SCOPE_UNSET"
+  | "GUEST_IN_CURRICULUM"
   | "NO_DATA";
 
 export interface EntityRef {
@@ -128,6 +132,10 @@ export interface SnapshotTeacher {
   periodPattern: "every_period" | "alternate_period" | "alternate_day";
   alternateDaySet: number[] | null;
   /** days fully unavailable (weekly off) */
+  /** §18: classes this teacher may take. Empty = not stated yet. */
+  eligibleClassIds: number[];
+  /** §18: `guest` teachers belong to extra classes, not the curriculum. */
+  employmentType: "permanent" | "adhoc" | "guest";
   unavailableFullDays: number[];
   /** count of additional single-period unavailability rows */
   unavailablePeriodCount: number;

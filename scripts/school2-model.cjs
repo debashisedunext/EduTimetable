@@ -35,6 +35,14 @@ const TARGET_LOAD = 22;
 const MIN_TEACHERS_PER_SUBJECT = 3;
 
 /** Classes in teaching order, with the band that staffs them. */
+/** The classes each teaching band covers — now recorded as §18 scope, not
+ *  merely respected by this generator. */
+const BAND_CLASSES = {
+  primary: ["Pre-Nursery", "Nursery", "Class 1", "Class 2", "Class 3"],
+  middle: ["Class 4", "Class 5", "Class 6", "Class 7", "Class 8"],
+  senior: ["Class 9", "Class 10", "Class 11", "Class 12"],
+};
+
 const CLASSES = [
   { name: "Pre-Nursery", sequence: 1, band: "primary", curriculum: "early" },
   { name: "Nursery", sequence: 2, band: "primary", curriculum: "early" },
@@ -204,6 +212,7 @@ function staffing() {
 }
 
 module.exports = {
+  BAND_CLASSES,
   SECTIONS, YEAR, CONFIG, WEEK, TARGET_LOAD, CLASSES, CURRICULA, LANGUAGES,
   LAB_SUBJECTS, SUBJECT_META, MERGED_IN_HIGHER,
   nameFor, curriculumOf, classSections, isMerged, demand, staffing,

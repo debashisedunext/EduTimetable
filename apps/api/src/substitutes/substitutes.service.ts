@@ -129,7 +129,7 @@ export class SubstitutesService {
         this.prisma.substitutionLog.findMany({ where: { date } }),
         this.prisma.teacher.findMany({
           where: { schoolId, isActive: true },
-          include: { mappings: true, mergedGroups: { include: { members: true } }, unavailability: true },
+          include: { mappings: true, mergedGroups: { include: { members: true } }, unavailability: true, eligibility: true },
         }),
         this.prisma.classSection.findMany({
           where: { class: { schoolId } },
@@ -249,7 +249,13 @@ export class SubstitutesService {
         maxPeriodsPerDay: t.maxPeriodsPerDay,
         subjectIds,
         classSectionIds: csIds,
-        classIds: [...new Set(csIds.map((id) => sectionById.get(id)?.classId).filter((x): x is number => x != null))],
+        // §18: declared scope, falling back to what they teach for a teacher
+        // whose scope has not been filled in yet.
+        classIds:
+          t.eligibility.length > 0
+            ? t.eligibility.map((e) => e.classId)
+            : [...new Set(csIds.map((id) => sectionById.get(id)?.classId).filter((x): x is number => x != null))],
+        employmentType: t.employmentType,
         busyPeriods: [...(busyByTeacher.get(t.id) ?? [])],
         unavailablePeriods: unavailByTeacher.get(t.id) ?? [],
         substitutionsToday: subsCountByTeacher.get(t.id) ?? 0,

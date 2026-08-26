@@ -150,6 +150,8 @@ export class SolverController {
       periods: config.periods.map((p) => ({
         periodNumber: p.periodNumber, startTime: p.startTime, endTime: p.endTime,
         isBreak: p.isBreak, breakName: p.breakName,
+        // §18: after the teaching day, rendered as its own band.
+        isExtra: p.isExtra,
       })),
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),

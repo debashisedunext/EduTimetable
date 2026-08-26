@@ -120,7 +120,16 @@ export async function writeDraftSlots(
 
   await prisma.$transaction([
     prisma.timetableSlot.deleteMany({
-      where: { timetableConfigId: configId, status: "draft", isLocked: false },
+      where: {
+        timetableConfigId: configId,
+        status: "draft",
+        isLocked: false,
+        // §18 extra classes survive a re-generation. They are not part of what
+        // the solver produced, they sit outside the teaching day it works in,
+        // and a school that re-runs generation has not thereby cancelled next
+        // week's revision class.
+        source: { not: "extra" },
+      },
     }),
     prisma.timetableSlot.createMany({ data: rows }),
   ]);

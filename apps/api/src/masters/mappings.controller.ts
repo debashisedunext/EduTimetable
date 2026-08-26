@@ -5,6 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClassSections } from "./capacity.util";
+import { assertCanTeach } from "./teacher-scope.util";
 
 /**
  * Subject Mapping — teacher_subject_class_section (§3, §8.1b) plus merged
@@ -96,6 +97,7 @@ export class MappingsController {
     }
     const subjectId = toInt(body.subjectId, "subjectId");
     const teacherId = toInt(body.teacherId, "teacherId");
+    await assertCanTeach(this.prisma, teacherId, ids, { what: "this subject" });
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     const preferredRoomId =
       body.preferredRoomId != null ? toInt(body.preferredRoomId, "preferredRoomId") : null;
@@ -188,6 +190,7 @@ export class MergedGroupsController {
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["teacherId", "subjectId", "periodsPerWeek", "classSectionIds"]);
     const ids = this.memberIds(body);
+    await assertCanTeach(this.prisma, toInt(body.teacherId, "teacherId"), ids, { what: "this merged group" });
     assertWithinWeek(
       toInt(body.periodsPerWeek, "periodsPerWeek"),
       await capacityForClassSections(this.prisma, ids),
@@ -221,6 +224,19 @@ export class MergedGroupsController {
     const data: Record<string, unknown> = {};
     if (body.teacherId !== undefined) data.teacherId = toInt(body.teacherId, "teacherId");
     if (body.periodsPerWeek !== undefined) data.periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
+    // A change to either side can break scope, so re-check whichever is not
+    // being changed against whichever is.
+    if (body.teacherId !== undefined || body.classSectionIds !== undefined) {
+      const existing = await this.prisma.mergedTeachingGroup.findFirst({
+        where: { id: groupId },
+        include: { members: true },
+      });
+      if (!existing) throw new BadRequestException(`Merged group ${groupId} not found`);
+      const teacherId = body.teacherId !== undefined ? toInt(body.teacherId, "teacherId") : existing.teacherId;
+      const sectionIds =
+        body.classSectionIds !== undefined ? this.memberIds(body) : existing.members.map((m) => m.classSectionId);
+      await assertCanTeach(this.prisma, teacherId, sectionIds, { what: "this merged group" });
+    }
     if (body.roomId !== undefined) data.roomId = body.roomId === null ? null : toInt(body.roomId, "roomId");
     if (body.periodsPerWeek !== undefined) {
       const memberIds =

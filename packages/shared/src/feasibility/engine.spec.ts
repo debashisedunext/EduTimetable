@@ -390,3 +390,68 @@ describe("Check 7 — split electives (§4.9)", () => {
     );
   });
 });
+
+describe("Check 8 — teaching scope and engagement (§18)", () => {
+  it("a teacher mapped outside their scope is a blocker naming the class and the fix", () => {
+    const snap = cleanSchool();
+    // T.English covers class 5 only; give them a section of a class 9 they do
+    // not teach — the case a scope *narrowed after the fact* produces.
+    snap.classSections.push({ id: 21, label: "9-A", classId: 9, classTeacherId: null });
+    snap.subjectRequirements.push({
+      id: 900, classId: 9, subjectId: 300, subjectName: "English", periodsPerWeek: 30,
+      maxPeriodsPerDay: 6, samePeriodAcrossWeek: false, consecutiveBlockSize: 1, consecutiveBlocksPerWeek: null,
+    });
+    snap.mappings.push({
+      id: 900, teacherId: 101, teacherName: "T.English", subjectId: 300, subjectName: "English",
+      classSectionId: 21, classSectionLabel: "9-A", periodsPerWeek: 30,
+    });
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("TEACHER_NOT_ELIGIBLE");
+    const b = r.blockers.find((x) => x.code === "TEACHER_NOT_ELIGIBLE")!;
+    expect(b.message).toContain("T.English");
+    expect(b.message).toContain("9-A");
+    expect(b.fix).toContain("teaching scope");
+  });
+
+  it("reports a teacher once per class, not once per section", () => {
+    const snap = cleanSchool();
+    // Same teacher, same out-of-scope class, four sections of it.
+    for (let i = 0; i < 4; i++) {
+      snap.classSections.push({ id: 30 + i, label: `9-${"ABCD"[i]}`, classId: 9, classTeacherId: null });
+      snap.mappings.push({
+        id: 930 + i, teacherId: 101, teacherName: "T.English", subjectId: 300, subjectName: "English",
+        classSectionId: 30 + i, classSectionLabel: `9-${"ABCD"[i]}`, periodsPerWeek: 1,
+      });
+    }
+    const r = runFeasibility(snap);
+    expect(r.blockers.filter((b) => b.code === "TEACHER_NOT_ELIGIBLE")).toHaveLength(1);
+  });
+
+  it("a guest teacher in the regular curriculum is a blocker", () => {
+    const snap = cleanSchool();
+    snap.teachers.find((t) => t.id === 101)!.employmentType = "guest";
+    const r = runFeasibility(snap);
+    expect(codes(r)).toContain("GUEST_IN_CURRICULUM");
+    expect(r.blockers.find((b) => b.code === "GUEST_IN_CURRICULUM")!.fix).toContain("Extra Classes");
+  });
+
+  it("an unstated scope is one warning for the whole school, not one per teacher", () => {
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.eligibleClassIds = [];
+    const r = runFeasibility(snap);
+    const warns = r.warnings.filter((w) => w.code === "TEACHER_SCOPE_UNSET");
+    expect(warns).toHaveLength(1);
+    expect(warns[0].message).toContain("5 teachers");
+    // and it stays a warning: an unfilled field must not block generation
+    expect(r.ready).toBe(true);
+  });
+
+  it("scope is checked through merged groups and elective options too", () => {
+    const snap = schoolWithElective();
+    snap.teachers.find((t) => t.id === 201)!.eligibleClassIds = [11]; // not class 5
+    const r = runFeasibility(snap);
+    const b = r.blockers.find((x) => x.code === "TEACHER_NOT_ELIGIBLE");
+    expect(b?.message).toContain("Mme Dubois");
+    expect(b?.message).toContain("French in Class 5 Third Language");
+  });
+});

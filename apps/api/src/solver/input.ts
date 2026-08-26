@@ -36,7 +36,7 @@ export async function buildFeasibilitySnapshot(
       }),
       prisma.teacher.findMany({
         where: { schoolId: config.schoolId, isActive: true },
-        include: { unavailability: true },
+        include: { unavailability: true, eligibility: true },
       }),
       prisma.mergedTeachingGroup.findMany({
         where: { members: { some: { classSectionId: { in: sectionIds } } } },
@@ -86,6 +86,7 @@ export async function buildFeasibilitySnapshot(
           startTime: p.startTime,
           endTime: p.endTime,
           isBreak: p.isBreak,
+          isExtra: p.isExtra,
           breakName: p.breakName,
         })),
       ),
@@ -115,6 +116,8 @@ export async function buildFeasibilitySnapshot(
       classTeacherPeriodRule: t.classTeacherPeriodRule,
       periodPattern: t.periodPattern,
       alternateDaySet: (t.alternateDaySet as number[] | null) ?? null,
+      eligibleClassIds: t.eligibility.map((e) => e.classId),
+      employmentType: t.employmentType,
       unavailableFullDays: t.unavailability
         .filter((u) => u.periodNumber === null)
         .map((u) => u.dayOfWeek),

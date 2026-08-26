@@ -128,7 +128,11 @@ export class ImportService {
         }),
         this.prisma.room.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
         this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
-        this.prisma.teacher.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
+        this.prisma.teacher.findMany({
+          where: { schoolId },
+          include: { eligibility: { include: { class: true }, orderBy: { class: { sequence: "asc" } } } },
+          orderBy: { name: "asc" },
+        }),
         this.prisma.teacherUnavailability.findMany({ where: { teacher: { schoolId } }, include: { teacher: true } }),
         this.prisma.classSubject.findMany({ where: { class: { schoolId } }, include: { class: true, subject: true } }),
         this.prisma.teacherSubjectClassSection.findMany({
@@ -173,6 +177,8 @@ export class ImportService {
           employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay, maxPeriodsPerWeek: t.maxPeriodsPerWeek,
           classTeacherPeriodRule: t.classTeacherPeriodRule, periodPattern: t.periodPattern,
           alternateDaySet: Array.isArray(t.alternateDaySet) ? (t.alternateDaySet as number[]).map((d) => DAYS[d]) : [],
+          classNames: t.eligibility.map((e) => e.class.name),
+          employmentType: t.employmentType,
           isActive: t.isActive,
         })),
         "Teacher Unavailability": unavailability.map((u) => ({
@@ -386,12 +392,33 @@ export class ImportService {
               classTeacherPeriodRule: (r.data.classTeacherPeriodRule ?? "none") as never,
               periodPattern: (r.data.periodPattern ?? "every_period") as never,
               alternateDaySet: days.length > 0 ? days.map((d) => dayNumber(d)!) : undefined,
+              employmentType: (r.data.employmentType ?? "permanent") as never,
               isActive: r.data.isActive ?? true,
             },
           });
           bump("teachers");
         }
         const teachers = new Map((await tx.teacher.findMany({ where: { schoolId } })).map((t) => [lc(t.employeeCode), t.id]));
+
+        // §18 teaching scope. Written after both teachers and classes exist,
+        // and only for rows that named one — a blank column means "not decided
+        // yet", not "no classes", so it must not clear an existing scope.
+        const classIdByName = new Map(
+          (await tx.schoolClass.findMany({ where: { schoolId } })).map((c) => [lc(c.name), c.id]),
+        );
+        for (const r of at("Teachers")) {
+          const names = (r.data.classNames as string[] | undefined) ?? [];
+          if (names.length === 0) continue;
+          const teacherId = teachers.get(lc(r.data.employeeCode));
+          if (!teacherId) continue;
+          const classIds = [...new Set(names.map((n) => classIdByName.get(lc(n))).filter((x): x is number => !!x))];
+          if (classIds.length === 0) continue;
+          await tx.teacherClassEligibility.deleteMany({ where: { teacherId } });
+          await tx.teacherClassEligibility.createMany({
+            data: classIds.map((classId) => ({ teacherId, classId, schoolId })),
+          });
+          bump("teachingScope", classIds.length);
+        }
 
         // ---- 6. class-sections (creates the Section row too) ----
         const configs = new Map((await tx.timetableConfig.findMany({ where: { schoolId } })).map((c) => [lc(c.name), c.id]));

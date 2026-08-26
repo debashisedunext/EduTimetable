@@ -122,6 +122,10 @@ export class TimetableConfigsController {
               durationMins: toInt(b.durationMins, "break.durationMins"),
             }))
           : [],
+        // §18: the extra-class window, appended after the teaching day.
+        extraPeriodsPerDay: body.extraPeriodsPerDay != null ? toInt(body.extraPeriodsPerDay, "extraPeriodsPerDay") : 0,
+        extraPeriodDurationMins:
+          body.extraPeriodDurationMins != null ? toInt(body.extraPeriodDurationMins, "extraPeriodDurationMins") : null,
       });
     } catch (e) {
       throw new BadRequestException((e as Error).message);
@@ -143,11 +147,15 @@ export class TimetableConfigsController {
             body.zeroPeriodDurationMins != null ? toInt(body.zeroPeriodDurationMins, "zeroPeriodDurationMins") : null,
           startTime: String(body.startTime),
           endTime: built.endTime,
+          extraPeriodsPerDay: body.extraPeriodsPerDay != null ? toInt(body.extraPeriodsPerDay, "extraPeriodsPerDay") : 0,
+          extraPeriodDurationMins:
+            body.extraPeriodDurationMins != null ? toInt(body.extraPeriodDurationMins, "extraPeriodDurationMins") : null,
+          extraDays: Array.isArray(body.extraDays) ? body.extraDays : undefined,
         },
       }),
     ]);
     await this.readiness.invalidate(req.user.schoolId);
-    return { ok: true, endTime: built.endTime, periods: built.rows };
+    return { ok: true, endTime: built.endTime, extraEndTime: built.extraEndTime, periods: built.rows };
   }
 
   /**

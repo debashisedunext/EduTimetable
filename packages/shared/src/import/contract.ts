@@ -53,6 +53,7 @@ export const DAY_VALUES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as c
 export const ROOM_TYPES = ["classroom", "lab", "sports", "music", "art", "auditorium", "other"] as const;
 export const CT_RULES = ["none", "always_first_period", "random"] as const;
 export const PATTERNS = ["every_period", "alternate_period", "alternate_day"] as const;
+export const ENGAGEMENTS = ["permanent", "adhoc", "guest"] as const;
 
 /** Rows whose first cell starts with this are template samples — never imported. */
 export const SAMPLE_MARKER = "e.g.";
@@ -137,6 +138,8 @@ export const SHEETS: SheetDef[] = [
       { header: "Class-Teacher Rule", key: "classTeacherPeriodRule", type: "enum", values: CT_RULES, aliases: { "always first period": "always_first_period" }, width: 20, help: "always_first_period = takes P1 of their own class every day, and never P1 elsewhere", sample: ["none"] },
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
       { header: "Alternate Days", key: "alternateDaySet", type: "list", separator: ",", width: 18, help: "Only for alternate_day, e.g. Mon,Wed,Fri", sample: [""] },
+      { header: "Teaching Scope", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes this teacher may take, comma separated. Leave blank if you have not decided yet", sample: ["Class 1, Class 2, Class 3"] },
+      { header: "Engagement", key: "employmentType", type: "enum", values: ENGAGEMENTS, aliases: { "full time": "permanent", "full-time": "permanent", contract: "adhoc", visiting: "guest" }, width: 14, help: "permanent, adhoc or guest. A guest teacher takes extra classes only", sample: ["permanent"] },
       { header: "Active", key: "isActive", type: "enum", values: YES_NO, width: 10, help: "Defaults to Yes", sample: ["Yes"] },
     ],
   },

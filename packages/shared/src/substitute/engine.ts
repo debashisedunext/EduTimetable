@@ -38,8 +38,16 @@ export interface SubstituteTeacher {
   subjectIds: number[];
   /** class-section ids this teacher teaches (for the +2 continuity bonus) */
   classSectionIds: number[];
-  /** class (grade) ids this teacher teaches — the §6.1 "grade band" test */
+  /**
+   * §18 teaching scope: the classes this teacher may take at all. Until Phase
+   * 11 this was *derived* from what they already taught, which made it a
+   * description rather than a rule — a teacher who happened to have no Class 2
+   * mapping simply scored lower, instead of being ineligible. It is now
+   * declared, and it is a hard filter.
+   */
   classIds: number[];
+  /** §18: guests are not on site for cover; permanent is preferred over adhoc. */
+  employmentType?: "permanent" | "adhoc" | "guest";
   /** periods already occupied on this day: own published slots + substitutions already confirmed */
   busyPeriods: number[];
   /** periods blocked by teacher_unavailability for this day (full-day = all) */
@@ -95,7 +103,15 @@ interface Ctx {
 function eligible(t: SubstituteTeacher, slot: AffectedSlot, ctx: Ctx): boolean {
   const { input, planPeriods } = ctx;
   if (input.absentTeacherIds.includes(t.id)) return false;
+  // §18: a guest is engaged for a specific extra class, not kept on hand.
+  if (t.employmentType === "guest") return false;
+
   const classId = slot.classSectionId === null ? undefined : input.classIdBySection[slot.classSectionId];
+  // §18: scope is a hard gate — a primary teacher does not cover Class 12 just
+  // because nobody better is free. Only applied when a scope is recorded;
+  // an empty one means "not stated", not "nothing".
+  if (classId !== undefined && t.classIds.length > 0 && !t.classIds.includes(classId)) return false;
+
   const subjectOk = t.subjectIds.includes(slot.subjectId);
   const gradeBandOk = classId !== undefined && t.classIds.includes(classId);
   if (!subjectOk && !gradeBandOk) return false;
@@ -122,6 +138,9 @@ function scoreOf(t: SubstituteTeacher, slot: AffectedSlot, ctx: Ctx): Candidate 
     score += 2;
     reasons.push(`already teaches ${slot.classSectionLabel} (continuity)`);
   }
+  // §18 tie-break: permanent staff are the school's own, and continuity of
+  // cover matters more than filling the slot with whoever is nearest free.
+  if (t.employmentType === "permanent") score += 1;
   if (t.busyPeriods.includes(slot.period - 1) || t.busyPeriods.includes(slot.period + 1)) {
     score += 1;
     reasons.push("adjacent to their own period");

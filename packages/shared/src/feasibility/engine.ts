@@ -366,6 +366,93 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  // ---------- Check 8 — teaching scope and engagement (§18) ----------
+  //
+  // The endpoints refuse an out-of-scope mapping at the point it is made, so
+  // in a healthy school this finds nothing. It exists for the data that did
+  // not come through those endpoints: rows created before the rule, an import
+  // written against an older build, or a scope narrowed *after* the mappings
+  // were made — which is the case a person is most likely to cause and least
+  // likely to notice.
+  const teacherForScope = new Map(snap.teachers.map((t) => [t.id, t]));
+  const classOfSection = new Map(snap.classSections.map((cs) => [cs.id, cs.classId]));
+  const classNameOfSection = new Map(snap.classSections.map((cs) => [cs.id, cs.label]));
+
+  /** Every (teacher, class-section) the timetable currently depends on. */
+  const attachments: Array<{ teacherId: number; classSectionId: number; what: string }> = [];
+  for (const m of snap.mappings) {
+    attachments.push({ teacherId: m.teacherId, classSectionId: m.classSectionId, what: m.subjectName });
+  }
+  for (const g of snap.mergedGroups) {
+    for (const cs of g.memberClassSectionIds) {
+      attachments.push({ teacherId: g.teacherId, classSectionId: cs, what: `${g.subjectName} (merged)` });
+    }
+  }
+  for (const b of snap.electiveBlocks) {
+    for (const o of b.options) {
+      for (const cs of b.memberClassSectionIds) {
+        attachments.push({ teacherId: o.teacherId, classSectionId: cs, what: `${o.subjectName} in ${b.name}` });
+      }
+    }
+  }
+
+  const reportedScope = new Set<string>();
+  const guestSeen = new Set<number>();
+  for (const a of attachments) {
+    const t = teacherForScope.get(a.teacherId);
+    if (!t) continue;
+
+    if (t.employmentType === "guest" && !guestSeen.has(t.id)) {
+      guestSeen.add(t.id);
+      issues.push({
+        code: "GUEST_IN_CURRICULUM",
+        severity: "blocker",
+        message: `${t.name} is engaged as a guest teacher but is mapped into the regular timetable (${a.what}, ${classNameOfSection.get(a.classSectionId) ?? "?"}).`,
+        entity: { type: "teacher", id: t.id, label: t.name },
+        fix: `Either change ${t.name}'s engagement to permanent or adhoc, or move this teaching to the Extra Classes screen.`,
+      });
+    }
+
+    if (t.eligibleClassIds.length === 0) continue; // covered by the warning below
+    const classId = classOfSection.get(a.classSectionId);
+    if (classId === undefined || t.eligibleClassIds.includes(classId)) continue;
+
+    const key = `${t.id}:${classId}`;
+    if (reportedScope.has(key)) continue; // one line per teacher-and-class, not per section
+    reportedScope.add(key);
+    issues.push({
+      code: "TEACHER_NOT_ELIGIBLE",
+      severity: "blocker",
+      message: `${t.name} is assigned ${a.what} to ${classNameOfSection.get(a.classSectionId) ?? "a class"}, which is outside their teaching scope.`,
+      entity: { type: "teacher", id: t.id, label: t.name },
+      fix: `Add that class to ${t.name}'s teaching scope on the Teachers screen, or give the periods to a teacher who covers it.`,
+    });
+  }
+
+  // A teacher with no scope at all is not refused — it is simply unstated, and
+  // saying so is more useful than pretending they may teach everything.
+  //
+  // One line for all of them, not one each. A school that has never filled
+  // this in has *every* teacher unscoped, and a hundred identical rows would
+  // drown the dashboard in something nobody can act on row by row — the point
+  // of §4 is that each line names a fix worth doing.
+  const unscoped = snap.teachers.filter(
+    (t) => t.eligibleClassIds.length === 0 && attachments.some((a) => a.teacherId === t.id),
+  );
+  if (unscoped.length > 0) {
+    const names = unscoped.slice(0, 3).map((t) => t.name).join(", ");
+    issues.push({
+      code: "TEACHER_SCOPE_UNSET",
+      severity: "warning",
+      message:
+        unscoped.length === 1
+          ? `${unscoped[0].name} has no teaching scope recorded, so nothing stops them being given any class.`
+          : `${unscoped.length} teachers have no teaching scope recorded (${names}${unscoped.length > 3 ? ", …" : ""}), so nothing stops them being given any class.`,
+      entity: { type: "teacher", id: unscoped[0].id, label: unscoped[0].name },
+      fix: "Set which classes each teacher covers on the Teachers screen — the Import workbook has a Teaching Scope column for doing it in bulk.",
+    });
+  }
+
   // ---------- Check 5 — shared/special room contention (§4.5) ----------
   const labSet = new Set(snap.labSubjectIds);
   let labDemand = 0;

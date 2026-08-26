@@ -213,7 +213,12 @@ function buildRows() {
       employeeCode: t.employeeCode, name: t.name,
       maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30,
       classTeacherPeriodRule: "none", periodPattern: "every_period",
-      alternateDaySet: "", isActive: "Yes",
+      alternateDaySet: "",
+      // §18: the band this teacher was staffed into, now recorded as a rule
+      // the app enforces rather than a convention of this script.
+      classNames: M.BAND_CLASSES[t.band].join(", "),
+      employmentType: "permanent",
+      isActive: "Yes",
     })),
     "Teacher Unavailability": [],
     Curriculum: curriculum,

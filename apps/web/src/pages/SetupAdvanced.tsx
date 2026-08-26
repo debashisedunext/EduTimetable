@@ -124,7 +124,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
@@ -134,6 +134,9 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
         maxPeriodsPerDay: Number(form.maxPeriodsPerDay), maxPeriodsPerWeek: Number(form.maxPeriodsPerWeek),
         classTeacherPeriodRule: form.classTeacherPeriodRule, periodPattern: form.periodPattern,
         alternateDaySet: form.periodPattern === "alternate_day" && form.alternateDaySet.length > 0 ? form.alternateDaySet : null,
+        // §18: which classes this teacher may take, and how they are engaged.
+        employmentType: form.employmentType,
+        classIds: form.classIds ?? [],
       };
       if (form.id) await api(`/teachers/${form.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/teachers", { method: "POST", body: JSON.stringify(body) });
@@ -141,7 +144,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
       return true;
     } catch (e) { setError(asMessage(e)); return false; }
   };
-  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [] }); };
+  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [], classIds: t.classIds ?? [], employmentType: t.employmentType ?? "permanent" }); };
 
   if (editing) {
     return (
@@ -165,16 +168,18 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
     >
       <ErrorNote message={error} />
       <DataTable
-        headers={["Teacher", "Subjects", "Sections", "Load", "Class-Teacher Rule", "Period Pattern", ""]}
+        headers={["Teacher", "Teaches", "Engagement", "Subjects", "Load", "Period Pattern", ""]}
         onRowClick={(i) => { const t = (data ?? [])[i]; if (t) openEdit(t); }}
         rows={(data ?? []).map((t) => [
           <span key="n"><b>{t.name}</b><br /><span style={{ fontSize: 11, color: "var(--ink-faint)" }}>{t.employeeCode}</span></span>,
+          <span key="sc" style={{ fontSize: 11.5 }}>
+            {t.classNames?.length ? scopeSummary(t.classNames) : <em style={{ color: "var(--amber)" }}>not set</em>}
+          </span>,
+          <span key="et" className={`chip${t.employmentType === "guest" ? " chip-warn" : ""}`}>{t.employmentType ?? "permanent"}</span>,
           t.subjects.join(", ") || "—",
-          t.sectionsMapped,
           <span key="l" className={`badge ${t.weeklyLoad > t.maxPeriodsPerWeek ? "badge-error" : "badge-ok"}`}>
             {t.weeklyLoad} / {t.maxPeriodsPerWeek}
           </span>,
-          <span key="r" className="chip">{t.classTeacherPeriodRule}</span>,
           <span key="p" className="chip">{t.periodPattern}</span>,
           <button key="e" className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: 11.5 }}
             onClick={(e) => { e.stopPropagation(); openEdit(t); }}>Edit</button>,
@@ -202,6 +207,68 @@ function RadioOpt({ group, selected, title, desc, onSelect, children }: {
 }
 
 /** Step 5b of the mockup — Add / Edit Teacher, replicated 1:1. */
+/** "Class 1 - Class 5" rather than five chips, when the set is contiguous. */
+function scopeSummary(names: string[]): string {
+  if (names.length <= 2) return names.join(", ");
+  return `${names[0]} – ${names[names.length - 1]} (${names.length})`;
+}
+
+/**
+ * §18 teaching scope. A set of classes rather than a range, because the PE
+ * teacher covers Nursery and Class 12 and a range cannot say that — with
+ * presets, so the ordinary case is still two clicks.
+ */
+function ScopePicker({ value, onChange }: { value: number[]; onChange: (ids: number[]) => void }) {
+  const { data: classes } = useApi<any[]>("/classes");
+  const all = classes ?? [];
+  const selected = new Set(value);
+  const idsOf = (names: string[]) => all.filter((c) => names.includes(c.name)).map((c) => c.id);
+  const presets: Array<[string, number[]]> = [
+    ["Pre-primary", idsOf(["Pre-Nursery", "Nursery"])],
+    ["Primary 1–5", idsOf(["Class 1", "Class 2", "Class 3", "Class 4", "Class 5"])],
+    ["Middle 6–8", idsOf(["Class 6", "Class 7", "Class 8"])],
+    ["Secondary 9–10", idsOf(["Class 9", "Class 10"])],
+    ["Senior 11–12", idsOf(["Class 11", "Class 12"])],
+    ["All classes", all.map((c) => c.id)],
+  ];
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {presets.filter(([, ids]) => ids.length > 0).map(([label, ids]) => (
+          <button key={label} type="button" className="btn btn-secondary"
+            style={{ padding: "4px 10px", fontSize: 11.5 }}
+            onClick={() => onChange(ids)}>{label}</button>
+        ))}
+        {value.length > 0 && (
+          <button type="button" className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: 11.5 }}
+            onClick={() => onChange([])}>Clear</button>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {all.map((c) => (
+          <label key={c.id} className={`chip${selected.has(c.id) ? " chip-on" : ""}`}
+            style={{ cursor: "pointer", userSelect: "none",
+              background: selected.has(c.id) ? "var(--brand)" : undefined,
+              color: selected.has(c.id) ? "#fff" : undefined }}>
+            <input type="checkbox" style={{ display: "none" }} checked={selected.has(c.id)}
+              onChange={() => {
+                const next = new Set(selected);
+                if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
+                onChange([...next]);
+              }} />
+            {c.name}
+          </label>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 8 }}>
+        {value.length === 0
+          ? "Not set — this teacher can currently be given any class."
+          : `Mappings, merged groups, elective options and cover are all limited to these ${value.length} class(es).`}
+      </div>
+    </div>
+  );
+}
+
 function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
   initial: any; error: string | null;
   onBack: () => void; onSaveAnother: (f: any) => void; onSaveNext: (f: any) => void;
@@ -235,6 +302,29 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
         <Field label="Employee code"><input style={inputStyle} value={form.employeeCode} onChange={(e) => setForm({ ...form, employeeCode: e.target.value })} /></Field>
         <Field label="Max periods / day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Max periods / week"><input type="number" style={inputStyle} value={form.maxPeriodsPerWeek} onChange={(e) => setForm({ ...form, maxPeriodsPerWeek: e.target.value })} /></Field>
+      </div>
+
+      <div style={{ height: 1, background: "var(--line)", margin: "6px 0 22px" }} />
+      <div className="section-label" style={{ display: "block", marginBottom: 14 }}>
+        Teaching scope and engagement (§18)
+      </div>
+      <div className="field" style={{ marginBottom: 18 }}>
+        <label>Which classes does {first} teach?</label>
+        <ScopePicker value={form.classIds ?? []} onChange={(classIds) => setForm({ ...form, classIds })} />
+      </div>
+      <div className="field" style={{ marginBottom: 22 }}>
+        <label>Engagement</label>
+        <select style={inputStyle} value={form.employmentType ?? "permanent"}
+          onChange={(e) => setForm({ ...form, employmentType: e.target.value })}>
+          <option value="permanent">Permanent — regular staff</option>
+          <option value="adhoc">Adhoc — on contract, covers as normal</option>
+          <option value="guest">Guest — extra classes only, never offered as cover</option>
+        </select>
+        {form.employmentType === "guest" && (
+          <div style={{ fontSize: 11.5, color: "var(--amber)", marginTop: 6 }}>
+            A guest teacher cannot be put on the regular timetable — schedule them on the Extra Classes screen.
+          </div>
+        )}
       </div>
 
       <div style={{ height: 1, background: "var(--line)", margin: "6px 0 22px" }} />

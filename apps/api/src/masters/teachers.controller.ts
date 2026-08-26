@@ -7,6 +7,7 @@ import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 const RULES = ["none", "always_first_period", "random"];
 const PATTERNS = ["every_period", "alternate_period", "alternate_day"];
+const ENGAGEMENTS = ["permanent", "adhoc", "guest"];
 
 @Controller("teachers")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -25,6 +26,7 @@ export class TeachersController {
         mappings: { include: { subject: true } },
         classTeacherOf: { include: { class: true, section: true } },
         unavailability: true,
+        eligibility: { include: { class: true }, orderBy: { class: { sequence: "asc" } } },
       },
       orderBy: { name: "asc" },
     });
@@ -37,6 +39,10 @@ export class TeachersController {
       classTeacherPeriodRule: t.classTeacherPeriodRule,
       periodPattern: t.periodPattern,
       alternateDaySet: t.alternateDaySet,
+      employmentType: t.employmentType,
+      // §18: the classes this teacher may be given, and the names to show.
+      classIds: t.eligibility.map((e) => e.classId),
+      classNames: t.eligibility.map((e) => e.class.name),
       isActive: t.isActive,
       subjects: [...new Set(t.mappings.map((m) => m.subject.name))],
       sectionsMapped: new Set(t.mappings.map((m) => m.classSectionId)).size,
@@ -62,6 +68,10 @@ export class TeachersController {
             classTeacherPeriodRule: body.classTeacherPeriodRule ?? "none",
             periodPattern: body.periodPattern ?? "every_period",
             alternateDaySet: body.alternateDaySet ?? undefined,
+            employmentType: body.employmentType ?? "permanent",
+            eligibility: {
+              create: this.scopeIds(body).map((classId) => ({ classId, schoolId: req.user.schoolId })),
+            },
           },
         }),
       `Teacher '${body.employeeCode}'`,
@@ -85,11 +95,26 @@ export class TeachersController {
             ...(body.classTeacherPeriodRule !== undefined ? { classTeacherPeriodRule: body.classTeacherPeriodRule } : {}),
             ...(body.periodPattern !== undefined ? { periodPattern: body.periodPattern } : {}),
             ...(body.alternateDaySet !== undefined ? { alternateDaySet: body.alternateDaySet } : {}),
+            ...(body.employmentType !== undefined ? { employmentType: body.employmentType } : {}),
             ...(body.isActive !== undefined ? { isActive: Boolean(body.isActive) } : {}),
           },
         }),
       "Teacher",
     );
+
+    // Scope is replaced wholesale when the field is sent, and left untouched
+    // when it is not — so a PUT that only changes a name cannot silently wipe
+    // what a teacher is allowed to take.
+    if (Array.isArray(body.classIds)) {
+      const teacherId = toInt(id, "id");
+      const ids = this.scopeIds(body);
+      await this.prisma.$transaction([
+        this.prisma.teacherClassEligibility.deleteMany({ where: { teacherId } }),
+        this.prisma.teacherClassEligibility.createMany({
+          data: ids.map((classId) => ({ teacherId, classId, schoolId: req.user.schoolId })),
+        }),
+      ]);
+    }
     await this.readiness.invalidate(req.user.schoolId);
     return updated;
   }
@@ -133,7 +158,19 @@ export class TeachersController {
     return { ok: true };
   }
 
+  /**
+   * The classes this teacher may take (§18). Absent means "not stated" and is
+   * left alone; an explicit empty list clears the scope.
+   */
+  private scopeIds(body: any): number[] {
+    if (!Array.isArray(body.classIds)) return [];
+    return [...new Set(body.classIds.map((x: unknown) => toInt(x, "classIds[]")))] as number[];
+  }
+
   private validateRules(body: any) {
+    if (body.employmentType !== undefined && !ENGAGEMENTS.includes(body.employmentType)) {
+      throw new BadRequestException(`employmentType must be one of ${ENGAGEMENTS.join(", ")}`);
+    }
     if (body.classTeacherPeriodRule !== undefined && !RULES.includes(body.classTeacherPeriodRule)) {
       throw new BadRequestException(`classTeacherPeriodRule must be one of ${RULES.join(", ")}`);
     }

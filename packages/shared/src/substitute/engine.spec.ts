@@ -152,18 +152,19 @@ describe("fairness (−1 after 2 covers) and load spread", () => {
 
 describe("matching (§6.1 step 4) — coverage via augmenting", () => {
   it("ejects a greedy choice so both same-period slots get covered", () => {
-    // Two absentees clash at P3: 5-A English and 5-B Maths. Flex can cover
-    // either; Rigid can only cover the English slot. Greedy gives 5-A (first
-    // alphabetically) to Flex and strands 5-B — the augmenting pass must swap.
+    // Two absentees clash at P3: 5-A English and 9-A Maths. Flex covers both
+    // grades; Rigid's §18 teaching scope is class 5 only, so 9-A is closed to
+    // them however free they are. Greedy gives 5-A to Flex and strands 9-A —
+    // the augmenting pass must swap.
     const plan = planSubstitutes(
       inputFor(
         [
           slot({ slotId: "s1", period: 3, absentTeacherId: 1 }),
-          slot({ slotId: "s2", period: 3, absentTeacherId: 2, classSectionId: 12, classSectionLabel: "5-B", subjectId: MATHS, subjectName: "Maths" }),
+          slot({ slotId: "s2", period: 3, absentTeacherId: 2, classSectionId: 21, classSectionLabel: "9-A", subjectId: MATHS, subjectName: "Maths" }),
         ],
         [
-          teacher(4, "Flex", { subjectIds: [ENGLISH, MATHS] }),
-          teacher(5, "Rigid", { subjectIds: [ENGLISH], classIds: [9] }), // English only, wrong grade for 5-B
+          teacher(4, "Flex", { subjectIds: [ENGLISH, MATHS], classIds: [5, 9] }),
+          teacher(5, "Rigid", { subjectIds: [ENGLISH], classIds: [5] }), // scoped to primary
         ],
         { absentTeacherIds: [1, 2] },
       ),
@@ -171,7 +172,7 @@ describe("matching (§6.1 step 4) — coverage via augmenting", () => {
     expect(plan.unmatchedCount).toBe(0);
     const byId = new Map(plan.slots.map((s) => [s.slot.slotId, s.assigned]));
     expect(byId.get("s1")).toBe(5); // Rigid keeps English 5-A
-    expect(byId.get("s2")).toBe(4); // Flex freed up for Maths 5-B
+    expect(byId.get("s2")).toBe(4); // Flex freed up for Maths 9-A
   });
 
   it("flags an uncoverable slot with the three §6.1 fallback options", () => {
@@ -213,5 +214,51 @@ describe("absent teacher who is themselves a substitute today (§4.6 edge)", () 
     );
     expect(plan.unmatchedCount).toBe(0);
     expect(plan.slots.find((s) => s.slot.viaSubstitution)?.assigned).toBe(2);
+  });
+});
+
+describe("§18 teaching scope and engagement", () => {
+  it("a teacher outside their scope is not offered, however free they are", () => {
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3, classSectionId: 21, classSectionLabel: "9-A" })],
+        [teacher(4, "Primary Only", { subjectIds: [ENGLISH], classIds: [5] })],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBeNull();
+    expect(plan.unmatchedCount).toBe(1);
+  });
+
+  it("a guest teacher is never offered as cover", () => {
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3 })],
+        [teacher(4, "Visiting Lecturer", { employmentType: "guest" })],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBeNull();
+  });
+
+  it("an unstated scope still allows cover — it means 'not filled in', not 'nothing'", () => {
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3 })],
+        [teacher(4, "No Scope Recorded", { classIds: [] })],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBe(4);
+  });
+
+  it("permanent staff edge out adhoc when everything else is equal", () => {
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3 })],
+        [
+          teacher(4, "Adhoc Cover", { employmentType: "adhoc" }),
+          teacher(5, "Permanent Cover", { employmentType: "permanent" }),
+        ],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBe(5);
   });
 });
