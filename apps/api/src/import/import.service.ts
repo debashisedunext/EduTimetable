@@ -45,7 +45,7 @@ export class ImportService {
   }
 
   async existingData(schoolId: number): Promise<ExistingData> {
-    const [years, classes, sections, rooms, subjects, teachers, curriculum, mappings, configs] =
+    const [years, classes, sections, rooms, subjects, teachers, curriculum, mappings, configs, blocks] =
       await Promise.all([
         this.prisma.academicYear.findMany({ where: { schoolId } }),
         this.prisma.schoolClass.findMany({ where: { schoolId } }),
@@ -62,6 +62,7 @@ export class ImportService {
           include: { subject: true, classSection: { include: { class: true, section: true } } },
         }),
         this.prisma.timetableConfig.findMany({ where: { schoolId } }),
+        this.prisma.electiveBlock.findMany({ where: { schoolId }, select: { name: true } }),
       ]);
 
     const capacityByTimetable: Record<string, number> = {};
@@ -89,6 +90,7 @@ export class ImportService {
       curriculum: curriculum.map((r) => `${r.class.name}||${r.subject.name}`),
       mappings: mappings.map((m) => `${m.subject.name}||${this.label(m.classSection)}`),
       classTeacherAssigned: sections.filter((cs) => cs.classTeacherId !== null).map((cs) => this.label(cs)),
+      electiveBlocks: blocks.map((b) => b.name),
       timetables: configs.map((c) => c.name),
       capacityByTimetable,
       capacityByClassSection,

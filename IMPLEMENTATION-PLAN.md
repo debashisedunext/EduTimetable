@@ -433,6 +433,33 @@ The three `elective_*` tables were migrated in Phase 1 and specced in detail at 
 >
 > Verified: `scripts/electives-smoke.cjs` builds a school with no slack — 20 curriculum periods and a 5-period block filling a 25-slot week exactly — and asserts the API refuses a one-option block, a repeated teacher and an over-long block; readiness reaches 100% *with the block counted* (and drops to two `SLOT_UNDERFLOW` warnings when a period is freed, proving it is counted); the worker places it on five different days; 10 member rows and 15 option rows land with the right columns; the DB still refuses a double-booked option teacher; and the language teacher's own timetable shows the lesson named by its block. **125 shared / 116 api tests**, lint and typechecks clean, web build passing.
 
+---
+
+## School 2 — a full school as test data (§16)
+
+A generated, importable school for Second Branch (`SCHOOL-2`): 14 classes (Pre-Nursery to Class 12) x 4 sections, Mon–Fri, 8 periods of 37 minutes from 08:00 to 14:01 with breaks after periods 3, 5 (lunch, 45 min) and 7.
+
+Nothing is typed out. `scripts/school2-model.cjs` holds the curricula; the demand follows from them, the staffing follows from the demand, and the mappings follow from the staffing — so changing one period in one curriculum re-balances the staff list on the next run, and the arithmetic that produced the file is the arithmetic the Feasibility Engine then checks.
+
+| | |
+|---|---|
+| **Sections** | 56, each with exactly 40 periods — a section with spare slots is a `SLOT_UNDERFLOW` warning, and 56 of them would bury the dashboard |
+| **Teachers** | 122, sized to the work (English 18, Mathematics 18, Hindi 15 … History 3) with the brief's floor of 3 per subject applied per subject. Average load 17.3/week, heaviest 26 — under the 90% at which tightness is warned |
+| **Demand** | 2,110 teacher-periods/week; a uniform "3 per subject" would have supplied 1,440 and been an immediate `TEACHER_OVERLOAD` |
+| **Third language** | 8 §4.9 blocks (classes 5–12), 5 periods/week, four sections held open while French, Sanskrit and German run in parallel |
+| **Merged science** | Physics, Chemistry and Biology in classes 11 and 12 — one lesson, four sections, one teacher |
+| **Rooms** | 56 home classrooms, 5 computer labs (Computer is the only lab subject: 144 periods against 200 slots is 72%, under the 80% warning line), 2 halls for the merged senior sciences |
+
+The language options meet in three of their own class's rooms. Those rooms are free by construction — the students in them come from those very sections — so no separate language rooms and no room contention. Marking the three sciences as lab subjects too would have needed twelve labs, partly because check 5 counts a merged lesson once per section.
+
+> **Result: 100% readiness, 0 blockers, 0 warnings.** Generation placed all 2,030 variables — 2,360 slot rows, since a block writes four member rows plus three option rows per occurrence — with **0 unplaced in 22.6s**, inside the 30s budget though not by much at this scale.
+>
+> Independently verified against the database rather than the solver's own report: every one of the 56 sections has exactly 40 filled periods; no section, teacher (by occupancy key) or room is in two places at once; all 8 language blocks land on 5 different days with 4 member rows and 3 option rows per cell; all 6 merged groups are one lesson across four sections with a single row carrying the teacher's occupancy.
+>
+> Read latency at this scale is comfortable: slots 6ms, readiness 3ms, teachers 15ms, mappings 33ms — against the §14 budget of 300ms.
+>
+> **A real importer bug surfaced on the first run and is fixed.** `validateWorkbook` returns the rows the committer writes in a `keep` map, but the plan's totals fell back to a *different* map when a sheet had no validation block — so the new Electives sheet reported "24 new" and then imported nothing, silently, and readiness sat at 36% with 32 unexplained `SLOT_UNDERFLOW` warnings. The Electives block was added, and the fallback now **throws**: a contract sheet with no validation block is a programming error, and it should never again be possible to count rows that are then dropped.
+
 **Exit criteria:** one deployment concurrently serves a single school, a trust group sharing a database, and a school on its own database with its own credentials; a user with access to two schools switches between them in the top bar and gets the correct role in each; the isolation suite passes with zero cross-school reads, writes, cache hits or socket events; per-tenant p95 still meets the §14 budget; and onboarding a new school is one command.
 
 **Risks:** the `school_id` backfill on `timetable_slots` (largest table — one transaction, unique keys verified after), and the extension's `findUnique`→`findFirst` rewrite changing return-type nullability at ~20 call sites — the two-school IDOR suite is its proof.
