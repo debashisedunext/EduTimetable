@@ -153,6 +153,11 @@ button { font-family: inherit; cursor: pointer; }
   position: relative; height: 100%;
 }
 .dnd-card.merged { background: #e3ecf9; border-style: double; }
+/* §4.9 split elective: one slot, several lessons. Dashed because the cell is
+   shared rather than owned by one teacher, and it needs to read differently
+   from a merged group (double border = one teacher across several sections). */
+.dnd-card.elective { background: var(--steel-pale); border-style: dashed; border-color: var(--steel); }
+.dnd-card.elective .s { color: var(--steel); }
 .dnd-card.locked { cursor: default; background: var(--offwhite); border-color: var(--line); }
 .dnd-card.dragging { opacity: 0.35; }
 .dnd-card .t { font-weight: 700; color: var(--brand-deep, #0b1f44); }
@@ -222,6 +227,46 @@ button { font-family: inherit; cursor: pointer; }
 .bubble { padding: 11px 14px; border-radius: 13px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
 .msg.user .bubble { background: var(--brand); color: #fff; border-bottom-right-radius: 4px; }
 .msg.ai .bubble { background: var(--paper); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+/* §13 — rendered Markdown inside an assistant bubble.
+   The bubble keeps `pre-wrap` for the user's own typed text; a rendered answer
+   turns it off, or every block would carry the source's line breaks on top of
+   its own margins. A bubble holding a table is also allowed to grow wider than
+   a bubble holding a sentence. */
+.bubble .md { white-space: normal; }
+.msg.ai:has(.md-table-wrap) { max-width: 100%; width: 100%; }
+
+.md-p { margin: 0 0 8px; }
+.md > *:last-child { margin-bottom: 0; }
+.md-h { font-weight: 700; line-height: 1.3; margin: 12px 0 6px; color: var(--ink); }
+.md > .md-h:first-child { margin-top: 0; }
+.md-h1, .md-h2 { font-size: 15px; }
+.md-h3 { font-size: 14px; }
+.md-h4, .md-h5, .md-h6 { font-size: 13px; color: var(--ink-soft); }
+.md-list { margin: 0 0 8px; padding-left: 20px; }
+.md-list li { margin-bottom: 3px; }
+.md-hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+.md-quote { margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 3px solid var(--steel-light); color: var(--ink-soft); }
+.md-code { font-family: var(--font-mono); font-size: 0.88em; background: var(--steel-pale); border-radius: 4px; padding: 1px 4px; }
+.md-pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--brand-deep); color: var(--steel-light); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; overflow-x: auto; }
+.md-pre code { font-family: inherit; background: none; padding: 0; }
+
+/* A wide week grid scrolls inside its own bubble — never the page. */
+.md-table-wrap { overflow-x: auto; margin: 0 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.md-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.md-table th, .md-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); vertical-align: top; }
+.md-table th:last-child, .md-table td:last-child { border-right: none; }
+.md-table tbody tr:last-child td { border-bottom: none; }
+.md-table th { background: var(--offwhite); font-weight: 600; color: var(--ink-soft); white-space: nowrap; position: sticky; top: 0; }
+/* A period column reads as a row header, so the first column is emphasised
+   and held still while the week scrolls sideways. */
+.md-table td:first-child { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.md-table tbody tr:nth-child(even) td { background: var(--offwhite); }
+
+/* The user's own bubble is solid brand — its rendered pieces have to invert. */
+.msg.user .md-code { background: rgba(255, 255, 255, 0.22); }
+.msg.user .md-table-wrap { border-color: rgba(255, 255, 255, 0.35); background: transparent; }
+.msg.user .md-table th, .msg.user .md-table td { border-color: rgba(255, 255, 255, 0.25); color: #fff; background: transparent; }
+
 .tool-trace { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--steel); background: var(--steel-pale); border-radius: 6px; padding: 3px 8px; width: fit-content; border: none; cursor: pointer; }
 .tool-trace.err { background: var(--signal-bg); color: var(--signal); }
 .report-chip { display: flex; align-items: center; gap: 12px; margin-top: 9px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--offwhite); }
@@ -269,3 +314,99 @@ button { font-family: inherit; cursor: pointer; }
 .perm-table td:first-child { text-align: left; font-weight: 600; }
 .perm-table input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 .role-lock-banner { display: flex; align-items: center; gap: 10px; background: var(--brand-deep); color: var(--steel-light); border-radius: 10px; padding: 12px 16px; font-size: 12.5px; margin-bottom: 18px; }
+
+
+/* ============================================================ PRINT / PDF
+ *
+ * §10 — until this existed, "Print / PDF" was a bare `window.print()` and the
+ * browser dutifully printed the whole application: navy sidebar, top bar,
+ * filter row, buttons and all, with the timetable squeezed into whatever was
+ * left. A printed timetable goes on a staffroom wall and into a parent's hand;
+ * it has to look like a document, not a screenshot.
+ *
+ * The rule is inverted rather than enumerated: hide everything, then show the
+ * print root. Enumerating what to hide means every new screen element is one
+ * somebody forgot.
+ */
+@media print {
+  @page {
+    /* A weekly grid is wide — five to seven day columns. Portrait squeezes the
+       cells until the teacher names wrap to three lines. */
+    size: A4 landscape;
+    margin: 11mm 10mm 12mm;
+  }
+
+  html, body {
+    background: #fff !important;
+    /* Break shading, the elective tint and the substitute highlight all carry
+       meaning; without this browsers drop them and the grid loses its legend. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* §10.5 — the subject/class colours are set inline on each cell, and the
+     property above does NOT inherit reliably to descendants in every engine:
+     Chrome honours it on the root, Safari and some Chromium builds drop a
+     `<td>` background unless the element itself carries it. Applying it to
+     everything is the only version that prints the same in all of them, and a
+     colour code that vanishes on paper is worse than none — the sheet on the
+     staffroom wall is the one most people read. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .app > .sidebar,
+  .main > .topbar,
+  .no-print {
+    display: none !important;
+  }
+
+  .app { display: block; }
+  .main { display: block; }
+  .content { padding: 0 !important; }
+
+  /* On screen the print sheets are not rendered at all; in print they are the
+     only thing rendered. */
+  .screen-only { display: none !important; }
+  .print-root { display: block !important; }
+
+  /* One class-section (or teacher) per sheet. `avoid` on the grid keeps a week
+     from being guillotined across two pages when several are printed at once. */
+  .print-sheet { page-break-after: always; break-after: page; }
+  .print-sheet:last-child { page-break-after: auto; break-after: auto; }
+  .print-sheet table { page-break-inside: avoid; break-inside: avoid; }
+  tr, td, th { page-break-inside: avoid; break-inside: avoid; }
+
+  /* Cards are screen furniture: on paper they become plain sections. */
+  .card {
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    background: transparent !important;
+  }
+  .screen-title, .screen-sub { display: none; }
+  a { text-decoration: none; color: inherit; }
+}
+
+/* The print sheets exist in the DOM so the browser has them at print time,
+   but they are never part of the screen layout. */
+.print-root { display: none; }
+
+.print-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 2px solid var(--brand);
+}
+.print-head img { height: 46px; width: auto; object-fit: contain; }
+.print-head .school { font-family: var(--font-display); font-size: 20px; font-weight: 700; color: var(--brand-deep); line-height: 1.15; }
+.print-head .sub { font-size: 11.5px; color: var(--ink-soft); margin-top: 2px; }
+.print-head .right { margin-left: auto; text-align: right; font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
+.print-title { font-size: 15px; font-weight: 700; color: var(--ink); }
+.print-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; font-size: 11.5px; color: var(--ink-soft); }
+.print-meta b { color: var(--ink); font-weight: 600; }
+.print-foot { margin-top: 10px; font-size: 9.5px; color: var(--ink-faint); display: flex; justify-content: space-between; }

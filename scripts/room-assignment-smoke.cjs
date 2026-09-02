@@ -122,8 +122,8 @@ async function call(method, p, token, body) {
 
   const maths = await prisma.subject.create({ data: { schoolId: SCHOOL, name: `${P} Maths` } });
   const bio = await prisma.subject.create({ data: { schoolId: SCHOOL, name: `${P} Biology`, isLab: true } });
-  await prisma.classSubject.create({ data: { schoolId: SCHOOL, classId: cls.id, subjectId: maths.id, periodsPerWeek: 20, maxPeriodsPerDay: 4 } });
-  await prisma.classSubject.create({ data: { schoolId: SCHOOL, classId: cls.id, subjectId: bio.id, periodsPerWeek: 5, maxPeriodsPerDay: 1 } });
+  await prisma.classSubject.create({ data: { schoolId: SCHOOL, classId: cls.id, academicYearId: year.id, subjectId: maths.id, periodsPerWeek: 20, maxPeriodsPerDay: 4 } });
+  await prisma.classSubject.create({ data: { schoolId: SCHOOL, classId: cls.id, academicYearId: year.id, subjectId: bio.id, periodsPerWeek: 5, maxPeriodsPerDay: 1 } });
 
   // One teacher per (subject, section): 20 Maths periods against a 25-period
   // capacity is 80%, comfortably under the tightness warning, so the readiness

@@ -44,13 +44,19 @@ export async function capacityForClassSections(
   return min;
 }
 
-/** Capacity for a class = tightest across its class-sections' configs. */
+/** Capacity for a class in one academic year = tightest across that year's
+ *  class-sections' configs.
+ *
+ *  Phase 19: the year is required. A class has sections in every session it has
+ *  ever run, so without it a 2026-27 curriculum row was capped by whichever
+ *  year happened to have the shortest week — including sessions long finished. */
 export async function capacityForClass(
   prisma: PrismaClient,
   classId: number,
+  academicYearId: number,
 ): Promise<WeeklyCapacity | null> {
   const sections = await prisma.classSection.findMany({
-    where: { classId },
+    where: { classId, academicYearId },
     select: { id: true },
   });
   return capacityForClassSections(prisma, sections.map((s) => s.id));

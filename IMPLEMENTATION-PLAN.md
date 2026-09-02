@@ -524,3 +524,584 @@ The language options meet in three of their own class's rooms. Those rooms are f
 **Exit criteria:** one deployment concurrently serves a single school, a trust group sharing a database, and a school on its own database with its own credentials; a user with access to two schools switches between them in the top bar and gets the correct role in each; the isolation suite passes with zero cross-school reads, writes, cache hits or socket events; per-tenant p95 still meets the §14 budget; and onboarding a new school is one command.
 
 **Risks:** the `school_id` backfill on `timetable_slots` (largest table — one transaction, unique keys verified after), and the extension's `findUnique`→`findFirst` rewrite changing return-type nullability at ~20 call sites — the two-school IDOR suite is its proof.
+
+## Phase 13 — Minimum Periods per Day (§20)
+
+**Gap reported:** some teachers were given a single period on a day — a whole commute for one lesson. `max_periods_per_day` guarded the top of a teacher's day; nothing guarded the bottom, and the solver's value ordering actively preferred the emptiest day.
+
+| Task | Deliverable |
+|---|---|
+| 13.1 | `teachers.min_periods_per_day` (default **3**, backfilled onto existing rows) — migration `20260826150000_phase13_min_periods_per_day`, Prisma model, teachers controller (with a min ≤ max guard), import workbook column, AI teacher tool, Setup → Teachers form and directory |
+| 13.2 | `packages/shared/src/feasibility/min-day.ts` — the single owner of the arithmetic: weekly load, **daily reach**, `minDayPlan()`, `effectiveMinByTeacher()` |
+| 13.3 | Feasibility **Check 10** — `MIN_DAY_IMPOSSIBLE` (blocker) and aggregated `MIN_DAY_RELAXED` (warning naming which bound binds) |
+| 13.4 | Solver enforcement as a shortfall-vs-budget forward check in `SolverState`, plus day-building value ordering; `shortDays()` / `totalShortfall()` audits |
+| 13.5 | Completeness ladder in `solveTimetable`: enforced pass (40% budget) → exact pre-§20 pass (full budget) → `consolidateShortDays()` swap-based repair; `stats.shortTeacherDays` / `stats.consolidatedDays` surfaced on the Generate screen and in the worker log |
+| 13.6 | CP-SAT parity — reified `works[t][d]` in `apps/optimizer/server.py`, `teacherDayMin`/`teacherDayForced` in the payload, and `verifyAssignment` rejecting any answer with a short day |
+| 13.7 | Board warning (never a refusal) on a move that thins a teacher's day |
+
+**Status — shipped.** 155 shared / 116 api tests; isolation suite green.
+
+Measured on School 2 (2,030 variables, every section 100% full), regenerated with the rule off and then on:
+
+| | rule off | rule on |
+|---|---|---|
+| unplaced lessons | 0 | 0 |
+| one-period teacher-days | 55 | 27–36 |
+| teacher-days ≥ 3 periods | 425 | 430 |
+
+**Deliberately not done:** School 2 is a near-critical fixture — 2,110 teacher-periods over 122 teachers × 5 days averages 3.46 against a minimum of 3, so almost every teacher must work almost every day at 3–4 periods and the shape is over-determined. Schools with ordinary slack reach zero short days (the `cleanSchool` solver test asserts it). The fixture's own fix is fewer, fuller teachers — a change to `scripts/school2-model.cjs`'s `TARGET_LOAD`, not to the engine — and it is left alone because it is the user's test data.
+
+### Phase 13 follow-up — report caches outliving a publish (§14)
+
+Reported from the Reports screen: after publishing, some Pre-Nursery and Class 1 sections showed a week of "Free". The published rows were all present in the database — the report was being served from a cache warmed before the publish, because `publish` dropped the `slots:*` keys and nothing else. Only sections somebody had opened early were affected, which is what made it look arbitrary.
+
+- `CacheKeysService.invalidateTimetable(configId?)` — one invalidation for everything derived from the published timetable, used by publish, extra classes and the substitute engine.
+- Fixed en route: the substitute engine's `redis.keys("slots:*")` (blocking `KEYS`, a silent no-op since the §17 school prefix, and cross-school if it had matched).
+- `apps/api/src/redis/cache-keys.spec.ts` (5 tests) pins what is dropped and what is not; `scripts/report-cache-smoke.cjs` is isolation-suite step 13 and was verified to fail with the fix reverted.
+
+## Phase 14.1 — Auto-resolve: complete & redistribute (§21)
+
+**Asked for:** a one-press resolver on the issue list, applying each recommendation, marking what got fixed green, with per-issue consent and a "do not ask again".
+
+**Correction made first:** the Allocation Matrix has no issue list — it shows the grid and a fill percentage. The issues and their recommendations live on the **Readiness Dashboard**, which is where this landed.
+
+| Task | Deliverable |
+|---|---|
+| 14.1.1 | `Remedy` / `RemedyChange` on `FeasibilityIssue`, plus stable issue `key`s assigned centrally in `finalize()` so no future check can forget one |
+| 14.1.2 | `packages/shared/src/feasibility/remedy.ts` — the choosers (teacher with capacity, free room, lab for a subject, alternating days) and `applyToSnapshot`, the pure preview |
+| 14.1.3 | Remedies attached at 14 issue sites; snapshot gains `rooms` (type/capacity), which `roomNames` could not supply |
+| 14.1.4 | `AutoFixService` — engine-proposed changes only, `WRITABLE` allow-list, compare-and-set, verify-by-re-run; `auto_fix_runs` + undo |
+| 14.1.5 | Readiness Dashboard review drawer, per-issue consent, "do not ask again" (localStorage, per timetable), green resolved rows, undo |
+| 14.1.6 | `scripts/auto-fix-smoke.cjs` as isolation-suite step 14 |
+
+**Status — shipped.** 191 shared / 121 api tests; isolation suite green (14 steps).
+
+Fourteen codes carry a remedy: `CT_UNASSIGNED`, `CT_RULE_INERT`, `ALT_DAY_UNSET`, `HOME_ROOM_UNSET`, `HOME_ROOM_SHARED`, `LAB_SUBJECT_UNSERVED`, `TEACHER_SCOPE_UNSET`, `TEACHER_NOT_ELIGIBLE`, `UNDER_MAPPED` (complete); `TEACHER_OVERLOAD`, `GUEST_IN_CURRICULUM`, `BLOCK_TEACHER_PATTERN`, `ELECTIVE_TEACHER_CLASH`, `ELECTIVE_ROOM_CLASH` (redistribute).
+
+**Deferred deliberately:**
+- The 11 `relax` codes → **14.2**, with the grouped review card.
+- `ELECTIVE_SUBJECT_DOUBLE_COUNTED` — its remedy is a row *deletion*, and undo would have to reconstruct every field of a curriculum row. 14.1's op vocabulary is `set` / `link` / `create`, all trivially reversible.
+- `OVER_MAPPED` — reducing mapped periods is a staffing decision, not a data repair.
+
+**Note for whoever adds a remedy next:** `packages/shared/tsconfig.json` excludes `*.spec.ts`, so a snapshot built inside a test is not typechecked by `tsc --noEmit`. Adding `rooms` to `FeasibilitySnapshot` compiled clean and then failed at runtime in the solver benchmark for exactly that reason.
+
+## Phase 14.2 — Auto-resolve: the limit changes (§21)
+
+The eleven `relax` codes — the half of auto-resolve that loosens a rule.
+
+| Task | Deliverable |
+|---|---|
+| 14.2.1 | Remedies for `DAILY_PIGEONHOLE`, `DAILY_DISTRIBUTION` (both sites raise it), `BLOCK_EXCEEDS_DAILY_MAX`, `BLOCK_MATH_INVALID`, `BLOCK_FRAGMENTED`, `MIN_DAY_IMPOSSIBLE`, `MIN_DAY_RELAXED`, `ELECTIVE_DAILY_PIGEONHOLE`, `SAME_PERIOD_IMPOSSIBLE`, `CT_P1_DEADLOCK`, `OVER_MAPPED` |
+| 14.2.2 | `largestFeasibleMin()` — the minimum a load can actually keep, searched not guessed |
+| 14.2.3 | `electiveBlock` as a remedy entity; `WRITABLE` widened to the five limit fields |
+| 14.2.4 | Grouped review card, unticked by default, "Accept all of these"; `kind` recorded on every outcome |
+| 14.2.5 | "Do not ask again" now skips the drawer entirely for the safe fixes and opens it only for limit changes, with an "Ask me again" link |
+| 14.2.6 | Smoke extended: a relax remedy is priced, is **not** applied by a run that did not name it, applies when named, and undoes |
+
+**Status — shipped.** 191 shared (50 in `remedy.spec.ts`) / 121 api tests; isolation suite green (14 steps).
+
+Bounds that stop a remedy being offered rather than offering a useless one: a cap raise above `periodsPerDay`, above an alternate-period teacher's every-other-period ceiling, a block count below 1, or an `OVER_MAPPED` trim that would empty a mapping.
+
+**Still deliberately without a remedy** (12 codes): `SLOT_OVERFLOW`, `SLOT_UNDERFLOW`, `LAB_NONE`, `LAB_OVERFLOW`, `LAB_TIGHT`, `LAB_SUBJECT_OVERFLOW`, `TEACHER_TIGHT`, `ELECTIVE_NO_MEMBERS`, `ELECTIVE_TOO_FEW_OPTIONS`, `ELECTIVE_DAY_INTERSECTION`, `SAME_PERIOD_PICK_DAYS`, `NO_DATA` — plus `ELECTIVE_SUBJECT_DOUBLE_COUNTED`, which needs a row deletion undo cannot reconstruct.
+
+**Gotcha worth remembering:** the API serves `packages/shared/dist`, so an engine change needs `pnpm build` in shared *and* an api restart before a live smoke sees it — and Redis still holds the previous readiness until something invalidates it. Both bit during this phase.
+
+## Phase 15 — Split Electives: the screen, the display, and when they run (§4.9)
+
+The third-language problem: Class 5-A, 5-B and 5-C take their language period at the same time, and inside it Sanskrit, French and German run under three teachers in three rooms.
+
+That is exactly the §4.9 split elective, which has had a schema, a synchronized macro-variable and six feasibility checks since Phase 10. Three things were missing, and only one of them was a feature.
+
+| Task | Deliverable |
+|---|---|
+| 15.1 | **`ReportsService.classSectionTimetable` joins the block's option rows.** A member row carries no subject, teacher or room (invariant 9), so the class's own week rendered the language period as an empty cell — on the report, on My Classes, in the printed week and to the AI assistant, which share the function. Now returns `blockName` + `electiveOptions[]`, read from the written option *rows* so a covered option shows its substitute. |
+| 15.2 | `WeekGrid` renders every option on its own line; the CSV export carries them; the Allocation Matrix cell names the subjects (`Fre / San / Ger`) instead of counting them. |
+| 15.3 | **`/electives` screen + wizard step 9.** Block → member sections → N options (subject/teacher/room) → when it runs. Every rule the endpoints enforce is shown while typing. Before this the only way in was the Excel importer. |
+| 15.4 | `elective_blocks.placement` (`solver` \| `same_period` \| `fixed`) + `fixed_slots` JSON. `same_period` reuses the existing `samePeriodKey`; `fixed` prunes occurrence *i*'s domain to its pinned cell. Domain pruning, never scoring (invariant 2). |
+| 15.5 | **Check 7b** — six new codes naming every way a pin can be wrong, each with a §21 remedy that hands the block back to the solver. `placement` added to auto-fix `WRITABLE`; `fixedSlots` deliberately not. |
+| 15.6 | `packages/shared/src/electives/pins.ts` — one owner of what "Mon P4" means, shared by the screen, the API and the importer. Malformed pins are dropped on read (surfacing as `ELECTIVE_PIN_COUNT`), never guessed. |
+| 15.7 | Importer parity: `When` / `Fixed Slots` columns, validated at dry-run so a bad slot list refuses the file rather than silently downgrading to `solver`. Export round-trips. |
+| 15.8 | Smoke extended (steps 7 and 8): the class grid names three subjects, three teachers and three rooms; every member section shows the same slots; a pinned block lands on exactly the cells named; an impossible pin is a Readiness row with a remedy, not a failed generation. |
+
+**Status — shipped.** 222 shared / 121 api tests; `electives-smoke.cjs` green end to end; lint, web typecheck and build clean.
+
+**The judgement in 15.5.** All six remedies are `relax` and all six do the same thing: set `placement` back to `solver`. None moves a pin. Moving a block to a different day is choosing when a whole grade changes rooms — a decision the school makes, not a resolver. That is why `fixedSlots` is absent from `WRITABLE` even though `placement` is on it.
+
+**Two behaviours worth keeping.** `parsePins` drops a malformed pin rather than guessing, because a guessed pin silently moves a lesson while a dropped one becomes a named Readiness row. And `placementFromLabel` falls back to `solver` — the default that changes nothing — never to a stricter rule, so a typo in the workbook's `When` column can never pin a block.
+
+**Not done, deliberately.** The Draft Board still shows an elective cell as a reserved block name rather than a draggable unit: a block is not one card, and dragging it means moving every option and every member section at once. That is its own piece of work, not a display fix.
+
+### Phase 15 follow-up — elective-only teachers were invisible
+
+Reported as "no timetable is showing for Pranav Banerjee, maybe there are more such teachers". There were nine, all language teachers whose only work is a split-elective option: 130 lessons absent from the Allocation Matrix's By Teacher grid and the Draft Board's By Teacher view.
+
+**Cause.** `GET /timetable-configs/:id/slots` filtered `classSectionId !== null` server-side. Correct for a section grid, wrong for the teacher grid — and both read that one payload.
+
+**Fix.** The payload carries option rows; each consumer filters for the meaning it wants (`bySection` skips them, `byTeacher` keeps them, the fill-rate stat counts section rows only). The Board's `BoardEngine` stays section-only — an option row is never a draggable card — and its read-only By Teacher view renders those lessons through a separate index. In a teacher's row the cell shows **that teacher's own option**, not the block's whole menu, or it would credit them with two colleagues' lessons.
+
+**Regression check.** `electives-smoke.cjs` step 5b, asserted at the payload where the data was lost, using the fixture's three language teachers who already had no ordinary mapping. It runs **before** the publish in step 6 — publishing turns every draft row into a published one, so `?status=draft` afterwards is empty and the check would pass or fail for an unrelated reason.
+
+**Two traps worth remembering.** `[].every(...)` is `true`, so the shape assertion had to require the rows exist or it passed for exactly the bug it was written to catch. And the `slots:*` Redis payload is cached for an hour, so a deploy that changes its shape serves the old shape until it expires or a write invalidates it.
+
+## Phase 16 — Multiple named drafts & the Draft Board stats (§22)
+
+Depends on: Phases 2–3 (solver, board, publish), 9.1 (scoping), 11 (extras). Spec: §22.
+
+- [ ] 16.1 Migration: `timetable_drafts` registry (+ `school_id`, per-config `draft_no`, stats columns), `timetable_slots.draft_id` + generated `draft_scope`, rebuild the three unique keys with `draft_scope` after `status`. Backfill: one Draft #1 per config with existing draft rows; published rows keep provenance `draft_id`.
+- [ ] 16.2 Draft service + routes: list/create (cap 5 live, copy-from-draft/published)/rename/discard/archive, `?draftId=` on `GET /timetable-configs/:id/slots` and every draft-reading consumer, defaulting to the latest live draft. New routes swept/classified by `pnpm test:isolation` (§17.8).
+- [ ] 16.3 Generation targets the selected draft: solver job carries `draftId`; `writeDraftSlots` deletes/rewrites only that draft's rows (extras excluded, locks honoured). Draft-from-published creates a named draft.
+- [ ] 16.4 Stats recompute module: one function stamping required/placed/pct/errors/warnings onto the registry row, reusing Check 1's requirement arithmetic and `SolverState.check()`; triggered on generation complete, board edit batch confirm, import, and `POST /drafts/:id/recompute`. Board reads the row, never counts slots (§14).
+- [ ] 16.5 Publish per draft: one transaction — supersede published set, flip selected draft's rows, stamp registry, other drafts untouched; §19a cache invalidation; Publish Confirmation shows "publishing Draft #N (label)" and provenance of the outgoing set.
+- [ ] 16.6 Draft Board UI: Draft ▾ selector + New draft + Compare in the filter row; five `.stat-box` cards below (Generation %, Total allocation, Actual allocation, Errors red>0, Warnings amber>0); status pill per draft; Compare = side-by-side stats of live drafts, best-per-column highlighted, Publish per row; archived drafts open read-only.
+- [ ] 16.7 Tests: unique-key property tests (two drafts may share a teacher-slot; two published sets impossible; extras collapse to scope 0), stats correctness against a seeded school2 generation, publish-supersede transaction, RBAC negatives (`timetable.generate` for CRUD, `timetable.publish` to publish), isolation sweep green.
+
+Exit: school2 holds three drafts with differing stats; Compare shows them; publishing one leaves the other two intact and the published grid correct; `pnpm test:isolation` passes.
+
+## Phase 16 — The Draft Board moves a split elective as one card (§4.9, §7.3)
+
+Deferred at the end of Phase 15 with the note "a block is not one card, and dragging it means moving every option and every member section at once — that is its own piece of work". This is that work.
+
+| Task | Deliverable |
+|---|---|
+| 16.1 | `BoardEntry` gains `electiveBlockId` + `options[]`; `subjectId`/`teacherId` become nullable (a block has neither). `SlotRow` carries the elective columns; `entryKeyOf` → `B{id}@d:p`; `rowsToEntries` folds a cell's member **and** option rows into one card. |
+| 16.2 | **`varOf` emits the real §4.9 macro-variable.** It previously hard-coded `electiveBlockId: null, options: []`. `SolverState` already validated elective variables — this is what makes drag legality *the same check the solver made*, rather than a second implementation. |
+| 16.3 | `domainCheck` intersects **every** option teacher (one out on Thursday takes the whole block off Thursday); `minDayWarning` reports each stranded option teacher; `explain`/`describeBlocker` name the block and the option actually in the way. |
+| 16.4 | **`checkSwapGroup`** — the N-way transactional swap: lift the card and every distinct entry at the target across its member sections, check each in its new home, restore exactly. `legalDestinations` routes to it whenever either side is multi-section. The `reserved` mechanism is deleted. |
+| 16.5 | **Merged groups can swap.** Same machinery; the "merged cards swap only with… nothing for now" comment is gone. |
+| 16.6 | Server: `CellRef` accepts `electiveBlockId`; `rowsOfEntry` finds a block by its id; `assertFresh` compares the **option-id set**; `move` keeps each option's own room; new `POST board/swap-group`. |
+| 16.7 | UI: block cards drag from any member section; dashed elective styling; teacher view shows *that teacher's* option; drag overlay names the block. The Phase 15 follow-up's separate `electiveByTeacherCell` index is deleted — blocks are engine entries now. |
+| 16.8 | Tests: 11 new engine tests (fold, move, per-section refusal, option-teacher refusal, block daily cap, group swap, refusal when a displaced lesson cannot live at the source, transactional apply, no-op refusal, merged swap) + smoke step 5c against the live DB. |
+
+**Status — shipped.** 231 shared / 121 api tests; electives smoke green; lint, web typecheck and build clean.
+
+**Why the group swap was not optional.** A card holding N sections can only *move* to a cell free in all N. School 2 is 100% full, so a move-only implementation would have refused every drag and read as broken. Measured on School 2 after the change: **41 legal swap destinations across the 40 block cards, 0 legal moves.** Every usable destination is a swap.
+
+**The bug the real data found.** The first working version reported 4 legal destinations for Class 5 Third Language — and all four were the block swapping with *another occurrence of itself*, which changes nothing. A green cell that does nothing when clicked is worse than a red one. `checkSwapGroup` now refuses a swap whose occupant shares the dragged card's `electiveBlockId` or `mergedGroupId`.
+
+**Deliberately absent from the block card.** No 📌: `lockedSlots` is built filtered to rows with a section, a subject and a teacher, so a block's rows never reach the solver as locks and a pin would be silently ignored by the next Generate (invariant 13). Phase 15's `placement: fixed` is the tool that actually holds a block's time. No ✕: the unplaced tray is per-section *mapping* demand, and a block is not a mapping, so a removed block could not get back.
+
+**Traps hit again, worth a third mention.** `packages/shared/tsconfig.json` excludes `*.spec.ts`, so two `checkPlace` call sites in the spec compiled clean and failed at runtime when `BoardEntry` grew a required field — fixed by normalising the probe at the engine boundary, which is the only entry the engine does not build itself. And a live board check must run **before** the publish step: publishing turns every draft row into a published one, and there is no draft left to drag.
+
+## Phase 17 — Multiple named drafts (§22)
+
+A school keeps several drafts of one timetable and publishes the best. §22 had been written in the architecture doc but never built; the linked UI mockup carries the matching screen.
+
+**Step 1 — the backend, as an invisible refactor.** A school with one draft behaves exactly as before, everywhere.
+
+| Task | Deliverable |
+|---|---|
+| 17.1 | `timetable_drafts` registry + `draft_id` on slots + the generated `draft_scope`, which joins all three §3 unique keys. Backfill: every config with draft rows gets Draft #1. |
+| 17.2 | `DraftsService` — CRUD, the 5-live cap, copy-from, and one owner of the §22.3 stats. Required comes from Feasibility Check 1's own function; violations from `BoardEngine.violations()`, the one rules engine's fourth call site. |
+| 17.3 | `?draftId=` on `GET /slots`, board context and publish preview, **defaulting to the config's current draft** so nothing that never heard of drafts changes. |
+| 17.4 | `writeDraftSlots` scoped to one draft; the BullMQ job carries `draftId`; **Generate creates a new draft by default**; publish promotes the selected draft, archives the previously published one and leaves the rest alone. |
+
+**Status — Step 1 shipped.** 231 shared / 121 api tests; electives smoke green; lint and typecheck clean. Verified on School 2: two complete 2,240-cell drafts coexisting, both at 100%, with the config's single extra class belonging to neither.
+
+**Why the schema, not the screen.** `uq_class_slot` was `(config, status, class_section, day, period)`. Two drafts both placing 5-A Monday P1 collide, so **a second draft could not physically exist**. `draft_scope` collapses to `0` for published and `source='extra'` rows and carries the draft id otherwise — the guarantee stays global exactly where it must (one published set per config, extras once per config) and relaxes exactly where alternatives are the point.
+
+**Three defects found in the written spec, all of which would have shipped:**
+1. `draft_scope INT NOT NULL AS (...) STORED` — MySQL requires `NOT NULL` *after* the generation clause. Fails at migrate time.
+2. `ON DELETE SET NULL` on `draft_id` — MySQL refuses it on the base column of a stored generated column, and is right to: orphaned rows would collapse to scope 0 and collide with the published set. Discard therefore deletes slots explicitly, in one transaction.
+3. §22.3 defined *actual allocation* as "section rows + option rows". Against a required figure that counts a §4.9 block once per member section, School 2 reads **2,360 / 2,240 = 105.4%**. Both sides must count grid cells. Spec corrected.
+
+**Two traps only the live run could find:**
+- Prisma applies `@default(0)` **client-side** and sends the column in the INSERT, which MySQL rejects outright for a generated column. `@default(dbgenerated())` is the annotation that tells Prisma the database owns it.
+- The board's `swap`, `swapGroup` and `place` rebuild rows field by field, and none carried `draft_id` — a hand-placed or swapped card silently **escaped its draft into scope 0**, where it was guarded against the published set instead of its own siblings. Caught by `electives-smoke.cjs`, not by any typecheck.
+
+**Ordering that the §17.8 gate depends on.** The `:draftId` routes resolve and ownership-check the **config** before parsing the draft id. The sweep substitutes only the first path param, so a route that parsed the second one first would answer both sessions an identical 400 and be reported as proving nothing.
+
+**A fourth defect, found by the isolation gate, and it predates Phase 17.** `draftFromPublished` copied published rows field by field and **omitted `elective_block_id` / `elective_option_id`** — so restoring a draft from the published week silently lost every §4.9 split elective. It also carried the single-draft assumption as a rule (*"A draft already exists — edit or publish it first"*). Both gone: it now delegates to `DraftsService.create({copyPublished: true})`, which stamps the draft id, excludes extras and carries the elective columns.
+
+**And a fixture that had stopped telling the truth.** The isolation sweep inserted draft slots directly with a NULL `draft_id`. That was harmless while one draft existed; once `generate` creates a registry row those slots fall outside the draft the board reads, and `board/remove` went back to refusing *both* sessions — which the gate correctly reports as proving nothing rather than passing. The fixture now builds a real draft row and a published row, because that is how every write path in the app builds a slot.
+
+**Three more single-draft assumptions the gate's second run flushed out:**
+
+- **Locked cells were collected across every draft.** `buildSolverInput` read `status:'draft' AND is_locked` unscoped, so generating Draft #4 would treat Draft #2's pinned cells as fixed — invariant 13 applied across a boundary it was never meant to cross. It now takes a `draftId`, resolved in the worker *before* the input is built.
+- **The board `context` cache was shared across drafts.** It carries the locked cells the client engine treats as immovable, under one `ctx` key — so Draft #4's board would have been handed Draft #2's pins. Keyed by draft now.
+- **`invalidateTimetable(configId)` deleted three exact keys.** §22 made the suffix open-ended (`slots:119:draft:d7`), so every per-draft payload survived a board edit as a stale copy. It sweeps the config's prefix now (`configSlotsKeyPattern`).
+
+**And a UX consequence found by a failing gate check, not by looking.** `currentId` returned the newest editable draft — but Generate creates its draft immediately and the worker fills it seconds later, so the board would switch to the empty new draft the moment the button was pressed and show a blank week until the solver finished. `currentId` now prefers the newest draft **that has rows**; an empty one becomes current exactly when it is worth looking at.
+
+### Step 2 — the screens
+
+Built against the UI mockup's §22.5 design.
+
+| Task | Deliverable |
+|---|---|
+| 17.5 | **Draft picker** on the Draft Board, left of everything else because it scopes everything else: `Draft #2 — Labs freed Friday · 98.4%`. Passes `?draftId=` to both `/slots` and `/board/context`. |
+| 17.6 | **Five stat cards** — Generation %, Total allocation, Actual allocation, Errors (red > 0), Warnings (amber > 0) — read off the registry row, never counted per render (§14). |
+| 17.7 | **Compare panel** — every live draft side by side, best value per column highlighted, `Publish this →` per row, plus discard (the 5-cap needs an escape or a school gets stuck). |
+| 17.8 | **Status-aware pill** (`DRAFT #2 — not published` / `ARCHIVED` / `PUBLISHED`), `＋ New draft` forking the draft on screen, and `Publish Draft #N…` carrying the id. |
+| 17.9 | `publish/preview?draftId=` and `POST board/publish {draftId}`; the Publish screen reads `?draftId=` so a Compare row publishes the draft it names. |
+| 17.10 | **`scripts/drafts-smoke.cjs`** — isolation-suite step 15. |
+
+**Status — shipped.** All 33 checks of the new smoke passed on the first run.
+
+**Two judgement calls the mockup did not settle.**
+- **`＋ New draft` forks the draft on screen** rather than creating an empty one. An empty draft is 2,000 cells of nothing to drag; "try something on a copy of this" is what the button is actually for, and it matches the mockup's own `Draft #3 — Manual edits on 6–8 wing`.
+- **A column where every draft ties is not highlighted.** Marking all three as the winner tells a reader nothing, and the panel exists to answer "which one is looking good".
+
+**What the smoke pins that no unit test could.** Two complete weeks holding *all twenty* of the same cells at once — `uq_class_slot` would have refused that before §22 — an edit leaving the other draft byte-identical, the cap refusing the sixth with a reason and then letting one through after a discard, and publishing #2 while #1 stays a complete editable week. Plus the two things §18 and §22 have to agree on: an extra class carries **no draft id**, collapses to scope 0, is never copied by a fork, and survives the publish.
+
+## Phase 18 — Print / PDF that looks like a document (§10.4)
+
+Reported as: *"Print/PDF is taking the complete page screen, whereas it should only print the timetable. The PDF should be presentable with all important details like Class, Teacher etc. The heading should be proper with School Logo, School Name. There should be an option to generate PDF for all the classes at one shot."*
+
+Four separate things, one of which was a plain omission: **there was no `@media print` stylesheet in the app at all.**
+
+| Task | Deliverable |
+|---|---|
+| 18.1 | Print stylesheet: A4 **landscape** (a 5–7 column week in portrait squeezes teacher names to three lines), `print-color-adjust: exact` so break shading / elective tint / substitute highlight survive, page-break rules, and cards flattened to plain sections on paper. |
+| 18.2 | `.screen-only` / `.print-root` inversion — hide everything, reveal the sheets. **Not** an enumerated hide-list, which is a list somebody forgets to extend. |
+| 18.3 | `PrintSheet.tsx` — masthead with school logo (initials fallback when the ERP supplied no `logoUrl`), school name, timetable name; then class/teacher, class teacher or weekly load, days, periods/day, cells filled, and whether it is the standing timetable or a dated view with substitutions. |
+| 18.4 | **Print all** — one sheet per class-section or per teacher, each on its own page, from the same `GridPayload` the screen renders. |
+
+**Status — shipped.** Lint, web typecheck and build clean. Measured on School 2: 56 class-sections / 122 teachers available; 8 sheets fetched in 95 ms, so a full run is well under a second.
+
+**Three things that are not obvious and would each have produced a silent bug:**
+- `window.print()` in the same tick as the state update prints the **previous** render — a blank page. Two `requestAnimationFrame`s are the cheap, reliable fix.
+- Sheets render **into the page**, not a popup: a popup inherits none of the app's stylesheet and is blocked about half the time.
+- Sheets are fetched **four at a time**. They are Redis-cached (§14), but sixty parallel requests is how a report screen becomes an outage.
+
+**Not done:** My Timetable / My Classes still print the old way — they render the same `WeekGrid` and could reuse `PrintSheet`, but the report was about Reports and widening it was not asked for.
+
+## Phase 19 — Clone a timetable into a new session (§3.11, §3.12)
+
+Reported as: *"In Timetables page, I want an option to clone an existing timetable, so that I don't need to create a new timetable which is having same entries. For the session 25-26 I generated one timetable, now I want the same entry point for session 26-27 — then I should clone it and do necessary changes and then generate the fresh one. This will save a lot of user time to do the data entry."*
+
+Cloning Second Branch's timetable would carry **~630 rows** a person would otherwise re-type: 11 periods, 56 class-sections with their home rooms and class teachers, **376 subject mappings**, 6 merged groups, 8 elective blocks with 32 members and 24 options, and 100 curriculum rows.
+
+Two steps, because investigating the first turned up work that has to land before a clone can be correct.
+
+### Step 1 — Year-scope the curriculum (§3.11) ✅
+
+`class_subjects` had **no year dimension at all**: one row per (class, subject) served every session at once. That is invisible in a one-year school — which is every school shipped so far — and becomes wrong the moment a clone makes two live years normal.
+
+| Task | Deliverable |
+|---|---|
+| 19.1 | Migration: `academic_year_id` added, backfilled per school (active year, else earliest by start date), then `NOT NULL` + FK; unique key `(class_id, subject_id)` → `(class_id, subject_id, academic_year_id)`. |
+| 19.2 | `buildFeasibilitySnapshot` filters curriculum by the config's year. |
+| 19.3 | **Cross-config teacher load is same-year only** — the bug below. |
+| 19.4 | `capacityForClass` takes the year. |
+| 19.5 | `POST /class-subjects` requires the year; `GET` takes it as an optional filter; `PUT` cannot move a row between sessions. |
+| 19.6 | Importer: Curriculum sheet gains a required **Academic Year** column, matching Class Sections; duplicate key and `capacityByClassSection` both carry the year. |
+| 19.7 | Curriculum screen reads the year from the timetable already selected — no second selector. |
+| 19.8 | `scripts/year-scope-smoke.cjs`, wired into the isolation suite as step 19.1. |
+
+**Status — shipped.** All 122 existing curriculum rows backfilled, zero nulls, zero cross-school year assignments. 235 shared + 121 api tests, import smoke, and the full isolation suite (including the new step) all pass. Lint, typechecks and web build clean. Second Branch still reads 100% readiness.
+
+**The bug this uncovered, which would have made the clone feature ship broken.** `buildFeasibilitySnapshot` summed a teacher's load from every *other* config with **no academic-year condition** — so rolling a school into a new session counted every teacher twice, Check 2 failed across the entire staff, and a freshly cloned timetable read as hopelessly overloaded on the first screen the admin sees. Nobody had hit it because no school had two years. The smoke pins both halves: last session's periods count **0**, while another wing of the *same* session still counts (§3.10).
+
+**Why the shared package needed no changes.** The engines never query the database — they read the snapshot, keyed `classId:subjectId`. One filter in the snapshot builder was enough. Had it been missed, `new Map()` in `solver/variables.ts` would have collapsed two sessions' rows to whichever loaded last and timetabled the wrong syllabus silently.
+
+**Two decisions worth keeping.** The year is **required on write, never defaulted to the active year** — a row filed against the wrong session is invisible until the timetable comes out wrong, and the importer loads hundreds at once. But it is **optional on read**: a `GET` that 400s for everybody tells the §17.8 sweep nothing.
+
+**A trap for whoever works on the importer next.** `packages/shared/src/import/validate.ts` contains literal control characters (the deliberate strip-regex), so `grep` treats it as **binary and silently reports no matches**. Use `grep -a`. Searching it normally suggests the validator handles nothing at all.
+
+**Also added to the isolation suite**: a check that a school cannot file a curriculum row against *another* school's academic year. A new foreign key is a new way to point into someone else's data, so it gets its own case rather than riding on the `classId` one.
+
+### Step 2 — The clone itself (§3.12) ✅
+
+| Task | Deliverable |
+|---|---|
+| 19.9 | `clone.service.ts` — `plan()` and `commit()`. One `oldSectionId → newSectionId` map; every dependent table is a straight re-point. |
+| 19.10 | `POST /timetable-configs/:id/clone/preview` (writes nothing, not even the target year) and `POST /timetable-configs/:id/clone`, both `masters.manage`. |
+| 19.11 | Refusals with reasons: same session, taken name, no target, a class-section already claimed by another timetable. |
+| 19.12 | Staffing notes — inactive and `guest` teachers dropped and named; §18 eligibility breaches warned but kept. |
+| 19.13 | `CloneTimetable.tsx` + a **⧉ Clone** button per card on the Timetables screen. Preview first, always. |
+| 19.14 | Year filters on `GET /mappings` and `GET /elective-blocks`, wired to the chosen timetable — without these the clone breaks the screens it feeds. |
+| 19.15 | `scripts/clone-smoke.cjs` (47 checks), isolation-suite step 19.2. |
+
+**Status — shipped.** All 47 clone checks pass, plus the full isolation suite. On the real reference school the preview computes **637 rows in 152 ms**: 11 periods, 56 class-sections, 56 class teachers, 100 curriculum rows, 376 mappings, 6 merged groups, 8 elective blocks with 24 options — no blockers, no warnings.
+
+**What the smoke pins that no unit test could.** A fixture holding one of everything: a home room, two class teachers, a merged group across two sections, a §4.9 split elective with two options in two rooms under two teachers, a published slot, an §18 extra class, and one teacher who has left. After the clone: every member and option re-pointed at the *new* sections, `placement: same_period` preserved, and **zero** slots, drafts, publications or extra classes. The departed teacher's Maths mapping is absent while the curriculum still asks for its 6 periods — so Readiness names the gap rather than the timetable failing at Generate.
+
+**Two things the sweep proved that a one-sided probe could not.** Both new routes discriminate rather than merely refuse: `A 201 · B 404 on the same config`. A route that 404s for everybody would have sailed through a weaker check.
+
+**The decision that shaped the feature.** Copy the inputs, never the outputs. It is what makes the clone safe (it never touches the §22 `draft_scope` unique keys), what makes it honest (the admin adjusts and presses Generate, as they were going to), and what makes the not-copied list explicable rather than arbitrary.
+
+**A consequence worth naming.** Cloning is what makes duplicate-looking rows normal, so three list screens needed a year filter or they would show two sessions at once with nothing to tell them apart — "Class 5-A · English · Mrs Rao" twice on Teacher Mapping, "Class 5 Third Language" twice on Electives. A feature that breaks the screens it feeds is not finished, so those went in here rather than being left as a follow-up.
+
+**Not done:** the preview reports the *source's* current readiness rather than simulating the clone's. Projecting a readiness score for rows that do not exist yet means building a synthetic snapshot, and the source's number is both truthful and the one that matters — the clone reproduces its structure. The commit response returns the new timetable's **actual** score.
+
+## Phase 20 — Subject and class colour code (§10.5)
+
+Reported as: *"Now we have to give decent colour codes to Subject and Classes, so that wherever Subject and Classes are showing then that cell should be shown with that colour, and font colour with the same colour in dark."*
+
+| Task | Deliverable |
+|---|---|
+| 20.1 | `packages/shared/src/colors/palette.ts` — 32 swatches (16 hues × 2 tones), FNV-1a hashing, and the **set-aware** `assignSwatches`. The only place a colour is chosen. |
+| 20.2 | `palette.spec.ts` — recomputes every WCAG ratio and hue gap from the hex values; proves the 20 real subjects come out distinct. |
+| 20.3 | `GET /me/colors` — names and ids, session only, so every role gets the *same* scheme. |
+| 20.4 | `ColorProvider` at the app root; one request, one assignment, shared by every screen. |
+| 20.5 | Applied to WeekGrid (Reports, My Timetable, My Classes, the printed PDF), the Allocation Matrix, and the Board's cards and tray. |
+| 20.6 | `print-color-adjust: exact` on `*`, not just the root. |
+
+**Status — shipped.** 248 shared tests (13 new), lint, api + web typecheck, web build, and the full isolation suite. On the reference school: **20 of 20 subjects and 14 of 14 classes get distinct colours**, worst contrast in actual use **5.50:1** (AA is 4.5:1), `/me/colors` in 20 ms.
+
+**Why the assignment is set-aware, which is the whole design.** A bare `hash(name) % 32` leaves about five of twenty subjects sharing a colour with another — and widening the palette does not fix it, because that is the birthday problem, not a palette that is too small. Going past 16 hues makes the hues themselves indistinguishable. So a name hashes to a *preferred* slot and probes forward if taken, processed in sorted order so the result depends on the set and never on the order it arrived in. Two screens fetching the same subjects in different orders must not disagree.
+
+**One module, or it is worse than nothing.** If each grid derived its own colours, Maths would be green on the Board and blue on the Matrix — and a reader would have *learned something untrue*, which is worse than an uncoloured grid. Same rule as the constraint engine.
+
+**Nothing was painted over.** Substitution keeps its cyan (on a cover sheet "what changed today" outranks which subject it is); a pinned card keeps the grey locked fill; a §4.9 block keeps its dashed steel tint in a *class* row because it is several subjects at once — but takes its option's real colour in a *teacher* row, where it is one lesson; merged keeps its double border and 🔗; breaks keep their hatching.
+
+**Three details that would each have been a silent bug.**
+- The Matrix abbreviates names for the 50×40 grid, so the cell carries a separate `colorKey` with the full name — looking up "Mat" would have matched nothing and silently produced an uncoloured matrix.
+- `classOfLabel` splits on the **last** hyphen: "Pre-Nursery-A" must become "Pre-Nursery", not "Pre".
+- `print-color-adjust` does not inherit reliably to descendants; on `html, body` alone, Safari drops every `<td>` background and the printed timetable comes out grey.
+
+**A permission finding.** `/subjects` and `/classes` are `masters.manage`, so a teacher cannot read them — and a teacher falling back to a different scheme would see Maths in a different colour from the admin looking at the same timetable. Hence `GET /me/colors`, session-only, names and ids. Returning **ids** rather than bare names was deliberate: it gives the §17.8 sweep something real to compare, and it duly reports `A 8 id(s) · B 2 · none in common` instead of shrugging at a payload with nothing to check.
+
+**Not done:** colours are assigned automatically and cannot be overridden. Adding a `color` column plus a swatch picker on the Subjects and Classes screens is a small, self-contained follow-up if a school wants to insist Maths is blue.
+
+## Phase 21 — Generate into a chosen draft (§22.2)
+
+Reported as: *"While generating timetable it's giving this error because there are 5 drafts: `This timetable already has 5 drafts… Discard one first.` We should provide a dropdown to list all draft timetables. Which one to update will be decided on this."*
+
+The five-draft cap (§22.2) is about legibility — a Compare table nobody can read is not a comparison — and it stays. What was wrong is that **the only way past it was to throw work away.** The server already accepted `draftId` on `POST …/generate`; the Generate screen simply never sent one, so a school at the cap could not press Generate at all.
+
+| Task | Deliverable |
+|---|---|
+| 21.1 | **Write into** picker on the Generate screen: "＋ A new draft" (default, disabled at the cap) plus every live draft, each showing its number, label, status and fill %. |
+| 21.2 | An inline line saying exactly what the chosen option does — including the published case, where the working copy is replaced and the live timetable is not. |
+| 21.3 | At the cap the Generate button is **disabled until a target is chosen**: there is nothing safe to default to when every option overwrites a week. |
+| 21.4 | `DraftsService.assertWritable` — a *discarded* draft is refused, since generating into one produces a timetable no screen shows. |
+| 21.5 | The cap message names both ways out instead of only "discard one first". |
+| 21.6 | Eight new checks in `drafts-smoke.cjs`. |
+
+**Status — shipped.** Verified against the reported situation itself: config 119 (Second Branch) was genuinely at five drafts. The old call reproduced the reported 400; targeting Draft #6 was accepted, and the worker's run wrote **2,360 rows into that draft alone** — its `generated_at` freshly stamped, every other draft's stamp and row count unchanged, the published set and the §18 extra classes untouched.
+
+**Why nothing else needed to change.** `writeDraftSlots` already scopes its delete to `status='draft' AND draft_id = <this draft>`, keeps 🔒 pinned cells, and skips `source='extra'`. And `buildSolverInput` already resolves locked cells per draft, so regenerating Draft #4 respects Draft #4's pins and not Draft #2's. Phase 17 built the targeting; only the way to ask for it was missing.
+
+**The published-draft case, which is the one worth knowing.** Publishing flips a draft's rows in place to `status='published'`, so a published draft has **no draft rows left** — which is why the Board shows it blank. Generating into it therefore refills its working copy without touching the published timetable at all. That is a real workflow ("revise what we published"), so it is allowed rather than blocked, and the picker says so in as many words instead of leaving the admin to guess.
+
+**Not done:** the cap itself is unchanged at five, and there is still no "discard" control on the Generate screen — the Board owns that, and the message now points there.
+
+### 21.7 — the same picker on the Allocation Matrix
+
+Reported as: *"Allocation Matrix should also have the Draft dropdown to see the timetable."*
+
+The Matrix read `GET /slots` with no `draftId`, so it always showed whichever draft the server resolved as current — a school with five of them could compare nothing. It now carries the **same** picker as the Board, in the same place (first in the filter row, because it scopes everything after it) with the same label format, and the status chip says `draft #6` rather than a bare `draft`.
+
+Two judgement calls. The picker is **hidden on the Published view**: there is exactly one published set per config however many drafts it was promoted from (§22.2), so offering a choice there would ask a question with no answer — and the server duly returns `draftId: null` for it. And the initial selection comes from **the server's own answer** (`data.draftId`), not from a client guess at "the newest": `DraftsService.currentId` prefers the newest draft *that has rows*, so a guess would have labelled the dropdown with a different draft from the one on screen.
+
+**Status — shipped.** Verified on the reference school's five real drafts: each `draftId` is answered by that draft (`served draftId` matches every time), the five return **four distinct week-hashes** — #1 and #3 match because §22.5's `＋ New draft` forks the draft on screen — and `status=published&draftId=…` correctly answers `draftId: null`. All within budget at 7–145 ms.
+
+**A gap this closed.** `GET /slots?draftId=` — which every grid in the app rides on — had **no smoke coverage at all**. Four checks now pin it, including that two drafts return genuinely different weeks rather than one cached copy served twice, which is the failure that would have made the picker change its label and nothing else: the worst kind of broken, because it looks like it worked.
+
+### 21.8 — the Publish Confirmation screen names its draft
+
+Reported as: *"Publish Confirmation page is not linked with Draft, which Draft to publish."*
+
+The server was never the problem: `preview` and `publish` both take a `draftId` and both already call `assertOwned`. The screen read one from the URL — so arriving from the Draft Board's Compare row worked — but **had no picker of its own and never named the draft anywhere on the page.** Reaching Publish from the sidebar showed a version number and a diff for a draft it did not identify, and a school with five of them had no way to tell which was about to go live, nor to change it without going back to the Board.
+
+| Task | Deliverable |
+|---|---|
+| 21.8a | A **Publish ▾** picker, same convention as the Board and the Matrix, listing the drafts that can actually be published. |
+| 21.8b | The draft is named in the card (`Draft #6 → v3`), the confirm dialog, the button, and the success screen. |
+| 21.8c | The picker writes `?draftId=` back to the URL, so refresh and shared links keep meaning the same draft and the Board's deep-link still works. |
+| 21.8d | Publish posts the draft **on screen**, not only one that arrived in the URL. |
+| 21.8e | Four new checks in `drafts-smoke.cjs`. |
+
+**Status — shipped.** Verified on the reference school's five drafts: each `draftId` produces its own diff against the live timetable — **0, 922, 10, 916 and 916 changed cells** — so the preview demonstrably follows the draft it is asked about rather than the server's current one. An unknown draft is a **404**, not an empty diff.
+
+**The bug inside the bug.** `publish()` posted `draftId` from the URL. With a picker added but that line left alone, choosing a draft would have redrawn the whole diff for it and then published a *different* one — the version that looks like it works. It posts `shownDraftId` instead.
+
+**Two things the screen now admits.** A draft that is already published, or was archived by a later publish, has **no draft rows left** — §22.4 flips them in place — so it would publish nothing; the picker lists only editable drafts and explains the case rather than leaving a mysteriously disabled button. And the success line used to read *"the draft board is now empty until you start the next revision"*, which stopped being true the moment a config could hold five: it now says the other drafts are untouched, which is what §22.4 actually does.
+
+**A gap this closed.** The smoke asked the publish preview about one draft only, so a preview that ignored the parameter entirely would have passed. It now asks about the *other* draft first, which is the ordering that can fail.
+
+## Phase 22 — ERP master-data sync (§23)
+
+Reported as: *"This timetable application will be linked with our existing ERP, the SSO will be done through the ERP. Now I need a sync option where I can sync the existing data of all our masters — school details, class-section, subject, teacher information."*
+
+**Decisions taken:** direct read of the ERP database; **ERP wins on its own fields** (field-level, never wholesale); scope is the five core-identity masters — academic years, classes, class-sections with strength, subjects, teachers.
+
+| Task | Deliverable |
+|---|---|
+| 22.1 | `packages/shared/src/sync/contract.ts` — the **field-ownership table**. The ERP's fields per sheet; everything else is the timetable's and is never written on an existing row. |
+| 22.2 | `sync/reconcile.ts` — pure new/update/unchanged, comparing only ERP-owned fields, forgiving about how two systems spell a value (case, whitespace, DATE vs DATETIME, TINYINT vs boolean, `30` vs `"30"`). |
+| 22.3 | `reconcile.spec.ts` — 15 tests, including a guard on the ownership table itself. |
+| 22.4 | `apps/api/src/sync/erp-map.ts` — one visible SELECT per master, `ERP_QUERY_FILE` override, and `assertReadOnly`. |
+| 22.5 | `erp-source.service.ts` — the read-only connection and `probe()`. |
+| 22.6 | `sync.service.ts` + three `masters.manage` endpoints: probe, preview, apply. |
+| 22.7 | `SyncErp.tsx` at `/sync`, under **Build** beside Import from Excel. |
+| 22.8 | `scripts/erp-sync-smoke.cjs` — 27 checks against a **fixture ERP database** the dev stack now provides; isolation-suite step 22. |
+
+**Status — shipped.** 263 shared + 121 api tests, lint, typechecks, web build, and the full isolation suite (22 steps) all pass.
+
+**Why so little of this is new.** `validateWorkbook` takes plain rows, not Excel, so the sync inherits the entire §16 pipeline by producing the same shape. What a sync genuinely adds is *update*, which an importer never does.
+
+**The property everything turns on, and how it is proved.** The smoke sets a teacher's `maxPeriodsPerDay`, `minPeriodsPerDay`, `maxPeriodsPerWeek`, `periodPattern`, `alternateDaySet`, `classTeacherPeriodRule` and `employmentType` by hand, and a subject's lab flags; then the fixture ERP renames her and re-counts a section. After the sync: **the name changed and every one of those scheduling fields is byte-identical.** A sync that reset them would change the next Generate's output with nothing on any screen saying why — the most expensive kind of silent bug this system can have.
+
+**A fixture ERP, because the alternative is untestable.** `docker compose up` now sets `ERP_DATABASE_URL` to a dev-only `erp_fixture` schema; the smoke creates it, shapes it like the shipped queries, drives the real endpoints against it, and drops it. Without it the sync could only be tested against somebody's production ERP, which is not a thing you can run twice.
+
+**A bug the smoke caught in my own code.** `probe()` reported a failed query's reason as `e.message.split("\n")[0]` — and a **Prisma error message begins with a newline**, so the probe returned an *empty error string*. A probe that says a query failed and will not say why is precisely the failure the endpoint exists to prevent. Now it finds the driver's own line (`Unknown column 'code' in 'field list'`).
+
+**Earning the §17.8 exemption rather than asserting it.** The sync routes carry no id, so the sweep failed the build demanding a decision. The exemption is backed by a real check: two schools, one ERP database, each syncing — B's preview shows B's rows and none of A's, B's writes land only in B, and A's teachers are untouched.
+
+**Not done, and deliberately.** Teacher→subject→section allocation, class teachers and rooms are out of scope for this step (you chose core identity). Scheduling is unattended-ready but not yet scheduled — the BullMQ nightly job is a small follow-up, and the fair-scheduling cap (§17.7) already exists to carry it. And the shipped SQL is a guess at your schema: run `GET /sync/erp/probe` first, and correct `erp-map.ts` where it names a missing column.
+
+### 22.9 — the fixture ERP had to survive its own test
+
+Reported as: *"giving this error — Invalid `prisma.$queryRawUnsafe()` invocation: Database `erp_fixture` does not exist"*
+
+My fault, twice over.
+
+**The dev stack pointed at a database that only existed during a test.** `erp-sync-smoke.cjs` created `erp_fixture` at the start and **dropped it at the end** — so anyone who ran the suite and then opened the Sync screen found it permanently broken. A test that breaks the thing it tests.
+
+Fixed by splitting the seed from the test: `scripts/seed-erp-fixture.cjs` creates the stand-in ERP (2 schools, 5 classes × 2 sections, 6 subjects, 6 teachers each, keyed on the seeded `SCHOOL-1`/`SCHOOL-2` codes so the screen works out of the box). The dev stack runs it at startup, and the smoke now builds **from that same seed** and hands the fixture back seeded rather than deleting it — with two checks asserting exactly that, so the regression cannot come back quietly.
+
+**And the error said nothing about what to do.** `Database erp_fixture does not exist` is accurate and useless: a symptom with no remedy, which is precisely what the §4 message contract exists to rule out. `explainConnection` now translates the four failures an operator actually meets when first pointing this at an ERP:
+
+| Driver says | Operator reads |
+|---|---|
+| `Database X does not exist` | which database is missing, on which host, and the command that creates the dev one |
+| `Access denied` | the credentials were refused — the sync needs a **read-only** user |
+| `ECONNREFUSED` / can't reach | check host and port, and that the container can see the ERP's network |
+| `Unknown column` | the ERP's schema differs from `erp-map.ts` — correct it, or override with `ERP_QUERY_FILE` |
+
+**Worth knowing when you try it.** The fixture ERP is *demo* data keyed to the same school codes as the seed, so previewing against Second Branch reports real-looking changes (5 classes, 10 section strengths). That is the sync working correctly against fixture data — do not apply it to a school whose masters you care about until `erp-map.ts` points at the real ERP.
+
+### 22.10 — the REST-API source (§23.6)
+
+Reported as: *"How should the API of the existing ERP be integrated, what do I have to do to use the existing REST API? The newly built page doesn't talk about the API integration."* — and then: *"provide both the options, connect with DB or through API."*
+
+A fair catch: Phase 22 shipped the database adapter that was chosen and never opened the REST path, so the screen only ever offered one way in.
+
+| Task | Deliverable |
+|---|---|
+| 22.10a | `packages/shared/src/sync/json-map.ts` — dotted-path `pick`, `pickList`, `mapRecord`, `fillTemplate`. Pure; 13 tests. |
+| 22.10b | `erp-reader.ts` — the four-method source seam. |
+| 22.10c | `erp-db.reader.ts` — the existing SQL source, moved behind it unchanged. |
+| 22.10d | `erp-http.reader.ts` — the REST source: declared endpoints, dotted field paths, pagination, bearer or header-key auth, GET-only. |
+| 22.10e | `ErpSourceService` picks on `ERP_SOURCE`, and `explainConnection` grew an HTTP arm (401/403 → which setting; 404 → which path; shape mismatch → `ERP_API_FILE`). |
+| 22.10f | The screen shows **which** source answered and, when a mapping fails, the ERP's own record beside the failure. When nothing is configured it now documents **both** routes rather than only the database one. |
+| 22.10g | Six new smoke checks against a stand-in ERP **API**. |
+
+**Status — shipped.** 276 shared + 121 api tests, lint, typechecks, web build, isolation suite (22 steps), and `erp-sync-smoke` at 34/34.
+
+**How the seam is actually proved rather than asserted.** The stand-in ERP API wraps the *same fixture database* the SQL source reads, so the two must agree row for row — if they disagreed, the seam would be a lie. Its `/sections` endpoint returns **nested** JSON (`class.name`, `session.name`) the way a REST API returns what SQL would join, which is what the dotted paths exist for; and `/staff` pages **one record per page**, so pagination is exercised rather than assumed.
+
+**Driven through `ErpHttpReader` directly, not by flipping the running server's `ERP_SOURCE`.** A dev endpoint that rewrites `process.env` on a live API is a poor trade for test convenience, and everything above the reader is already proved by the database path.
+
+**Two of my own test expectations were wrong, not the code.** Page size 2 with only 2 teachers left (step 5 deletes one) fits on one page and proves nothing — now one row per page. And an earlier run mis-stated the row count as 10 when the five masters sum to 13.
+
+**Which to choose.** *(Superseded by 22.11 — the database source has since been removed.)* Direct DB needed no ERP development and was fastest to working, at the cost of coupling to their schema. The REST route survives their schema changes and needs no database credentials or network path, at the cost of endpoints being exposed.
+
+### 22.11 — REST only, per-master buttons, and deletion that is counted first (§23.3–23.4)
+
+Reported as: *"Remove the DB integration part. The sync process will be simple — it should get synced through API only. Just provide the option in backend where I or you can add the APIs which I will provide later for each master... For each master provide one button, on click it should sync the data successfully. While sync, if there is any existing data exists then ask to remove them all with its dependencies and insert the fresh data always. But before deleting, give the proper alert message. It should provide the logs of each sync."*
+
+**What I flagged before building, and what I built.** "Delete all and re-insert" is one sentence and about fifteen tables, and the schema decides the cost: `timetable_slots` has **no foreign keys to the masters**, so deleting a teacher raises nothing, warns nothing, and leaves every published timetable pointing at a teacher that no longer exists. Same for `users.teacher_id` and both teacher columns on `substitution_log`. So I built the destructive mode as asked, and added a key-preserving one beside it that reaches the *same data* without re-minting ids — defaulted to that, and made the alert say what actually goes.
+
+| Task | Deliverable |
+|---|---|
+| 22.11a | The database source deleted: `erp-db.reader.ts`, `erp-map.ts`, `ERP_SOURCE`, `ERP_QUERY_FILE`, `ERP_DATABASE_URL` from the app. `ErpReader` stays as the test seam. |
+| 22.11b | `SyncMode` + `SYNC_DEPENDS_ON` in the contract; `reconcileSheet` gains removals and a `replace` mode, carrying our row id on every matched verdict. |
+| 22.11c | `apps/api/src/sync/dependencies.ts` — the cascade, each step declaring its **count and its delete in one object**. |
+| 22.11d | `erp_sync_runs` + migration `20260901090000` — one row per master per run, `ok` / `failed` / `blocked` alike. |
+| 22.11e | Per-master endpoints: `status`, `probe`, `preview`, `apply`, `reload`, `logs`. Confirmation by typed school name, bound to the shown impact by `fingerprint`. |
+| 22.11f | No built-in endpoint guesses; per-master "not configured"; `scripts/erp-api.example.json` as the template. |
+| 22.11g | `SyncErp.tsx` rebuilt: five cards, Sync + Replace all per card, the itemised alert, and a sync-history panel. |
+| 22.11h | `scripts/fake-erp-api.cjs` + the dev-only `erp-fake` compose service — the app now reaches its ERP over HTTP from another container, with a token, as production would. |
+| 22.11i | `erp-sync-smoke.cjs` rewritten: **67 checks**, 13 steps. |
+
+**Status — shipped.** 278 shared + 121 api tests, lint, both typechecks, web build, `migrate:all` across all 3 databases, the full isolation suite (19 steps incl. the exhaustive sweep), and `erp-sync-smoke` at 67/67.
+
+**A bug my own code had, of exactly the kind this feature exists to prevent.** `countImpact` counted published slots with `{ classSection: { classId: { in: ids } } }` — a nested relation filter on a relation that **does not exist**, which is the entire premise of the file it was written in. Prisma rejected it outright, which is at least honest; a laxer ORM would have counted zero and the confirmation would have under-reported a destructive write. Now it resolves section ids first and filters on a plain id list.
+
+**Two things the smoke proves that a reading could not.** After a confirmed removal: the teacher's mappings, her *published* timetable rows, her class-teacher assignment and her **user login's `teacher_id`** are all gone or cleared — nothing is left aimed at an id that will be reused — while the `timetable_config` itself survives. And `replace` on three subjects that all still exist in the ERP produces **three entirely new ids**, which is the property that makes it the wrong default.
+
+**A test that encoded a rescinded decision.** `reconcile.spec.ts` asserted *"does not report a row missing from the ERP — a sync adds and updates, it does not delete"*. That was the old rule, not a bug; the spec now asserts the new behaviour in both modes, and a sibling test keeps the distinction that still holds — **inactive is not absent**.
+
+**What is deliberately refused.** Replacing an academic session that a timetable belongs to: the sync names the timetable and stops. A masters button is not consent to delete a school's period structure, drafts and publication history.
+
+**Not done.** The nightly BullMQ job is still unbuilt (the §17.7 fair-scheduling cap already exists to carry it), and teacher→subject→section allocation, class teachers and rooms remain out of sync scope. The shipped endpoint paths in `erp-api.example.json` are a template, not your API — fill in `ERP_API_FILE`, then `POST /sync/erp/reload` and read the probe.
+
+### 22.12 — the ERP's API is secured (§23.8)
+
+Reported as: *"ERP API's are secured and it should be done through SSO token, let me know how it will be done."*
+
+**The literal thing cannot be done, and I said so before building.** The ERP's SSO token is single-use (`AuthService` burns its `jti`), short-lived, and discarded at `/sso/callback` in favour of our own session JWT — which the ERP has no reason to trust. By the time an admin presses Sync it is long gone, and a scheduled sync never had one. What survives is the part worth having: **who asked**.
+
+**Decision taken:** OAuth2 client credentials.
+
+| Task | Deliverable |
+|---|---|
+| 22.12a | `apps/api/src/sync/erp-auth.ts` — `oauth2` / `bearer` / `none` behind one `headers(actingUser)` call. Token cache with a shared in-flight grant, refresh-before-expiry, and a bounded lifetime when the ERP omits `expires_in`. |
+| 22.12b | A 401 refreshes the token and retries **exactly once**; `ErpReader` threads `actingUser` as a parameter, never as reader state. |
+| 22.12c | `auth` block in `ERP_API_FILE`; the secret lives in the env var the block *names*. `unconfiguredReason()` reports a missing secret once, by name. |
+| 22.12d | `actingUserHeader` carries the SSO identity of whoever pressed Sync; absent on an unattended run. |
+| 22.12e | The stand-in ERP is now secured: `/oauth/token`, 401 on expired or revoked tokens, plus `_test/stats` and `_test/revoke` so the auth path is observable rather than assumed. |
+| 22.12f | `erp-auth.spec.ts` — 18 tests. `erp-sync-smoke.cjs` — **74 checks**. |
+
+**Status — shipped.** 278 shared + 139 api tests, lint, both typechecks, web build, `erp-sync-smoke` 74/74, full isolation suite.
+
+**What the smoke proves that a reading could not.** The whole 13-step suite now runs on OAuth2 — **108 reads on 5 tokens**, so caching is measured rather than claimed. The ERP records `X-ERP-Acting-User: ZZERP-1`, so the admin's identity demonstrably arrives. And revoking every token behind the app's back produces `+1 token, +1 401`: the 401 really happened and the sync still succeeded, which is the retry path rather than a cached success.
+
+**Two of my own mistakes, both in tests rather than code.** A "refreshes before expiry" test asserted a 40s token would be refused on the second call — but 40s minus the 30s margin still leaves 10s of usable life, so the code was right; rewritten with fake timers to assert the real property (a 3600s token refreshes at 3580s, *while the ERP would still accept it*). And the 401-retry check first reported `+0 401`, because step 11's mapping reload rebuilds the reader and drops its cached token — the next call minted a fresh one and never met a 401. Fixed by warming the cache after the reload, not by weakening the assertion.
+
+**The one thing with a blast radius beyond this feature** is a secret in an error message: these are rendered on screen and written to `erp_sync_runs.error`. Two tests assert it never happens, and messages name the *variable* instead.
+
+**If you later want identity-based auth rather than a client secret**, the seam is ready: a `jwt_assertion` mode would sign a 60-second RS256 assertion with our key, which the ERP verifies against our public key exactly as we verify its SSO tokens — the same trust relationship, reversed. Not built, because you have OAuth2.
+
+## Phase 23 — Teacher availability (§4.7a)
+
+Reported as: *"now we have to built teacher availibility option, where admin can mark the teacher availbility as per the teacher preference... Teacher is not available every Monday & Friday from 1st to 4th period... not available 2nd half daily... comes to school after 10 AM."*
+
+`teacher_unavailability` already existed (one row per blocked cell, `period_number = NULL` meaning the whole day) and had no screen — Phase 1 deferred it. This is the screen, plus the four call sites that had to agree with it.
+
+| Task | Deliverable |
+|---|---|
+| 23a | `apps/web/src/pages/Availability.tsx` — week grid per teacher, click to block, quick patterns compiled to cells. |
+| 23b | Quick patterns: arrives-after, leaves-by, second-half, whole-day. **Entry shortcuts, never a second rule model** — they resolve against the config's real period times and write ordinary cells. |
+| 23c | A day with every period blocked collapses to one `period_number = NULL` row, so it survives the timetable gaining a period. |
+| 23d | Four consumers agree: solver domain pruning *before search*, board drop refusal, Check 2's weekly capacity, and the substitute engine dropping the teacher from the candidate list rather than scoring them down. |
+
+**Status — shipped.** Route `/availability` under Build.
+
+**Not done:** dated one-off absences ("Meera is out 12–14 Oct") are a different thing from a recurring pattern and still live only in the Substitute Center's absence flow.
+
+## Phase 24 — Natural-language master-data entry (§13.5)
+
+Reported as: *"AI should be capable of adding Classes, Section, Subject, Teacher, Curriculum, Teacher Mapping. User can just write the prompt and it should insert the data with all validation... Also provide one floating icon of AI on bottom right."*
+
+The §12 roadmap always listed this, and always with the words *"with confirmation screen"* — which is not a nicety in that sentence, it is the mechanism. **The model proposes; a person disposes; the existing validated committer does the writing.**
+
+### 24.A — adding
+
+| Task | Deliverable |
+|---|---|
+| 24a | `packages/shared/src/ai/data-entry.ts` — the adapter. `RawSheet` cells are keyed by header text, which a model reproduces unreliably and fails at *silently*; this accepts either the header or the field key, in any casing, and **reports a key it cannot place**. Its column guide is generated from the import contract, so it cannot drift. |
+| 24b | `draftMasterData` — one tool, several sheets per call, because the validator is cross-sheet. |
+| 24c | `AiDataEntryService` — school-keyed Redis stash, 30-minute TTL, single-use. **Apply takes a proposal id, never rows**, and re-validates at the moment of the write. |
+| 24d | `ProposalCard.tsx` + `AiDock.tsx` — the confirmation screen, and the floating assistant. |
+| 24e | `COMMON_SUBJECTS` catalogue + multi-select picker; `masters.manage` enforced in the tool list, in the handler and on the endpoint. |
+
+### 24.B — changing what exists
+
+| Task | Deliverable |
+|---|---|
+| 24f | `data-entry.update.ts` — `UPDATABLE`, the whole of the assistant's authority over existing rows. Every sheet's natural key is absent by design. |
+| 24g | `mentioned` on `toRawSheets` — **a field the draft did not mention is not a change.** |
+| 24h | `data-entry.store.ts` — current values per sheet, one query per sheet; the field-level `old → new` diff on the card. |
+
+**A bug in my own first implementation, of exactly the kind this feature exists to prevent.** `validateWorkbook` returns a *fully populated* row — every column, defaults filled in — so the first diff reported **nine** changed fields to change one, and applied would have nulled every untouched optional column. `mentioned` is the fix.
+
+### 24.C — the sheet where one row is not one row
+
+| Task | Deliverable |
+|---|---|
+| 24i | `ValidatedRow.existingParts` — the already-mapped sections the validator strips out of `classSections`. The Excel path never needed them; an assistant that may *change* a mapping does. |
+| 24j | `data-entry.mapping.ts` — expansion into units (one per class-section, or one per merged group), then a diff per unit. |
+| 24k | `MERGED_UPDATABLE` — a merged group's teacher and members are part of its identity, so a draft that moves them is **refused by name** rather than creating a second group over the same children. |
+| 24l | §18 and weekly-capacity guards at plan time *and* at apply, reusing `assertCanTeach` / `assertCanOwnClass` / `assertWithinWeek`. |
+| 24m | `Class Teachers` as a seventh draftable master; `listSubjectMappings` as the read that makes a mapping change draftable at all. |
+| 24n | Readiness invalidated after an update-only batch; `SHEET_MISSING` warnings dropped from a drafted proposal. |
+
+**Status — shipped.** `ai-data-entry-smoke` at **74/74** (10 steps), 303 shared + 154 api tests, lint, both typechecks, web build, and the full isolation suite including the 13-tool census.
+
+**Two things the smoke proves that a reading could not.** One drafted mapping row became **two** database rows and a later draft changed **one** of them, leaving the other alone — which is the expansion actually behaving as the importer's. And moving a merged group's teacher was refused with the existing group named, after which there was **still exactly one** merged group over those sections.
+
+**Deliberately not done.** The assistant cannot delete anything, cannot change a natural key, cannot move a merged group's teacher or members, and cannot touch a slot, a publication, a role, an academic year, a room or an elective block. `homeRoom` and `timetable` on `Class Sections` are shown in a diff and reported as skipped rather than written — a stated gap, not a silent one.

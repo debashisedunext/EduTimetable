@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, switchSchool } from "../api";
 import { Card, ErrorNote, Field } from "../components";
-import { useConfigCtx } from "../hooks";
+import { useApi, useConfigCtx } from "../hooks";
+import { CloneTimetable } from "./CloneTimetable";
 import type { MeResponse } from "@edutimetable/shared";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -12,6 +13,9 @@ export function Timetables({ me }: { me: MeResponse }) {
   const { configs, setCurrentId, refetch } = useConfigCtx();
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
+  // §3.12: which timetable's clone form is open, if any.
+  const [cloningId, setCloningId] = useState<number | null>(null);
+  const { data: years } = useApi<{ id: number; name: string }[]>("/academic-years");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   // A trust admin may run timetables for several schools, so the school is part
@@ -109,6 +113,23 @@ export function Timetables({ me }: { me: MeResponse }) {
       )}
 
       {configs.map((c) => (
+        cloningId === c.id ? (
+          <div key={c.id}>
+            <CloneTimetable
+              config={c}
+              years={years ?? []}
+              onCancel={() => setCloningId(null)}
+              onDone={(newId) => {
+                // Land on the new timetable's wizard: cloning is step one of
+                // "adjust, then generate", and the adjusting happens there.
+                setCloningId(null);
+                refetch();
+                setCurrentId(newId);
+                navigate("/setup");
+              }}
+            />
+          </div>
+        ) : (
         <Card key={c.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
@@ -135,9 +156,20 @@ export function Timetables({ me }: { me: MeResponse }) {
               <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={() => { setCurrentId(c.id); navigate("/readiness"); }}>
                 Readiness
               </button>
+              {/* §3.12 — next session has the same classes and very nearly the
+                  same staffing; retyping 600 rows to change 20 is the point. */}
+              <button
+                className="btn"
+                style={{ border: "1px solid var(--line)" }}
+                onClick={() => { setCreating(false); setCloningId(c.id); }}
+                title="Copy this timetable's classes, syllabus and staffing into another session"
+              >
+                ⧉ Clone
+              </button>
             </div>
           </div>
         </Card>
+        )
       ))}
     </div>
   );

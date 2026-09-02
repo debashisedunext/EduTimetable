@@ -4,6 +4,8 @@ import { io, type Socket } from "socket.io-client";
 import { getToken } from "../api";
 import { Card } from "../components";
 import { useConfigCtx } from "../hooks";
+import { Markdown } from "../markdown";
+import { ProposalCard, type Proposal } from "../ai/ProposalCard";
 
 interface ToolTrace { name: string; args: Record<string, unknown>; ok: boolean; summary: string }
 interface ReportCard { title: string; reportType: string; format: string; downloadPath: string }
@@ -12,6 +14,8 @@ interface Msg {
   text: string;
   tools?: ToolTrace[];
   cards?: ReportCard[];
+  /** §13.5 — drafted master-data rows awaiting a human Apply */
+  proposals?: Proposal[];
   at: Date;
   streaming?: boolean;
 }
@@ -66,6 +70,14 @@ export function AskAi() {
         return next;
       });
     });
+    socket.on("ai:proposal", (d: { proposal: Proposal }) => {
+      setMessages((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last?.role === "ai") next[next.length - 1] = { ...last, proposals: [...(last.proposals ?? []), d.proposal] };
+        return next;
+      });
+    });
     socket.on("ai:card", (d: { card: ReportCard }) => {
       setMessages((m) => {
         const next = [...m];
@@ -87,7 +99,9 @@ export function AskAi() {
             streaming: false,
             text: last.text.trim()
               ? last.text
-              : "The assistant finished without an answer. This usually means the model used its whole output budget; try a shorter question, or a lighter model on AI Settings.",
+              : (last.proposals ?? []).length > 0
+                ? ""
+                : "The assistant finished without an answer. This usually means the model used its whole output budget; try a shorter question, or a lighter model on AI Settings.",
           };
         }
         return next;
@@ -130,7 +144,10 @@ export function AskAi() {
             <div className="chat-head-name">Timetable Assistant</div>
             <div className="chat-head-sub">Answers only from this school's data · scope: {scopeName}</div>
           </div>
-          <span className="readonly-pill">🔒 reads the timetable, never changes it</span>
+          {/* Accurate for both roles since §13.5: the assistant still cannot
+              touch a lesson, and master data it drafts is written only by a
+              human pressing Apply. */}
+          <span className="readonly-pill">🔒 never changes the timetable · new master data needs your approval</span>
         </div>
 
         <div className="chat-body" ref={bodyRef}>
@@ -159,10 +176,20 @@ export function AskAi() {
                   ))}
                 </div>
               )}
-              {(m.text || !m.streaming) && <div className="bubble">{m.text}</div>}
+              {/* The assistant answers in Markdown — tables above all, since a
+                  class's week or a teacher's load IS a table. The user's own
+                  message is their literal text and stays unparsed. */}
+              {(m.text || !m.streaming) && (
+                <div className="bubble">
+                  {m.role === "ai" ? <Markdown text={m.text} /> : m.text}
+                </div>
+              )}
               {m.streaming && !m.text && (
                 <div className="bubble typing"><span /><span /><span /></div>
               )}
+              {m.proposals?.map((p, j) => (
+                <ProposalCard key={`p${j}`} proposal={p} onApplied={() => { /* the card owns its own applied state */ }} />
+              ))}
               {m.cards?.map((c, j) => (
                 <div key={j} className="report-chip">
                   <div className="report-chip-icon">{c.format.toUpperCase()}</div>

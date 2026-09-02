@@ -171,6 +171,11 @@ const BODY_FOR = (key, n, A) => ({
   "PUT /timetable-configs/:id": { name: `${P} G${n}`, periodsPerDay: 8 },
   "PUT /timetable-configs/:id/class-sections": { classSectionIds: [] },
   "PUT /timetable-configs/:id/structure": { startTime: "08:00", periodsPerDay: 4, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5] },
+  // §3.12 clone. The target session is the CALLER's own new year, so the only
+  // thing separating owner from stranger is whether they own the source
+  // timetable named in the path — which is exactly what this route must decide.
+  "POST /timetable-configs/:id/clone/preview": { name: `${P} Clone ${n}`, newYear: { name: `${P} CY${n}`, startDate: "2027-04-01", endDate: "2028-03-31" } },
+  "POST /timetable-configs/:id/clone": { name: `${P} Clone C${n}`, newYear: { name: `${P} CYC${n}`, startDate: "2027-04-01", endDate: "2028-03-31" } },
   // The board's real payload shapes, pointing at A's own fixture slots. A
   // malformed body is rejected before the config is ever looked up, so both
   // sessions would get the same 400 and the control would prove nothing.
@@ -191,6 +196,19 @@ const BODY_FOR = (key, n, A) => ({
     expectA: { subjectId: A.rows.subject.id, teacherId: A.rows.teacher.id },
     b: { classSectionId: A.rows.classSection.id, day: 2, period: 1 },
     expectB: { subjectId: A.rows.subject.id, teacherId: A.rows.teacher.id },
+  },
+  // §22 Phase 17 — draft registry. A draft id is not a capability: B must not
+  // reach A's drafts even knowing the number.
+  "GET /timetable-configs/:id/drafts": null,
+  "POST /timetable-configs/:id/drafts": { label: "sweep probe" },
+  "PUT /timetable-configs/:id/drafts/:draftId": { label: "renamed by sweep" },
+  "POST /timetable-configs/:id/drafts/:draftId/archive": { archived: true },
+  "POST /timetable-configs/:id/drafts/:draftId/recompute": {},
+  "DELETE /timetable-configs/:id/drafts/:draftId": null,
+  "POST /timetable-configs/:id/board/swap-group": {
+    from: { classSectionId: A.rows.classSection.id, day: 1, period: 1 },
+    expect: { subjectId: A.rows.subject.id, teacherId: A.rows.teacher.id },
+    to: { day: 2, period: 1 },
   },
   "POST /timetable-configs/:id/board/remove": {
     from: { classSectionId: A.rows.classSection.id, day: 2, period: 1 },
@@ -232,6 +250,25 @@ const NO_ID = {
   "POST /ai/explain-readiness": { how: "body", reason: "takes a configId in the body" },
   "POST /auth/switch-school": { how: "body", reason: "names a school the session was never granted" },
   "POST /import/dry-run": { how: "body", reason: "resolves names against the caller's school only" },
+
+  // §23 — the ERP sync takes NO id from the request: it reads the ERP with the
+  // session school's own code and writes through the scoped client. Covered by
+  // erp-sync-smoke.cjs step 13, which runs two schools against one stand-in ERP
+  // and asserts each sees, writes and logs only its own rows.
+  "POST /sync/erp/preview": { how: "effect", reason: "reads the ERP for the session's own school code — erp-sync-smoke.cjs step 13 proves two schools do not cross" },
+  "POST /sync/erp/apply": { how: "effect", reason: "writes only the session's own school — erp-sync-smoke.cjs step 13 proves two schools do not cross" },
+  "GET /sync/erp/logs": { how: "effect", reason: "the run history is read through the scoped client — erp-sync-smoke.cjs step 13 asserts B sees only B's runs" },
+  // No school id anywhere in these two: `status` counts through the scoped
+  // client and `reload` re-reads a file on disk. Neither takes a body.
+  "GET /sync/erp/status": { how: "effect", reason: "counts through the scoped client; no id in the request" },
+  "POST /sync/erp/reload": { how: "none", reason: "re-reads the deployment's endpoint file — server config, not school data" },
+
+  // §13.5 — AI data entry. `apply` takes a proposal id, and the stash it reads
+  // is keyed `s{schoolId}:aiproposal:*`, so another school's id is simply not
+  // found. Covered by ai-data-entry-smoke.cjs, which drafts in one school and
+  // tries to apply from the other.
+  "POST /ai/data-entry/apply": { how: "effect", reason: "proposal stash is school-keyed — ai-data-entry-smoke.cjs proves B cannot apply A's proposal" },
+  "GET /ai/data-entry/common-subjects": { how: "none", reason: "a static catalogue of subject names; carries no school data" },
 
   "PUT /school": { how: "effect", reason: "edits the session's own school row" },
   "PUT /ai/settings": { how: "effect", reason: "edits the session's own settings row" },
@@ -295,6 +332,9 @@ const LIST_NO_IDS = {
         prisma.substitutionLog.deleteMany({ where: { schoolId: school } }),
         prisma.teacherAbsence.deleteMany({ where: { schoolId: school } }),
         prisma.timetableSlot.deleteMany({ where: { schoolId: school } }),
+        // after the slots: the FK is RESTRICT, because `draft_id` is the base
+        // column of the generated `draft_scope` (§22.2)
+        prisma.timetableDraft.deleteMany({ where: { schoolId: school } }),
         prisma.timetablePublication.deleteMany({ where: { schoolId: school } }),
         prisma.teacherSubjectClassSection.deleteMany({ where: { schoolId: school } }),
         prisma.extraClass.deleteMany({ where: { schoolId: school } }),
@@ -396,7 +436,7 @@ const LIST_NO_IDS = {
       },
     });
     const curriculum = await prisma.classSubject.create({
-      data: { classId: cls.id, subjectId: subject.id, periodsPerWeek: 4, schoolId: id },
+      data: { classId: cls.id, academicYearId: year.id, subjectId: subject.id, periodsPerWeek: 4, schoolId: id },
     });
     const mapping = await prisma.teacherSubjectClassSection.create({
       data: { teacherId: teacher.id, subjectId: subject.id, classSectionId: classSection.id, periodsPerWeek: 4, schoolId: id },
@@ -432,15 +472,33 @@ const LIST_NO_IDS = {
     const notification = await prisma.notification.create({
       data: { userId: user.id, schoolId: id, type: "test", title: `${P} ${tag} note`, body: "x" },
     });
-    // One draft slot at Monday period 1. Without it the board's move/remove/
-    // lock/publish routes answer "nothing there" to *both* sessions, and a
-    // matching refusal on both sides is not evidence of scoping.
+    // Draft slots at Monday/Tuesday period 1. Without them the board's move/
+    // remove/lock/publish routes answer "nothing there" to *both* sessions, and
+    // a matching refusal on both sides is not evidence of scoping.
+    //
+    // §22 Phase 17: they hang off a real draft registry row, because that is
+    // how every write path in the app now builds a slot. Left with a NULL
+    // `draft_id` they fall outside the draft the board reads and the routes go
+    // back to refusing everyone — which is the fixture lying, not the app.
+    const draft = await prisma.timetableDraft.create({
+      data: { schoolId: id, timetableConfigId: config.id, draftNo: 1, label: `${P} ${tag} draft` },
+    });
     await prisma.timetableSlot.createMany({
       data: [[1, 1], [2, 1]].map(([day, period]) => ({
         schoolId: id, timetableConfigId: config.id, classSectionId: classSection.id,
         dayOfWeek: day, periodNumber: period, subjectId: subject.id, teacherId: teacher.id,
-        roomId: room.id, status: "draft", source: "manual",
+        roomId: room.id, status: "draft", draftId: draft.id, source: "manual",
       })),
+    });
+    // A published row as well, so `draft-from-published` has something real to
+    // copy for the owner. Without it that route answers "nothing published" to
+    // both sessions and proves nothing either.
+    await prisma.timetableSlot.create({
+      data: {
+        schoolId: id, timetableConfigId: config.id, classSectionId: classSection.id,
+        dayOfWeek: 3, periodNumber: 1, subjectId: subject.id, teacherId: teacher.id,
+        roomId: room.id, status: "published", source: "auto",
+      },
     });
     // One chat turn, so the AI history collections have rows to compare.
     await prisma.aiChatLog.create({
@@ -498,7 +556,7 @@ const LIST_NO_IDS = {
       }
       case "curriculum": {
         const cls = await prisma.schoolClass.create({ data: { schoolId: id, name: `${P} ${t} CU${n}`, sequence: n } });
-        return prisma.classSubject.create({ data: { classId: cls.id, subjectId: base.subject.id, periodsPerWeek: 3, schoolId: id } });
+        return prisma.classSubject.create({ data: { classId: cls.id, academicYearId: base.year.id, subjectId: base.subject.id, periodsPerWeek: 3, schoolId: id } });
       }
       case "mapping": {
         const cs = await freshRow(school, "classSection");
@@ -719,7 +777,7 @@ const LIST_NO_IDS = {
   console.log("\nA's ids smuggled through a request body are refused:");
   const bodyAttacks = [
     ["POST /class-subjects", "POST", "/class-subjects",
-      { classId: A.rows.class.id, subjectId: B.rows.subject.id, periodsPerWeek: 2 }],
+      { classId: A.rows.class.id, academicYearId: B.rows.year.id, subjectId: B.rows.subject.id, periodsPerWeek: 2 }],
     ["POST /mappings", "POST", "/mappings",
       { teacherId: B.rows.teacher.id, subjectId: B.rows.subject.id, classSectionId: A.rows.classSection.id, periodsPerWeek: 2 }],
     ["POST /merged-groups", "POST", "/merged-groups",
@@ -805,6 +863,12 @@ const LIST_NO_IDS = {
     getTimetableConfigs: {},
     listTeachers: {},
     listClassSections: {},
+    // §13.5 Phase C — the read that makes a mapping change draftable.
+    // Deliberately unfiltered: handing it A's employee code would return an
+    // empty list for B, and an empty answer proves nothing about scoping. Run
+    // wide open, B's answer is B's real mappings, class teachers and merged
+    // groups — so "none of A's" is a claim about data that actually came back.
+    listSubjectMappings: {},
     getClassSectionTimetable: { class_section_id: A.rows.classSection.id },
     getTeacherTimetable: { teacher_id: A.rows.teacher.id },
     getTeacherLoadSummary: {},
@@ -813,9 +877,20 @@ const LIST_NO_IDS = {
     getReadinessStatus: {},
     getSubstitutionHistory: { date_from: "2026-01-01", date_to: "2026-12-31" },
     generateReport: { report_type: "class_section", class_section_id: A.rows.classSection.id },
+    // §13.5 — the drafting tool. The dev seam builds its context with
+    // canWrite:false, so this must come back refused; the write path's own
+    // isolation is proved by ai-data-entry-smoke.cjs.
+    draftMasterData: { sheets: [{ sheet: "Subjects", rows: [{ name: "ZZSWP Probe Subject" }] }] },
   };
   const untested = toolNames.filter((n) => !(n in TOOL_ARGS));
   check(untested.length === 0, "every registered tool has a case here", untested.join(", ") || `${toolNames.length} tools`);
+
+  // draftMasterData runs here as B, an admin, and so produces a real proposal
+  // — for B's own school. That is the property this sweep tests: it must carry
+  // none of A's rows. The permission gate itself is asserted in
+  // ai-data-entry-smoke.cjs step 8, with a session that genuinely lacks
+  // masters.manage; asserting it here, where B is a Super Admin, would only
+  // ever have tested the wrong branch.
 
   const aNamesAll = [A.rows.room.name, A.rows.subject.name, A.rows.teacher.name, A.rows.class.name, A.rows.config.name];
   const bIds = new Set(Object.values(B.rows).map((r) => r?.id).filter((n) => typeof n === "number"));

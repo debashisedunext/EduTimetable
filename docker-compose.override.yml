@@ -53,6 +53,16 @@ services:
       # `scripts/dedicated-db-smoke.cjs`; the app never uses it directly — it
       # learns the URL from the tenant registry, which is the property tested.
       TENANT_B_DATABASE_URL: mysql://${MYSQL_B_USER:-branch_app}:${MYSQL_B_PASSWORD:-branch_dev_pw}@mysql-b:3306/${MYSQL_B_DATABASE:-edutimetable_branch}
+      # §23.6 — the stand-in ERP's REST API (the `erp-fake` service below), so
+      # the master-data sync can be exercised end to end without a real ERP.
+      # In a deployment these three point at the school's own ERP; nothing else
+      # changes, because the endpoints and field names live in the mapping file
+      # rather than in code.
+      ERP_API_BASE_URL: http://erp-fake:4010/api/v1
+      ERP_API_FILE: /app/scripts/erp-api.dev.json
+      # §23.8 — the OAuth2 client secret lives in the environment, never in the
+      # mapping file, which is committed.
+      ERP_API_CLIENT_SECRET: ${ERP_API_CLIENT_SECRET:-dev-erp-secret}
     # Merged with the base file's mysql/redis dependencies. The dev startup
     # runs `migrate:all`, which walks the registry — and once the 9.10 school
     # is registered that includes this server, so it has to be up (§17.3: a
@@ -83,6 +93,10 @@ services:
       CHOKIDAR_USEPOLLING: "1"
       TSC_WATCHFILE: DynamicPriorityPolling
       TENANT_B_DATABASE_URL: mysql://${MYSQL_B_USER:-branch_app}:${MYSQL_B_PASSWORD:-branch_dev_pw}@mysql-b:3306/${MYSQL_B_DATABASE:-edutimetable_branch}
+      # §23.6 / §23.8 — see the api service above.
+      ERP_API_BASE_URL: http://erp-fake:4010/api/v1
+      ERP_API_FILE: /app/scripts/erp-api.dev.json
+      ERP_API_CLIENT_SECRET: ${ERP_API_CLIENT_SECRET:-dev-erp-secret}
     volumes:
       - .:/app
       - node-modules:/app/node_modules
@@ -93,6 +107,40 @@ services:
     depends_on:
       api:
         condition: service_started
+
+  # §23.6 — a stand-in for the school ERP's REST API. Dev-only.
+  #
+  # A separate service on purpose: the app must reach its ERP over HTTP, from
+  # another container, with a token — the same shape as production. Serving it
+  # inside the api container would let a mapping bug hide behind localhost.
+  #
+  # Its storage is the `erp_fixture` database, which `seed-erp-fixture.cjs`
+  # builds. Only this service reads it; the app never touches it.
+  erp-fake:
+    image: edutimetable/api:dev
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    # Retries rather than sleeps: it needs MySQL up and the node_modules volume
+    # populated by the api container's install, and neither has a clean signal.
+    command: >
+      sh -c "until node /app/scripts/seed-erp-fixture.cjs; do
+               echo 'stand-in ERP: waiting for mysql and dependencies...'; sleep 3;
+             done &&
+             node /app/scripts/fake-erp-api.cjs"
+    environment:
+      ERP_DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-edutimetable_dev}@mysql:3306/${ERP_FIXTURE_DATABASE:-erp_fixture}
+      ERP_API_CLIENT_ID: ${ERP_API_CLIENT_ID:-edutimetable}
+      ERP_API_CLIENT_SECRET: ${ERP_API_CLIENT_SECRET:-dev-erp-secret}
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - .:/app
+      - node-modules:/app/node_modules
+      - api-node-modules:/app/apps/api/node_modules
+      - pnpm-store:/root/.local/share/pnpm/store
 
   optimizer:
     image: edutimetable/optimizer:dev

@@ -513,3 +513,61 @@ describe("Check 9 — fixed room assignment (§19)", () => {
     expect(runFeasibility(snap).blockers.filter((b) => b.code.startsWith("LAB_SUBJECT"))).toEqual([]);
   });
 });
+
+describe("Check 10 — minimum periods per day (§20)", () => {
+
+  it("a minimum that no whole number of days can reach is a blocker naming the fix", () => {
+    const snap = cleanSchool();
+    // T.English keeps 12 periods but may take only 5 a day, and must take at
+    // least 5 — 12 is neither 5 nor 10 nor 15.
+    const t = snap.teachers.find((x) => x.name === "T.English")!;
+    t.minPeriodsPerDay = 5;
+    t.maxPeriodsPerDay = 5;
+    for (const r of snap.subjectRequirements) if (r.subjectId === 300) r.maxPeriodsPerDay = 6;
+
+    const b = runFeasibility(snap).blockers.find((x) => x.code === "MIN_DAY_IMPOSSIBLE");
+    expect(b?.message).toContain("T.English");
+    expect(b?.message).toContain("12 periods/week");
+    expect(b?.fix).toContain("minimum periods/day to 4");
+  });
+
+  it("a load too small for the minimum is a warning, not a blocker — it is still solvable", () => {
+    const snap = cleanSchool();
+    // Split Art in two and cut it to 2 periods, so T.Art holds a single
+    // 2-period mapping: a minimum of 3 is simply more work than they have.
+    const art = snap.subjectRequirements.find((r) => r.subjectName === "Art")!;
+    art.periodsPerWeek = 2;
+    snap.teachers.push(teacher(106, "T.Art2", { eligibleClassIds: [5], minPeriodsPerDay: 3 }));
+    for (const m of snap.mappings) {
+      if (m.subjectName !== "Art") continue;
+      m.periodsPerWeek = 2;
+      if (m.classSectionId === 12) { m.teacherId = 106; m.teacherName = "T.Art2"; }
+    }
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+
+    const r = runFeasibility(snap);
+    expect(r.blockers.filter((b) => b.code === "MIN_DAY_IMPOSSIBLE")).toEqual([]);
+    const w = r.warnings.find((x) => x.code === "MIN_DAY_RELAXED");
+    expect(w?.message).toContain("T.Art");
+    expect(w?.message).toContain("3 → 2");
+    expect(w?.message).toContain("only 2 periods/week in total");
+  });
+
+  it("a teacher whose subjects cap them below their minimum is told which bound binds", () => {
+    const snap = schoolWithElective();
+    // The French option runs once a day at most, so three-period days are not
+    // a thing this teacher could ever have — the cap binds, not the load.
+    snap.teachers.find((t) => t.id === 201)!.minPeriodsPerDay = 3;
+    const w = runFeasibility(snap).warnings.find((x) => x.code === "MIN_DAY_RELAXED");
+    expect(w?.message).toContain("Mme Dubois");
+    expect(w?.message).toContain("at most 1 period(s) of their own subjects in a day");
+  });
+
+  it("the default minimum leaves a normally-staffed school clean", () => {
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3; // the app default
+    const r = runFeasibility(snap);
+    expect(r.blockers).toEqual([]);
+    expect(r.warnings.filter((w) => w.code.startsWith("MIN_DAY"))).toEqual([]);
+  });
+});

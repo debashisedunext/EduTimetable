@@ -10,6 +10,10 @@ export function teacher(id: number, name: string, over: Partial<SnapshotTeacher>
     id,
     name,
     maxPeriodsPerDay: 6,
+    // §20: fixtures opt in per test. The app's default is 3; leaving it at 1
+    // here keeps every pre-Phase-13 fixture measuring the check it was written
+    // for rather than tripping the new one.
+    minPeriodsPerDay: 1,
     maxPeriodsPerWeek: 30,
     classTeacherPeriodRule: "none",
     periodPattern: "every_period",
@@ -87,6 +91,14 @@ export function cleanSchool(): FeasibilitySnapshot {
     homeRoomBySection: { 11: 701, 12: 702 },
     labRoomsBySubject: {},
     roomNames: { 701: "Room 1", 702: "Room 2", 901: "Science Lab" },
+    // §21: remedies need to tell a classroom from a lab. Room 3 is spare on
+    // purpose — it is what a "give this section a home room" fix reaches for.
+    rooms: [
+      { id: 701, name: "Room 1", roomType: "classroom", capacity: 40, isShared: false, subjectIds: [] },
+      { id: 702, name: "Room 2", roomType: "classroom", capacity: 40, isShared: false, subjectIds: [] },
+      { id: 703, name: "Room 3", roomType: "classroom", capacity: 35, isShared: false, subjectIds: [] },
+      { id: 901, name: "Science Lab", roomType: "lab", capacity: 30, isShared: true, subjectIds: [] },
+    ],
   };
 }
 
@@ -117,6 +129,10 @@ export function schoolWithElective(): FeasibilitySnapshot {
       name: "Class 5 Third Language",
       periodsPerWeek: 2,
       maxPeriodsPerDay: 1,
+      // Phase 15 default: the solver still chooses, so every pre-Phase-15
+      // assertion in this fixture keeps measuring what it always measured.
+      placement: "solver",
+      fixedSlots: [],
       memberClassSectionIds: [11, 12],
       memberLabels: ["5-A", "5-B"],
       options: [

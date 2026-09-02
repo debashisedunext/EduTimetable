@@ -35,6 +35,7 @@ export class TeachersController {
       employeeCode: t.employeeCode,
       name: t.name,
       maxPeriodsPerDay: t.maxPeriodsPerDay,
+      minPeriodsPerDay: t.minPeriodsPerDay,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
       classTeacherPeriodRule: t.classTeacherPeriodRule,
       periodPattern: t.periodPattern,
@@ -64,6 +65,7 @@ export class TeachersController {
             name: String(body.name),
             employeeCode: String(body.employeeCode),
             maxPeriodsPerDay: body.maxPeriodsPerDay != null ? toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") : 6,
+            minPeriodsPerDay: body.minPeriodsPerDay != null ? toInt(body.minPeriodsPerDay, "minPeriodsPerDay") : 3,
             maxPeriodsPerWeek: body.maxPeriodsPerWeek != null ? toInt(body.maxPeriodsPerWeek, "maxPeriodsPerWeek") : 30,
             classTeacherPeriodRule: body.classTeacherPeriodRule ?? "none",
             periodPattern: body.periodPattern ?? "every_period",
@@ -91,6 +93,7 @@ export class TeachersController {
             ...(body.name !== undefined ? { name: String(body.name) } : {}),
             ...(body.employeeCode !== undefined ? { employeeCode: String(body.employeeCode) } : {}),
             ...(body.maxPeriodsPerDay !== undefined ? { maxPeriodsPerDay: toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") } : {}),
+            ...(body.minPeriodsPerDay !== undefined ? { minPeriodsPerDay: toInt(body.minPeriodsPerDay, "minPeriodsPerDay") } : {}),
             ...(body.maxPeriodsPerWeek !== undefined ? { maxPeriodsPerWeek: toInt(body.maxPeriodsPerWeek, "maxPeriodsPerWeek") } : {}),
             ...(body.classTeacherPeriodRule !== undefined ? { classTeacherPeriodRule: body.classTeacherPeriodRule } : {}),
             ...(body.periodPattern !== undefined ? { periodPattern: body.periodPattern } : {}),
@@ -168,6 +171,18 @@ export class TeachersController {
   }
 
   private validateRules(body: any) {
+    // §20: the floor cannot sit above the ceiling. Caught here rather than left
+    // to the solver, where it would surface as an unexplainable dead end.
+    if (body.minPeriodsPerDay !== undefined) {
+      const min = toInt(body.minPeriodsPerDay, "minPeriodsPerDay");
+      if (min < 0) throw new BadRequestException("minPeriodsPerDay cannot be negative");
+      const max = body.maxPeriodsPerDay !== undefined ? toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") : null;
+      if (max !== null && min > max) {
+        throw new BadRequestException(
+          `minPeriodsPerDay (${min}) cannot exceed maxPeriodsPerDay (${max}) — a day cannot need more periods than it can hold.`,
+        );
+      }
+    }
     if (body.employmentType !== undefined && !ENGAGEMENTS.includes(body.employmentType)) {
       throw new BadRequestException(`employmentType must be one of ${ENGAGEMENTS.join(", ")}`);
     }

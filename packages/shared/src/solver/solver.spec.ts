@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runFeasibility } from "../feasibility/engine";
+import { effectiveMinByTeacher, minDayPlan } from "../feasibility/min-day";
 import { cleanSchool, schoolWithElective, teacher } from "../feasibility/fixtures";
 import type { FeasibilitySnapshot } from "../feasibility/types";
 import { solveTimetable } from "./engine";
@@ -62,10 +63,15 @@ function assertValid(input: SolverInput, result: SolverResult) {
     }
   }
 
+  const minByTeacher = effectiveMinByTeacher(input.snapshot);
   for (const [k, n] of teacherDay) {
     const tid = Number(k.split("@")[0]);
     const t = teacherByIdx.get(tid)!;
     expect(n, `teacher ${t.name} daily max on ${k}`).toBeLessThanOrEqual(t.maxPeriodsPerDay);
+    // §20: a day is free or it is a proper day. `n` only exists for days that
+    // got something, so every entry here has to clear the minimum. A no-op for
+    // fixtures that leave the minimum at 1, which is most of them.
+    expect(n, `teacher ${t.name} daily minimum on ${k}`).toBeGreaterThanOrEqual(minByTeacher.get(tid) ?? 1);
   }
   const reqBy = new Map(
     input.snapshot.subjectRequirements.map((r) => [`${r.classId}:${r.subjectId}`, r]),
@@ -245,7 +251,7 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
       config: { id: 1, name: "Big School", workingDays: [1, 2, 3, 4, 5], periodsPerDay: perDay, daySegments: [4, 4] },
       classSections: [], subjectRequirements: [], teachers: [], mappings: [],
       mergedGroups: [], electiveBlocks: [], crossConfigTeacherLoad: {}, labRoomCount: 0, labSubjectIds: [],
-      homeRoomBySection: {}, labRoomsBySubject: {}, roomNames: {},
+      homeRoomBySection: {}, labRoomsBySubject: {}, roomNames: {}, rooms: [],
     };
     let csId = 1, mapId = 1, tId = 1;
     for (let c = 1; c <= classes; c++) {
@@ -357,6 +363,146 @@ describe("split electives (§4.9)", () => {
 
 });
 
+/**
+ * §4.9 Phase 15 — placement. Every assertion here is about a cell the solver
+ * was NOT allowed to consider, which is why it is checked against the result
+ * rather than against the variable list: pruning that quietly failed to prune
+ * would still produce a plausible timetable.
+ */
+describe("split elective placement (§4.9, Phase 15)", () => {
+  it("a fixed block lands on exactly the cells the school named", () => {
+    const snap = schoolWithElective();
+    const block = snap.electiveBlocks[0];
+    block.placement = "fixed";
+    block.fixedSlots = [
+      { day: 2, period: 3 },
+      { day: 4, period: 3 },
+    ];
+    expect(runFeasibility(snap).ready, "a well-formed pin must not make the school infeasible").toBe(true);
+
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const placed = result.placements
+      .filter((p) => p.electiveBlockId === 7)
+      .map((p) => `${p.day}:${p.period}`)
+      .sort();
+    expect(placed).toEqual(["2:3", "4:3"]);
+  });
+
+  it("same_period holds every occurrence to one period number, on different days", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].placement = "same_period";
+    expect(runFeasibility(snap).ready).toBe(true);
+
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const block = result.placements.filter((p) => p.electiveBlockId === 7);
+    expect(block).toHaveLength(2);
+    expect(new Set(block.map((p) => p.period)).size, "one period number").toBe(1);
+    expect(new Set(block.map((p) => p.day)).size, "different days").toBe(2);
+  });
+
+  it("a pin on a day an option teacher cannot work is refused by Phase A, not discovered by the solver", () => {
+    const snap = schoolWithElective();
+    const block = snap.electiveBlocks[0];
+    block.placement = "fixed";
+    block.fixedSlots = [
+      { day: 2, period: 3 },
+      { day: 4, period: 3 },
+    ];
+    // Hr. Bauer is out on Thursday. Every option runs at once, so the whole
+    // block comes off Thursday with him.
+    snap.teachers.find((t) => t.id === 203)!.unavailableFullDays = [4];
+
+    const result = runFeasibility(snap);
+    expect(result.ready).toBe(false);
+    const issue = result.blockers.find((b) => b.code === "ELECTIVE_PIN_UNAVAILABLE");
+    expect(issue?.message).toMatch(/Hr\. Bauer .* does not work Thu/);
+    // §21: the remedy hands the block back to the solver — it never moves the
+    // block to a day nobody chose, and never touches who teaches it.
+    expect(issue?.remedy?.kind).toBe("relax");
+    expect(issue?.remedy?.changes).toEqual([
+      { op: "set", entity: "electiveBlock", id: 7, field: "placement", from: "fixed", to: "solver" },
+    ]);
+  });
+
+  it("counts the pins: too few is a blocker naming how many are missing", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].placement = "fixed";
+    snap.electiveBlocks[0].fixedSlots = [{ day: 2, period: 3 }];
+
+    const issue = runFeasibility(snap).blockers.find((b) => b.code === "ELECTIVE_PIN_COUNT");
+    expect(issue?.message).toMatch(/needs 2 periods\/week but 1 slot\(s\) have been fixed/);
+    expect(issue?.fix).toMatch(/Choose 1 more slot/);
+  });
+
+  it("a cell outside the timetable is named, not silently dropped", () => {
+    const snap = schoolWithElective();
+    snap.electiveBlocks[0].placement = "fixed";
+    snap.electiveBlocks[0].fixedSlots = [
+      { day: 6, period: 3 }, // Saturday — not a working day here
+      { day: 2, period: 99 }, // beyond the day
+    ];
+
+    const codes = runFeasibility(snap).blockers.filter((b) => b.code === "ELECTIVE_PIN_INVALID");
+    expect(codes).toHaveLength(2);
+    expect(codes[0].message).toMatch(/Sat period 3, which is not a teaching slot/);
+  });
+
+  it("two blocks pinned to one cell only clash when they actually share something", () => {
+    const base = () => {
+      const snap = schoolWithElective();
+      const a = snap.electiveBlocks[0];
+      a.placement = "fixed";
+      a.fixedSlots = [
+        { day: 2, period: 3 },
+        { day: 4, period: 3 },
+      ];
+      return snap;
+    };
+
+    // A second block for the same sections, pinned to the same cell: 5-A
+    // cannot be in two places, so this is a clash.
+    const clashing = base();
+    clashing.electiveBlocks.push({
+      ...clashing.electiveBlocks[0],
+      id: 8,
+      name: "Class 5 Activity",
+      fixedSlots: [{ day: 2, period: 3 }],
+      periodsPerWeek: 1,
+    });
+    const clash = runFeasibility(clashing).blockers.find((b) => b.code === "ELECTIVE_PIN_CLASH");
+    expect(clash?.message).toMatch(/5-A attends both/);
+
+    // The same cell for a block sharing no section, teacher or room is fine —
+    // two grades running their languages at once is normal, and a check that
+    // flagged it would make pinning unusable.
+    const fine = base();
+    fine.electiveBlocks.push({
+      ...fine.electiveBlocks[0],
+      id: 9,
+      name: "Class 6 Third Language",
+      memberClassSectionIds: [],
+      memberLabels: [],
+      periodsPerWeek: 1,
+      fixedSlots: [{ day: 2, period: 3 }],
+      options: fine.electiveBlocks[0].options.map((o, i) => ({
+        ...o,
+        id: 900 + i,
+        teacherId: 900 + i,
+        roomId: 910 + i,
+      })),
+    });
+    expect(runFeasibility(fine).blockers.some((b) => b.code === "ELECTIVE_PIN_CLASH")).toBe(false);
+  });
+});
+
 describe("fixed rooms (§19)", () => {
   it("every ordinary lesson is placed in its own class-section's room", () => {
     const snap = cleanSchool();
@@ -401,5 +547,109 @@ describe("fixed rooms (§19)", () => {
     for (const p of result.placements.filter((x) => x.subjectId === 302)) {
       expect(p.roomId).toBe(902);
     }
+  });
+});
+
+describe("minimum periods per day (§20)", () => {
+  /** Days each teacher actually works, from a finished result. */
+  const daysWorkedBy = (result: SolverResult) => {
+    const out = new Map<number, Map<number, number>>();
+    for (const p of result.placements) {
+      for (const t of p.options.length > 0 ? p.options.map((o) => o.teacherId) : [p.teacherId!]) {
+        const days = out.get(t) ?? new Map<number, number>();
+        days.set(p.day, (days.get(p.day) ?? 0) + p.span);
+        out.set(t, days);
+      }
+    }
+    return out;
+  };
+
+  it("no teacher gets a one- or two-period day when their minimum is 3 (§20)", () => {
+    const snap = cleanSchool();
+    // 12 periods each, cap 6/day, but two sections x max 2/day means at most 4
+    // a day — so the week has to land as 3+3+3+3 or 4+4+4, never 3+3+2+2+2.
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+    const input = inputFor(snap);
+    expect(runFeasibility(snap).ready).toBe(true);
+
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result); // asserts the minimum on every teacher-day
+    expect(result.stats.shortTeacherDays).toBe(0);
+
+    for (const [teacherId, days] of daysWorkedBy(result)) {
+      for (const [day, n] of days) {
+        expect(n, `teacher ${teacherId} on day ${day}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it("the same school without the rule is free to fragment — the rule is what fixes it", () => {
+    // Guards against the test above passing for an unrelated reason: with the
+    // minimum off, this fixture really does produce short days.
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.minPeriodsPerDay = 1;
+    const result = solveTimetable(inputFor(snap));
+    const short = [...daysWorkedBy(result).values()].flatMap((d) => [...d.values()]).filter((n) => n < 3);
+    expect(short.length).toBeGreaterThan(0);
+  });
+
+  it("a light load is concentrated into whole days rather than spread thin (§20)", () => {
+    const snap = cleanSchool();
+    // Hand 5-B's Art to a second pair of hands: 6 periods, max 2/day, so the
+    // only shapes that clear a minimum of 3 are 3+3 or 4+2... and 4 is over the
+    // subject's own daily cap, leaving exactly two days of 3.
+    const art = snap.mappings.find((m) => m.subjectName === "Art" && m.classSectionId === 12)!;
+    snap.teachers.push(teacher(106, "T.Art2", { eligibleClassIds: [5], minPeriodsPerDay: 3 }));
+    art.teacherId = 106;
+    art.teacherName = "T.Art2";
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+
+    const input = inputFor(snap);
+    expect(runFeasibility(snap).blockers).toEqual([]);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+    expect(daysWorkedBy(result).get(106)!.size).toBe(3); // 6 periods, 2/day cap
+  });
+
+  it("a teacher whose subjects cap them at one period a day is left alone (§20)", () => {
+    // The elective option teachers take 2 block periods a week, one a day at
+    // most — so three-period days are arithmetically impossible and the rule
+    // must relax rather than make the timetable unsolvable.
+    const snap = schoolWithElective();
+    for (const t of snap.teachers) if (t.id >= 201) t.minPeriodsPerDay = 3;
+    const mins = effectiveMinByTeacher(snap);
+    expect(mins.get(201)).toBe(1);
+
+    const input = inputFor(snap);
+    expect(runFeasibility(snap).blockers).toEqual([]);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+  });
+
+  it("a complete timetable beats a well-shaped one when both are not available (§20)", () => {
+    // Every section 100% full, every subject capped at 2/day, AND every teacher
+    // needing whole days is over-determined. The solver must not answer with a
+    // timetable that is missing lessons — it drops the minimum and says so.
+    const snap = schoolWithElective();
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+    const input = inputFor(snap);
+    const result = solveTimetable(input, { budgetMs: 12_000 });
+    expect(result.unplaced, "completeness comes first").toEqual([]);
+    // The shape it could not reach is reported rather than silently dropped.
+    expect(result.stats.shortTeacherDays).toBeGreaterThan(0);
+  }, 40_000);
+
+  it("minDayPlan: the arithmetic of whole days", () => {
+    // 12 periods, min 3, cap 4 -> 3 or 4 days, both fine
+    expect(minDayPlan(3, 12, 4, 5)).toMatchObject({ effectiveMin: 3, minDays: 3, maxDays: 4, feasible: true });
+    // 2 periods in the whole week: one 2-period day, not two 1-period days
+    expect(minDayPlan(3, 2, 6, 5)).toMatchObject({ effectiveMin: 2, relaxedBy: "weekly-load", feasible: true });
+    // 5 periods with a cap of 3 cannot be cut into days of 3..3
+    expect(minDayPlan(3, 5, 3, 5)).toMatchObject({ feasible: false });
+    // and the load simply does not fit the days available
+    expect(minDayPlan(3, 30, 4, 5)).toMatchObject({ feasible: false });
   });
 });

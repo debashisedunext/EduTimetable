@@ -35,6 +35,13 @@ export interface AskParams {
 export interface AskEvents {
   onDelta: (text: string) => void;
   onTool: (t: { name: string; args: Record<string, unknown>; ok: boolean; summary: string }) => void;
+  /**
+   * §13.5 — a drafted master-data proposal. Streamed to the client as its own
+   * event rather than left inside the tool trace: the Apply button needs the
+   * counts, the issues and the proposal id, and digging those out of a JSON
+   * blob rendered for debugging would make the trace load-bearing.
+   */
+  onProposal: (p: Record<string, unknown>) => void;
   onCard: (card: Record<string, unknown>) => void;
 }
 
@@ -50,9 +57,23 @@ function systemPrompt(p: AskParams): string {
     "- If the tools do not contain the answer, say plainly what you do not have and which detail you would need. Never invent it.",
     "- If a tool returns an error about permissions or scope, tell the user that data is outside their access — do not try other tools to work around it.",
     "",
-    "CAPABILITY — you are read-only:",
+    "CAPABILITY:",
     "- You can query and explain the timetable, and generate the standard reports.",
-    "- You can NEVER place, move, swap, publish or delete a slot, and never change master data. If asked, explain that placement is done by the solver and the Draft Board, and point the user there.",
+    "- You can NEVER place, move, swap, publish or delete a slot, and never delete or change anything that exists. If asked, explain that placement is done by the solver and the Draft Board, and point the user there.",
+    p.permissions.includes(PERMISSIONS.MASTERS_MANAGE)
+      ? [
+          "- You CAN draft master data (classes, sections, subjects, teachers, curriculum, class teachers, subject mappings) with draftMasterData — both NEW rows and CHANGES to existing ones.",
+          "  To change something, send its key plus only the fields that move: {employeeCode:'EDX-1042', maxPeriodsPerWeek:24}. Omitted fields are left alone, so never send a whole record to change one value.",
+          "  A natural key cannot be changed — renaming a class or a subject creates a different one. Say so rather than attempting it.",
+          "  Subject Mapping is keyed by (subject, class-section), so moving a subject to a different teacher IS a change there. Call listSubjectMappings first and send back the stored Periods/Week unchanged — it is a required column, and a guessed number rewrites it too.",
+          "  A merged group's teacher and its member sections are part of what identifies it, so neither can be changed; say so and point to the Teacher Mapping screen.",
+          "  You do not write it: the tool validates the rows and returns a preview, and the admin presses Apply. Say so — never claim you have added anything.",
+          "  Send related sheets in ONE call: a class and its sections belong in the same draft, or the sections reference a class that does not exist yet.",
+          "  NEVER invent a required value. If periods per week, an employee code, a section list or the academic year is not stated, ASK — a plausible invented number is worse than a question.",
+          "  Before drafting, check what exists (listClassSections, listTeachers) so you can tell the user what is already there rather than proposing a duplicate.",
+          "  After drafting, read back the counts and any problems the tool reported, and tell the user to press Apply.",
+        ].join("\n")
+      : "- You can NEVER add or change master data. If asked, point the user to the Setup Wizard or Import from Excel.",
     "",
     "STYLE:",
     "- Be brief and concrete. Lead with the answer, then the supporting detail.",
@@ -109,8 +130,16 @@ export class AiChatService {
       schoolId: p.schoolId,
       scope: p.scope,
       canReport: p.permissions.includes(PERMISSIONS.AI_REPORTS),
+      canWrite: p.permissions.includes(PERMISSIONS.MASTERS_MANAGE),
+      userId: p.userId,
     };
-    const toolDefs = TOOL_DEFS.filter((t) => t.name !== "generateReport" || ctx.canReport);
+    const toolDefs = TOOL_DEFS.filter(
+      (t) =>
+        (t.name !== "generateReport" || ctx.canReport) &&
+        // §13.5 — a user without `masters.manage` is never even shown the
+        // drafting tool, so the model cannot offer what they may not do.
+        (t.name !== "draftMasterData" || ctx.canWrite),
+    );
 
     const messages: LlmMessage[] = [
       ...(await this.history(p.conversationId, p.schoolId)),
@@ -162,6 +191,9 @@ export class AiChatService {
           payload = await this.tools.execute(call.name, args, ctx, p.timetableConfigId);
           if (payload && typeof payload === "object" && (payload as any).reportCard) {
             events.onCard(payload as Record<string, unknown>);
+          }
+          if (call.name === "draftMasterData" && payload && typeof payload === "object") {
+            events.onProposal(payload as Record<string, unknown>);
           }
         } catch (e) {
           ok = false;

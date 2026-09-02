@@ -229,7 +229,18 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       roomId: o.roomId,
     }));
     const teacherIds = options.map((o) => o.teacherId);
+    const free = domainFor(teacherIds, 1, b.memberClassSectionIds);
+    // §4.9 Phase 15 — placement is DOMAIN PRUNING, never a preference score
+    // (invariant 2). A pinned occurrence is handed exactly the cell the school
+    // named, intersected with what its option teachers can actually work: if
+    // that intersection is empty the block will not place, and the feasibility
+    // engine has already said so by name rather than letting it fail here.
+    const pins = b.placement === "fixed" ? b.fixedSlots : [];
     for (let i = 0; i < b.periodsPerWeek; i++) {
+      const pin = pins[i];
+      const domain = pin
+        ? free.filter((c) => c.day === pin.day && c.period === pin.period)
+        : free;
       vars.push({
         id: nextId++,
         classSectionIds: b.memberClassSectionIds,
@@ -251,9 +262,12 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         labRoomIds: [],
         homeRoomId: null,
         preferredRoomId: null,
-        samePeriodKey: null,
+        // `same_period` reuses the §4.6 same-period-across-week machinery: the
+        // first occurrence to be placed fixes the period number, and every
+        // later one must match it. Nothing new in the state machine.
+        samePeriodKey: b.placement === "same_period" ? `B${b.id}` : null,
         maxPerDay: Math.min(b.maxPeriodsPerDay, perDay),
-        domain: domainFor(teacherIds, 1, b.memberClassSectionIds),
+        domain,
       });
     }
   }

@@ -34,6 +34,7 @@ interface SlotRow {
   teacherId: number | null;
   roomId: number | null;
   mergedGroupId: number | null;
+  draftId: number | null;
   electiveBlockId: number | null;
   electiveOptionId: number | null;
   teacherOccupancyKey: string | null;
@@ -46,9 +47,16 @@ export async function writeDraftSlots(
   placements: Placement[],
   /** Stamped onto every row: school_id is NOT NULL on timetable_slots (9.1 / §17). */
   schoolId: number,
+  /**
+   * §22 Phase 17 — which named draft this generation writes into. Every delete
+   * and every insert below is scoped to it, so generating Draft #4 cannot
+   * touch a word of Draft #2. Null only for a config that predates the
+   * registry, which the migration should have made impossible.
+   */
+  draftId: number | null = null,
 ): Promise<{ rows: number }> {
   const rows: SlotRow[] = [];
-  const base = { schoolId, timetableConfigId: configId, status: "draft" as const, source: "auto" as const };
+  const base = { schoolId, timetableConfigId: configId, status: "draft" as const, source: "auto" as const, draftId };
 
   for (const p of placements) {
     for (let s = 0; s < p.span; s++) {
@@ -123,6 +131,9 @@ export async function writeDraftSlots(
       where: {
         timetableConfigId: configId,
         status: "draft",
+        // §22: only THIS draft's rows. Generating Draft #4 must not touch a
+        // word of Draft #2 — that is the whole point of having both.
+        ...(draftId !== null ? { draftId } : {}),
         isLocked: false,
         // §18 extra classes survive a re-generation. They are not part of what
         // the solver produced, they sit outside the teaching day it works in,

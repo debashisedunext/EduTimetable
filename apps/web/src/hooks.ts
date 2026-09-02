@@ -45,6 +45,14 @@ export interface TimetableConfigSummary {
   status: string;
   classSections: string[];
   breaks: { name: string | null; startTime: string; endTime: string }[];
+  /** Every row of the day in order, breaks included — what §4.7a's grid draws. */
+  periods?: {
+    periodNumber: number | null;
+    startTime: string;
+    endTime: string;
+    isBreak: boolean;
+    breakName: string | null;
+  }[];
 }
 
 interface ConfigCtx {

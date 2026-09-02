@@ -3,6 +3,7 @@
  * engine, many call sites: the solver search uses it during placement, and
  * Phase 3's drag-drop legality/"suggest legal moves" reuse the same checks.
  */
+import { effectiveMinByTeacher } from "../feasibility/min-day";
 import type { SolverInput, SolverVariable } from "./types";
 import { buildTeacherCtx, cellKey, type TeacherCtx } from "./variables";
 
@@ -32,6 +33,31 @@ export interface CheckResult {
   blockers: number[];
 }
 
+/** How many teacher-periods each teacher still has left to place (§20). */
+export function teacherPeriodBudget(vars: SolverVariable[]): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const v of vars) {
+    for (const t of teachersOf(v)) out.set(t, (out.get(t) ?? 0) + v.span);
+  }
+  return out;
+}
+
+export interface SolverStateOptions {
+  /**
+   * §20 — enables the minimum-periods-per-day rule, and supplies the work it
+   * has to budget against: teacher → periods still to be placed.
+   *
+   * The rule is "a day is free or carries at least N", which no single
+   * placement can break — adding a lesson only ever helps. What it can break
+   * is the *ability to finish*: opening a fourth day for a teacher with two
+   * lessons left strands both of the days they have already started. So the
+   * check is a budget, and it needs to know how much work is left; a state
+   * built for the drag-drop board has none left, which is why the board uses
+   * the same rule in its own form rather than passing a budget here.
+   */
+  minPerDayBudget?: Map<number, number>;
+}
+
 export class SolverState {
   readonly teacherCtx: Map<number, TeacherCtx>;
   private section = new Map<string, number>(); // `${cs}@${d}:${p}` -> varId
@@ -41,17 +67,28 @@ export class SolverState {
   private teacherDay = new Map<string, number>(); // `${t}@${d}` -> count
   private samePeriod = new Map<string, { period: number; count: number }>();
   readonly labRoomIds: number[];
+  /** §20: teacher -> the minimum a *started* day of theirs must reach. */
+  readonly minPerDay: Map<number, number>;
+  /** §20: teacher -> periods still to place. Undefined = rule not enforced. */
+  private readonly budget: Map<number, number> | null;
+  /** §20: teacher -> Σ over started days of (minimum − periods placed). */
+  private shortfall = new Map<number, number>();
 
-  constructor(private readonly input: SolverInput) {
+  constructor(
+    private readonly input: SolverInput,
+    opts: SolverStateOptions = {},
+  ) {
     this.teacherCtx = buildTeacherCtx(input);
     this.labRoomIds = input.labRoomIds;
+    this.minPerDay = effectiveMinByTeacher(input.snapshot);
+    this.budget = opts.minPerDayBudget ? new Map(opts.minPerDayBudget) : null;
     // §7.4: locked cells occupy state before search begins (varId 0 = locked)
     for (const l of input.lockedSlots) {
       this.section.set(`${l.classSectionId}@${cellKey(l.dayOfWeek, l.periodNumber)}`, 0);
       this.teacher.set(`${l.teacherId}@${cellKey(l.dayOfWeek, l.periodNumber)}`, 0);
       if (l.roomId !== null) this.room.set(`${l.roomId}@${cellKey(l.dayOfWeek, l.periodNumber)}`, 0);
       this.bump(this.subjDay, `${l.classSectionId}:S${l.subjectId}@${l.dayOfWeek}`, 1);
-      this.bump(this.teacherDay, `${l.teacherId}@${l.dayOfWeek}`, 1);
+      this.bumpTeacherDay(l.teacherId, l.dayOfWeek, 1);
     }
   }
 
@@ -59,6 +96,49 @@ export class SolverState {
     const next = (map.get(key) ?? 0) + delta;
     if (next <= 0) map.delete(key);
     else map.set(key, next);
+  }
+
+  /** How far short of the minimum a day would sit at `count` periods. */
+  private shortOf(min: number, count: number): number {
+    return count > 0 ? Math.max(0, min - count) : 0;
+  }
+
+  /**
+   * The one place a teacher's day-count moves, so the §20 shortfall stays in
+   * step with it rather than being recomputed over seven days on every check.
+   */
+  private bumpTeacherDay(teacherId: number, day: number, delta: number) {
+    const key = `${teacherId}@${day}`;
+    const before = this.teacherDay.get(key) ?? 0;
+    const after = before + delta;
+    this.bump(this.teacherDay, key, delta);
+    const min = this.minPerDay.get(teacherId) ?? 0;
+    if (min > 1) {
+      const next = (this.shortfall.get(teacherId) ?? 0) + this.shortOf(min, after) - this.shortOf(min, before);
+      if (next === 0) this.shortfall.delete(teacherId);
+      else this.shortfall.set(teacherId, next);
+    }
+    if (this.budget) this.budget.set(teacherId, (this.budget.get(teacherId) ?? 0) - delta);
+  }
+
+  /**
+   * §20 — would this placement leave the teacher unable to fill every day they
+   * have started?
+   *
+   * Days already begun can never go back to empty during a forward search, so
+   * the periods still owed to them (`shortfall`) must fit inside the periods
+   * still to be placed (`budget`). When they no longer do, no completion of
+   * this branch satisfies the rule, and the search should turn back here
+   * rather than discover it 400 placements later.
+   */
+  private strandsShortDay(teacherId: number, day: number, span: number): boolean {
+    if (!this.budget) return false;
+    const min = this.minPerDay.get(teacherId) ?? 0;
+    if (min <= 1) return false;
+    const before = this.teacherDay.get(`${teacherId}@${day}`) ?? 0;
+    const shortfall =
+      (this.shortfall.get(teacherId) ?? 0) + this.shortOf(min, before + span) - this.shortOf(min, before);
+    return shortfall > (this.budget.get(teacherId) ?? 0) - span;
   }
 
   /** All ten §5.1 hard checks for placing `v` at (day, period..period+span-1). */
@@ -117,6 +197,13 @@ export class SolverState {
         if (used + v.span > info.maxPeriodsPerDay) {
           return { ok: false, roomId: null, reason: "teacher daily max", blockers };
         }
+      }
+
+      // constraint 11 — teacher daily *minimum* (§20). The floor to go with the
+      // cap above: this value would commit the teacher to more days than the
+      // work they have left can fill.
+      if (this.strandsShortDay(t, day, v.span)) {
+        return { ok: false, roomId: null, reason: "teacher daily minimum", blockers };
       }
     }
 
@@ -203,7 +290,7 @@ export class SolverState {
       if (roomId !== null) this.room.set(`${roomId}@${ck}`, v.id);
     }
     for (const cs of v.classSectionIds) this.bump(this.subjDay, `${cs}:${v.dayKey}@${day}`, v.span);
-    for (const t of teacherIds) this.bump(this.teacherDay, `${t}@${day}`, v.span);
+    for (const t of teacherIds) this.bumpTeacherDay(t, day, v.span);
     if (v.samePeriodKey) {
       const cur = this.samePeriod.get(v.samePeriodKey);
       if (cur) cur.count++;
@@ -221,7 +308,7 @@ export class SolverState {
       if (roomId !== null) this.room.delete(`${roomId}@${ck}`);
     }
     for (const cs of v.classSectionIds) this.bump(this.subjDay, `${cs}:${v.dayKey}@${day}`, -v.span);
-    for (const t of teacherIds) this.bump(this.teacherDay, `${t}@${day}`, -v.span);
+    for (const t of teacherIds) this.bumpTeacherDay(t, day, -v.span);
     if (v.samePeriodKey) {
       const cur = this.samePeriod.get(v.samePeriodKey);
       if (cur && --cur.count <= 0) this.samePeriod.delete(v.samePeriodKey);
@@ -232,7 +319,50 @@ export class SolverState {
   sectionDayLoad(csId: number, dayKey: string, day: number): number {
     return this.subjDay.get(`${csId}:${dayKey}@${day}`) ?? 0;
   }
+  /** Is this teacher already placed in this cell? (§7 board messages.) */
+  teacherBusy(teacherId: number, day: number, period: number): boolean {
+    return this.teacher.has(`${teacherId}@${cellKey(day, period)}`);
+  }
+
+  /** Is this room already claimed in this cell? (§7 board messages.) */
+  roomBusy(roomId: number, day: number, period: number): boolean {
+    return this.room.has(`${roomId}@${cellKey(day, period)}`);
+  }
+
   teacherDayLoad(teacherId: number, day: number): number {
     return this.teacherDay.get(`${teacherId}@${day}`) ?? 0;
+  }
+  /** §20: the minimum a started day must reach for this teacher (1 = no rule). */
+  minPerDayOf(teacherId: number): number {
+    return this.minPerDay.get(teacherId) ?? 1;
+  }
+
+  /**
+   * §20: how many periods short of their minimums every started day is, added
+   * up. The gradient the consolidation pass descends — `shortDays().length`
+   * alone cannot tell a one-period Tuesday from a two-period one.
+   */
+  totalShortfall(): number {
+    let sum = 0;
+    for (const [key, count] of this.teacherDay) {
+      const min = this.minPerDay.get(Number(key.split("@")[0])) ?? 1;
+      if (count > 0 && count < min) sum += min - count;
+    }
+    return sum;
+  }
+
+  /**
+   * §20 audit: every (teacher, day) that ended up below the teacher's minimum
+   * without being empty. Zero rows is the guarantee the whole rule exists for;
+   * the solver checks it after search and the tests assert on it.
+   */
+  shortDays(): Array<{ teacherId: number; day: number; periods: number; min: number }> {
+    const out: Array<{ teacherId: number; day: number; periods: number; min: number }> = [];
+    for (const [key, count] of this.teacherDay) {
+      const [t, d] = key.split("@").map(Number);
+      const min = this.minPerDay.get(t) ?? 1;
+      if (count > 0 && count < min) out.push({ teacherId: t, day: d, periods: count, min });
+    }
+    return out;
   }
 }

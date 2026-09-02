@@ -50,6 +50,23 @@ export interface SheetDef {
 export const YES_NO = ["Yes", "No"] as const;
 export const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 export const DAY_VALUES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+/** §4.9 Phase 15 — the Electives sheet's `When` column, in a person's words. */
+export const PLACEMENT_VALUES = ["Solver chooses", "Same period every day", "Fixed slots"] as const;
+
+const PLACEMENT_BY_LABEL: Record<string, "solver" | "same_period" | "fixed"> = {
+  "solver chooses": "solver",
+  "same period every day": "same_period",
+  "fixed slots": "fixed",
+};
+
+/** Workbook text → the stored value. Unrecognised (and blank) means `solver`,
+ *  the default that changes nothing — never a guess at a stricter rule. */
+export const placementFromLabel = (v: unknown): "solver" | "same_period" | "fixed" =>
+  PLACEMENT_BY_LABEL[String(v ?? "").trim().toLowerCase()] ?? "solver";
+
+export const placementToLabel = (v: string): string =>
+  v === "same_period" ? "Same period every day" : v === "fixed" ? "Fixed slots" : "Solver chooses";
 export const ROOM_TYPES = ["classroom", "lab", "sports", "music", "art", "auditorium", "other"] as const;
 export const CT_RULES = ["none", "always_first_period", "random"] as const;
 export const PATTERNS = ["every_period", "alternate_period", "alternate_day"] as const;
@@ -136,6 +153,7 @@ export const SHEETS: SheetDef[] = [
       { header: "Employee Code", key: "employeeCode", type: "string", required: true, maxLength: 20, width: 16, help: "Unique per school, e.g. EDX-1042", sample: ["e.g. EDX-1042"] },
       { header: "Name", key: "name", type: "string", required: true, maxLength: 100, width: 22, help: "Full name", sample: ["Rekha Sharma"] },
       { header: "Max Periods/Day", key: "maxPeriodsPerDay", type: "int", min: 1, max: 12, width: 15, help: "Defaults to 6", sample: [6] },
+      { header: "Min Periods/Day", key: "minPeriodsPerDay", type: "int", min: 0, max: 12, width: 15, help: "Defaults to 3. A working day carries at least this many periods — the teacher is either in for a proper day or not in at all. Set 0 or 1 to switch the rule off for this teacher", sample: [3] },
       { header: "Max Periods/Week", key: "maxPeriodsPerWeek", type: "int", min: 1, max: 60, width: 16, help: "Defaults to 30", sample: [30] },
       { header: "Class-Teacher Rule", key: "classTeacherPeriodRule", type: "enum", values: CT_RULES, aliases: { "always first period": "always_first_period" }, width: 20, help: "always_first_period = takes P1 of their own class every day, and never P1 elsewhere", sample: ["none"] },
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
@@ -162,10 +180,14 @@ export const SHEETS: SheetDef[] = [
     name: "Curriculum",
     title: "Curriculum (class ↔ subject)",
     help: "How many periods of each subject a class takes per week. This is what the solver has to place.",
-    keyLabel: "Class + Subject",
-    naturalKey: ["className", "subjectName"],
+    keyLabel: "Class + Subject + Year",
+    naturalKey: ["className", "subjectName", "academicYear"],
     columns: [
       { header: "Class Name", key: "className", type: "string", required: true, maxLength: 20, refSheet: "Classes", width: 18, help: "Must exist on the Classes sheet or already in the system", sample: ["e.g. Class 5"] },
+      // Phase 19: the curriculum is per session. Required rather than inferred
+      // from the active year — this sheet loads hundreds of rows at once, so a
+      // wrong guess here files a whole syllabus against the wrong session.
+      { header: "Academic Year", key: "academicYear", type: "string", required: true, maxLength: 20, refSheet: "Academic Years", width: 16, help: "Which session this syllabus is for. Must exist on the Academic Years sheet or already in the system", sample: ["2026-27"] },
       { header: "Subject Name", key: "subjectName", type: "string", required: true, maxLength: 50, refSheet: "Subjects", width: 20, help: "Must exist on the Subjects sheet or already in the system", sample: ["Mathematics"] },
       { header: "Periods/Week", key: "periodsPerWeek", type: "int", required: true, min: 1, max: 20, width: 14, help: "Cannot exceed the timetable's weekly capacity", sample: [6] },
       { header: "Max Periods/Day", key: "maxPeriodsPerDay", type: "int", min: 1, max: 12, width: 16, help: "Defaults to 1", sample: [1] },
@@ -215,6 +237,8 @@ export const SHEETS: SheetDef[] = [
       { header: "Option Subject", key: "subjectName", type: "string", required: true, maxLength: 50, refSheet: "Subjects", width: 20, help: "One of the choices, e.g. French", sample: ["French"] },
       { header: "Option Teacher", key: "employeeCode", type: "string", required: true, maxLength: 20, refSheet: "Teachers", width: 22, help: "Who teaches this option. Each option needs a different teacher — they all teach at once", sample: ["EDX-1042"] },
       { header: "Option Room", key: "room", type: "string", required: true, maxLength: 50, refSheet: "Rooms", width: 18, help: "Where this option meets. Each option needs a different room", sample: ["Lang 1"] },
+      { header: "When", key: "placement", type: "enum", values: PLACEMENT_VALUES, width: 18, help: "Blank or 'Solver chooses' = placed wherever it fits. 'Same period every day' holds it to one period number. 'Fixed slots' uses the next column", sample: ["Solver chooses"] },
+      { header: "Fixed Slots", key: "fixedSlots", type: "string", maxLength: 100, width: 24, help: "Only with When = Fixed slots. One per period/week, e.g. Mon P4, Wed P4, Fri P4", sample: [""] },
     ],
   },
 ];

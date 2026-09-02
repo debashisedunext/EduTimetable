@@ -29,6 +29,11 @@ const NAV: NavGroup[] = [
       { label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
+      // §23 — the same pipeline, with the ERP as its source instead of a file.
+      { label: "Sync from ERP", to: "/sync", requires: PERMISSIONS.MASTERS_MANAGE },
+      { label: "Split Electives", to: "/electives", requires: PERMISSIONS.MASTERS_MANAGE },
+      // §4.7a — the rule the solver has always enforced, finally sayable.
+      { label: "Teacher Availability", to: "/availability", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
       { label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
     ],
@@ -85,6 +90,9 @@ const TITLES: Record<string, [string, string]> = {
   "/": ["Build", "Timetables"],
   "/setup": ["Build", "Setup Wizard"],
   "/import": ["Build", "Import Master Data"],
+  "/sync": ["Build", "Sync Masters from the ERP"],
+  "/electives": ["Build", "Split Electives"],
+  "/availability": ["Build", "Teacher Availability"],
   "/readiness": ["Build", "Readiness Dashboard"],
   "/generate": ["Build", "Generate Timetable"],
   "/matrix": ["Manage", "Full Allocation Matrix"],

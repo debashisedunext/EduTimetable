@@ -5,6 +5,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import type { FeasibilitySnapshot, SolverInput } from "@edutimetable/shared";
+import { parsePins } from "@edutimetable/shared";
 import { daySegmentsFromRows } from "../masters/structure.util";
 
 export async function buildFeasibilitySnapshot(
@@ -26,8 +27,12 @@ export async function buildFeasibilitySnapshot(
 
   const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects] =
     await Promise.all([
+      // Phase 19: the curriculum is year-scoped, and this filter is what keeps
+      // it so. `variables.ts` keys requirements by `classId:subjectId` in a
+      // plain Map — two years' rows reaching the snapshot would collapse to
+      // whichever loaded last, silently timetabling the wrong syllabus.
       prisma.classSubject.findMany({
-        where: { classId: { in: classIds } },
+        where: { classId: { in: classIds }, academicYearId: config.academicYearId },
         include: { subject: true },
       }),
       prisma.teacherSubjectClassSection.findMany({
@@ -71,10 +76,19 @@ export async function buildFeasibilitySnapshot(
     }
 
   // §3.10: a teacher's load in OTHER configs counts toward their capacity here.
+  //
+  // Phase 19: other configs *in the same academic year*. Next year's teaching
+  // does not consume this year's capacity, and without the year filter rolling
+  // a school into a new session double-counted every teacher — Check 2 then
+  // failed across the board and a freshly cloned timetable read as hopelessly
+  // overloaded before anyone had touched it.
   const crossRows = await prisma.teacherSubjectClassSection.findMany({
     where: {
       teacherId: { in: teachers.map((t) => t.id) },
-      classSection: { timetableConfigId: { not: configId } },
+      classSection: {
+        timetableConfigId: { not: configId },
+        academicYearId: config.academicYearId,
+      },
     },
     include: { classSection: { include: { timetableConfig: true } } },
   });
@@ -128,6 +142,7 @@ export async function buildFeasibilitySnapshot(
       id: t.id,
       name: t.name,
       maxPeriodsPerDay: t.maxPeriodsPerDay,
+      minPeriodsPerDay: t.minPeriodsPerDay,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
       classTeacherPeriodRule: t.classTeacherPeriodRule,
       periodPattern: t.periodPattern,
@@ -162,6 +177,10 @@ export async function buildFeasibilitySnapshot(
       name: b.name,
       periodsPerWeek: b.periodsPerWeek,
       maxPeriodsPerDay: b.maxPeriodsPerDay,
+      placement: b.placement,
+      // Only meaningful under `fixed`; carrying it regardless would let a
+      // stale pin quietly narrow a block the school has since set free.
+      fixedSlots: b.placement === "fixed" ? parsePins(b.fixedSlots) : [],
       memberClassSectionIds: b.members.map((m) => m.classSectionId),
       memberLabels: b.members.map(
         (m) => `${m.classSection.class.name}-${m.classSection.section.name}`,
@@ -182,10 +201,28 @@ export async function buildFeasibilitySnapshot(
     homeRoomBySection: Object.fromEntries(classSections.map((cs) => [cs.id, cs.homeRoomId])),
     labRoomsBySubject,
     roomNames: Object.fromEntries(allRooms.map((r) => [r.id, r.name])),
+    // §21: a remedy that hands a class-section a free room has to be able to
+    // tell a classroom from a lab, which `roomNames` cannot.
+    rooms: allRooms.map((r) => ({
+      id: r.id,
+      name: r.name,
+      roomType: r.roomType,
+      capacity: r.capacity,
+      isShared: r.isShared,
+      subjectIds: r.subjects.map((x) => x.subjectId),
+    })),
   };
 }
 
-export async function buildSolverInput(prisma: PrismaClient, configId: number): Promise<SolverInput> {
+export async function buildSolverInput(
+  prisma: PrismaClient,
+  configId: number,
+  /**
+   * §22 — which draft's locked cells count as fixed. Omitted means every one,
+   * which is only correct for a config that has no named drafts at all.
+   */
+  draftId?: number | null,
+): Promise<SolverInput> {
   const snapshot = await buildFeasibilitySnapshot(prisma, configId);
   const sectionIds = snapshot.classSections.map((c) => c.id);
   const [unavail, labRooms, mappingsWithRooms, groups, locked] = await Promise.all([
@@ -201,8 +238,16 @@ export async function buildSolverInput(prisma: PrismaClient, configId: number): 
       where: { members: { some: { classSectionId: { in: sectionIds } } } },
       select: { id: true, roomId: true },
     }),
+    // §22: locked cells belong to ONE draft. Unscoped, generating Draft #4
+    // would treat Draft #2's pinned cells as fixed — invariant 13 applied
+    // across a boundary it was never meant to cross.
     prisma.timetableSlot.findMany({
-      where: { timetableConfigId: configId, status: "draft", isLocked: true },
+      where: {
+        timetableConfigId: configId,
+        status: "draft",
+        isLocked: true,
+        ...(draftId !== undefined && draftId !== null ? { draftId } : {}),
+      },
     }),
   ]);
   return {

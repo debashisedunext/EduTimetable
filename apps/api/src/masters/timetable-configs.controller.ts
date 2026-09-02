@@ -3,6 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { CloneService } from "./clone.service";
 import { buildPeriodRows } from "./structure.util";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
@@ -11,6 +12,7 @@ export class TimetableConfigsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly clone: CloneService,
   ) {}
 
   /** Landing screen list — visible to anyone who can generate or manage. */
@@ -196,6 +198,29 @@ export class TimetableConfigsController {
     ]);
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true, count: ids.length };
+  }
+
+  /**
+   * §3.12 — what cloning this timetable into another session would do, without
+   * doing any of it. Creates nothing, not even the target academic year.
+   */
+  @Post(":id/clone/preview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async clonePreview(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    requireFields(body, ["name"]);
+    return this.clone.plan(req.user.schoolId, toInt(id, "id"), { ...body, name: String(body.name) });
+  }
+
+  /**
+   * §3.12 — do it. The plan is recomputed server-side from the database; the
+   * request names the source and the target session and nothing else, so a
+   * stale or doctored preview can never become the list of writes.
+   */
+  @Post(":id/clone")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async cloneCommit(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    requireFields(body, ["name"]);
+    return this.clone.commit(req.user.schoolId, toInt(id, "id"), { ...body, name: String(body.name) });
   }
 
   @Delete(":id")

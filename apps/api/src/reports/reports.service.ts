@@ -23,6 +23,15 @@ export interface GridCell {
   substituted: boolean;
   isBreak?: boolean;
   breakName?: string | null;
+  /**
+   * §4.9 — a split-elective cell. The section's own row carries no subject,
+   * teacher or room by design (invariant 9): the lessons are the block's
+   * option rows, which belong to no section. Without these two fields the
+   * cell reads as a free period on every screen that shows a class's week —
+   * the report, My Classes, the printed timetable and the AI assistant.
+   */
+  blockName?: string | null;
+  electiveOptions?: Array<{ subject: string | null; teacher: string | null; room: string | null; substituted: boolean }>;
 }
 
 function scopedSectionIds(scope: ViewScope): number[] | "all" | "none" {
@@ -98,19 +107,71 @@ export class ReportsService {
       const slots = await this.prisma.timetableSlot.findMany({
         where: { classSectionId, status: "published" },
       });
-      const subs = await this.subsFor(date, slots.map((s) => s.id));
+      // §4.9: the section's elective rows are placeholders holding the slot
+      // open. The lessons running inside it are the block's option rows, which
+      // carry `class_section_id = NULL` and so are not in `slots` at all. Read
+      // the real rows rather than the block's configured options, so a covered
+      // option shows its substitute and a moved option its actual room.
+      const blockIds = [...new Set(slots.map((s) => s.electiveBlockId).filter((x): x is number => x !== null))];
+      const optionSlots = blockIds.length
+        ? await this.prisma.timetableSlot.findMany({
+            where: { electiveBlockId: { in: blockIds }, classSectionId: null, status: "published" },
+          })
+        : [];
+      const blockNames = new Map(
+        blockIds.length
+          ? (await this.prisma.electiveBlock.findMany({ where: { id: { in: blockIds } }, select: { id: true, name: true } })).map((b) => [b.id, b.name])
+          : [],
+      );
+      const all = [...slots, ...optionSlots];
+      const subs = await this.subsFor(date, all.map((s) => s.id));
       const teacherNames = await this.names([
-        ...new Set([...slots.map((s) => s.teacherId).filter((x): x is number => x !== null), ...subs.values()]),
+        ...new Set([...all.map((s) => s.teacherId).filter((x): x is number => x !== null), ...subs.values()]),
       ]);
       const subjects = new Map(
-        (await this.prisma.subject.findMany({ where: { id: { in: slots.map((s) => s.subjectId).filter((x): x is number => x !== null) } } })).map((s) => [s.id, s.name]),
+        (await this.prisma.subject.findMany({ where: { id: { in: all.map((s) => s.subjectId).filter((x): x is number => x !== null) } } })).map((s) => [s.id, s.name]),
       );
       const rooms = new Map(
-        (await this.prisma.room.findMany({ where: { id: { in: slots.map((s) => s.roomId).filter((x): x is number => x !== null) } } })).map((r) => [r.id, r.name]),
+        (await this.prisma.room.findMany({ where: { id: { in: all.map((s) => s.roomId).filter((x): x is number => x !== null) } } })).map((r) => [r.id, r.name]),
       );
+      const optionsAt = new Map<string, typeof optionSlots>();
+      for (const o of optionSlots) {
+        const k = `${o.electiveBlockId}:${o.dayOfWeek}:${o.periodNumber}`;
+        const at = optionsAt.get(k);
+        if (at) at.push(o);
+        else optionsAt.set(k, [o]);
+      }
       const grid: Record<string, GridCell> = {};
       for (const s of slots) {
         const sub = subs.get(s.id.toString());
+        if (s.electiveBlockId !== null) {
+          const opts = (optionsAt.get(`${s.electiveBlockId}:${s.dayOfWeek}:${s.periodNumber}`) ?? [])
+            .map((o) => {
+              const oSub = subs.get(o.id.toString());
+              return {
+                subject: o.subjectId !== null ? (subjects.get(o.subjectId) ?? null) : null,
+                teacher: teacherNames.get(oSub ?? o.teacherId ?? -1) ?? null,
+                room: o.roomId !== null ? (rooms.get(o.roomId) ?? null) : null,
+                substituted: oSub !== undefined,
+              };
+            })
+            .sort((a, b) => (a.subject ?? "").localeCompare(b.subject ?? ""));
+          const blockName = blockNames.get(s.electiveBlockId) ?? "Elective";
+          grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
+            period: s.periodNumber,
+            // `subject` carries the block name so every existing consumer —
+            // exports, the AI assistant, anything reading the flat cell —
+            // says "Third Language" instead of nothing.
+            subject: blockName,
+            teacher: null,
+            room: null,
+            classSection: null,
+            substituted: opts.some((o) => o.substituted),
+            blockName,
+            electiveOptions: opts,
+          };
+          continue;
+        }
         grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
           period: s.periodNumber,
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,

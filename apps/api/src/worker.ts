@@ -21,7 +21,7 @@ import { buildSolverInput } from "./solver/input";
 import { TenantContextService } from "./tenant/tenant-context.service";
 import { withSchoolScope } from "./prisma/school-scope";
 import { StandaloneTenantClients } from "./prisma/standalone-tenant-client";
-import { slotsKey } from "./redis/cache-keys";
+import { configSlotsKeyPattern, scanDel } from "./redis/cache-keys";
 import { withFairScheduling } from "./solver/fair-scheduling";
 import { optimizeWithCpSat, type OptimizeOutcome } from "./solver/optimize";
 import { writeDraftSlots } from "./solver/writer";
@@ -145,7 +145,24 @@ async function solve(
   tenantId: number | null,
   prisma: PrismaClient,
 ) {
-  const input = await buildSolverInput(prisma, configId);
+  // §22 Phase 17 — the generation writes into ONE named draft. The id rides on
+  // the job so the worker never has to guess which; a job queued before Phase
+  // 17 carries none and falls back to the config's current draft.
+  //
+  // Resolved BEFORE the solver input is built: the input carries the locked
+  // cells the search must treat as fixed, and those belong to this draft
+  // alone. Built without it, generating Draft #4 would pin Draft #2's cells.
+  const draftId: number | null =
+    typeof job.data.draftId === "number"
+      ? job.data.draftId
+      : (
+          await prisma.timetableDraft.findFirst({
+            where: { timetableConfigId: configId, status: "draft" },
+            orderBy: { draftNo: "desc" },
+            select: { id: true },
+          })
+        )?.id ?? null;
+  const input = await buildSolverInput(prisma, configId, draftId);
 
   // Phase A gate (§1 design thesis): the solver only runs on proven-feasible input.
   const feasibility = runFeasibility(input.snapshot);
@@ -201,11 +218,44 @@ async function solve(
   }
   const after = scoreTimetable(input, placements, variables, weights);
 
-  const { rows } = await writeDraftSlots(prisma, configId, placements, schoolId);
-  await redis.del(slotsKey(schoolId, configId, "draft"));
+  const { rows } = await writeDraftSlots(prisma, configId, placements, schoolId, draftId);
+  // §22: the payload is cached per draft (`…:draft:d7`) and the board context
+  // per draft too, so deleting one fixed key would leave the week the solver
+  // just rewrote on screen. The worker has no Nest context, so it sweeps the
+  // config's prefix directly — the same shape `CacheKeysService` uses.
+  await scanDel(redis, configSlotsKeyPattern(schoolId, configId));
+
+  // §22.3 — stamp the numbers the school will compare drafts on, straight
+  // after the write. Reading them off the registry row is what keeps the Draft
+  // Board off a 2,000-row count per render (§14).
+  if (draftId !== null) {
+    const placed = await prisma.timetableSlot.count({
+      where: { timetableConfigId: configId, status: "draft", draftId, classSectionId: { not: null }, source: { not: "extra" } },
+    });
+    const required = runFeasibility(input.snapshot).stats.totalRequiredSlots;
+    await prisma.timetableDraft.update({
+      where: { id: draftId },
+      data: {
+        requiredLessons: required,
+        placedLessons: placed,
+        generationPct: required > 0 ? Math.round((placed / required) * 10000) / 100 : 0,
+        // 0 by construction right after a solve unless something went unplaced
+        errorCount: result.unplaced.length,
+        // §20 short teacher-days — advisory, never blocking
+        warningCount: result.stats.shortTeacherDays ?? 0,
+        lockedCount: await prisma.timetableSlot.count({
+          where: { timetableConfigId: configId, status: "draft", draftId, isLocked: true },
+        }),
+        manualCount: 0,
+        solverStats: result.stats as never,
+        generatedAt: new Date(),
+      },
+    });
+  }
 
   const summary = {
     configId,
+    draftId,
     // echoed so the API's solver-completed listener knows whose school to
     // open a context for — and which database to open it against — before
     // writing the notification (9.1 / §17, 9.4 / §17.5)
@@ -230,7 +280,7 @@ async function solve(
     },
   };
   console.log(
-    `[worker] solver job ${job.id} done [${mode}]: ${summary.placedVariables}/${summary.totalVariables} vars, ${rows} slot rows, ${result.unplaced.length} unplaced, ${result.stats.ms}ms · objective ${before.weighted}→${after.weighted} (${optimization.detail})`,
+    `[worker] solver job ${job.id} done [${mode}]: ${summary.placedVariables}/${summary.totalVariables} vars, ${rows} slot rows, ${result.unplaced.length} unplaced, ${result.stats.shortTeacherDays} short teacher-days (consolidation cleared ${result.stats.consolidatedDays}), ${result.stats.ms}ms · objective ${before.weighted}→${after.weighted} (${optimization.detail})`,
   );
   return summary;
 }

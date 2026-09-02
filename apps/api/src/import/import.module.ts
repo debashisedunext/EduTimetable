@@ -7,5 +7,8 @@ import { ImportService } from "./import.service";
 @Module({
   controllers: [ImportController],
   providers: [ImportService, ReadinessService],
+  // §13.5 — the AI data-entry path is a third source into this same
+  // pipeline, so it reuses the service rather than growing a second one.
+  exports: [ImportService],
 })
 export class ImportModule {}

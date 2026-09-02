@@ -7,9 +7,12 @@ import type {
   FeasibilityIssue,
   FeasibilityResult,
   FeasibilitySnapshot,
+  SnapshotElectiveBlock,
   SnapshotSubjectRequirement,
   SnapshotTeacher,
 } from "./types";
+import { largestFeasibleMin, minDayPlan, teacherAvailableDays, teacherDailyCap, teacherDailyReach } from "./min-day";
+import { alternatingDays, dayList, loadByTeacher, pickFreeRoom, pickLabForSubject, pickTeacher, remedy } from "./remedy";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -99,6 +102,13 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  /** §21: remedies in the teacher loop need a section's class. */
+  const classOfSectionForRemedy = new Map(snap.classSections.map((cs) => [cs.id, cs.classId]));
+  /** §20: the most periods each teacher's own subjects could put in one day. */
+  const dailyReach = teacherDailyReach(snap);
+  /** §20 teachers whose minimum cannot be met as written — reported as one row. */
+  const minRelaxed: Array<{ id: number; name: string; declared: number; effective: number; why: string }> = [];
+
   for (const t of snap.teachers) {
     const localDemand = demandByTeacher.get(t.id) ?? 0;
     const cross = snap.crossConfigTeacherLoad[t.id];
@@ -121,6 +131,37 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         fix: biggest
           ? `Reassign [${biggest.classSectionLabel} ${biggest.subjectName}: ${biggest.periodsPerWeek} periods] to another teacher, or raise ${t.name}'s max load.`
           : `Reduce ${t.name}'s assignments or raise their max load.`,
+        // §21: move work off them until they fit, smallest mapping first, so
+        // the least teaching changes hands. Raising the cap instead is the
+        // *other* half of the printed fix and is deliberately not offered
+        // here — it is a `relax`, it lands in 14.2, and it would let one
+        // button take any school to 100 by making the limit meaningless.
+        ...(() => {
+          const over = demand - capacity;
+          const held = snap.mappings
+            .filter((m) => m.teacherId === t.id)
+            .sort((a, b) => a.periodsPerWeek - b.periodsPerWeek);
+          const changes = [];
+          const names: string[] = [];
+          const pending = new Map<number, number>();
+          let shed = 0;
+          for (const m of held) {
+            if (shed >= over) break;
+            const classId = classOfSectionForRemedy.get(m.classSectionId);
+            if (classId === undefined) continue;
+            const pick = pickTeacher(snap, { classId, periods: m.periodsPerWeek, exclude: [t.id], pending });
+            if (!pick) continue;
+            pending.set(pick.teacher.id, (pending.get(pick.teacher.id) ?? 0) + m.periodsPerWeek);
+            shed += m.periodsPerWeek;
+            names.push(`${m.classSectionLabel} ${m.subjectName} (${m.periodsPerWeek}) → ${pick.teacher.name}`);
+            changes.push({ op: "set" as const, entity: "mapping" as const, id: m.id, field: "teacherId", from: t.id, to: pick.teacher.id });
+          }
+          // Partly shedding the load leaves the teacher still overloaded — a
+          // fix that does not fix it is worse than none, so it is all or none.
+          return shed >= over && changes.length > 0
+            ? { remedy: remedy("redistribute", `Move ${names.join(", ")} — ${t.name} drops to ${demand - shed}/${capacity}`, changes) }
+            : {};
+        })(),
       });
     } else if (capacity > 0 && demand / capacity >= 0.9) {
       // ---------- Check 4b — tightness score (§4.4) ----------
@@ -152,8 +193,92 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${t.name}'s ${localDemand} periods/week over ${spreadDays} day(s) force at least ${minMaxDaily} periods on some day, but their daily cap is ${dailyCap}.`,
         entity: { type: "teacher", id: t.id, label: t.name },
         fix: `Spread ${t.name}'s load across more teachers, or raise their daily max.`,
+        // §21 relax: give them the day they actually need. Bounded by the day
+        // itself and — for an alternate-period teacher, who must leave a gap
+        // between lessons — by every other period of it: past that the number
+        // is not what is stopping them, so raising it would fix nothing.
+        ...(() => {
+          const patternCap =
+            t.periodPattern === "alternate_period" ? Math.floor((perDay + 1) / 2) : perDay;
+          if (minMaxDaily > patternCap) return {};
+          return {
+            remedy: remedy(
+              "relax",
+              `Raise ${t.name}'s maximum periods/day from ${t.maxPeriodsPerDay} to ${minMaxDaily}`,
+              [{ op: "set" as const, entity: "teacher" as const, id: t.id, field: "maxPeriodsPerDay", from: t.maxPeriodsPerDay, to: minMaxDaily }],
+            ),
+          };
+        })(),
       });
     }
+
+    // ---------- Check 10 — minimum periods per day (§20) ----------
+    // The mirror of the pigeonhole check above: that one asks whether the load
+    // can be spread thinly enough, this one whether it can be packed densely
+    // enough. A day is either free or carries at least the minimum, so the
+    // load has to divide into whole days of [minimum, daily cap].
+    if (localDemand > 0 && t.minPeriodsPerDay > 1) {
+      const availableDays = teacherAvailableDays(t, snap.config.workingDays).length;
+      const cap = teacherDailyCap(t, perDay, dailyReach.get(t.id));
+      const plan = minDayPlan(t.minPeriodsPerDay, localDemand, cap, availableDays);
+      if (!plan.feasible) {
+        issues.push({
+          code: "MIN_DAY_IMPOSSIBLE",
+          severity: "blocker",
+          message:
+            plan.minDays > availableDays
+              ? `${t.name}'s ${localDemand} periods/week need at least ${plan.minDays} working days, but only ${availableDays} are available to them.`
+              : `${t.name} has ${localDemand} periods/week, a minimum of ${plan.effectiveMin}/day and a maximum of ${cap}/day — no whole number of days adds up to ${localDemand} within those bounds.`,
+          entity: { type: "teacher", id: t.id, label: t.name },
+          fix: `Set ${t.name}'s minimum periods/day to ${Math.max(1, plan.effectiveMin - 1)}, raise their daily maximum, or change their weekly load.`,
+          ...(() => {
+            // §21 relax: the largest minimum this load can actually keep.
+            const target = largestFeasibleMin(localDemand, cap, availableDays, plan.effectiveMin - 1);
+            return target > 0 && target < t.minPeriodsPerDay
+              ? { remedy: remedy("relax", `Lower ${t.name}'s minimum periods/day from ${t.minPeriodsPerDay} to ${target}`, [
+                  { op: "set" as const, entity: "teacher" as const, id: t.id, field: "minPeriodsPerDay", from: t.minPeriodsPerDay, to: target },
+                ]) }
+              : {};
+          })(),
+        });
+      } else if (plan.relaxedBy) {
+        minRelaxed.push({
+          id: t.id,
+          name: t.name,
+          declared: plan.declared,
+          effective: plan.effectiveMin,
+          why:
+            plan.relaxedBy === "weekly-load"
+              ? `only ${localDemand} periods/week in total`
+              : `at most ${cap} period(s) of their own subjects in a day`,
+        });
+      }
+    }
+  }
+
+  if (minRelaxed.length > 0) {
+    const first = minRelaxed.slice(0, 3);
+    issues.push({
+      code: "MIN_DAY_RELAXED",
+      severity: "warning",
+      message: `${minRelaxed.length} teacher(s) cannot reach their minimum periods/day: ${first
+        .map((r) => `${r.name} (${r.declared} → ${r.effective}, ${r.why})`)
+        .join("; ")}${minRelaxed.length > 3 ? `, and ${minRelaxed.length - 3} more` : ""}. Their days will be as full as their load allows.`,
+      entity: { type: "config", id: snap.config.id, label: snap.config.name },
+      fix: "Give these teachers more periods, or lower their minimum to match the work they actually have.",
+      // §21 relax: write down the minimum each of them can actually keep. This
+      // changes no timetable — the solver already uses the effective value
+      // (§20) — it only stops the record claiming a rule the school cannot
+      // honour. Still a `relax`, because it is a stated policy being lowered.
+      remedy: remedy(
+        "relax",
+        `Lower the minimum periods/day of ${minRelaxed.length} teacher(s) to what their load allows`,
+        minRelaxed.map((r) => ({
+          op: "set" as const, entity: "teacher" as const, id: r.id,
+          field: "minPeriodsPerDay", from: r.declared, to: r.effective,
+        })),
+      ),
+    });
   }
 
   // ---------- Check 3 — daily distribution & block feasibility (§4.3, §4.8) ----------
@@ -172,6 +297,14 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
             message: `${r.subjectName} (Class ${classLabel}) is set to the same period every day, but needs ${r.periodsPerWeek} periods in a ${days}-day week.`,
             entity: { type: "class_subject", id: r.id, label: `${classLabel} · ${r.subjectName}` },
             fix: `Reduce to ≤ ${days} periods/week or turn off same-period-across-week.`,
+            // §21 relax: drop the rule, not the periods. Cutting periods/week
+            // would change what the children are taught to satisfy a
+            // scheduling preference, which is the wrong way round.
+            remedy: remedy(
+              "relax",
+              `Turn off same-period-across-week for ${r.subjectName} (Class ${classLabel})`,
+              [{ op: "set", entity: "classSubject", id: r.id, field: "samePeriodAcrossWeek", from: true, to: false }],
+            ),
           });
         } else if (r.periodsPerWeek < days) {
           issues.push({
@@ -202,6 +335,24 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${t.name} teaches ${m.subjectName} in ${m.classSectionLabel} as ${req.consecutiveBlockSize}-period blocks, but their alternate-period pattern forbids adjacent periods — contradictory configuration.`,
         entity: { type: "mapping", id: m.id, label: `${m.classSectionLabel} · ${m.subjectName}` },
         fix: `Assign a different teacher for ${m.subjectName} in ${m.classSectionLabel}, or remove the block/pattern rule.`,
+        // §21: move the teaching, never the rule. Clearing the teacher's
+        // alternate-period pattern would fix this row by changing a working
+        // condition somebody agreed to — a redistribute is the honest answer.
+        ...(() => {
+          const pick = cs
+            ? pickTeacher(snap, {
+                classId: cs.classId,
+                periods: m.periodsPerWeek,
+                exclude: [m.teacherId],
+                allowPattern: (x) => x.periodPattern !== "alternate_period",
+              })
+            : null;
+          return pick
+            ? { remedy: remedy("redistribute", `Give ${m.classSectionLabel} ${m.subjectName} to ${pick.teacher.name}`, [
+                { op: "set" as const, entity: "mapping" as const, id: m.id, field: "teacherId", from: m.teacherId, to: pick.teacher.id },
+              ]) }
+            : {};
+        })(),
       });
     }
   }
@@ -226,6 +377,37 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
               : `${r.subjectName} in ${cs.label} has only ${covered} of ${r.periodsPerWeek} periods/week mapped to a teacher.`,
           entity: { type: "class_section", id: cs.id, label: `${cs.label} · ${r.subjectName}` },
           fix: `Add a Subject Mapping for ${r.subjectName} in ${cs.label} covering ${r.periodsPerWeek - covered} periods/week.`,
+          // §21: two different shapes of the same shortfall.
+          //   - Nobody is mapped at all → find a teacher and create the row.
+          //   - Somebody covers part of it → top up what they already hold,
+          //     rather than splitting one subject between two people, which
+          //     is a staffing decision nobody asked the software to make.
+          ...(() => {
+            const short = r.periodsPerWeek - covered;
+            const existing = snap.mappings
+              .filter((m) => m.classSectionId === cs.id && m.subjectId === r.subjectId)
+              .sort((a, b) => b.periodsPerWeek - a.periodsPerWeek)[0];
+            if (existing) {
+              const t = snap.teachers.find((x) => x.id === existing.teacherId);
+              const load = t ? (loadByTeacher(snap).get(t.id) ?? 0) : 0;
+              if (!t || load + short > t.maxPeriodsPerWeek) return {};
+              return {
+                remedy: remedy(
+                  "complete",
+                  `Raise ${t.name}'s ${cs.label} ${r.subjectName} from ${existing.periodsPerWeek} to ${existing.periodsPerWeek + short} periods/week`,
+                  [{ op: "set" as const, entity: "mapping" as const, id: existing.id, field: "periodsPerWeek", from: existing.periodsPerWeek, to: existing.periodsPerWeek + short }],
+                ),
+              };
+            }
+            const pick = pickTeacher(snap, { classId: cs.classId, periods: short });
+            return pick
+              ? { remedy: remedy("redistribute", `Map ${pick.teacher.name} to ${cs.label} ${r.subjectName} for ${short} periods/week`, [
+                  { op: "create" as const, entity: "mapping" as const, data: {
+                    teacherId: pick.teacher.id, subjectId: r.subjectId, classSectionId: cs.id, periodsPerWeek: short,
+                  } },
+                ]) }
+              : {}; // nobody eligible has room — a staffing problem, not a data one
+          })(),
         });
       } else if (covered > r.periodsPerWeek) {
         issues.push({
@@ -234,6 +416,32 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           message: `${r.subjectName} in ${cs.label} has ${covered} periods/week mapped but the curriculum needs only ${r.periodsPerWeek}.`,
           entity: { type: "class_section", id: cs.id, label: `${cs.label} · ${r.subjectName}` },
           fix: `Reduce the mapping by ${covered - r.periodsPerWeek} periods/week.`,
+          // §21 relax: trim the mappings back to what the curriculum asks
+          // for, largest first. The curriculum is the stated policy and the
+          // mapping is the thing that drifted — but this still takes periods
+          // off a real person's week, so it asks.
+          ...(() => {
+            let excess = covered - r.periodsPerWeek;
+            const held = snap.mappings
+              .filter((m) => m.classSectionId === cs.id && m.subjectId === r.subjectId)
+              .sort((a, b) => b.periodsPerWeek - a.periodsPerWeek);
+            const changes = [];
+            const names: string[] = [];
+            for (const m of held) {
+              if (excess <= 0) break;
+              // Never to nothing: a mapping of zero periods is a row that says
+              // a teacher teaches a class they do not, which is a different
+              // kind of wrong. Removing one is the admin's call.
+              const take = Math.min(excess, m.periodsPerWeek - 1);
+              if (take <= 0) continue;
+              excess -= take;
+              names.push(`${m.teacherName} ${m.periodsPerWeek} → ${m.periodsPerWeek - take}`);
+              changes.push({ op: "set" as const, entity: "mapping" as const, id: m.id, field: "periodsPerWeek", from: m.periodsPerWeek, to: m.periodsPerWeek - take });
+            }
+            return excess === 0 && changes.length > 0
+              ? { remedy: remedy("relax", `Trim ${cs.label} ${r.subjectName} to the curriculum's ${r.periodsPerWeek} periods/week (${names.join(", ")})`, changes) }
+              : {};
+          })(),
         });
       }
     }
@@ -288,6 +496,23 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           message: `${o.teacherName} teaches both ${clashT} and ${o.subjectName} in ${b.name} — every option runs in the same period, so one person cannot cover both.`,
           entity: { type: "teacher", id: o.teacherId, label: o.teacherName },
           fix: `Give ${o.subjectName} in ${b.name} a different teacher.`,
+          // §21: somebody not already inside this block. Every option runs at
+          // once, so the replacement must be free of the block entirely, not
+          // merely free of this one option.
+          ...(() => {
+            const classId = snap.classSections.find((c) => c.id === b.memberClassSectionIds[0])?.classId;
+            if (classId === undefined) return {};
+            const pick = pickTeacher(snap, {
+              classId,
+              periods: b.periodsPerWeek,
+              exclude: b.options.map((x) => x.teacherId),
+            });
+            return pick
+              ? { remedy: remedy("redistribute", `Give ${o.subjectName} in ${b.name} to ${pick.teacher.name}`, [
+                  { op: "set" as const, entity: "electiveOption" as const, id: o.id, field: "teacherId", from: o.teacherId, to: pick.teacher.id },
+                ]) }
+              : {};
+          })(),
         });
       } else seenTeacher.set(o.teacherId, o.subjectName);
 
@@ -299,6 +524,18 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           message: `${o.roomName} is used by both ${clashR} and ${o.subjectName} in ${b.name} — the options run at the same time, so they need different rooms.`,
           entity: { type: "room", id: o.roomId, label: o.roomName },
           fix: `Give ${o.subjectName} in ${b.name} a different room.`,
+          // §21: any room this block is not already using. A member section's
+          // own room is fine and is in fact where these lessons usually meet —
+          // those students are out of their room for the period anyway.
+          ...(() => {
+            const used = new Set(b.options.map((x) => x.roomId));
+            const free = (snap.rooms ?? []).find((r) => !used.has(r.id) && r.roomType !== "lab");
+            return free
+              ? { remedy: remedy("redistribute", `Move ${o.subjectName} in ${b.name} to ${free.name}`, [
+                  { op: "set" as const, entity: "electiveOption" as const, id: o.id, field: "roomId", from: o.roomId, to: free.id },
+                ]) }
+              : {};
+          })(),
         });
       } else seenRoom.set(o.roomId, o.subjectName);
     }
@@ -311,6 +548,17 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${b.name} needs ${b.periodsPerWeek} periods/week but is capped at ${b.maxPeriodsPerDay}/day over ${days} working day(s) — at most ${days * b.maxPeriodsPerDay} can be placed.`,
         entity: where,
         fix: `Reduce ${b.name} to ${days * b.maxPeriodsPerDay} periods/week, or raise its max periods/day.`,
+        // §21 relax: raising the block's daily cap means a student can have
+        // two of their language periods in one day. Real, and worth showing —
+        // but better than cutting the subject's periods to fit.
+        ...(() => {
+          const needed = Math.ceil(b.periodsPerWeek / days);
+          return needed <= perDay
+            ? { remedy: remedy("relax", `Raise ${b.name} to ${needed} period(s)/day — students may get ${needed} in one day`, [
+                { op: "set" as const, entity: "electiveBlock" as const, id: b.id, field: "maxPeriodsPerDay", from: b.maxPeriodsPerDay, to: needed },
+              ]) }
+            : {};
+        })(),
       });
     }
 
@@ -364,6 +612,186 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         }
       }
     }
+
+    // ---- Check 7b — placement (§4.9, Phase 15) ----
+    //
+    // Pinning is the one thing on this screen a school can set that the solver
+    // cannot route around: it removes cells rather than preferring them. So
+    // every way a pin can be wrong is caught here, by name, before Generate.
+    //
+    // Every remedy below is `relax` and every one of them turns the PIN off
+    // rather than touching the block's teaching. That is the §21 rule: a relax
+    // remedy changes the rule, never what children are taught or who takes
+    // them. Letting the solver choose the slot again is exactly that.
+    const unpin = (why: string) =>
+      remedy("relax", `Let the solver choose when ${b.name} runs — ${why}`, [
+        { op: "set" as const, entity: "electiveBlock" as const, id: b.id, field: "placement", from: b.placement, to: "solver" },
+      ]);
+
+    if (b.placement === "same_period" && b.periodsPerWeek > days) {
+      issues.push({
+        code: "ELECTIVE_SAME_PERIOD_TIGHT",
+        severity: "blocker",
+        message: `${b.name} is held to one period number across the week but needs ${b.periodsPerWeek} periods over ${days} working day(s) — the same period can only come round once a day.`,
+        entity: where,
+        fix: `Reduce ${b.name} to ${days} periods/week, or let the solver choose its slots.`,
+        remedy: unpin(`${b.periodsPerWeek} periods will not fit into ${days} day(s) at one fixed period`),
+      });
+    }
+
+    if (b.placement === "fixed") {
+      const pins = b.fixedSlots;
+      if (pins.length !== b.periodsPerWeek) {
+        issues.push({
+          code: "ELECTIVE_PIN_COUNT",
+          severity: "blocker",
+          message:
+            pins.length === 0
+              ? `${b.name} is set to fixed slots but none have been chosen.`
+              : `${b.name} needs ${b.periodsPerWeek} periods/week but ${pins.length} slot(s) have been fixed.`,
+          entity: where,
+          fix:
+            pins.length < b.periodsPerWeek
+              ? `Choose ${b.periodsPerWeek - pins.length} more slot(s) for ${b.name}, or let the solver place the rest.`
+              : `Remove ${pins.length - b.periodsPerWeek} slot(s) from ${b.name}, or raise its periods/week.`,
+          remedy: unpin(`${pins.length} slot(s) chosen for ${b.periodsPerWeek} period(s)`),
+        });
+      }
+
+      // A cell outside the timetable is not a slot the solver could ever offer.
+      const bad = pins.filter(
+        (p) => !snap.config.workingDays.includes(p.day) || p.period < 1 || p.period > perDay,
+      );
+      for (const p of bad) {
+        issues.push({
+          code: "ELECTIVE_PIN_INVALID",
+          severity: "blocker",
+          message: `${b.name} is fixed to ${DAY_NAMES[p.day] ?? `day ${p.day}`} period ${p.period}, which is not a teaching slot in this timetable (${snap.config.workingDays.map((d) => DAY_NAMES[d]).join(", ")}, periods 1–${perDay}).`,
+          entity: where,
+          fix: `Move that slot inside the timetable's days and periods, or let the solver choose.`,
+          remedy: unpin(`${DAY_NAMES[p.day] ?? `day ${p.day}`} P${p.period} is outside the timetable`),
+        });
+      }
+
+      // Two occurrences on one day are legal when the block allows it, more
+      // than that is not — and the same cell twice never is: one slot cannot
+      // hold the block twice over.
+      const perCell = new Map<string, number>();
+      const perDayCount = new Map<number, number>();
+      for (const p of pins) {
+        const k = `${p.day}:${p.period}`;
+        perCell.set(k, (perCell.get(k) ?? 0) + 1);
+        perDayCount.set(p.day, (perDayCount.get(p.day) ?? 0) + 1);
+      }
+      for (const [k, n] of perCell) {
+        if (n < 2) continue;
+        const [d, p] = k.split(":").map(Number);
+        issues.push({
+          code: "ELECTIVE_PIN_DUPLICATE",
+          severity: "blocker",
+          message: `${b.name} is fixed to ${DAY_NAMES[d]} period ${p} ${n} times — one slot cannot hold the block more than once.`,
+          entity: where,
+          fix: `Spread those ${n} periods across different slots.`,
+          remedy: unpin(`${DAY_NAMES[d]} P${p} is named ${n} times`),
+        });
+      }
+      for (const [d, n] of perDayCount) {
+        if (n <= b.maxPeriodsPerDay) continue;
+        issues.push({
+          code: "ELECTIVE_PIN_DUPLICATE",
+          severity: "blocker",
+          message: `${b.name} is fixed to ${n} periods on ${DAY_NAMES[d]} but is capped at ${b.maxPeriodsPerDay}/day.`,
+          entity: where,
+          fix: `Move ${n - b.maxPeriodsPerDay} of ${DAY_NAMES[d]}'s periods to another day, or raise ${b.name}'s max periods/day to ${n}.`,
+          // The other half of this fix — raising the cap — is a real relax too,
+          // and the one that keeps the school's chosen shape. Offer that.
+          remedy:
+            n <= perDay
+              ? remedy("relax", `Raise ${b.name} to ${n} period(s)/day — students may get ${n} in one day`, [
+                  { op: "set", entity: "electiveBlock", id: b.id, field: "maxPeriodsPerDay", from: b.maxPeriodsPerDay, to: n },
+                ])
+              : unpin(`${n} periods pinned to ${DAY_NAMES[d]}`),
+        });
+      }
+
+      // A pinned cell has to be a cell every option teacher can actually work.
+      // One of them out on Wednesday takes the whole block off Wednesday,
+      // because the options all run at once.
+      for (const p of pins) {
+        for (const o of b.options) {
+          const t = snap.teachers.find((x) => x.id === o.teacherId);
+          if (!t) continue;
+          const offDay = t.unavailableFullDays.includes(p.day);
+          const altDays =
+            t.periodPattern === "alternate_day"
+              ? t.alternateDaySet && t.alternateDaySet.length > 0
+                ? t.alternateDaySet.filter((d) => snap.config.workingDays.includes(d))
+                : snap.config.workingDays.filter((_, i) => i % 2 === 0)
+              : null;
+          const offPattern = altDays !== null && !altDays.includes(p.day);
+          if (!offDay && !offPattern) continue;
+          issues.push({
+            code: "ELECTIVE_PIN_UNAVAILABLE",
+            severity: "blocker",
+            message: `${b.name} is fixed to ${DAY_NAMES[p.day]} period ${p.period}, but ${o.teacherName} (${o.subjectName}) ${offDay ? `does not work ${DAY_NAMES[p.day]}` : `only teaches on ${altDays!.map((d) => DAY_NAMES[d]).join(", ")}`} — every option runs at once, so the block cannot meet without them.`,
+            entity: { type: "teacher", id: o.teacherId, label: o.teacherName },
+            fix: `Move that slot to a day ${o.teacherName} works, give ${o.subjectName} a different teacher, or let the solver choose ${b.name}'s slots.`,
+            remedy: unpin(`${o.teacherName} cannot teach on ${DAY_NAMES[p.day]}`),
+          });
+        }
+      }
+    }
+  }
+
+  // ---- two blocks pinned to the same cell (§4.9, Phase 15) ----
+  //
+  // Only checkable across blocks, so it sits outside the loop. Sharing a cell
+  // is fine — two grades can run their languages at the same time. Sharing a
+  // cell AND a section, a teacher or a room is not: that is a double-booking
+  // the database would refuse at write time, reported here instead.
+  {
+    const pinnedCells = new Map<string, SnapshotElectiveBlock[]>();
+    for (const b of snap.electiveBlocks) {
+      if (b.placement !== "fixed") continue;
+      for (const p of b.fixedSlots) {
+        const k = `${p.day}:${p.period}`;
+        const at = pinnedCells.get(k);
+        if (at) at.push(b);
+        else pinnedCells.set(k, [b]);
+      }
+    }
+    for (const [k, entries] of pinnedCells) {
+      const [d, p] = k.split(":").map(Number);
+      const blocks = [...new Map(entries.map((b) => [b.id, b])).values()];
+      for (let i = 0; i < blocks.length; i++) {
+        for (let j = i + 1; j < blocks.length; j++) {
+          const a = blocks[i];
+          const c = blocks[j];
+          const shared = (() => {
+            const sec = a.memberClassSectionIds.find((x) => c.memberClassSectionIds.includes(x));
+            if (sec !== undefined) {
+              return `${sectionLabelById.get(sec) ?? `#${sec}`} attends both`;
+            }
+            const t = a.options.find((x) => c.options.some((y) => y.teacherId === x.teacherId));
+            if (t) return `${t.teacherName} teaches in both`;
+            const r = a.options.find((x) => c.options.some((y) => y.roomId === x.roomId));
+            if (r) return `${r.roomName} is used by both`;
+            return null;
+          })();
+          if (!shared) continue;
+          issues.push({
+            code: "ELECTIVE_PIN_CLASH",
+            severity: "blocker",
+            message: `${a.name} and ${c.name} are both fixed to ${DAY_NAMES[d]} period ${p}, and ${shared} — they cannot run at the same time.`,
+            entity: { type: "elective_block", id: c.id, label: c.name },
+            fix: `Move ${c.name} to another slot, or let the solver choose its slots.`,
+            remedy: remedy("relax", `Let the solver choose when ${c.name} runs — it collides with ${a.name} on ${DAY_NAMES[d]} P${p}`, [
+              { op: "set", entity: "electiveBlock", id: c.id, field: "placement", from: c.placement, to: "solver" },
+            ]),
+          });
+        }
+      }
+    }
   }
 
   // ---------- Check 8 — teaching scope and engagement (§18) ----------
@@ -410,6 +838,28 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${t.name} is engaged as a guest teacher but is mapped into the regular timetable (${a.what}, ${classNameOfSection.get(a.classSectionId) ?? "?"}).`,
         entity: { type: "teacher", id: t.id, label: t.name },
         fix: `Either change ${t.name}'s engagement to permanent or adhoc, or move this teaching to the Extra Classes screen.`,
+        // §21: hand the curriculum periods to somebody who is not a guest.
+        // NOT "promote the guest to permanent" — that rewrites the school's
+        // employment record to silence a warning, which is the wrong direction
+        // entirely (§18: a guest is refused the curriculum on purpose).
+        ...(() => {
+          const held = snap.mappings.filter((m) => m.teacherId === t.id);
+          const changes = [];
+          const names: string[] = [];
+          const pending = new Map<number, number>();
+          for (const m of held) {
+            const classId = classOfSection.get(m.classSectionId);
+            if (classId === undefined) return {};
+            const pick = pickTeacher(snap, { classId, periods: m.periodsPerWeek, exclude: [t.id], pending });
+            if (!pick) return {}; // nobody has room — the admin must decide
+            pending.set(pick.teacher.id, (pending.get(pick.teacher.id) ?? 0) + m.periodsPerWeek);
+            names.push(`${m.classSectionLabel} ${m.subjectName} → ${pick.teacher.name}`);
+            changes.push({ op: "set" as const, entity: "mapping" as const, id: m.id, field: "teacherId", from: t.id, to: pick.teacher.id });
+          }
+          return changes.length > 0
+            ? { remedy: remedy("redistribute", `Move ${names.join(", ")}`, changes) }
+            : {};
+        })(),
       });
     }
 
@@ -426,6 +876,14 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
       message: `${t.name} is assigned ${a.what} to ${classNameOfSection.get(a.classSectionId) ?? "a class"}, which is outside their teaching scope.`,
       entity: { type: "teacher", id: t.id, label: t.name },
       fix: `Add that class to ${t.name}'s teaching scope on the Teachers screen, or give the periods to a teacher who covers it.`,
+      // §21: the school has already given them the teaching; the scope simply
+      // has not caught up. Widening it states what is already true, and is a
+      // far smaller change than moving the periods to somebody else.
+      remedy: remedy(
+        "complete",
+        `Add ${classNameOfSection.get(a.classSectionId) ?? "that class"} to ${t.name}'s teaching scope`,
+        [{ op: "link", entity: "teacherClass", id: t.id, otherId: classId }],
+      ),
     });
   }
 
@@ -444,6 +902,28 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     issues.push({
       code: "TEACHER_SCOPE_UNSET",
       severity: "warning",
+      // §21: infer each teacher's scope from the classes they already hold.
+      // This is the single most useful fix on a freshly imported school, where
+      // nobody has a scope and everybody has mappings.
+      remedy: (() => {
+        const changes = [];
+        for (const t of unscoped) {
+          const classes = [
+            ...new Set(
+              attachments
+                .filter((a) => a.teacherId === t.id)
+                .map((a) => classOfSection.get(a.classSectionId))
+                .filter((c): c is number => c !== undefined),
+            ),
+          ].sort((x, y) => x - y);
+          for (const classId of classes) {
+            changes.push({ op: "link" as const, entity: "teacherClass" as const, id: t.id, otherId: classId });
+          }
+        }
+        return changes.length > 0
+          ? remedy("complete", `Set the teaching scope of ${unscoped.length} teacher(s) from the classes they already teach`, changes)
+          : undefined;
+      })(),
       message:
         unscoped.length === 1
           ? `${unscoped[0].name} has no teaching scope recorded, so nothing stops them being given any class.`
@@ -509,12 +989,31 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
   }
   for (const [room, labels] of sectionsByHomeRoom) {
     if (labels.length > 1) {
+      // §21: the first section keeps the room; the rest are re-homed into
+      // whatever is free. `taken` grows as we go, so two displaced sections
+      // never get handed the same replacement.
+      const displaced = snap.classSections.filter(
+        (cs) => snap.homeRoomBySection[cs.id] === room && labels.indexOf(cs.label) > 0,
+      );
+      const taken = new Set<number>();
+      const changes = [];
+      const moved: string[] = [];
+      for (const cs of displaced) {
+        const free = pickFreeRoom(snap, taken);
+        if (!free) break;
+        taken.add(free.id);
+        moved.push(`${cs.label} → ${free.name}`);
+        changes.push({ op: "set" as const, entity: "classSection" as const, id: cs.id, field: "homeRoomId", from: room, to: free.id });
+      }
       issues.push({
         code: "HOME_ROOM_SHARED",
         severity: "blocker",
         message: `${roomName(room)} is the home room of ${labels.join(" and ")} — both are timetabled all week, so they cannot share it.`,
         entity: { type: "room", id: room, label: roomName(room) },
         fix: `Give ${labels.slice(1).join(" and ")} a different home room on the Class-Sections screen.`,
+        ...(changes.length === displaced.length && changes.length > 0
+          ? { remedy: remedy("complete", `Move ${moved.join(", ")}`, changes) }
+          : {}),
       });
     }
   }
@@ -530,6 +1029,28 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           : `${unroomed.length} class-sections have no home room (${unroomed.slice(0, 3).map((c) => c.label).join(", ")}${unroomed.length > 3 ? ", …" : ""}), so their lessons will show no room.`,
       entity: { type: "class_section", id: unroomed[0].id, label: unroomed[0].label },
       fix: "Set a home room for each class-section — the Rooms screen can do it from either side.",
+      ...(() => {
+        // §21: one remedy for all of them, because a school that has never set
+        // home rooms has none set anywhere and fixing them one at a time is
+        // not a feature. Stops at the point the rooms run out and says so.
+        const taken = new Set<number>();
+        const changes = [];
+        for (const cs of unroomed) {
+          const free = pickFreeRoom(snap, taken);
+          if (!free) break;
+          taken.add(free.id);
+          changes.push({ op: "set" as const, entity: "classSection" as const, id: cs.id, field: "homeRoomId", from: null, to: free.id });
+        }
+        if (changes.length === 0) return {};
+        const short = unroomed.length - changes.length;
+        return {
+          remedy: remedy(
+            "complete",
+            `Give ${changes.length} class-section(s) a free room${short > 0 ? ` — ${short} would still have none, the school has run out of rooms` : ""}`,
+            changes,
+          ),
+        };
+      })(),
     });
   }
 
@@ -557,6 +1078,14 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${subjectName} needs a lab for ${demandForSubject} periods/week, but no lab room is set up for it.`,
         entity: { type: "config", id: snap.config.id, label: snap.config.name },
         fix: `Add a lab room for ${subjectName}, or mark an existing lab as serving it on the Rooms screen.`,
+        ...(() => {
+          const lab = pickLabForSubject(snap, subjectId);
+          return lab
+            ? { remedy: remedy("complete", `Mark ${lab.name} as also serving ${subjectName}`, [
+                { op: "link" as const, entity: "roomSubject" as const, id: lab.id, otherId: subjectId },
+              ]) }
+            : {}; // no lab to give it — nobody can conjure a room
+        })(),
       });
       continue;
     }
@@ -583,6 +1112,31 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${cs.label} has no class teacher assigned.`,
         entity: { type: "class_section", id: cs.id, label: cs.label },
         fix: `Assign a class teacher for ${cs.label} in the Teacher Mapping step.`,
+        ...(() => {
+          // §21: somebody who already teaches this section — a class teacher
+          // the children never see would be a worse answer than none. Whoever
+          // has the most periods with them, and is not already class teacher
+          // somewhere else.
+          const already = new Set(
+            snap.classSections.map((x) => x.classTeacherId).filter((x): x is number => x !== null),
+          );
+          const byPeriods = new Map<number, number>();
+          for (const m of snap.mappings) {
+            if (m.classSectionId !== cs.id) continue;
+            byPeriods.set(m.teacherId, (byPeriods.get(m.teacherId) ?? 0) + m.periodsPerWeek);
+          }
+          const pick = [...byPeriods.entries()]
+            .filter(([id]) => !already.has(id))
+            .filter(([id]) => teacherById.get(id)?.employmentType !== "guest")
+            .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+          if (!pick) return {};
+          const name = teacherById.get(pick[0])?.name ?? `teacher #${pick[0]}`;
+          return {
+            remedy: remedy("complete", `Make ${name} class teacher of ${cs.label} — they already teach it ${pick[1]} periods/week`, [
+              { op: "set" as const, entity: "classSection" as const, id: cs.id, field: "classTeacherId", from: null, to: pick[0] },
+            ]),
+          };
+        })(),
       });
       continue;
     }
@@ -602,6 +1156,14 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         message: `${t.name} is class teacher of ${labels.join(" and ")} with the "always first period" rule — one person cannot take Period 1 in ${labels.length} sections at once.`,
         entity: { type: "teacher", id: teacherId, label: t.name },
         fix: `Keep ${t.name} as class teacher of one section, or set their Period-1 rule to 'random'.`,
+        // §21 relax: change the scheduling rule, not who is responsible for a
+        // class. Which section a teacher looks after is a pastoral decision
+        // the software has no business editing.
+        remedy: remedy(
+          "relax",
+          `Set ${t.name}'s Period-1 rule to 'random' — they stay class teacher of ${labels.join(" and ")}`,
+          [{ op: "set", entity: "teacher", id: teacherId, field: "classTeacherPeriodRule", from: "always_first_period", to: "random" }],
+        ),
       });
     }
   }
@@ -615,6 +1177,11 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         severity: "warning",
         message: `${t.name} has the "always first period" class-teacher rule but is not class teacher of any section — the rule has no effect (§4.7).`,
         entity: { type: "teacher", id: t.id, label: t.name },
+        // §21: clearing a rule that does nothing changes no timetable — it
+        // only stops the data claiming something it does not mean.
+        remedy: remedy("complete", `Clear ${t.name}'s inert Period-1 rule`, [
+          { op: "set", entity: "teacher", id: t.id, field: "classTeacherPeriodRule", from: "always_first_period", to: "none" },
+        ]),
       });
     }
   }
@@ -651,6 +1218,13 @@ export function teacherWeeklyCapacity(
             .map((d) => DAY_NAMES[d])
             .join("/")}). Confirm or pick the days explicitly.`,
           entity: { type: "teacher", id: t.id, label: t.name },
+          // §21: writes down the days the solver was going to pick anyway, so
+          // the record matches the timetable instead of leaving it implied.
+          remedy: remedy(
+            "complete",
+            `Set ${t.name}'s alternate days to ${dayList(alternatingDays(effectiveDays))}`,
+            [{ op: "set", entity: "teacher", id: t.id, field: "alternateDaySet", from: null, to: alternatingDays(effectiveDays) }],
+          ),
         });
       }
       break;
@@ -687,6 +1261,16 @@ function checkDailyDistribution(
         message: `${r.subjectName} (Class ${classLabel}): ${blocks} blocks of ${size} periods = ${blocks * size}, more than its ${r.periodsPerWeek} periods/week.`,
         entity,
         fix: `Reduce blocks/week to ≤ ${Math.floor(r.periodsPerWeek / size)} or raise periods/week.`,
+        // §21 relax: fit the blocks to the periods the subject has, rather
+        // than giving it more periods to justify the blocks.
+        ...(() => {
+          const fits = Math.floor(r.periodsPerWeek / size);
+          return fits >= 1
+            ? { remedy: remedy("relax", `Reduce ${r.subjectName} (Class ${classLabel}) to ${fits} block(s)/week of ${size}`, [
+                { op: "set" as const, entity: "classSubject" as const, id: r.id, field: "consecutiveBlocksPerWeek", from: r.consecutiveBlocksPerWeek, to: fits },
+              ]) }
+            : {}; // not even one block fits — the block size itself is wrong
+        })(),
       });
       return;
     }
@@ -697,6 +1281,15 @@ function checkDailyDistribution(
         message: `${r.subjectName} (Class ${classLabel}) needs ${size} consecutive periods in one day, but its max/day is ${r.maxPeriodsPerDay}.`,
         entity,
         fix: `Raise max periods/day for ${r.subjectName} to at least ${size}.`,
+        ...(size <= perDay
+          ? {
+              remedy: remedy(
+                "relax",
+                `Raise ${r.subjectName} (Class ${classLabel}) to ${size} periods/day, so its ${size}-period block fits`,
+                [{ op: "set" as const, entity: "classSubject" as const, id: r.id, field: "maxPeriodsPerDay", from: r.maxPeriodsPerDay, to: size }],
+              ),
+            }
+          : {}),
       });
       return;
     }
@@ -707,6 +1300,22 @@ function checkDailyDistribution(
         message: `${r.subjectName} (Class ${classLabel}) needs a ${size}-period consecutive block, but breaks split the day into runs of at most ${Math.max(...daySegments)} periods — no block can ever fit (§4.8).`,
         entity,
         fix: "Move a break, or reduce the consecutive block size.",
+        // §21 relax: shrink the block to the longest run the day actually has.
+        // Moving a break is the other half of the printed fix and is NOT
+        // offered — the shape of the school day is not a scheduling knob, and
+        // a break moved to suit one subject lands on every class in the school.
+        ...(() => {
+          const longest = Math.max(...daySegments);
+          return longest >= 1 && longest < size
+            ? { remedy: remedy(
+                "relax",
+                longest === 1
+                  ? `Drop consecutive blocks for ${r.subjectName} (Class ${classLabel}) — no two teaching periods sit together in this day`
+                  : `Shorten ${r.subjectName} (Class ${classLabel}) blocks from ${size} to ${longest} periods, the longest run the day has`,
+                [{ op: "set" as const, entity: "classSubject" as const, id: r.id, field: "consecutiveBlockSize", from: size, to: longest }],
+              ) }
+            : {};
+        })(),
       });
       return;
     }
@@ -723,6 +1332,14 @@ function checkDailyDistribution(
         message: `${r.subjectName} (Class ${classLabel}) needs ${blocks} block(s) of ${size} + ${singles} single period(s), requiring ${daysNeeded} days — the week has ${days}.`,
         entity,
         fix: `Allow ${Math.ceil(r.periodsPerWeek / days)} periods/day for ${r.subjectName}, or reduce periods/week.`,
+        ...(() => {
+          const needed = Math.ceil(r.periodsPerWeek / days);
+          return needed > r.maxPeriodsPerDay && needed <= perDay
+            ? { remedy: remedy("relax", `Allow ${needed} periods/day of ${r.subjectName} (Class ${classLabel}), up from ${r.maxPeriodsPerDay}`, [
+                { op: "set" as const, entity: "classSubject" as const, id: r.id, field: "maxPeriodsPerDay", from: r.maxPeriodsPerDay, to: needed },
+              ]) }
+            : {};
+        })(),
       });
     }
     return;
@@ -736,6 +1353,18 @@ function checkDailyDistribution(
       message: `${r.subjectName} (Class ${classLabel}) needs ${r.periodsPerWeek} periods/week at max ${cap}/day — that requires ${daysNeeded} days; the week has only ${days}.`,
       entity,
       fix: `Allow ${Math.ceil(r.periodsPerWeek / days)} periods on some days, or reduce to ${days * cap}/week.`,
+      // §21 relax — the same remedy as the block branch above, because this is
+      // the same arithmetic without blocks in it. Both sites raise this code,
+      // and a remedy on only one of them would leave the other looking
+      // unfixable for no reason a school could see.
+      ...(() => {
+        const needed = Math.ceil(r.periodsPerWeek / days);
+        return needed > r.maxPeriodsPerDay && needed <= perDay
+          ? { remedy: remedy("relax", `Allow ${needed} periods/day of ${r.subjectName} (Class ${classLabel}), up from ${r.maxPeriodsPerDay}`, [
+              { op: "set" as const, entity: "classSubject" as const, id: r.id, field: "maxPeriodsPerDay", from: r.maxPeriodsPerDay, to: needed },
+            ]) }
+          : {};
+      })(),
     });
   }
 }
@@ -746,6 +1375,19 @@ function finalize(
   totalRequired: number,
   available: number,
 ): FeasibilityResult {
+  // §21: one key per issue, assigned here rather than at each of the 38 check
+  // sites — a new check cannot forget to do it, and it cannot invent a
+  // different scheme. Code and entity identify an issue on their own except
+  // where one entity can raise the same code twice (a teacher outside scope
+  // for two classes), which the ordinal covers.
+  const seen = new Map<string, number>();
+  for (const i of issues) {
+    const base = `${i.code}:${i.entity.type}:${i.entity.id}`;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    i.key = n === 1 ? base : `${base}#${n}`;
+  }
+
   const blockers = issues.filter((i) => i.severity === "blocker");
   const warnings = issues.filter((i) => i.severity === "warning");
   const hasData = snap.classSections.length > 0 && snap.subjectRequirements.length > 0;

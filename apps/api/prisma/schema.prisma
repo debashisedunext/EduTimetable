@@ -70,6 +70,9 @@ model School {
   notifications               Notification[]
   aiSettings                  AiSettings[]
   aiChatLogs                  AiChatLog[]
+  autoFixRuns                 AutoFixRun[]
+  timetableDrafts             TimetableDraft[]
+  erpSyncRuns                 ErpSyncRun[]
 
   @@map("schools")
 }
@@ -140,6 +143,13 @@ model ErpRoleMapping {
 
 // ===================== PHASE 1: TIMETABLING DOMAIN (§3, §3.10, §4.7-4.9) =====================
 
+/// §4.9 Phase 15 — how a split elective's slot is chosen.
+enum ElectivePlacement {
+  solver
+  same_period
+  fixed
+}
+
 enum RoomType {
   classroom
   lab
@@ -187,6 +197,7 @@ model AcademicYear {
   isActive         Boolean           @default(true) @map("is_active")
   classSections    ClassSection[]
   timetableConfigs TimetableConfig[]
+  classSubjects    ClassSubject[]
   holidays         Holiday[]
 
   @@unique([schoolId, name])
@@ -312,6 +323,10 @@ model Teacher {
   employeeCode           String                       @map("employee_code") @db.VarChar(20)
   name                   String                       @db.VarChar(100)
   maxPeriodsPerDay       Int                          @default(6) @map("max_periods_per_day")
+  /// §20: the floor to go with the cap. A teacher works a day properly or not
+  /// at all — never a single period. `max` bounds the top of the range, this
+  /// bounds the bottom, and the solver treats a day as "0 or at least this".
+  minPeriodsPerDay       Int                          @default(3) @map("min_periods_per_day")
   maxPeriodsPerWeek      Int                          @default(30) @map("max_periods_per_week")
   classTeacherPeriodRule ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
   periodPattern          PeriodPattern                @default(every_period) @map("period_pattern")
@@ -365,21 +380,30 @@ model TeacherUnavailability {
   @@map("teacher_unavailability")
 }
 
+/// The curriculum: what a class studies in a given year, and how it is spread.
+/// Phase 19 — scoped by ACADEMIC YEAR, not just by class. Without the year one
+/// row served every session at once, so editing next year's periods/week
+/// silently rewrote what last year's readiness report said. Scoped by year
+/// rather than by config because what Class 5 studies belongs to the session,
+/// not to whichever wing timetables it.
 model ClassSubject {
-  id                       Int         @id @default(autoincrement())
-  classId                  Int         @map("class_id")
-  class                    SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subjectId                Int         @map("subject_id")
-  subject                  Subject     @relation(fields: [subjectId], references: [id])
-  periodsPerWeek           Int         @map("periods_per_week")
-  maxPeriodsPerDay         Int         @default(1) @map("max_periods_per_day")
-  samePeriodAcrossWeek     Boolean     @default(false) @map("same_period_across_week")
-  consecutiveBlockSize     Int         @default(1) @map("consecutive_block_size")
-  consecutiveBlocksPerWeek Int?        @map("consecutive_blocks_per_week")
-  schoolId                 Int         @map("school_id")
-  school                   School      @relation(fields: [schoolId], references: [id])
+  id                       Int          @id @default(autoincrement())
+  classId                  Int          @map("class_id")
+  class                    SchoolClass  @relation(fields: [classId], references: [id], onDelete: Cascade)
+  academicYearId           Int          @map("academic_year_id")
+  academicYear             AcademicYear @relation(fields: [academicYearId], references: [id])
+  subjectId                Int          @map("subject_id")
+  subject                  Subject      @relation(fields: [subjectId], references: [id])
+  periodsPerWeek           Int          @map("periods_per_week")
+  maxPeriodsPerDay         Int          @default(1) @map("max_periods_per_day")
+  samePeriodAcrossWeek     Boolean      @default(false) @map("same_period_across_week")
+  consecutiveBlockSize     Int          @default(1) @map("consecutive_block_size")
+  consecutiveBlocksPerWeek Int?         @map("consecutive_blocks_per_week")
+  schoolId                 Int          @map("school_id")
+  school                   School       @relation(fields: [schoolId], references: [id])
 
-  @@unique([classId, subjectId])
+  @@unique([classId, subjectId, academicYearId])
+  @@index([academicYearId])
   @@index([schoolId])
   @@map("class_subjects")
 }
@@ -434,7 +458,9 @@ model TimetableConfig {
   extraClasses                ExtraClass[]
 
   @@unique([schoolId, name, academicYearId])
+  autoFixRuns    AutoFixRun[]
   @@map("timetable_config")
+  drafts         TimetableDraft[]
 }
 
 model Period {
@@ -509,6 +535,15 @@ model ElectiveBlock {
   /// Occurrences of this block allowed on one day. 1 = the usual "one language
   /// period a day"; without it a 5-period block could stack on Monday.
   maxPeriodsPerDay Int                   @default(1) @map("max_periods_per_day")
+  /// §4.9 Phase 15 — when the block runs. `solver` lets it float (the default,
+  /// so no existing block changes behaviour); `same_period` holds it to one
+  /// period number across its days; `fixed` pins exact cells. All three are
+  /// enforced by pruning the solver's domain, never by penalty scoring.
+  placement        ElectivePlacement     @default(solver)
+  /// Read only when placement = `fixed`: [{ day, period }, …], one per
+  /// occurrence. Kept as JSON rather than rows because it is a small ordered
+  /// list edited as a whole, never queried across blocks.
+  fixedSlots       Json?                 @map("fixed_slots")
   members          ElectiveBlockMember[]
   options          ElectiveOption[]
 
@@ -592,6 +627,52 @@ model AuditLog {
 
 // ===================== PHASE 2: THE TIMETABLE ITSELF (§3, §4.9) =====================
 
+/// §22 Phase 17 — the named drafts of one timetable config.
+///
+/// A school does not generate once and publish. They generate, look, tweak the
+/// masters, generate again, hand-edit one, and only then decide which of the
+/// three the school will live with. This row is what makes that comparison a
+/// reading rather than a recollection.
+model TimetableDraft {
+  id                Int             @id @default(autoincrement())
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// per-config sequence — what the school calls it: "Draft #2"
+  draftNo           Int             @map("draft_no") @db.SmallInt
+  label             String?         @db.VarChar(80)
+  status            DraftStatus     @default(draft)
+  /// §22.3 stats, stamped by one owner and READ from here — the Draft Board
+  /// never counts 2,000 slots per render (§14).
+  requiredLessons   Int?            @map("required_lessons")
+  placedLessons     Int?            @map("placed_lessons")
+  generationPct     Decimal?        @map("generation_pct") @db.Decimal(5, 2)
+  errorCount        Int?            @map("error_count")
+  warningCount      Int?            @map("warning_count")
+  lockedCount       Int?            @map("locked_count")
+  manualCount       Int?            @map("manual_count")
+  solverStats       Json?           @map("solver_stats")
+  generatedAt       DateTime?       @map("generated_at")
+  createdById       Int?            @map("created_by")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  publishedAt       DateTime?       @map("published_at")
+  publishedById     Int?            @map("published_by")
+  slots             TimetableSlot[]
+
+  @@unique([schoolId, timetableConfigId, draftNo], map: "uq_draft_no")
+  @@index([schoolId])
+  @@index([timetableConfigId, status])
+  @@map("timetable_drafts")
+}
+
+enum DraftStatus {
+  draft
+  published
+  archived
+  discarded
+}
+
 enum SlotStatus {
   draft
   published
@@ -618,6 +699,21 @@ model TimetableSlot {
   id                  BigInt     @id @default(autoincrement())
   timetableConfigId   Int        @map("timetable_config_id")
   status              SlotStatus @default(draft)
+  /// §22 — which named draft this row belongs to. NULL on published rows that
+  /// pre-date Phase 17 and on `source='extra'` rows, which live once per
+  /// config outside any draft (§18).
+  draftId             Int?       @map("draft_id")
+  draft               TimetableDraft? @relation(fields: [draftId], references: [id])
+  /// §22 — a STORED GENERATED column in MySQL: `0` for published and extra
+  /// rows, `draft_id` otherwise. It exists solely to sit inside the three
+  /// unique keys below, collapsing them where the double-booking guarantee has
+  /// to stay global.
+  ///
+  /// `dbgenerated()`, NOT `@default(0)`: Prisma applies a literal default
+  /// CLIENT-side and sends the column in the INSERT, which MySQL rejects
+  /// outright ("The value specified for generated column 'draft_scope' ... is
+  /// not allowed"). This annotation is what tells Prisma the database owns it.
+  draftScope          Int        @default(dbgenerated()) @map("draft_scope")
   /// NULL only on a §4.9 elective *option* row, which belongs to a block
   /// rather than to any one section — there is no enrolment model, so an
   /// option genuinely has no class-section. NULL also takes the row out of
@@ -641,14 +737,15 @@ model TimetableSlot {
   schoolId            Int        @map("school_id")
   school              School     @relation(fields: [schoolId], references: [id])
 
-  @@unique([timetableConfigId, status, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
-  @@unique([timetableConfigId, status, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
-  @@unique([timetableConfigId, status, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
+  @@unique([timetableConfigId, status, draftScope, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
+  @@unique([timetableConfigId, status, draftScope, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
+  @@unique([timetableConfigId, status, draftScope, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
   @@index([timetableConfigId, status, teacherId])
   // Scoped reads are always `school_id = ? AND timetable_config_id = ? AND
   // status = ?` — this is the index EXPLAIN must pick for the matrix and board
   // queries, the hottest path in the app (§14).
   @@index([schoolId, timetableConfigId, status])
+  @@index([schoolId, timetableConfigId, status, draftId])
   @@map("timetable_slots")
 }
 
@@ -797,4 +894,70 @@ model AiChatLog {
   @@index([schoolId, createdAt])
   @@index([conversationId, id])
   @@map("ai_chat_log")
+}
+
+/// §21 (Phase 14.1) — one press of Auto-resolve on the Readiness Dashboard.
+///
+/// Records what each field held *before* the run, which is what makes "Undo
+/// this run" possible and what makes the button safe to press in the first
+/// place. `changes` and `outcomes` are the shared package's own shapes; see
+/// the migration for why they are JSON rather than child tables.
+model AutoFixRun {
+  id                Int             @id @default(autoincrement())
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  timetableConfigId Int             @map("timetable_config_id")
+  config            TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  appliedById       Int?            @map("applied_by_id")
+  scoreBefore       Int             @map("score_before")
+  scoreAfter        Int             @map("score_after")
+  changes           Json
+  outcomes          Json
+  undoneAt          DateTime?       @map("undone_at")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@index([schoolId, timetableConfigId])
+  @@map("auto_fix_runs")
+}
+
+// ===================== PHASE 23 (§23.7): ERP SYNC HISTORY =====================
+
+/// One row per master, per sync run — the answer to "what did that button do?".
+///
+/// A sync is the one screen in the app that deletes other people's work, and it
+/// runs unattended in the sense that nobody watches the writes. So every run is
+/// recorded whatever happens: the rows counted, the rows written, the endpoint
+/// called, and — on a failure — the ERP's own error text. A failed run is
+/// logged as loudly as a successful one, because "we synced and nothing changed"
+/// and "the sync could not reach the ERP" look identical from the outside and
+/// have completely different remedies.
+///
+/// `detail` carries the per-row summary the screen expands, and on a destructive
+/// run the impact the admin actually consented to — so a question six weeks
+/// later about a missing teacher has an answer.
+model ErpSyncRun {
+  id         Int      @id @default(autoincrement())
+  schoolId   Int      @map("school_id")
+  school     School   @relation(fields: [schoolId], references: [id])
+  /// the master, as `SyncSheet` spells it: "Teachers", "Class Sections", …
+  sheet      String   @db.VarChar(40)
+  /// `refresh` (key-preserving) or `replace` (delete and re-insert)
+  mode       String   @db.VarChar(10)
+  /// `ok` · `failed` · `blocked` (refused before writing anything)
+  status     String   @db.VarChar(10)
+  /// the ERP path this run called, so a wrong mapping is visible in the history
+  endpoint   String?  @db.VarChar(255)
+  fetched    Int      @default(0)
+  created    Int      @default(0)
+  updated    Int      @default(0)
+  deleted    Int      @default(0)
+  durationMs Int      @map("duration_ms")
+  error      String?  @db.Text
+  detail     Json?
+  runById    Int?     @map("run_by_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([schoolId, sheet])
+  @@index([schoolId, createdAt])
+  @@map("erp_sync_runs")
 }

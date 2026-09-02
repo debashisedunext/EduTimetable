@@ -1,10 +1,22 @@
 import { useMemo, useState } from "react";
 import { useApi, useConfigCtx } from "../hooks";
+import { useColors } from "../colors";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/** §22 — a named draft, as the picker needs it. */
+interface DraftRow {
+  id: number;
+  draftNo: number;
+  label: string | null;
+  status: "draft" | "published" | "archived" | "discarded";
+  generationPct: number | null;
+}
+
 interface SlotsPayload {
   status: string;
+  /** which draft the server actually served — its answer when we sent none */
+  draftId: number | null;
   workingDays: number[];
   periods: { periodNumber: number | null; startTime: string; isBreak: boolean; breakName: string | null; isExtra?: boolean }[];
   sections: { id: number; label: string }[];
@@ -27,12 +39,25 @@ export function Matrix() {
   const { current } = useConfigCtx();
   const [status, setStatus] = useState<"draft" | "published">("draft");
   const [date, setDate] = useState("");
+  // §22 — which named draft this matrix is reading. `null` means "the config's
+  // current one", which is what the server resolves when the parameter is
+  // absent, so a single-draft school sees exactly what it saw before.
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const { data: drafts } = useApi<DraftRow[]>(
+    current ? `/timetable-configs/${current.id}/drafts` : null,
+  );
   const { data } = useApi<SlotsPayload>(
     current
-      ? `/timetable-configs/${current.id}/slots?status=${status}${status === "published" && date ? `&date=${date}` : ""}`
+      ? `/timetable-configs/${current.id}/slots?status=${status}` +
+        `${status === "published" && date ? `&date=${date}` : ""}` +
+        // A draft id is meaningless on the published view: there is exactly one
+        // published set per config however many drafts it was promoted from
+        // (§22.2), so sending it would ask a question with no answer.
+        `${status === "draft" && draftId !== null ? `&draftId=${draftId}` : ""}`
       : null,
   );
   const [dimension, setDimension] = useState<"section" | "teacher">("section");
+  const colors = useColors();
   const [search, setSearch] = useState("");
 
   const index = useMemo(() => {
@@ -40,7 +65,12 @@ export function Matrix() {
     const bySection = new Map<string, (typeof data.slots)[number]>();
     const byTeacher = new Map<string, (typeof data.slots)[number]>();
     for (const s of data.slots) {
-      bySection.set(`${s[0]}@${s[1]}:${s[2]}`, s);
+      // §4.9 invariant 9, applied per dimension. A section grid wants cells:
+      // an option row has no section and must not become one. A teacher grid
+      // wants lessons: an option row IS this teacher's lesson, and dropping it
+      // leaves a language teacher's whole week blank. Member rows carry no
+      // teacher, so they fall out of `byTeacher` on their own.
+      if (s[0] !== null) bySection.set(`${s[0]}@${s[1]}:${s[2]}`, s);
       if (s[4] !== null) byTeacher.set(`${s[4]}@${s[1]}:${s[2]}`, s);
     }
     return { bySection, byTeacher };
@@ -49,13 +79,27 @@ export function Matrix() {
   if (!current) return <p className="screen-sub">Select a timetable first.</p>;
   if (!data || !index) return <p className="screen-sub">Loading matrix…</p>;
 
+  const liveDrafts = (drafts ?? []).filter((d) => d.status !== "discarded");
+  // Show the draft the SERVER chose until the reader picks one. Guessing
+  // "the newest" here would disagree with `DraftsService.currentId`, which
+  // prefers the newest draft that actually has rows — and the picker would
+  // then name a different draft from the one on screen.
+  const shownDraftId = draftId ?? data.draftId ?? null;
+  const shownDraft = liveDrafts.find((d) => d.id === shownDraftId) ?? null;
+
   // §18: the extra window is teaching, but it is not what the timetable has to
   // fill — counting it would make a full grid look under-allocated.
   const teachingPeriods = data.periods.filter(
     (p) => !p.isBreak && !p.isExtra && p.periodNumber !== 0 && p.periodNumber !== null,
   );
   const capacity = data.sections.length * data.workingDays.length * teachingPeriods.length;
-  const filled = data.slots.length;
+  // Numerator and denominator must count the same thing. `capacity` is built
+  // from `teachingPeriods`, so `filled` counts only slots inside them: option
+  // rows occupy no section cell, and §18 extra classes sit in periods this
+  // capacity deliberately excludes. Counting either produced a fill rate over
+  // 100% — School 2 read "2241 of 2240" from one leftover revision class.
+  const teachingPeriodNumbers = new Set(teachingPeriods.map((p) => p.periodNumber));
+  const filled = data.slots.filter((s) => s[0] !== null && teachingPeriodNumbers.has(s[2])).length;
 
   const q = search.trim().toLowerCase();
   const rows: { key: number; label: string }[] =
@@ -76,10 +120,39 @@ export function Matrix() {
     // students split across the block's options. Show the block, and list the
     // choices on hover — "blank with a tooltip" would read as a gap in the grid.
     const block = blockId !== null && blockId !== undefined ? data.blocks?.[String(blockId)] : undefined;
+    // In a TEACHER's row the question is what this person is doing, and the
+    // answer is one option, not all of them: Pranav Banerjee teaches French in
+    // Room 41 while two colleagues teach Sanskrit and German in the same slot.
+    // Listing the block's whole menu here would credit him with their lessons.
+    if (block && csId === null) {
+      return {
+        // §10.5: this teacher takes ONE option, so the cell is truthfully that
+        // subject's colour — unlike the section-row version below, which is the
+        // whole menu and belongs to no single subject.
+        colorKey: data.subjects[String(subjectId)] ?? null,
+        main: abbr(data.subjects[String(subjectId)] ?? block.name),
+        sub: `${short(block.name)}${roomId !== null ? ` · ${data.rooms[String(roomId)] ?? ""}` : ""}`,
+        merged: false,
+        elective: true,
+        locked: locked === 1,
+        substituted: substituted === 1,
+        room: roomId !== null ? (data.rooms[String(roomId)] ?? null) : null,
+        title: `${block.name}\nThis teacher takes ${data.subjects[String(subjectId)] ?? "one option"}${
+          roomId !== null ? ` in ${data.rooms[String(roomId)] ?? ""}` : ""
+        }\n\nRunning at the same time:\n${block.options
+          .map((o) => `${o.subject} — ${o.teacher} (${o.room})`)
+          .join("\n")}`,
+      };
+    }
     if (block) {
       return {
+        colorKey: null,
         main: abbr(block.name),
-        sub: `${block.options.length} options`,
+        // The subjects themselves, not a count: "Fre / San / Ger" tells a
+        // reader scanning the grid what the choice actually is, and a count
+        // tells them nothing they could not see. Teachers and rooms stay on
+        // the tooltip — this cell is one row of a 50×40 matrix.
+        sub: block.options.map((o) => abbr(o.subject)).join(" / "),
         merged: false,
         elective: true,
         locked: locked === 1,
@@ -89,6 +162,11 @@ export function Matrix() {
       };
     }
     return {
+      // §10.5 — the FULL name, because `main` is abbreviated for the 50×40 grid
+      // and "Mat" would not match the school's "Mathematics".
+      colorKey: dimension === "section"
+        ? (data.subjects[String(subjectId)] ?? null)
+        : (data.sections.find((x) => x.id === csId)?.label ?? null),
       main: dimension === "section" ? abbr(data.subjects[String(subjectId)] ?? "?") : (data.sections.find((x) => x.id === csId)?.label ?? "?"),
       sub: dimension === "section" ? short(data.teachers[String(teacherId)] ?? "") : abbr(data.subjects[String(subjectId)] ?? "?"),
       merged: mergedGroupId !== null,
@@ -104,6 +182,22 @@ export function Matrix() {
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* §22.5 — which draft this matrix is showing. First in the row, and
+              only on the draft view, because it scopes everything after it. */}
+          {status === "draft" && liveDrafts.length > 0 && (
+            <select
+              value={shownDraftId ?? ""}
+              onChange={(e) => setDraftId(Number(e.target.value))}
+              style={{ padding: "8px 11px", border: "1px solid var(--brand)", borderRadius: 8, fontWeight: 700, fontSize: 13, color: "var(--brand)", background: "var(--steel-pale)" }}
+            >
+              {liveDrafts.map((d) => (
+                <option key={d.id} value={d.id}>
+                  Draft #{d.draftNo}{d.label ? ` — ${d.label}` : ""}
+                  {d.generationPct !== null ? ` · ${d.generationPct}%` : ""}
+                </option>
+              ))}
+            </select>
+          )}
           <select value={dimension} onChange={(e) => setDimension(e.target.value as any)}
             style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
             <option value="section">By Class-Section</option>
@@ -126,7 +220,12 @@ export function Matrix() {
         <div style={{ display: "flex", gap: 8 }}>
           <span className="chip mono">{filled} / {capacity} slots filled ({capacity ? Math.round((filled / capacity) * 100) : 0}%)</span>
           <span className="badge badge-ok">0 conflicts — DB-enforced</span>
-          <span className="chip mono">{data.status}</span>
+          {/* Which week these numbers describe. "draft" alone stopped being an
+              answer the moment a config could hold five of them. */}
+          <span className="chip mono">
+            {data.status}
+            {status === "draft" && shownDraft ? ` #${shownDraft.draftNo}` : ""}
+          </span>
         </div>
       </div>
 
@@ -175,19 +274,25 @@ export function Matrix() {
                       return <td key={`${d}:${i}`} style={{ background: "repeating-linear-gradient(45deg, var(--offwhite), var(--offwhite) 5px, #E9EEF7 5px, #E9EEF7 10px)", borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)", minWidth: 30 }} />;
                     }
                     const cell = cellFor(row.key, d, p.periodNumber as number);
+                    // Substitution keeps its cyan; a merged group keeps its 🔗
+                    // and an elective its ⋔, so neither loses its marker by
+                    // gaining a colour.
+                    const sw = cell && !cell.substituted
+                      ? (dimension === "section" ? colors.subject(cell.colorKey) : colors.classOf(cell.colorKey))
+                      : null;
                     return (
                       <td key={`${d}:${i}`} title={cell?.title ?? (cell?.substituted ? `Substitute teacher on ${date}` : (cell?.room ?? undefined))} style={{
                         padding: "5px 7px", minWidth: 62, height: 44, verticalAlign: "middle",
                         borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                        background: cell?.substituted ? "var(--accent-bg)" : cell?.elective ? "var(--brand-pale, var(--steel-pale))" : cell?.merged ? "var(--steel-pale)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--paper)",
+                        background: cell?.substituted ? "var(--accent-bg)" : sw?.bg ?? (cell?.elective ? "var(--brand-pale, var(--steel-pale))" : cell?.merged ? "var(--steel-pale)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--paper)"),
                         borderLeft: p.isExtra ? "2px solid var(--amber)" : undefined,
                       }}>
                         {cell ? (
                           <>
-                            <div style={{ fontWeight: 700, fontSize: 11 }}>
+                            <div style={{ fontWeight: 700, fontSize: 11, color: sw?.fg }}>
                               {cell.main}{cell.elective ? " ⋔" : ""}{cell.merged ? " 🔗" : ""}{cell.locked ? " 🔒" : ""}{cell.substituted ? " ↺" : ""}
                             </div>
-                            <div style={{ fontSize: 9.5, color: cell.substituted ? "var(--accent)" : "var(--ink-faint)", fontWeight: cell.substituted ? 700 : 400 }}>{cell.sub}</div>
+                            <div style={{ fontSize: 9.5, color: cell.substituted ? "var(--accent)" : sw ? sw.fg : "var(--ink-faint)", opacity: sw ? 0.75 : 1, fontWeight: cell.substituted ? 700 : 400 }}>{cell.sub}</div>
                           </>
                         ) : (
                           <span style={{ color: "var(--ink-faint)", fontSize: 10 }}>—</span>

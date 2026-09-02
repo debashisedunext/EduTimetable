@@ -4,7 +4,7 @@
  * fallback with per-variable reasons when the budget runs out.
  */
 import type { Placement, SolverInput, SolveOptions, SolverResult, SolverVariable, UnplacedVariable } from "./types";
-import { SolverState, teachersOf } from "./state";
+import { SolverState, teacherPeriodBudget, teachersOf } from "./state";
 import { buildTeacherCtx, buildVariables } from "./variables";
 
 /** deterministic PRNG (mulberry32) — reproducible runs per seed (task 2.5) */
@@ -33,41 +33,276 @@ export function solveTimetable(input: SolverInput, opts: SolveOptions = {}): Sol
   const baseVars = buildVariables(input, teacherCtx);
   const total = baseVars.length;
 
-  let best: { placements: Placement[]; unplaced: UnplacedVariable[] } = { placements: [], unplaced: [] };
-  let steps = 0, backtracks = 0, restarts = 0;
+  let steps = 0, backtracks = 0, restarts = 0, consolidatedDays = 0;
 
-  // Budget is sliced per attempt: search rarely needs long — near-complete
-  // partials are finished by the §5.4 repair pass, which runs after EVERY
-  // attempt so a 99% partial never burns the remaining budget on thrashing.
-  const maxRestarts = 3;
-  for (let attempt = 0; attempt <= maxRestarts; attempt++) {
-    const remaining = budgetMs - (Date.now() - started);
-    if (remaining <= 0) break;
-    const slice = Math.max(500, Math.min(remaining, Math.floor(budgetMs / (maxRestarts + 1))));
-    const random = rng((input.seed ?? 1) + attempt * 7919);
-    const out = attemptSolve(input, baseVars, random, Date.now(), slice, opts, () => steps++, () => backtracks++);
-    if (out.placements.length > best.placements.length) best = out;
-    if (best.unplaced.length === 0) break;
-    const repaired = repair(input, baseVars, out.placements);
-    if (repaired.unplaced.length < best.unplaced.length || best.placements.length === 0) best = repaired;
-    if (best.unplaced.length === 0) break;
-    restarts = attempt + 1;
+  /**
+   * One full search: restarts with a sliced time budget, each attempt followed
+   * by the §5.4 repair pass so a 99% partial never burns the remaining budget
+   * on thrashing.
+   */
+  const search = (minBudget: Map<number, number> | null, deadline: number) => {
+    let best: { placements: Placement[]; unplaced: UnplacedVariable[] } = { placements: [], unplaced: [] };
+    const maxRestarts = 3;
+    const window = deadline - Date.now();
+    for (let attempt = 0; attempt <= maxRestarts; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const slice = Math.max(500, Math.min(remaining, Math.floor(window / (maxRestarts + 1))));
+      const random = rng((input.seed ?? 1) + attempt * 7919);
+      const out = attemptSolve(input, baseVars, random, Date.now(), slice, opts, minBudget, () => steps++, () => backtracks++);
+      if (out.placements.length > best.placements.length) best = out;
+      if (best.unplaced.length === 0) break;
+      const repaired = repair(input, baseVars, out.placements, minBudget);
+      if (repaired.unplaced.length < best.unplaced.length || best.placements.length === 0) best = repaired;
+      if (best.unplaced.length === 0) break;
+      restarts = attempt + 1;
+    }
+    return best;
+  };
+
+  // §20 tightens the search: a school whose sections are 100% full and whose
+  // subjects are capped at two periods a day has far fewer legal shapes once
+  // every teacher's week also has to divide into whole days. A first pass tries
+  // to honour the minimum while building, which is where it belongs...
+  //
+  // Two passes, and the order matters. The first enforces the minimum *while*
+  // building, which is where a constraint belongs and where any school with
+  // slack in its staffing finishes. The second is the pre-§20 solver exactly —
+  // no budget, no day-shaping in the value ordering — and it exists so a new
+  // rule can never cost a school lessons: a timetable missing four periods is
+  // worse than one where two teachers have a short Tuesday.
+  //
+  // (A middle rung keeping only the day-shaping value ordering was tried and
+  // dropped: on a school tight enough to need it, it failed to complete just as
+  // the enforced pass had, and doubled the wall clock to reach the same answer.)
+  const minBudget = teacherPeriodBudget(baseVars);
+  const enforced = [...new SolverState(input).minPerDay.values()].some((m) => m > 1);
+  let best = search(enforced ? minBudget : null, started + (enforced ? Math.floor(budgetMs * 0.4) : budgetMs));
+
+  if (enforced && best.unplaced.length > 0) {
+    const plain = search(null, Date.now() + budgetMs);
+    if (plain.unplaced.length < best.unplaced.length) best = plain;
+  }
+
+  // Whichever pass won, win back what shape can still be won by *moving*
+  // lessons — which cannot cost a placement, so it is safe to run whenever
+  // anything is short, including after a successful enforced pass whose
+  // relaxed-minimum teachers still came up thin.
+  const beforeShape = enforced ? countShortDays(input, baseVars, best.placements).length : 0;
+  if (beforeShape > 0) {
+    const placements = consolidateShortDays(input, baseVars, best.placements, Date.now() + Math.floor(budgetMs * 0.5));
+    consolidatedDays = beforeShape - countShortDays(input, baseVars, placements).length;
+    best = { ...best, placements };
   }
 
   return {
     placements: best.placements,
     unplaced: best.unplaced,
     totalVariables: total,
-    stats: { steps, backtracks, restarts, ms: Date.now() - started },
+    stats: {
+      steps,
+      backtracks,
+      restarts,
+      ms: Date.now() - started,
+      shortTeacherDays: countShortDays(input, baseVars, best.placements).length,
+      consolidatedDays,
+    },
   };
+}
+
+/**
+ * §20 — consolidate a *finished* timetable's short teacher-days.
+ *
+ * The search above enforces the minimum while it builds, which is the right
+ * way round and works whenever a school has any slack. A school where the
+ * total teaching load divided by (teachers x days) sits barely above the
+ * minimum has almost none, and there the rule and completeness pull against
+ * each other. This pass exists for exactly that case: it starts from a
+ * complete timetable and only ever *moves* lessons, so it cannot cost a single
+ * placement — the worst it can do is fail to improve.
+ *
+ * The move it makes is a whole-day evacuation: take every lesson a teacher has
+ * on a day that is too thin, and try to re-home all of them on other days. All
+ * or nothing, and kept only if the school's total shortfall actually falls —
+ * shuffling one short day into another is not progress.
+ */
+export function consolidateShortDays(
+  input: SolverInput,
+  baseVars: SolverVariable[],
+  placements: Placement[],
+  deadline: number,
+): Placement[] {
+  const state = new SolverState(input);
+  const varById = new Map(baseVars.map((v) => [v.id, v]));
+  const byVar = new Map<number, Placement>();
+  /** which variable holds each (section, day, period) — the swap-partner index */
+  const occupant = new Map<string, number>();
+  /**
+   * Where each variable stood before the current attempt touched it.
+   *
+   * Recorded by *position*, not as a list of steps: an attempt contains swaps,
+   * and replaying a swap backwards one move at a time puts two lessons in one
+   * cell halfway through. Lifting everything touched and then putting it all
+   * back is order-independent, and order-independence is the whole point.
+   */
+  let touched: Map<number, Placement> | null = null;
+
+  const cellKeys = (v: SolverVariable, day: number, period: number) =>
+    v.classSectionIds.flatMap((cs) =>
+      Array.from({ length: v.span }, (_, i) => `${cs}@${day}:${period + i}`),
+    );
+  const put = (v: SolverVariable, day: number, period: number, roomId: number | null) => {
+    state.place(v, day, period, roomId);
+    byVar.set(v.id, { ...byVar.get(v.id)!, day, period, roomId });
+    for (const k of cellKeys(v, day, period)) occupant.set(k, v.id);
+  };
+  const lift = (v: SolverVariable) => {
+    const at = byVar.get(v.id)!;
+    state.unplace(v, at.day, at.period, at.roomId);
+    for (const k of cellKeys(v, at.day, at.period)) occupant.delete(k);
+    return at;
+  };
+  const touch = (v: SolverVariable) => {
+    if (touched && !touched.has(v.id)) touched.set(v.id, byVar.get(v.id)!);
+  };
+
+  for (const p of placements) {
+    const v = varById.get(p.variableId);
+    if (!v) continue;
+    byVar.set(p.variableId, p);
+    state.place(v, p.day, p.period, p.roomId);
+    for (const k of cellKeys(v, p.day, p.period)) occupant.set(k, v.id);
+  }
+
+  let metric = state.totalShortfall();
+
+  /**
+   * Get this lesson off `awayFrom`, swapping with whatever is in the way if
+   * need be — which is the normal case, not the exception. A school whose
+   * sections are 100% full has no empty cell anywhere, so a pass that could
+   * only *move* lessons would be a no-op on exactly the timetables that need
+   * it. Takes the first legal landing, best day first; whether the attempt as
+   * a whole was worth making is the caller's judgement.
+   */
+  const rehome = (v: SolverVariable, awayFrom: number): boolean => {
+    touch(v);
+    const home = lift(v);
+    const cands = v.domain
+      .filter((c) => c.day !== awayFrom)
+      .sort((a, b) => dayCost(state, v, a.day) - dayCost(state, v, b.day));
+
+    for (const c of cands) {
+      if (Date.now() >= deadline) break;
+      const direct = state.check(v, c.day, c.period);
+      if (direct.ok) { put(v, c.day, c.period, direct.roomId); return true; }
+
+      const holderId = occupant.get(`${v.classSectionIds[0]}@${c.day}:${c.period}`);
+      const w = holderId !== undefined ? varById.get(holderId) : undefined;
+      if (!w || w.id === v.id || w.span !== v.span) continue;
+
+      const wHome = lift(w);
+      const forV = state.check(v, c.day, c.period);
+      if (forV.ok) {
+        state.place(v, c.day, c.period, forV.roomId);
+        const forW = state.check(w, home.day, home.period);
+        state.unplace(v, c.day, c.period, forV.roomId);
+        if (forW.ok) {
+          touch(w);
+          put(w, home.day, home.period, forW.roomId);
+          put(v, c.day, c.period, forV.roomId);
+          return true;
+        }
+      }
+      put(w, wHome.day, wHome.period, wHome.roomId);
+    }
+    put(v, home.day, home.period, home.roomId);
+    return false;
+  };
+
+  /**
+   * Clear one thin teacher-day entirely.
+   *
+   * All or nothing, because half of it is worse than none: taking one lesson
+   * off a two-period Tuesday leaves a one-period Tuesday, which scores worse
+   * than what it started with. So the whole day moves speculatively and is
+   * kept only if the school's total shortfall actually falls.
+   */
+  const evacuate = (teacherId: number, day: number): boolean => {
+    const lessons = [...byVar.values()]
+      .filter((p) => p.day === day && teachersOf(varById.get(p.variableId)!).includes(teacherId))
+      .map((p) => varById.get(p.variableId)!);
+    if (lessons.length === 0) return false;
+
+    touched = new Map();
+    let all = true;
+    for (const v of lessons) {
+      if (!rehome(v, day)) { all = false; break; }
+    }
+    if (all && state.totalShortfall() < metric) {
+      touched = null;
+      metric = state.totalShortfall();
+      return true;
+    }
+    for (const id of touched.keys()) lift(varById.get(id)!);
+    for (const [id, at] of touched) put(varById.get(id)!, at.day, at.period, at.roomId);
+    touched = null;
+    return false;
+  };
+
+  for (let round = 0; round < 8 && metric > 0 && Date.now() < deadline; round++) {
+    let improved = false;
+    // Thinnest days first: a day holding one lesson clears as soon as that one
+    // lesson finds a home, which is the cheapest win available.
+    for (const s of state.shortDays().sort((a, b) => a.periods - b.periods)) {
+      if (Date.now() >= deadline) break;
+      if (evacuate(s.teacherId, s.day)) improved = true;
+    }
+    if (!improved) break;
+  }
+
+  return [...byVar.values()];
+}
+
+/** How unwelcome `day` is for this lesson, §20-wise: 0 = every teacher is
+ *  already past their minimum there, higher = it would start a thin day. */
+function dayCost(state: SolverState, v: SolverVariable, day: number): number {
+  let cost = 0;
+  for (const t of teachersOf(v)) {
+    const min = state.minPerDayOf(t);
+    const count = state.teacherDayLoad(t, day);
+    if (min > 1 && count === 0) cost += min;
+    else if (min > 1 && count < min) cost += min - count;
+  }
+  return cost;
+}
+
+/**
+ * §20 audit over a finished (or partial) assignment: which teacher-days ended
+ * up with periods but fewer than the teacher's minimum. Replaying through a
+ * plain SolverState keeps the arithmetic in one place — the same counters the
+ * search maintained, rather than a second implementation that could disagree.
+ */
+export function countShortDays(
+  input: SolverInput,
+  baseVars: SolverVariable[],
+  placements: Placement[],
+): Array<{ teacherId: number; day: number; periods: number; min: number }> {
+  const state = new SolverState(input);
+  const byId = new Map(baseVars.map((v) => [v.id, v]));
+  for (const p of placements) {
+    const v = byId.get(p.variableId);
+    if (v) state.place(v, p.day, p.period, p.roomId);
+  }
+  return state.shortDays();
 }
 
 function repair(
   input: SolverInput,
   baseVars: SolverVariable[],
   placements: Placement[],
+  minBudget: Map<number, number> | null,
 ): { placements: Placement[]; unplaced: UnplacedVariable[] } {
-  const state = new SolverState(input);
+  const state = new SolverState(input, { minPerDayBudget: minBudget ?? undefined });
   const varById = new Map(baseVars.map((v) => [v.id, v]));
   const placementByVar = new Map<number, Placement>();
   for (const p of placements) {
@@ -162,10 +397,11 @@ function attemptSolve(
   started: number,
   budgetMs: number,
   opts: SolveOptions,
+  minBudget: Map<number, number> | null,
   onStep: () => void,
   onBacktrack: () => void,
 ): { placements: Placement[]; unplaced: UnplacedVariable[] } {
-  const state = new SolverState(input);
+  const state = new SolverState(input, { minPerDayBudget: minBudget ?? undefined });
 
   // §5.2 static constrainedness order: smallest domain first, blocks and merged
   // groups early, tie-broken by the teacher's cross-section degree.
@@ -200,10 +436,32 @@ function attemptSolve(
       return tc?.hasP1Rule && v.classSectionIds.every((id) => tc.p1OwnSections.has(id));
     });
     const jitter = new Map(values.map((val) => [val, random()]));
+    /**
+     * §20 — what a day is worth to this teacher. Only when the rule is being
+     * enforced: the relaxed fallback pass has to behave exactly as the solver
+     * did before §20 existed, or it inherits the very bias it exists to escape.
+     *
+     * The old rule was simply "prefer the emptiest day", which is precisely
+     * what produced the one-period days: a light load, offered five equally
+     * empty days, ends up spread one lesson to each. Now a day the teacher has
+     * already started but not yet filled is the cheapest place to put a lesson,
+     * and opening a fresh day is the most expensive — so the week packs itself
+     * into whole days instead of dribbling across them. Once a day is past the
+     * minimum the old spread preference takes over again, so nobody's Monday
+     * absorbs the entire week.
+     */
+    const dayPreference = (t: number, day: number) => {
+      const min = minBudget ? state.minPerDayOf(t) : 1;
+      const count = state.teacherDayLoad(t, day);
+      if (min <= 1) return count;
+      if (count === 0) return 6;
+      if (count < min) return -8;
+      return count * 0.5;
+    };
     values.sort((a, b) => {
       const load = (val: { day: number; period: number }) =>
         state.sectionDayLoad(v.classSectionIds[0], v.dayKey, val.day) * 4 +
-        varTeachers.reduce((n, t) => n + state.teacherDayLoad(t, val.day), 0) +
+        varTeachers.reduce((n, t) => n + dayPreference(t, val.day), 0) +
         (ownP1 ? (val.period === 1 ? -8 : 0) : 0) +
         (jitter.get(val) ?? 0);
       return load(a) - load(b);

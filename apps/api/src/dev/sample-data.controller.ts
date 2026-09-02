@@ -129,10 +129,17 @@ export class SampleDataController {
       ];
       for (const [subj, pw, maxDay] of plan) {
         await this.prisma.classSubject.upsert({
-          where: { classId_subjectId: { classId: klass.id, subjectId: subjects[subj] } },
+          where: {
+            classId_subjectId_academicYearId: {
+              classId: klass.id,
+              subjectId: subjects[subj],
+              academicYearId: year.id,
+            },
+          },
           create: {
             schoolId,
             classId: klass.id,
+            academicYearId: year.id,
             subjectId: subjects[subj],
             periodsPerWeek: pw,
             maxPeriodsPerDay: maxDay,

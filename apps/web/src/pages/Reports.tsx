@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import type { MeResponse } from "@edutimetable/shared";
 import { api } from "../api";
 import { asMessage, Card, DataTable, ErrorNote, Field } from "../components";
 import { useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
+import { PrintSheet, type PrintContext } from "./PrintSheet";
 import { WeekGrid, type GridPayload } from "./WeekGrid";
 
 type ReportKind = "class-section" | "teacher" | "rooms" | "load";
@@ -17,7 +19,7 @@ interface Options {
 
 /** §10 Reports screen — filter bar, on-screen grid ≤1s (Redis-cached compact
  *  payloads), Print (browser print-style PDF) and CSV export. */
-export function Reports() {
+export function Reports({ me }: { me: MeResponse | null }) {
   const { current } = useConfigCtx();
   // a report card from Ask AI deep-links here with the filters it chose (§13.1)
   const [params] = useSearchParams();
@@ -28,6 +30,16 @@ export function Reports() {
   const [date, setDate] = useState("");
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * §10 — the sheets handed to the printer.
+   *
+   * They live in the DOM (hidden on screen) rather than in a new window,
+   * because a popup inherits none of the app's stylesheet and every browser
+   * blocks it about half the time. `window.print()` after a render is the
+   * boring, reliable path.
+   */
+  const [sheets, setSheets] = useState<GridPayload[] | null>(null);
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     api<Options>("/reports/options")
@@ -54,6 +66,66 @@ export function Reports() {
 
   useEffect(() => { load(); }, [load]);
 
+  /**
+   * Render sheets, let the browser lay them out, then print.
+   *
+   * The `requestAnimationFrame` pair is not superstition: `window.print()`
+   * blocks, and calling it in the same tick as the state update prints the
+   * PREVIOUS render — an empty page. Two frames is the cheap, reliable way to
+   * be sure the sheets are on the page first.
+   */
+  const printSheets = (payloads: GridPayload[]) => {
+    setSheets(payloads);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        window.print();
+        // Kept until after the dialog closes, so a cancelled print can be
+        // retried without refetching everything.
+        setTimeout(() => setSheets(null), 1000);
+      }),
+    );
+  };
+
+  const printOne = () => {
+    if (data && (data.kind === "class-section" || data.kind === "teacher")) printSheets([data as GridPayload]);
+    else window.print();
+  };
+
+  /**
+   * Every class-section (or every teacher) in one run — the ask that turns a
+   * morning of clicking Print fifty-six times into one action.
+   *
+   * Fetched a few at a time rather than all at once: these are Redis-cached
+   * (§14) so they are fast, but firing sixty parallel requests at the API is
+   * how a report screen becomes an outage.
+   */
+  const printAll = async () => {
+    const targets =
+      kind === "teacher"
+        ? (options?.teachers ?? []).map((t) => ({ id: t.id, path: `/reports/teacher/${t.id}` }))
+        : (options?.sections ?? []).map((s) => ({ id: s.id, path: `/reports/class-section/${s.id}` }));
+    if (targets.length === 0) return;
+    setError(null);
+    setBatch({ done: 0, total: targets.length });
+    const q = date ? `?date=${date}` : "";
+    const out: GridPayload[] = [];
+    try {
+      for (let i = 0; i < targets.length; i += 4) {
+        const chunk = targets.slice(i, i + 4);
+        const got = await Promise.all(chunk.map((t) => api<GridPayload>(`${t.path}${q}`)));
+        out.push(...got);
+        setBatch({ done: Math.min(targets.length, i + chunk.length), total: targets.length });
+      }
+      printSheets(out);
+    } catch (e) {
+      setError(asMessage(e));
+    } finally {
+      setBatch(null);
+    }
+  };
+
+  const printCtx: PrintContext = { me, timetableName: current?.name ?? null, printedAt: new Date() };
+
   const exportCsv = () => {
     if (!data) return;
     let rows: string[][] = [];
@@ -76,6 +148,14 @@ export function Reports() {
           ...g.workingDays.map((d) => {
             const c = g.grid[`${d}:${p.periodNumber}`];
             if (!c) return "Free";
+            // §4.9: an elective cell is several lessons. Flattening it to the
+            // block name would export a timetable that hides which language a
+            // child is actually in.
+            if (c.electiveOptions?.length) {
+              return `${c.blockName ?? c.subject ?? "Elective"}: ${c.electiveOptions
+                .map((o) => `${o.subject} — ${o.teacher ?? ""}${o.room ? `, ${o.room}` : ""}${o.substituted ? " [SUB]" : ""}`)
+                .join(" | ")}`;
+            }
             const main = g.kind === "teacher" ? c.classSection : c.subject;
             const sub = g.kind === "teacher" ? c.subject : c.teacher;
             return `${main ?? ""} (${sub ?? ""}${c.room ? `, ${c.room}` : ""})${c.substituted ? " [SUB]" : ""}`;
@@ -92,7 +172,22 @@ export function Reports() {
   };
 
   return (
-    <div>
+    <>
+      {/* Hidden on screen, and the only thing on the page in print. Rendering
+          them here rather than in a popup means they inherit the app's
+          stylesheet, so the printed grid is the grid people already know. */}
+      {sheets && (
+        <div className="print-root">
+          {sheets.map((g, i) => (
+            <PrintSheet key={`${g.kind}-${g.label}-${i}`} ctx={printCtx} grid={g} />
+          ))}
+        </div>
+      )}
+
+      {/* Everything below is the SCREEN. Marking the whole of it, rather than
+          tagging each card, means a card added later cannot accidentally end
+          up on the printout — which is the failure this replaced. */}
+      <div className="screen-only">
       <Card title="Reports" sub="All reports read the PUBLISHED timetable (§10); pick a date to overlay that day's substitutions.">
         <ErrorNote message={error} />
         <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1fr auto auto", gap: 10, alignItems: "end" }}>
@@ -126,9 +221,25 @@ export function Reports() {
               <input type="date" style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} />
             </Field>
           ) : <div />}
-          <button className="btn btn-secondary" style={{ marginBottom: 18 }} onClick={() => window.print()} disabled={!data}>🖨 Print / PDF</button>
+          <button className="btn btn-secondary" style={{ marginBottom: 18 }} onClick={printOne} disabled={!data}>🖨 Print / PDF</button>
           <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={exportCsv} disabled={!data}>⬇ Excel (CSV)</button>
         </div>
+
+        {(kind === "class-section" || kind === "teacher") && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+            <button className="btn btn-secondary" onClick={printAll} disabled={batch !== null}>
+              {batch
+                ? `Preparing ${batch.done} of ${batch.total}…`
+                : kind === "teacher"
+                  ? `🖨 Print all ${options?.teachers.length ?? 0} teachers`
+                  : `🖨 Print all ${options?.sections.length ?? 0} class-sections`}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+              One sheet per {kind === "teacher" ? "teacher" : "class"}, each on its own page — print to PDF for a single file
+              {date ? `, with ${date}'s substitutions overlaid` : ""}.
+            </span>
+          </div>
+        )}
       </Card>
 
       {data && (data.kind === "class-section" || data.kind === "teacher") && (
@@ -178,6 +289,7 @@ export function Reports() {
           />
         </Card>
       )}
-    </div>
+      </div>
+    </>
   );
 }

@@ -10,12 +10,40 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import {
   dayNumber,
+  formatPins,
+  parsePins,
+  parsePinText,
+  placementFromLabel,
+  placementToLabel,
   runFeasibility,
   validateWorkbook,
+  type RawSheet,
   type ExistingData,
   type ImportPlan,
   type ValidatedRow,
 } from "@edutimetable/shared";
+import { Prisma } from "@prisma/client";
+
+/**
+ * §4.9 Phase 15 — the Electives sheet's two placement columns, turned into the
+ * pair of database fields.
+ *
+ * Deliberately forgiving: a `Fixed slots` row whose slot list cannot be read
+ * falls back to letting the solver choose rather than importing a half-pinned
+ * block. A file that pins nothing produces a school that generates; a file
+ * that pins the wrong cells produces one that does not, and the person who
+ * typed it is not in the room to be asked.
+ */
+function electivePlacement(data: Record<string, unknown>): {
+  placement: "solver" | "same_period" | "fixed";
+  fixedSlots: Prisma.InputJsonValue | typeof Prisma.DbNull;
+} {
+  const placement = placementFromLabel(data.placement);
+  if (placement !== "fixed") return { placement, fixedSlots: Prisma.DbNull };
+  const { pins, bad } = parsePinText(String(data.fixedSlots ?? ""));
+  if (bad.length > 0 || pins.length === 0) return { placement: "solver", fixedSlots: Prisma.DbNull };
+  return { placement, fixedSlots: pins.map((p) => ({ day: p.day, period: p.period })) };
+}
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
@@ -51,12 +79,12 @@ export class ImportService {
         this.prisma.schoolClass.findMany({ where: { schoolId } }),
         this.prisma.classSection.findMany({
           where: { class: { schoolId } },
-          include: { class: true, section: true, timetableConfig: true },
+          include: { class: true, section: true, academicYear: true, timetableConfig: true },
         }),
         this.prisma.room.findMany({ where: { schoolId } }),
         this.prisma.subject.findMany({ where: { schoolId } }),
         this.prisma.teacher.findMany({ where: { schoolId } }),
-        this.prisma.classSubject.findMany({ where: { class: { schoolId } }, include: { class: true, subject: true } }),
+        this.prisma.classSubject.findMany({ where: { class: { schoolId } }, include: { class: true, subject: true, academicYear: true } }),
         this.prisma.teacherSubjectClassSection.findMany({
           where: { classSection: { class: { schoolId } } },
           include: { subject: true, classSection: { include: { class: true, section: true } } },
@@ -70,10 +98,12 @@ export class ImportService {
       const days = Array.isArray(c.workingDays) ? (c.workingDays as number[]).length : 5;
       capacityByTimetable[c.name] = c.periodsPerDay * days;
     }
+    // Phase 19: keyed "year||label". The same "Class 5-A" exists once per
+    // session it has run, so a bare label let the last one loaded win.
     const capacityByClassSection: Record<string, { cap: number; timetable: string }> = {};
     for (const cs of sections) {
       if (!cs.timetableConfig) continue;
-      capacityByClassSection[this.label(cs)] = {
+      capacityByClassSection[`${cs.academicYear.name}||${this.label(cs)}`] = {
         cap: capacityByTimetable[cs.timetableConfig.name] ?? 0,
         timetable: cs.timetableConfig.name,
       };
@@ -87,7 +117,7 @@ export class ImportService {
       subjects: subjects.map((s) => s.name),
       teacherCodes: teachers.map((t) => t.employeeCode),
       activeTeacherCodes: teachers.filter((t) => t.isActive).map((t) => t.employeeCode),
-      curriculum: curriculum.map((r) => `${r.class.name}||${r.subject.name}`),
+      curriculum: curriculum.map((r) => `${r.class.name}||${r.subject.name}||${r.academicYear.name}`),
       mappings: mappings.map((m) => `${m.subject.name}||${this.label(m.classSection)}`),
       classTeacherAssigned: sections.filter((cs) => cs.classTeacherId !== null).map((cs) => this.label(cs)),
       electiveBlocks: blocks.map((b) => b.name),
@@ -138,7 +168,7 @@ export class ImportService {
           orderBy: { name: "asc" },
         }),
         this.prisma.teacherUnavailability.findMany({ where: { teacher: { schoolId } }, include: { teacher: true } }),
-        this.prisma.classSubject.findMany({ where: { class: { schoolId } }, include: { class: true, subject: true } }),
+        this.prisma.classSubject.findMany({ where: { class: { schoolId } }, include: { class: true, subject: true, academicYear: true } }),
         this.prisma.teacherSubjectClassSection.findMany({
           where: { classSection: { class: { schoolId } } },
           include: { teacher: true, subject: true, classSection: { include: { class: true, section: true } }, preferredRoom: true },
@@ -182,7 +212,8 @@ export class ImportService {
         })),
         Subjects: subjects.map((s) => ({ name: s.name, code: s.code, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod })),
         Teachers: teachers.map((t) => ({
-          employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay, maxPeriodsPerWeek: t.maxPeriodsPerWeek,
+          employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay,
+          minPeriodsPerDay: t.minPeriodsPerDay, maxPeriodsPerWeek: t.maxPeriodsPerWeek,
           classTeacherPeriodRule: t.classTeacherPeriodRule, periodPattern: t.periodPattern,
           alternateDaySet: Array.isArray(t.alternateDaySet) ? (t.alternateDaySet as number[]).map((d) => DAYS[d]) : [],
           classNames: t.eligibility.map((e) => e.class.name),
@@ -193,7 +224,8 @@ export class ImportService {
           employeeCode: u.teacher.employeeCode, day: DAYS[u.dayOfWeek], period: u.periodNumber, reason: u.reason,
         })),
         Curriculum: curriculum.map((r) => ({
-          className: r.class.name, subjectName: r.subject.name, periodsPerWeek: r.periodsPerWeek,
+          className: r.class.name, academicYear: r.academicYear.name,
+          subjectName: r.subject.name, periodsPerWeek: r.periodsPerWeek,
           maxPeriodsPerDay: r.maxPeriodsPerDay, samePeriodAcrossWeek: r.samePeriodAcrossWeek,
           consecutiveBlockSize: r.consecutiveBlockSize, consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
         })),
@@ -223,6 +255,10 @@ export class ImportService {
             subjectName: o.subject.name,
             employeeCode: o.teacher.employeeCode,
             room: o.room.name,
+            // §4.9 Phase 15: repeated on every option row like the block's
+            // other columns, so an export re-imports to the same block.
+            placement: placementToLabel(b.placement),
+            fixedSlots: b.placement === "fixed" ? formatPins(parsePins(b.fixedSlots)) : "",
           })),
         ),
       },
@@ -240,9 +276,31 @@ export class ImportService {
         `That file could not be opened as an Excel workbook (${(e as Error).message}). Save it as .xlsx and try again.`,
       );
     }
+    return this.dryRunSheets(schoolId, parsed.sheets, parsed.unknownSheets, parsed.truncated);
+  }
+
+  /**
+   * The dry run, from rows rather than from a file (§13.5).
+   *
+   * `validateWorkbook` was always written to take plain rows — that is what let
+   * the §23 ERP sync reuse it instead of growing a second validator. The AI
+   * data-entry path is the third source into the same pipe, so a proposal the
+   * assistant drafts is checked by exactly the same rules an upload is: the
+   * duplicate detection, the cross-sheet reference resolution, the §4.8 block
+   * rule, the weekly-capacity guard. A separate validator for the AI would
+   * eventually disagree with this one, and the disagreement would be silent.
+   */
+  async dryRunSheets(
+    schoolId: number,
+    sheets: RawSheet[],
+    unknownSheets: string[] = [],
+    truncated: string[] = [],
+  ): Promise<DryRunResult & { rows: Record<string, ValidatedRow[]> }> {
+    const parsed = { sheets, unknownSheets, truncated };
     const existing = await this.existingData(schoolId);
     const { plan, rows } = validateWorkbook(parsed.sheets, existing);
     this.checkElectiveRowsAgree(rows, plan);
+    this.checkElectivePlacement(rows, plan);
 
     // readiness today, so the preview can say what the import is working toward
     let readinessPreview: DryRunResult["readinessPreview"] = null;
@@ -302,8 +360,74 @@ export class ImportService {
     }
   }
 
-  private addIssue(plan: ImportPlan, r: ValidatedRow, column: string, message: string, fix: string) {
-    plan.issues.push({ severity: "error", sheet: "Electives", row: r.row, column, code: "ELECTIVE_ROWS_DISAGREE", message, fix });
+  /**
+   * §4.9 Phase 15 — the `When` / `Fixed Slots` pair.
+   *
+   * Pinning removes cells from the solver rather than nudging it, so a file
+   * that names them wrongly must be refused here, at the cell, not quietly
+   * downgraded to "solver chooses" at commit time. The person who typed
+   * "Mondey P4" needs to be told; a school that silently loses its language
+   * slot finds out weeks later.
+   */
+  private checkElectivePlacement(rows: Record<string, ValidatedRow[]>, plan: ImportPlan) {
+    const firstOf = new Map<string, { row: number; placement: string }>();
+    for (const r of rows["Electives"] ?? []) {
+      const key = String(r.data.blockName).toLowerCase();
+      const placement = placementFromLabel(r.data.placement);
+      const text = String(r.data.fixedSlots ?? "").trim();
+
+      const first = firstOf.get(key);
+      if (!first) firstOf.set(key, { row: r.row, placement });
+      else if (first.placement !== placement) {
+        this.addIssue(plan, r, "placement",
+          `${r.data.blockName} says '${placementToLabel(placement)}' here but '${placementToLabel(first.placement)}' on row ${first.row} — when a block runs belongs to the block, not to one option.`,
+          `Make this row's When match row ${first.row}.`);
+      }
+
+      if (placement !== "fixed") {
+        if (text) {
+          this.addIssue(plan, r, "fixedSlots",
+            `${r.data.blockName} lists fixed slots but When is '${placementToLabel(placement)}', so they would be ignored.`,
+            `Set When to 'Fixed slots' to use them, or clear the Fixed Slots cell.`,
+            "ELECTIVE_PIN_IGNORED");
+        }
+        continue;
+      }
+
+      const { pins, bad } = parsePinText(text);
+      if (bad.length > 0) {
+        this.addIssue(plan, r, "fixedSlots",
+          `Could not read ${bad.map((b) => `'${b}'`).join(", ")} as a slot.`,
+          `Write each slot as a day and a period, e.g. Mon P4, Wed P4.`,
+          "ELECTIVE_PIN_UNREADABLE");
+        continue;
+      }
+      const wanted = r.data.periodsPerWeek as number;
+      if (pins.length !== wanted) {
+        this.addIssue(plan, r, "fixedSlots",
+          pins.length === 0
+            ? `${r.data.blockName} is set to fixed slots but none are listed.`
+            : `${r.data.blockName} needs ${wanted} periods/week but ${pins.length} slot(s) are fixed.`,
+          `List exactly ${wanted} slot(s), e.g. ${Array.from({ length: Math.min(wanted, 3) }, (_, i) => `${["Mon", "Wed", "Fri"][i]} P4`).join(", ")}${wanted > 3 ? ", …" : ""}.`,
+          "ELECTIVE_PIN_COUNT");
+      }
+      const seen = new Set<string>();
+      for (const pin of pins) {
+        const k = `${pin.day}:${pin.period}`;
+        if (seen.has(k)) {
+          this.addIssue(plan, r, "fixedSlots",
+            `${formatPins([pin])} is listed twice — one slot can only hold this block once.`,
+            `Remove the repeat, or move it to another day or period.`,
+            "ELECTIVE_PIN_DUPLICATE");
+          break;
+        }
+        seen.add(k);
+      }
+    }
+  }
+
+  private addIssue(plan: ImportPlan, r: ValidatedRow, column: string, message: string, fix: string, code = "ELECTIVE_ROWS_DISAGREE") {
+    plan.issues.push({ severity: "error", sheet: "Electives", row: r.row, column, code, message, fix });
     const sheet = plan.sheets.find((s) => s.sheet === "Electives");
     if (sheet) {
       sheet.errors += 1;
@@ -324,13 +448,34 @@ export class ImportService {
   async commit(schoolId: number, file: Buffer) {
     // re-validate from the file itself — never trust a plan handed back by a client
     const { plan, rows } = await this.dryRun(schoolId, file);
+    return this.applyValidated(schoolId, plan, rows);
+  }
+
+  /**
+   * Commit rows that did not come from a file (§13.5).
+   *
+   * Re-validates here rather than accepting a caller's plan — the same rule the
+   * file path holds to. The AI proposal is re-read from its server-side stash
+   * and checked again at the moment of the write, so a preview taken minutes
+   * ago cannot become the list of writes.
+   */
+  async commitSheets(schoolId: number, sheets: RawSheet[]) {
+    const { plan, rows } = await this.dryRunSheets(schoolId, sheets);
+    return this.applyValidated(schoolId, plan, rows);
+  }
+
+  private async applyValidated(
+    schoolId: number,
+    plan: DryRunResult["plan"],
+    rows: Record<string, ValidatedRow[]>,
+  ) {
     if (!plan.ok) {
       throw new BadRequestException(
-        `This file still has ${plan.totals.errors} error(s) — nothing was imported. Run the preview to see them.`,
+        `There ${plan.totals.errors === 1 ? "is" : "are"} still ${plan.totals.errors} error(s) — nothing was written. Run the preview to see them.`,
       );
     }
     if (plan.totals.create === 0) {
-      return { ok: true, created: {}, message: "Everything in this file already exists — nothing to import.", plan };
+      return { ok: true, created: {}, message: "Everything here already exists — nothing to add.", plan };
     }
 
     const created: Record<string, number> = {};
@@ -413,6 +558,7 @@ export class ImportService {
             data: {
               schoolId, employeeCode: r.data.employeeCode, name: r.data.name,
               maxPeriodsPerDay: r.data.maxPeriodsPerDay ?? 6,
+              minPeriodsPerDay: r.data.minPeriodsPerDay ?? 3,
               maxPeriodsPerWeek: r.data.maxPeriodsPerWeek ?? 30,
               classTeacherPeriodRule: (r.data.classTeacherPeriodRule ?? "none") as never,
               periodPattern: (r.data.periodPattern ?? "every_period") as never,
@@ -516,6 +662,8 @@ export class ImportService {
             data: {
               schoolId,
               classId: classes.get(lc(r.data.className))!,
+              // Phase 19: the sheet names the session, never the active year.
+              academicYearId: years.get(lc(r.data.academicYear))!,
               subjectId: subjects.get(lc(r.data.subjectName))!,
               periodsPerWeek: r.data.periodsPerWeek,
               maxPeriodsPerDay: r.data.maxPeriodsPerDay ?? 1,
@@ -626,6 +774,7 @@ export class ImportService {
               name: String(head.data.blockName),
               periodsPerWeek: head.data.periodsPerWeek as number,
               maxPeriodsPerDay: (head.data.maxPeriodsPerDay as number | null) ?? 1,
+              ...electivePlacement(head.data),
               members: { create: memberIds.map((classSectionId) => ({ classSectionId, schoolId })) },
               options: { create: options.map((o) => ({ ...o, schoolId })) },
             },

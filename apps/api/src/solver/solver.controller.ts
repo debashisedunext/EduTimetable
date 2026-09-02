@@ -8,6 +8,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { DraftsService } from "../drafts/drafts.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
 
 export const SOLVER_QUEUE = "solver";
@@ -19,6 +20,7 @@ export class SolverController {
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
     private readonly keys: CacheKeysService,
+    private readonly drafts: DraftsService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -40,8 +42,16 @@ export class SolverController {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 && n <= 20 ? Math.round(n) : fallback;
     };
+    // §22 Phase 17 — a generation writes into its OWN draft by default, so no
+    // button a person presses to explore an alternative can destroy work they
+    // did by hand. `draftId` in the body targets an existing one deliberately.
+    const draft =
+      body?.draftId != null
+        ? await this.drafts.assertWritable(configId, toInt(body.draftId, "draftId"))
+        : await this.drafts.create(configId, { label: body?.label ?? null });
     const job = await this.queue.add("solve", {
       configId,
+      draftId: draft.id,
       // The worker opens its tenant context from this, and the gateway routes
       // progress events by it — a solver job is not school-agnostic work
       // (9.1 / §17).
@@ -57,7 +67,7 @@ export class SolverController {
       },
       optimizeBudgetSec: Math.min(120, Math.max(5, Number(body?.optimizeBudgetSec) || 30)),
     });
-    return { jobId: job.id, mode };
+    return { jobId: job.id, mode, draftId: draft.id, draftNo: draft.draftNo, draftStatus: draft.status };
   }
 
   /**
@@ -66,19 +76,40 @@ export class SolverController {
    */
   @Get("slots")
   @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
-  async slots(@Param("id") id: string, @Query("status") statusQ?: string, @Query("date") dateQ?: string) {
+  async slots(
+    @Param("id") id: string,
+    @Query("status") statusQ?: string,
+    @Query("date") dateQ?: string,
+    @Query("draftId") draftQ?: string,
+  ) {
     const configId = toInt(id, "id");
     const status = statusQ === "published" ? "published" : "draft";
+    // §22 — which named draft to render. Omitted means the config's current
+    // one, so every screen that has never heard of drafts keeps working and a
+    // single-draft school sees exactly what it saw before Phase 17.
+    const draftId =
+      status === "draft"
+        ? await this.drafts.resolve(configId, draftQ ? toInt(draftQ, "draftId") : null)
+        : null;
     // §6 overlay (task 4.5): a date on the published view layers that day's
     // substitutions over the base grid — the stored rows are never mutated
     const date = status === "published" && dateQ && /^\d{4}-\d{2}-\d{2}$/.test(dateQ) ? dateQ : null;
-    const cacheKey = this.keys.slots(configId, `${status}${date ? `:${date}` : ""}`);
+    const cacheKey = this.keys.slots(
+      configId,
+      `${status}${draftId !== null ? `:d${draftId}` : ""}${date ? `:${date}` : ""}`,
+    );
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
     const [slots, sections, config] = await Promise.all([
       this.prisma.timetableSlot.findMany({
-        where: { timetableConfigId: configId, status },
+        // §18 extras belong to no draft and show in both statuses, so they are
+        // included whichever alternative future is being looked at.
+        where: {
+          timetableConfigId: configId,
+          status,
+          ...(draftId !== null ? { OR: [{ draftId }, { source: "extra" as const }] } : {}),
+        },
         select: {
           id: true, classSectionId: true, dayOfWeek: true, periodNumber: true,
           subjectId: true, teacherId: true, roomId: true, mergedGroupId: true, isLocked: true,
@@ -146,6 +177,7 @@ export class SolverController {
 
     const payload = {
       status,
+      draftId,
       workingDays: config.workingDays as number[],
       periods: config.periods.map((p) => ({
         periodNumber: p.periodNumber, startTime: p.startTime, endTime: p.endTime,
@@ -162,10 +194,16 @@ export class SolverController {
       blocks,
       // compact tuples: [classSectionId, day, period, subjectId, teacherId, roomId, mergedGroupId, locked, substituted, electiveBlockId]
       // with a date overlay, teacherId is the SUBSTITUTE for that date and substituted = 1
+      //
+      // §4.9 invariant 9 draws the line between "a grid cell" and "a lesson",
+      // and this payload feeds BOTH: the By Class-Section grid (cells) and the
+      // By Teacher grid (lessons). It used to drop option rows here, which
+      // made a teacher who ONLY takes elective options — a third-language
+      // teacher, typically — look completely unscheduled on the Allocation
+      // Matrix and the Draft Board. The filtering belongs at each consumer,
+      // where the meaning is known: `classSectionId === null` marks an option
+      // row, so a section grid skips it and a teacher grid keeps it.
       slots: slots
-        // Option rows have no section, so they are not cells in this grid —
-        // they are reachable through `blocks[blockId].options`.
-        .filter((s) => s.classSectionId !== null)
         .map((s) => {
           const sub = subBydSlot.get(s.id.toString());
           return [

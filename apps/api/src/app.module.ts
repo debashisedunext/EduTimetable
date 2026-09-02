@@ -23,11 +23,15 @@ import { NotificationsModule } from "./notifications/notifications.module";
 import { ReportsModule } from "./reports/reports.module";
 import { AiModule } from "./ai/ai.module";
 import { ImportModule } from "./import/import.module";
+import { SyncModule } from "./sync/sync.module";
 import { SolverController } from "./solver/solver.controller";
 import { RolesAdminController } from "./admin/roles-admin.controller";
 import { SampleDataController } from "./dev/sample-data.controller";
 import { RouteCensusController } from "./dev/route-census.controller";
 import { ReadinessService } from "./readiness/readiness.service";
+import { AutoFixController } from "./readiness/auto-fix.controller";
+import { DraftsModule } from "./drafts/drafts.module";
+import { AutoFixService } from "./readiness/auto-fix.service";
 
 @Module({
   imports: [
@@ -43,6 +47,7 @@ import { ReadinessService } from "./readiness/readiness.service";
     // TenantModule before PrismaModule: the scoped client is built from the
     // tenant context, so the context service must already exist (9.1 / §17).
     TenantModule,
+    DraftsModule,
     // The tenant registry (§17.3). Optional at runtime — a deployment without
     // CONTROL_DATABASE_URL keeps working as a single school.
     ControlModule,
@@ -58,11 +63,13 @@ import { ReadinessService } from "./readiness/readiness.service";
     ReportsModule,
     AiModule,
     ImportModule,
+    SyncModule,
     BullQueueModule.registerQueue({ name: "solver" }),
   ],
   controllers: [
     HealthController,
     MeController,
+    AutoFixController,
     RolesAdminController,
     SampleDataController,
     // Dev-only. Lets the 9.10 isolation suite enumerate what actually exists,
@@ -72,6 +79,7 @@ import { ReadinessService } from "./readiness/readiness.service";
   ],
   providers: [
     ReadinessService,
+    AutoFixService,
     // Order matters: authentication first, then permission checks.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },

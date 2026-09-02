@@ -3,22 +3,47 @@
  * first against the shared BoardEngine; these endpoints are the authoritative
  * re-validation on drop-confirm (invariant 7) and the publish lifecycle.
  */
-import { Body, Controller, Get, Param, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { requireFields, toInt, type AuthedRequest } from "../masters/crud.util";
 import { BoardService, type CellExpectation, type CellRef } from "./board.service";
 import { PublishService } from "./publish.service";
 
-const cellRef = (o: any, prefix = ""): CellRef => ({
-  classSectionId: toInt(o[`${prefix}classSectionId`] ?? o.classSectionId, "classSectionId"),
-  day: toInt(o[`${prefix}day`] ?? o.day, "day"),
-  period: toInt(o[`${prefix}period`] ?? o.period, "period"),
-});
-const expectation = (o: any): CellExpectation => ({
-  subjectId: toInt(o?.subjectId, "expect.subjectId"),
-  teacherId: toInt(o?.teacherId, "expect.teacherId"),
-});
+/**
+ * A cell is named either by its class-section or — for a §4.9 elective block,
+ * whose option rows belong to no section — by the block itself.
+ */
+const cellRef = (o: any, prefix = ""): CellRef => {
+  const blockId = o?.[`${prefix}electiveBlockId`] ?? o?.electiveBlockId;
+  const day = toInt(o[`${prefix}day`] ?? o.day, "day");
+  const period = toInt(o[`${prefix}period`] ?? o.period, "period");
+  if (blockId != null) {
+    return { classSectionId: null, electiveBlockId: toInt(blockId, "electiveBlockId"), day, period };
+  }
+  return {
+    classSectionId: toInt(o[`${prefix}classSectionId`] ?? o.classSectionId, "classSectionId"),
+    day,
+    period,
+  };
+};
+const expectation = (o: any): CellExpectation => {
+  // A block is identified by the options running in it: it has no subject or
+  // teacher of its own, and two NULLs would make any block look like any other.
+  if (Array.isArray(o?.electiveOptionIds)) {
+    return {
+      subjectId: null,
+      teacherId: null,
+      electiveOptionIds: o.electiveOptionIds.map((x: unknown, i: number) =>
+        toInt(x, `expect.electiveOptionIds[${i}]`),
+      ),
+    };
+  }
+  return {
+    subjectId: toInt(o?.subjectId, "expect.subjectId"),
+    teacherId: toInt(o?.teacherId, "expect.teacherId"),
+  };
+};
 
 @Controller("timetable-configs/:id/board")
 export class BoardController {
@@ -30,8 +55,8 @@ export class BoardController {
   /** SolverInput for the browser's BoardEngine — same rules, zero latency. */
   @Get("context")
   @RequirePermission(PERMISSIONS.TIMETABLE_EDIT)
-  context(@Param("id") id: string) {
-    return this.board.context(toInt(id, "id"));
+  context(@Param("id") id: string, @Query("draftId") draftQ?: string) {
+    return this.board.context(toInt(id, "id"), draftQ ? toInt(draftQ, "draftId") : undefined);
   }
 
   @Post("move")
@@ -55,6 +80,22 @@ export class BoardController {
       cellRef(body.b),
       expectation(body.expectB),
     );
+  }
+
+  /**
+   * §7.3 group swap — a multi-section card (merged group or §4.9 block) landing
+   * on an occupied cell. Separate from `swap` because the client cannot name
+   * what gets displaced: one card can push a DIFFERENT lesson out of each of
+   * its member sections, and the server decides which, from the engine.
+   */
+  @Post("swap-group")
+  @RequirePermission(PERMISSIONS.TIMETABLE_EDIT)
+  swapGroup(@Param("id") id: string, @Body() body: any) {
+    requireFields(body, ["from", "expect", "to"]);
+    return this.board.swapGroup(toInt(id, "id"), cellRef(body.from), expectation(body.expect), {
+      day: toInt(body.to?.day, "to.day"),
+      period: toInt(body.to?.period, "to.period"),
+    });
   }
 
   @Post("place")
@@ -88,14 +129,17 @@ export class BoardController {
 
   @Get("publish/preview")
   @RequirePermission(PERMISSIONS.TIMETABLE_PUBLISH)
-  preview(@Param("id") id: string) {
-    return this.publishSvc.preview(toInt(id, "id"));
+  preview(@Param("id") id: string, @Query("draftId") draftQ?: string) {
+    return this.publishSvc.preview(toInt(id, "id"), draftQ ? toInt(draftQ, "draftId") : null);
   }
 
   @Post("publish")
   @RequirePermission(PERMISSIONS.TIMETABLE_PUBLISH)
-  publish(@Req() req: AuthedRequest, @Param("id") id: string) {
-    return this.publishSvc.publish(toInt(id, "id"), req.user.sub ?? null);
+  publish(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    // §22 — which of the school's drafts becomes the timetable. Omitted means
+    // the current one, so a single-draft school publishes exactly as before.
+    const draftId = body?.draftId != null ? toInt(body.draftId, "draftId") : null;
+    return this.publishSvc.publish(toInt(id, "id"), req.user.sub ?? null, draftId);
   }
 
   @Post("draft-from-published")

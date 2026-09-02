@@ -18,7 +18,7 @@ interface JobSummary {
   totalVariables: number;
   slotRows: number;
   unplaced: { label: string; reason: string }[];
-  stats: { ms: number; steps: number; backtracks: number; restarts: number };
+  stats: { ms: number; steps: number; backtracks: number; restarts: number; shortTeacherDays?: number };
   objective?: {
     weights: { teacherGaps: number; dailyLoadBalance: number; roomChanges: number };
     before: ObjectiveScore;
@@ -27,6 +27,20 @@ interface JobSummary {
     optimization: { attempted: boolean; adopted: boolean; status: string; detail: string; wallTimeSec?: number };
   };
 }
+
+/** §22 — a named draft, as the picker needs it. */
+interface DraftRow {
+  id: number;
+  draftNo: number;
+  label: string | null;
+  status: "draft" | "published" | "archived" | "discarded";
+  placedLessons: number | null;
+  generationPct: number | null;
+  generatedAt: string | null;
+}
+
+/** §22.2 — kept in step with MAX_LIVE_DRAFTS on the server. */
+const MAX_LIVE_DRAFTS = 5;
 
 /** Screen 4 (§8.1): trigger + live progress over Socket.IO + result summary. */
 export function Generate() {
@@ -37,6 +51,14 @@ export function Generate() {
   const { data: latest, refetch: refetchLatest } = useApi<any>(
     current ? `/timetable-configs/${current.id}/generate/latest` : null,
   );
+  // §22.2 — which draft this run writes into. A new one by default, so no
+  // button press can destroy work somebody did by hand; but a school at the
+  // five-draft cap needs to be able to say "overwrite that one" without
+  // throwing a draft away first, which is what used to be the only way out.
+  const { data: drafts, refetch: refetchDrafts } = useApi<DraftRow[]>(
+    current ? `/timetable-configs/${current.id}/drafts` : null,
+  );
+  const [target, setTarget] = useState<"new" | number>("new");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ placed: number; total: number } | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -68,6 +90,7 @@ export function Generate() {
         return next;
       });
       refetchLatest();
+      refetchDrafts();
     });
     socket.on("solver:failed", (d: { reason: string }) => {
       setRunning(false);
@@ -75,7 +98,7 @@ export function Generate() {
       setLog((l) => [...l, `✗ failed: ${d.reason}`]);
     });
     return () => { socket.disconnect(); };
-  }, [refetchLatest]);
+  }, [refetchLatest, refetchDrafts]);
 
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
@@ -83,16 +106,28 @@ export function Generate() {
 
   if (!current) return <p className="screen-sub">Select a timetable first.</p>;
 
+  const live = (drafts ?? []).filter((d) => d.status !== "discarded");
+  const atCap = live.length >= MAX_LIVE_DRAFTS;
+  const chosen = typeof target === "number" ? live.find((d) => d.id === target) ?? null : null;
+  // At the cap "New draft" is not an option, so there is nothing to fall back
+  // to — the choice has to be made rather than defaulted, because every
+  // remaining option overwrites a week somebody may still want.
+  const mustChoose = atCap && target === "new";
+
   const start = async () => {
     setError(null);
-    setLog([`queued ${mode === "optimized" ? "optimized (CP-SAT)" : "fast"} solver for ${current.name}…`]);
+    setLog([
+      `queued ${mode === "optimized" ? "optimized (CP-SAT)" : "fast"} solver for ${current.name}` +
+        `${chosen ? ` → Draft #${chosen.draftNo}` : " → a new draft"}…`,
+    ]);
     setProgress(null);
     try {
       await api(`/timetable-configs/${current.id}/generate`, {
         method: "POST",
-        body: JSON.stringify({ mode, weights }),
+        body: JSON.stringify({ mode, weights, ...(chosen ? { draftId: chosen.id } : {}) }),
       });
       setRunning(true);
+      refetchDrafts();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -116,15 +151,47 @@ export function Generate() {
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span className="badge badge-ok">✓ Feasible — a full solution is guaranteed to exist</span>
-            <button className="btn btn-primary" onClick={start} disabled={running || !readiness?.ready}>
+            <button className="btn btn-primary" onClick={start} disabled={running || !readiness?.ready || mustChoose}>
               {running ? "Generating…" : "⚡ Generate Timetable"}
             </button>
           </div>
         )}
 
-        {readiness?.ready && (
+        {readiness?.ready && drafts && (
           <div style={{ marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 16 }}>
-            <div className="section-label" style={{ display: "block", marginBottom: 10 }}>Generation mode (§5.6)</div>
+            <div className="section-label" style={{ display: "block", marginBottom: 10 }}>
+              Write into (§22)
+            </div>
+            <select
+              value={typeof target === "number" ? String(target) : "new"}
+              onChange={(e) => setTarget(e.target.value === "new" ? "new" : Number(e.target.value))}
+              style={{ ...selectStyle, borderColor: mustChoose ? "var(--signal)" : "var(--line)" }}
+            >
+              <option value="new" disabled={atCap}>
+                {atCap
+                  ? `＋ A new draft — not available, ${live.length} of ${MAX_LIVE_DRAFTS} in use`
+                  : `＋ A new draft (Draft #${Math.max(0, ...live.map((d) => d.draftNo)) + 1})`}
+              </option>
+              {live.map((d) => (
+                <option key={d.id} value={d.id}>
+                  Draft #{d.draftNo}
+                  {d.label ? ` · ${d.label}` : ""}
+                  {d.status !== "draft" ? ` · ${d.status}` : ""}
+                  {d.generationPct !== null ? ` · ${d.generationPct}% filled` : " · empty"}
+                </option>
+              ))}
+            </select>
+            <p style={{ fontSize: 11.5, color: mustChoose ? "var(--signal)" : "var(--ink-faint)", margin: "6px 0 0" }}>
+              {mustChoose
+                ? `All ${MAX_LIVE_DRAFTS} draft slots are in use. Choose which draft to generate into — its current week is replaced — or discard one on the Board first.`
+                : chosen === null
+                  ? "A fresh draft, so nothing you have already generated or edited by hand is touched."
+                  : chosen.status === "published"
+                    ? `Replaces Draft #${chosen.draftNo}'s working copy. The published timetable stays live and unchanged until you publish again.`
+                    : `Replaces Draft #${chosen.draftNo}'s current week. Pinned 🔒 cells and extra classes survive; everything else is re-solved.`}
+            </p>
+
+            <div className="section-label" style={{ display: "block", margin: "18px 0 10px" }}>Generation mode (§5.6)</div>
             <div className="radio-row" style={{ marginBottom: weights && mode === "optimized" ? 14 : 0 }}>
               <label className={`radio-opt${mode === "fast" ? " selected" : ""}`}>
                 <input type="radio" name="genmode" checked={mode === "fast"} onChange={() => setMode("fast")} />
@@ -186,7 +253,17 @@ export function Generate() {
             <Stat n={String(result.slotRows)} l="slot rows" />
             <Stat n={`${Math.round((result.placedVariables / Math.max(1, result.totalVariables)) * 100)}%`} l="fill" />
             <Stat n={`${result.stats.ms}ms`} l="solve time" />
+            {/* §20: 0 is the promise. Anything else is a school-data fact the
+                admin should see, not something to bury. */}
+            <Stat n={String(result.stats.shortTeacherDays ?? 0)} l="short teacher-days" />
           </div>
+          {(result.stats.shortTeacherDays ?? 0) > 0 && (
+            <p style={{ fontSize: 12.5, color: "var(--amber)", marginBottom: 12, lineHeight: 1.6 }}>
+              {result.stats.shortTeacherDays} teacher-day(s) came out below the teacher's minimum periods/day.
+              A complete timetable was preferred over a perfectly shaped one — the Readiness Dashboard names
+              the teachers whose numbers do not divide into whole days.
+            </p>
+          )}
           {result.unplaced.length > 0 && (
             <>
               <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--amber)", marginBottom: 6 }}>
@@ -271,3 +348,8 @@ function Stat({ n, l }: { n: string; l: string }) {
     </div>
   );
 }
+
+const selectStyle: React.CSSProperties = {
+  width: "100%", maxWidth: 460, padding: "8px 10px", border: "1px solid var(--line)",
+  borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "var(--paper)",
+};

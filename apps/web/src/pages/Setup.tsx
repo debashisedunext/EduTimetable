@@ -5,6 +5,7 @@ import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
+import { StepElectives } from "./Electives";
 
 // Capacity-first order: Timetable Config (periods/week capacity) precedes
 // Curriculum and Teacher Mapping so their periods/week entries validate
@@ -18,6 +19,7 @@ const STEPS = [
   "Timetable Config",
   "Curriculum",
   "Teacher Mapping",
+  "Electives",
 ];
 
 /** Setup Wizard (§8.1) — list-first, form-second on every step. */
@@ -77,6 +79,7 @@ export function Setup() {
       {step === 5 && <StepConfig />}
       {step === 6 && <StepCurriculum />}
       {step === 7 && <StepTeacherMapping />}
+      {step === 8 && <StepElectives />}
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
         <button className="btn" style={{ border: "1px solid var(--line)" }} disabled={step === 0} onClick={() => setStep(step - 1)}>← Back</button>

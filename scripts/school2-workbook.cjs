@@ -170,6 +170,8 @@ function buildRows() {
     for (const [subject, periods] of Object.entries(M.curriculumOf(cls).subjects)) {
       curriculum.push({
         className: cls.name,
+        // Phase 19: the curriculum is per session, like the class-sections.
+        academicYear: M.YEAR,
         subjectName: subject,
         periodsPerWeek: periods,
         // A subject of 6 periods over 5 days needs 2/day to be placeable at
@@ -221,7 +223,11 @@ function buildRows() {
     })),
     Teachers: teachers.map((t) => ({
       employeeCode: t.employeeCode, name: t.name,
-      maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30,
+      maxPeriodsPerDay: 6,
+      // §20: a teacher comes in for a proper day or not at all. 3 is the app
+      // default; stated here so the workbook shows what the rule will be.
+      minPeriodsPerDay: 3,
+      maxPeriodsPerWeek: 30,
       classTeacherPeriodRule: "none", periodPattern: "every_period",
       alternateDaySet: "",
       // §18: the band this teacher was staffed into, now recorded as a rule

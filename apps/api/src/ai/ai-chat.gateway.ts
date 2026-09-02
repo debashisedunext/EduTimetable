@@ -129,6 +129,7 @@ export class AiChatGateway implements OnGatewayConnection {
           onDelta: (text) => client.emit("ai:delta", { conversationId, text }),
           onTool: (t) => client.emit("ai:tool", { conversationId, ...t }),
           onCard: (card) => client.emit("ai:card", { conversationId, card }),
+          onProposal: (proposal) => client.emit("ai:proposal", { conversationId, proposal }),
         },
       );
       client.emit("ai:done", { conversationId, answer, tools });

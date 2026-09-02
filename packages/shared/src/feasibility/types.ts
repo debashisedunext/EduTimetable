@@ -47,6 +47,16 @@ export type IssueCode =
   | "ELECTIVE_DAILY_PIGEONHOLE"
   | "ELECTIVE_DAY_INTERSECTION"
   | "ELECTIVE_SUBJECT_DOUBLE_COUNTED"
+  // Check 7b — elective placement (§4.9, Phase 15)
+  | "ELECTIVE_PIN_COUNT"
+  | "ELECTIVE_PIN_INVALID"
+  | "ELECTIVE_PIN_DUPLICATE"
+  | "ELECTIVE_PIN_UNAVAILABLE"
+  | "ELECTIVE_PIN_CLASH"
+  | "ELECTIVE_SAME_PERIOD_TIGHT"
+  // Check 10 — minimum periods per day (§20)
+  | "MIN_DAY_IMPOSSIBLE"
+  | "MIN_DAY_RELAXED"
   // Check 8 — teaching scope and engagement (§18)
   | "TEACHER_NOT_ELIGIBLE"
   | "TEACHER_SCOPE_UNSET"
@@ -68,6 +78,56 @@ export interface EntityRef {
   label: string;
 }
 
+/**
+ * §21 — a machine-applicable form of the `fix` line.
+ *
+ * `fix` is prose written for a person ("Reassign [5-A Maths: 6 periods] to
+ * another teacher, or raise their max load"). Auto-resolve must never parse
+ * that: a resolver that reads English is guessing at the exact moment it is
+ * about to write to the school's master data. So the engine emits the remedy
+ * *as data*, decided where the numbers are already in scope, and the applier
+ * gets exact writes with no judgement of its own to make.
+ *
+ * Three kinds, because they carry very different risk:
+ *
+ *   - `complete` — fills in something the school simply has not stated yet
+ *     (a class teacher, a home room, a teaching scope). Nothing is loosened.
+ *   - `redistribute` — a real change with no rule relaxed: the same teaching
+ *     moved to someone who has room for it.
+ *   - `relax` — raises a cap or lowers a floor. Always shown with its cost,
+ *     never covered by "do not ask again", because a resolver free to loosen
+ *     can take any school to a Readiness Score of 100 without changing one
+ *     real thing, and the score is the whole promise.
+ */
+export type RemedyKind = "complete" | "redistribute" | "relax";
+
+/** The tables a remedy is allowed to touch. */
+export type RemedyEntity =
+  | "teacher"
+  | "classSection"
+  | "mapping"
+  | "electiveOption"
+  | "electiveBlock"
+  | "classSubject";
+
+/** Join tables, where a change is a row that exists or does not. */
+export type RemedyLink = "teacherClass" | "roomSubject";
+
+export type RemedyValue = string | number | boolean | null | number[];
+
+export type RemedyChange =
+  | { op: "set"; entity: RemedyEntity; id: number; field: string; from: RemedyValue; to: RemedyValue }
+  | { op: "link"; entity: RemedyLink; id: number; otherId: number }
+  | { op: "create"; entity: RemedyEntity; data: Record<string, RemedyValue> };
+
+export interface Remedy {
+  kind: RemedyKind;
+  /** one line for the consent card, naming what changes and to what */
+  summary: string;
+  /** every write, in order. Applied together or not at all. */
+  changes: RemedyChange[];
+}
+
 /** One actionable finding — maps 1:1 to a row on the Readiness Dashboard (§4). */
 export interface FeasibilityIssue {
   code: IssueCode;
@@ -76,6 +136,14 @@ export interface FeasibilityIssue {
   message: string;
   entity: EntityRef;
   fix?: string;
+  /**
+   * Stable enough to consent against: assigned by `finalize()`, not by each
+   * check, so a new check cannot forget it. Two issues sharing a code and an
+   * entity get an ordinal.
+   */
+  key?: string;
+  /** §21: present only when this issue can be fixed mechanically. */
+  remedy?: Remedy;
 }
 
 export interface FeasibilityResult {
@@ -132,6 +200,8 @@ export interface SnapshotTeacher {
   id: number;
   name: string;
   maxPeriodsPerDay: number;
+  /** §20: a day is either free or carries at least this many periods. */
+  minPeriodsPerDay: number;
   maxPeriodsPerWeek: number;
   classTeacherPeriodRule: "none" | "always_first_period" | "random";
   periodPattern: "every_period" | "alternate_period" | "alternate_day";
@@ -171,11 +241,33 @@ export interface SnapshotMergedGroup {
  * teacher across several sections; this is several teachers inside one slot,
  * with every member section holding that slot open exactly once.
  */
+/**
+ * §4.9 Phase 15 — when the block runs.
+ *
+ *  - `solver`      the solver picks, as it always has. The default.
+ *  - `same_period` one period NUMBER across the block's days: P4 Mon–Fri, so a
+ *                  whole grade changes rooms together at a known time.
+ *  - `fixed`       exact cells, named by the admin.
+ *
+ * All three are enforced by pruning the variable's domain before search
+ * (invariant 2), so the solver can never consider a slot the school ruled out.
+ */
+export type ElectivePlacement = "solver" | "same_period" | "fixed";
+
+/** One pinned cell. Read only when `placement` is `fixed`. */
+export interface ElectivePin {
+  day: number;
+  period: number;
+}
+
 export interface SnapshotElectiveBlock {
   id: number;
   name: string;
   periodsPerWeek: number;
   maxPeriodsPerDay: number;
+  placement: ElectivePlacement;
+  /** one per occurrence, in order; empty unless `placement` is `fixed` */
+  fixedSlots: ElectivePin[];
   memberClassSectionIds: number[];
   memberLabels: string[];
   /** the parallel lessons — each its own subject, teacher and room */
@@ -209,4 +301,19 @@ export interface FeasibilitySnapshot {
   labRoomsBySubject: Record<number, number[]>;
   /** Room names, for messages that have to name one. */
   roomNames: Record<number, string>;
+  /**
+   * §21: every room, with the type a remedy needs to tell a classroom from a
+   * lab. `roomNames` alone cannot answer "give this section a free room".
+   */
+  rooms: SnapshotRoom[];
+}
+
+export interface SnapshotRoom {
+  id: number;
+  name: string;
+  roomType: string;
+  capacity: number | null;
+  isShared: boolean;
+  /** §19: the subjects this room is set up for; empty = a general room. */
+  subjectIds: number[];
 }

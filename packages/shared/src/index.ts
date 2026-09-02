@@ -156,9 +156,15 @@ export * from "./board/engine";
 export * from "./substitute/engine";
 export * from "./optimize/objective";
 export * from "./optimize/model";
+export * from "./electives/pins";
 export * from "./import/contract";
+export * from "./ai/data-entry";
 export * from "./import/types";
 export * from "./import/validate";
+export * from "./colors/palette";
+export * from "./sync/contract";
+export * from "./sync/reconcile";
+export * from "./sync/json-map";
 
 /** The school a session belongs to (§17, Phase 9.2). */
 export interface SessionSchool {

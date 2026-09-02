@@ -96,7 +96,49 @@ run "11   teaching scope and extra classes" \
 run "12   fixed room assignment" \
   node "$API_DIR/scripts/room-assignment-smoke.cjs"
 
-# 11. The exhaustive sweep, last: it is the slowest, and the most likely to be
+# 11. Report caches must not outlive a publish (§14).
+run "13   report cache invalidation" \
+  node "$API_DIR/scripts/report-cache-smoke.cjs"
+
+# 12. Auto-resolve: applies, verifies, refuses and undoes (§21).
+run "14   auto-resolve remedies" \
+  node "$API_DIR/scripts/auto-fix-smoke.cjs"
+
+# 13. §22 multiple named drafts: several complete timetables coexist, an edit
+#    in one leaves the others byte-identical, and publishing one promotes only
+#    that one. Also pins the cap, the stats' unit, and §18 extras being outside
+#    every draft.
+run "15   multiple named drafts" \
+  node "$API_DIR/scripts/drafts-smoke.cjs"
+
+# 14. §3 year-scoped curriculum: a school running two sessions at once keeps
+#    them apart — separate syllabi, and a teacher's load in last year does not
+#    consume this year's capacity while another wing of the same year still
+#    does. Every school shipped so far has one academic year, so nothing else
+#    in the suite exercises two.
+run "19.1 year-scoped curriculum and teacher load" \
+  node "$API_DIR/scripts/year-scope-smoke.cjs"
+
+# 15. §3.12 clone: a whole timetable copied into a new session — every input
+#    re-pointed at the new sections, none of the generated output carried over,
+#    and the two sessions kept apart afterwards.
+run "19.2 clone a timetable into a new session" \
+  node "$API_DIR/scripts/clone-smoke.cjs"
+
+# 16. §23 ERP master-data sync: the ERP owns identity, the timetable owns
+#    scheduling, and a re-sync must prove it leaves every scheduling field
+#    alone. Also runs two schools against one ERP database.
+run "22   ERP master-data sync" \
+  node "$API_DIR/scripts/erp-sync-smoke.cjs"
+
+# 17. §13.5 AI master-data entry: the assistant drafts, a human applies. Proves
+#    the drafting tool writes nothing, that the importer's rules apply to it
+#    unchanged, that a proposal is single-use and school-scoped, and that a
+#    session without masters.manage is refused at both the tool and the endpoint.
+run "24   AI master-data entry" \
+  node "$API_DIR/scripts/ai-data-entry-smoke.cjs"
+
+# 18. The exhaustive sweep, last: it is the slowest, and the most likely to be
 #    the thing you are iterating on.
 run "9.10 exhaustive route / list / body / tool sweep" \
   node "$API_DIR/scripts/isolation-sweep.cjs"

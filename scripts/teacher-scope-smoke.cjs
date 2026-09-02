@@ -59,6 +59,8 @@ async function call(method, p, token, body) {
       prisma.substitutionLog.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.teacherAbsence.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.timetableSlot.deleteMany({ where: { schoolId: SCHOOL } }),
+      // §22: after the slots — the draft FK is RESTRICT (generated draft_scope)
+      prisma.timetableDraft.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.timetablePublication.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.electiveOption.deleteMany({ where: { schoolId: SCHOOL } }),
       prisma.electiveBlockMember.deleteMany({ where: { schoolId: SCHOOL } }),
@@ -116,7 +118,7 @@ async function call(method, p, token, body) {
       data: { classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
     });
     await prisma.classSubject.create({
-      data: { schoolId: SCHOOL, classId: cls.id, subjectId: subject.id, periodsPerWeek: 20, maxPeriodsPerDay: 4 },
+      data: { schoolId: SCHOOL, classId: cls.id, academicYearId: year.id, subjectId: subject.id, periodsPerWeek: 20, maxPeriodsPerDay: 4 },
     });
     return { cls, cs };
   };

@@ -36,6 +36,8 @@ def solve(model_json: dict[str, Any]) -> dict[str, Any]:
     teacher_day_cap: dict[str, int] = model_json["teacherDayCap"]
     subject_day_cap: dict[str, int] = model_json["subjectDayCap"]
     alternate_period_teachers = set(model_json.get("alternatePeriodTeachers", []))
+    teacher_day_min: dict[str, int] = model_json.get("teacherDayMin", {})
+    teacher_day_forced = set(model_json.get("teacherDayForced", []))
     lab_capacity: dict[str, int] = model_json.get("labCapacity", {})
     weights: dict[str, int] = model_json.get("weights", {})
     time_limit: float = float(model_json.get("timeLimitSec", 30))
@@ -101,8 +103,24 @@ def solve(model_json: dict[str, Any]) -> dict[str, Any]:
             m.Add(sum(lits) <= cap)
 
     for (teacher_id, day), pairs in teacher_day_lits.items():
-        cap = teacher_day_cap.get(f"{teacher_id}@{day}", periods_per_day)
-        m.Add(sum(lit * span for lit, span in pairs) <= cap)
+        key = f"{teacher_id}@{day}"
+        cap = teacher_day_cap.get(key, periods_per_day)
+        total = sum(lit * span for lit, span in pairs)
+        m.Add(total <= cap)
+
+        # §20 minimum periods/day — "this day is empty, or it carries at least
+        # `lo`". Reified on a `works` literal, because a flat lower bound would
+        # force every teacher into every day and make part-timers infeasible.
+        # A day already opened by a locked cell needs no literal: it is used,
+        # so the bound is unconditional.
+        lo = teacher_day_min.get(key, 0)
+        if lo > 0:
+            if key in teacher_day_forced:
+                m.Add(total >= lo)
+            else:
+                works = m.NewBoolVar(f"works_{teacher_id}_{day}")
+                m.Add(total >= lo * works)
+                m.Add(total <= cap * works)
 
     for (key, day), pairs in subject_day_lits.items():
         cap = subject_day_cap.get(f"{key}@{day}", periods_per_day)

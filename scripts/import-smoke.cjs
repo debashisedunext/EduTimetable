@@ -77,6 +77,11 @@ async function counts(prisma) {
   // --------------------------------------------------- 2. dirty file rejected
   console.log("\nA dirty workbook is rejected and writes nothing:");
   const before = await counts(prisma);
+  // Phase 19: the Curriculum sheet names its session. Given here so the row
+  // still reaches the rules this fixture is actually testing — a missing
+  // required column stops the sheet at stage A, and the planted block-overflow
+  // and misspelt-subject errors would never fire.
+  const year = (await prisma.academicYear.findFirst())?.name;
   const dirty = await makeWorkbook({
     Subjects: [
       ["Subject Name", "Code", "Is Lab"],
@@ -88,8 +93,8 @@ async function counts(prisma) {
     ],
     Rooms: [["Room Name", "Type", "Capacity"], [`${P} Lab`, "labratory", "lots"]], // enum typo + non-numeric
     Curriculum: [
-      ["Class Name", "Subject Name", "Periods/Week", "Block Size", "Blocks/Week"],
-      [`${P} Nowhere`, "Mathmatics", 5, 2, 4],  // unknown class, misspelt subject, block overflow
+      ["Class Name", "Academic Year", "Subject Name", "Periods/Week", "Block Size", "Blocks/Week"],
+      [`${P} Nowhere`, year, "Mathmatics", 5, 2, 4],  // unknown class, misspelt subject, block overflow
     ],
     "Subject Mapping": [
       ["Teacher Employee Code", "Subject", "Class-Sections", "Periods/Week", "Merged"],
@@ -116,13 +121,12 @@ async function counts(prisma) {
 
   // ----------------------------------------------------- 3. clean file imports
   console.log("\nA clean workbook imports exactly what the preview promised:");
-  const year = (await prisma.academicYear.findFirst())?.name;
   const clean = await makeWorkbook({
     Classes: [["Class Name", "Sequence"], [`${P} Class`, 99]],
     "Class Sections": [["Class Name", "Section Name", "Academic Year"], [`${P} Class`, "A", year]],
     Subjects: [["Subject Name", "Is Lab"], [`${P} Subject`, "No"]],
     Teachers: [["Employee Code", "Name", "Max Periods/Day"], [`${P}-T1`, `${P} Teacher`, 6]],
-    Curriculum: [["Class Name", "Subject Name", "Periods/Week"], [`${P} Class`, `${P} Subject`, 5]],
+    Curriculum: [["Class Name", "Academic Year", "Subject Name", "Periods/Week"], [`${P} Class`, year, `${P} Subject`, 5]],
     "Subject Mapping": [
       ["Teacher Employee Code", "Subject", "Class-Sections", "Periods/Week"],
       [`${P}-T1`, `${P} Subject`, `${P} Class-A`, 5],

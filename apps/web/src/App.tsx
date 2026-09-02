@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { PERMISSIONS, type MeResponse } from "@edutimetable/shared";
 import { api, getToken, setToken } from "./api";
 import { ConfigContext, type TimetableConfigSummary } from "./hooks";
+import { ColorProvider } from "./colors";
 import { Shell } from "./Shell";
 import { Dashboard } from "./pages/Dashboard";
 import { DevLogin } from "./pages/DevLogin";
@@ -22,6 +23,10 @@ import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
 import { AiSettings } from "./pages/AiSettings";
 import { ImportMasters } from "./pages/ImportMasters";
+import { SyncErp } from "./pages/SyncErp";
+import { Electives } from "./pages/Electives";
+import { Availability } from "./pages/Availability";
+import { AiDock } from "./ai/AiDock";
 import { SchoolProfile } from "./pages/SchoolProfile";
 import { Platform } from "./pages/Platform";
 
@@ -106,7 +111,16 @@ export default function App() {
         <Route
           element={
             <ConfigContext.Provider value={ctx}>
-              <Shell me={me} />
+              {/* §10.5 — the school's subject/class colours, resolved once for
+                  every screen so they cannot disagree. */}
+              <ColorProvider>
+                <Shell me={me} />
+                {/* §13.5 — the assistant, reachable from every screen. It
+                    renders nothing without ai.chat, and the drafting tools
+                    appear only with masters.manage — enforced on the server,
+                    not here. */}
+                <AiDock permissions={me.permissions} />
+              </ColorProvider>
             </ConfigContext.Provider>
           }
         >
@@ -117,6 +131,9 @@ export default function App() {
           } />
           <Route path="/setup" element={<Setup />} />
           <Route path="/import" element={<ImportMasters />} />
+          <Route path="/sync" element={<SyncErp />} />
+          <Route path="/electives" element={<Electives />} />
+          <Route path="/availability" element={<Availability />} />
           <Route path="/readiness" element={<Readiness />} />
           <Route path="/generate" element={<Generate />} />
           <Route path="/matrix" element={<Matrix />} />
@@ -124,7 +141,7 @@ export default function App() {
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
           <Route path="/extra-classes" element={<ExtraClasses />} />
-          <Route path="/reports" element={<Reports />} />
+          <Route path="/reports" element={<Reports me={me} />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
@@ -15,17 +15,28 @@ export class CurriculumController {
     private readonly readiness: ReadinessService,
   ) {}
 
+  /**
+   * Phase 19 — `academicYearId` narrows the list to one session. Optional
+   * rather than required: reading every year is merely noisy, and a GET that
+   * 400s for everybody tells the §17.8 sweep nothing. Writes are the ones that
+   * must name their year (see `create`).
+   */
   @Get()
-  async list(@Req() req: AuthedRequest) {
+  async list(@Req() req: AuthedRequest, @Query("academicYearId") academicYearId?: string) {
     const rows = await this.prisma.classSubject.findMany({
-      where: { class: { schoolId: req.user.schoolId } },
-      include: { class: true, subject: true },
+      where: {
+        class: { schoolId: req.user.schoolId },
+        ...(academicYearId ? { academicYearId: toInt(academicYearId, "academicYearId") } : {}),
+      },
+      include: { class: true, subject: true, academicYear: true },
       orderBy: [{ class: { sequence: "asc" } }, { subject: { name: "asc" } }],
     });
     return rows.map((r) => ({
       id: r.id,
       classId: r.classId,
       className: r.class.name,
+      academicYearId: r.academicYearId,
+      academicYear: r.academicYear.name,
       subjectId: r.subjectId,
       subjectName: r.subject.name,
       periodsPerWeek: r.periodsPerWeek,
@@ -36,21 +47,30 @@ export class CurriculumController {
     }));
   }
 
+  /**
+   * Phase 19 — `academicYearId` is REQUIRED, deliberately not defaulted to the
+   * school's active year. Guessing puts next year's syllabus into last year's
+   * session with no error anywhere, and a curriculum row filed against the
+   * wrong session is invisible until the timetable comes out wrong.
+   */
   @Post()
   async create(@Req() req: AuthedRequest, @Body() body: any) {
-    requireFields(body, ["classId", "subjectId", "periodsPerWeek"]);
+    requireFields(body, ["classId", "academicYearId", "periodsPerWeek", "subjectId"]);
+    const classId = toInt(body.classId, "classId");
+    const academicYearId = toInt(body.academicYearId, "academicYearId");
     const data = this.normalize(body);
-    assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, toInt(body.classId, "classId")));
+    assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, classId, academicYearId));
     const created = await uniq(
       () => this.prisma.classSubject.create({
           data: {
             ...data,
             schoolId: req.user.schoolId,
-            classId: toInt(body.classId, "classId"),
+            classId,
+            academicYearId,
             subjectId: toInt(body.subjectId, "subjectId"),
           },
         }),
-      "Curriculum row for that class & subject",
+      "Curriculum row for that class & subject in that year",
     );
     await this.readiness.invalidate(req.user.schoolId);
     return created;
@@ -60,8 +80,13 @@ export class CurriculumController {
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const existing = await this.prisma.classSubject.findUnique({ where: { id: toInt(id, "id") } });
     if (!existing) throw new BadRequestException("Curriculum row not found");
+    // `normalize` returns only the five shape fields, so a PUT can never move a
+    // row between sessions — that would be a re-key, not an edit.
     const data = this.normalize({ ...existing, ...body });
-    assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, existing.classId));
+    assertWithinWeek(
+      data.periodsPerWeek,
+      await capacityForClass(this.prisma, existing.classId, existing.academicYearId),
+    );
     const updated = await this.prisma.classSubject.update({
       where: { id: existing.id },
       data,

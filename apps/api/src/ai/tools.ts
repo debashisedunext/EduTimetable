@@ -7,8 +7,10 @@
  */
 import { Injectable } from "@nestjs/common";
 import type { ViewScope } from "@edutimetable/shared";
+import { AI_ENTRY_SHEETS, allSheetGuides, type DraftSheet } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { AiDataEntryService } from "./data-entry.service";
 import { ReportsService } from "../reports/reports.service";
 
 export interface ToolContext {
@@ -16,6 +18,15 @@ export interface ToolContext {
   scope: ViewScope;
   /** whether this user may trigger generateReport (§13.3 ai.reports) */
   canReport: boolean;
+  /**
+   * §13.5 — whether this user may DRAFT master data. Not a new permission:
+   * the authority to add a teacher is `masters.manage`, the same one the
+   * Setup Wizard and the Excel import require. The assistant never gets an
+   * authority its user does not already have on a screen.
+   */
+  canWrite: boolean;
+  /** who is asking, for the audit trail on an applied proposal */
+  userId: number | null;
 }
 
 export interface ToolDef {
@@ -53,6 +64,20 @@ export const TOOL_DEFS: ToolDef[] = [
     input_schema: {
       type: "object",
       properties: { search: { type: "string", description: "optional case-insensitive label filter" } },
+    },
+  },
+  {
+    name: "listSubjectMappings",
+    description:
+      "Who teaches what: the current subject mappings (teacher, subject, class-section, periods/week, room), merged teaching groups, and each class-section's class teacher. " +
+      "Read this BEFORE drafting a change to a mapping — Periods/Week is a required column, so changing only the teacher still means sending the periods/week that is already stored, and inventing it would silently rewrite it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        class_section: { type: "string", description: "optional label filter, e.g. 'Class 5-A'" },
+        subject: { type: "string", description: "optional subject-name filter" },
+        employee_code: { type: "string", description: "optional teacher employee-code filter" },
+      },
     },
   },
   {
@@ -155,6 +180,42 @@ export const TOOL_DEFS: ToolDef[] = [
       required: ["report_type"],
     },
   },
+  {
+    name: "draftMasterData",
+    description:
+      "Draft master-data rows for the admin to review. This does NOT write anything: it validates the rows and returns a preview — what would be added, what would CHANGE on rows that already exist, and what is wrong — which the admin then applies with a button. " +
+      "Use it when the user asks to add OR change classes, sections, subjects, teachers, curriculum, class teachers or subject mappings. " +
+      "To change something that exists, send its natural key plus only the fields to change: {employeeCode:'EDX-1042', maxPeriodsPerWeek:24} changes that teacher's weekly cap and nothing else. A field you omit is left alone, so never send a whole record to change one value. " +
+      "The natural key itself can never be changed — renaming a class is not an edit, it is a different class, and the tool will treat it as a new row. " +
+      "Subject Mapping is keyed by (subject, class-section), so the TEACHER is a changeable value there: to move Class 5-A maths to another teacher, send that one row with the new employeeCode. " +
+      "But Periods/Week is a required column, so call listSubjectMappings FIRST and send back the periods/week already stored — do not guess it, or you will change it as well. " +
+      "Two things on that sheet cannot be changed: a merged group's teacher and its member sections are part of what identifies it (send merged rows only to create a new group), and a class-section that has no mapping for that subject yet is an addition, not a change. " +
+      "Send every related sheet in ONE call (adding a class and its sections is one draft), because rows are checked against each other. " +
+      "Never invent a required value: if periods per week, an employee code or a timetable is not stated, ask the user first.\n\n" +
+      "COLUMNS (use these exact field names):\n" + allSheetGuides(),
+    input_schema: {
+      type: "object",
+      properties: {
+        sheets: {
+          type: "array",
+          description: "one entry per master being added",
+          items: {
+            type: "object",
+            properties: {
+              sheet: { type: "string", enum: [...AI_ENTRY_SHEETS] },
+              rows: {
+                type: "array",
+                description: "the rows to add, each an object of column name → value",
+                items: { type: "object" },
+              },
+            },
+            required: ["sheet", "rows"],
+          },
+        },
+      },
+      required: ["sheets"],
+    },
+  },
 ];
 
 @Injectable()
@@ -163,6 +224,7 @@ export class AiToolsService {
     private readonly prisma: PrismaService,
     private readonly reports: ReportsService,
     private readonly readiness: ReadinessService,
+    private readonly dataEntry: AiDataEntryService,
   ) {}
 
   /** Sections this user may see at all — the hard boundary for every tool. */
@@ -180,6 +242,16 @@ export class AiToolsService {
   ): Promise<unknown> {
     const configId = Number(args.timetable_config_id) || currentConfigId;
     switch (name) {
+      // ── §13.5 the one tool that proposes a write ───────────────────────
+      case "draftMasterData": {
+        // Belt and braces on top of the tool-list filter in chat.service: if
+        // this ever ran for a user without `masters.manage`, it stops here.
+        if (!ctx.canWrite) {
+          return { error: "You do not have permission to add master data. Ask an administrator." };
+        }
+        const sheets = Array.isArray(args.sheets) ? (args.sheets as DraftSheet[]) : [];
+        return this.dataEntry.propose(ctx.schoolId, sheets, ctx.userId);
+      }
       case "getTimetableConfigs": {
         const rows = await this.prisma.timetableConfig.findMany({
           where: { schoolId: ctx.schoolId },
@@ -212,6 +284,7 @@ export class AiToolsService {
           name: t.name,
           employeeCode: t.employeeCode,
           maxPeriodsPerDay: t.maxPeriodsPerDay,
+          minPeriodsPerDay: t.minPeriodsPerDay,
           maxPeriodsPerWeek: t.maxPeriodsPerWeek,
           classTeacherPeriodRule: t.classTeacherPeriodRule,
           periodPattern: t.periodPattern,
@@ -239,6 +312,89 @@ export class AiToolsService {
             strength: cs.strength,
           }))
           .filter((r) => !search || r.label.toLowerCase().includes(search));
+      }
+
+      /**
+       * §13.5 Phase C — the read that makes a mapping change possible.
+       *
+       * Without it the assistant could be *asked* to move a subject to another
+       * teacher but could not draft it correctly: Periods/Week is a required
+       * column on that sheet, so a change of teacher alone still has to carry
+       * the periods already stored, and a guess would quietly rewrite them.
+       * Scoped like every other read — a teacher sees their own sections only.
+       */
+      case "listSubjectMappings": {
+        const allowed = this.allowedSectionIds(ctx.scope);
+        if (allowed !== "all" && allowed.length === 0) return { mappings: [], mergedGroups: [], classTeachers: [] };
+        const within = allowed === "all" ? {} : { classSectionId: { in: allowed } };
+        const [rows, groups, sections] = await Promise.all([
+          this.prisma.teacherSubjectClassSection.findMany({
+            where: { schoolId: ctx.schoolId, ...within },
+            include: {
+              teacher: true,
+              subject: true,
+              preferredRoom: true,
+              classSection: { include: { class: true, section: true } },
+            },
+          }),
+          this.prisma.mergedTeachingGroup.findMany({
+            where: {
+              schoolId: ctx.schoolId,
+              ...(allowed === "all" ? {} : { members: { some: { classSectionId: { in: allowed } } } }),
+            },
+            include: {
+              teacher: true, subject: true, room: true,
+              members: { include: { classSection: { include: { class: true, section: true } } } },
+            },
+          }),
+          this.prisma.classSection.findMany({
+            where: {
+              schoolId: ctx.schoolId,
+              classTeacherId: { not: null },
+              ...(allowed === "all" ? {} : { id: { in: allowed } }),
+            },
+            include: { class: true, section: true, classTeacher: true },
+          }),
+        ]);
+        const label = (cs: { class: { name: string }; section: { name: string } }) =>
+          `${cs.class.name}-${cs.section.name}`;
+        const wantSection = typeof args.class_section === "string" ? args.class_section.toLowerCase() : null;
+        const wantSubject = typeof args.subject === "string" ? args.subject.toLowerCase() : null;
+        const wantCode = typeof args.employee_code === "string" ? args.employee_code.toLowerCase() : null;
+        const keep = (sectionLabels: string[], subject: string, code: string) =>
+          (!wantSection || sectionLabels.some((l) => l.toLowerCase().includes(wantSection))) &&
+          (!wantSubject || subject.toLowerCase().includes(wantSubject)) &&
+          (!wantCode || code.toLowerCase() === wantCode);
+        return {
+          mappings: rows
+            .map((m) => ({
+              classSection: label(m.classSection),
+              subjectName: m.subject.name,
+              employeeCode: m.teacher.employeeCode,
+              teacherName: m.teacher.name,
+              periodsPerWeek: m.periodsPerWeek,
+              room: m.preferredRoom?.name ?? null,
+            }))
+            .filter((m) => keep([m.classSection], m.subjectName, m.employeeCode)),
+          mergedGroups: groups
+            .map((g) => ({
+              classSections: g.members.map((x) => label(x.classSection)),
+              subjectName: g.subject.name,
+              employeeCode: g.teacher.employeeCode,
+              teacherName: g.teacher.name,
+              periodsPerWeek: g.periodsPerWeek,
+              room: g.room?.name ?? null,
+              merged: true,
+            }))
+            .filter((g) => keep(g.classSections, g.subjectName, g.employeeCode)),
+          classTeachers: sections
+            .map((cs) => ({
+              classSection: label(cs),
+              employeeCode: cs.classTeacher!.employeeCode,
+              teacherName: cs.classTeacher!.name,
+            }))
+            .filter((c) => keep([c.classSection], "", c.employeeCode) && !wantSubject),
+        };
       }
 
       case "getClassSectionTimetable":

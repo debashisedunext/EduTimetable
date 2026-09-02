@@ -16,12 +16,45 @@ function inputFor(over: Partial<SolverInput> = {}): SolverInput {
   };
 }
 
-const row = (over: Partial<SlotRow> & Pick<SlotRow, "classSectionId" | "dayOfWeek" | "periodNumber" | "subjectId" | "teacherId">): SlotRow => ({
+const row = (over: Partial<SlotRow> & Pick<SlotRow, "classSectionId" | "dayOfWeek" | "periodNumber">): SlotRow => ({
+  subjectId: null,
+  teacherId: null,
   roomId: null,
   mergedGroupId: null,
+  electiveBlockId: null,
+  electiveOptionId: null,
   isLocked: false,
   ...over,
 });
+
+/**
+ * §4.9 — one occurrence of a block, as the writer stores it: a member row per
+ * attending section (no subject, teacher or room) plus an option row per
+ * parallel lesson (no section).
+ */
+const blockRows = (
+  blockId: number,
+  day: number,
+  period: number,
+  sections: number[],
+  options: Array<{ optionId: number; subjectId: number; teacherId: number; roomId: number }>,
+): SlotRow[] => [
+  ...sections.map((classSectionId) =>
+    row({ classSectionId, dayOfWeek: day, periodNumber: period, electiveBlockId: blockId }),
+  ),
+  ...options.map((o) =>
+    row({
+      classSectionId: null,
+      dayOfWeek: day,
+      periodNumber: period,
+      subjectId: o.subjectId,
+      teacherId: o.teacherId,
+      roomId: o.roomId,
+      electiveBlockId: blockId,
+      electiveOptionId: o.optionId,
+    }),
+  ),
+];
 
 // cleanSchool: sections 11 (5-A) / 12 (5-B); subjects 300..304 (English..Art,
 // max 2/day); teachers 101..105 (one subject each, both sections).
@@ -245,7 +278,7 @@ describe("BoardEngine merged groups (§4.9 — one linked unit)", () => {
     expect(moved.classSectionIds.sort()).toEqual([11, 12]);
     // both member cells at the old position are free again
     const eng2check = eng.checkPlace(
-      { classSectionIds: [11], subjectId: 301, teacherId: 102, roomId: null, mergedGroupId: null },
+      { classSectionIds: [11], subjectId: 301, teacherId: 102, roomId: null, mergedGroupId: null, electiveBlockId: null, options: [] },
       1, 1,
     );
     expect(eng2check.ok).toBe(true);
@@ -275,49 +308,249 @@ describe("BoardEngine.checkPlace (unplaced tray)", () => {
       row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 }),
     ]);
     const clash = eng.checkPlace(
-      { classSectionIds: [12], subjectId: 300, teacherId: 101, roomId: null, mergedGroupId: null },
+      { classSectionIds: [12], subjectId: 300, teacherId: 101, roomId: null, mergedGroupId: null, electiveBlockId: null, options: [] },
       1, 1,
     );
     expect(clash.ok).toBe(false);
     const free = eng.checkPlace(
-      { classSectionIds: [12], subjectId: 300, teacherId: 101, roomId: null, mergedGroupId: null },
+      { classSectionIds: [12], subjectId: 300, teacherId: 101, roomId: null, mergedGroupId: null, electiveBlockId: null, options: [] },
       1, 2,
     );
     expect(free.ok).toBe(true);
   });
 });
 
-describe("BoardEngine — reserved elective cells (§4.9)", () => {
-  it("refuses a drop onto a cell an elective block holds, and names the block", () => {
-    const eng = new BoardEngine(
-      inputFor(),
-      [row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
-      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
+/**
+ * §4.9 Phase 16 — a split-elective block is a draggable card.
+ *
+ * It used to arrive as an opaque "reserved" cell: the board knew it was taken
+ * and could not move it. Now it is an ordinary entry whose variable is the
+ * same elective macro-variable the solver placed — so every option's teacher
+ * and every option's room is checked by the state machine, not re-implemented.
+ */
+describe("BoardEngine — elective blocks as cards (§4.9)", () => {
+  /** 5-A and 5-B take a 3-option block at Tue P3. Three teachers, three rooms. */
+  const OPTIONS = [
+    { optionId: 21, subjectId: 501, teacherId: 201, roomId: 801 },
+    { optionId: 22, subjectId: 502, teacherId: 202, roomId: 802 },
+    { optionId: 23, subjectId: 503, teacherId: 203, roomId: 803 },
+  ];
+  const electiveInput = () => {
+    const snap = cleanSchool();
+    snap.teachers.push(
+      teacher(201, "Mme Dubois", { eligibleClassIds: [5] }),
+      teacher(202, "Shri Joshi", { eligibleClassIds: [5] }),
+      teacher(203, "Hr. Bauer", { eligibleClassIds: [5] }),
     );
-    const verdict = eng.checkMove(K(11, 1, 1), 2, 3);
-    expect(verdict.ok).toBe(false);
-    expect(verdict.reason).toContain("Class 5 Third Language");
-    // Without this the client would offer the drop and the server would refuse
-    // it — the exact split invariant 7 exists to prevent.
-    expect(verdict.reason).toContain("moves as a whole");
+    snap.electiveBlocks = [
+      {
+        id: 7,
+        name: "Class 5 Third Language",
+        periodsPerWeek: 2,
+        maxPeriodsPerDay: 1,
+        placement: "solver",
+        fixedSlots: [],
+        memberClassSectionIds: [11, 12],
+        memberLabels: ["5-A", "5-B"],
+        options: [
+          { id: 21, subjectId: 501, subjectName: "French", teacherId: 201, teacherName: "Mme Dubois", roomId: 801, roomName: "Lang 1" },
+          { id: 22, subjectId: 502, subjectName: "Sanskrit", teacherId: 202, teacherName: "Shri Joshi", roomId: 802, roomName: "Lang 2" },
+          { id: 23, subjectId: 503, subjectName: "German", teacherId: 203, teacherName: "Hr. Bauer", roomId: 803, roomName: "Lang 3" },
+        ],
+      },
+    ];
+    return inputFor({ snapshot: snap });
+  };
+  const BK = (d: number, p: number) => `B7@${d}:${p}`;
+
+  it("folds member and option rows into ONE card", () => {
+    const entries = rowsToEntries(blockRows(7, 2, 3, [11, 12], OPTIONS));
+    expect(entries).toHaveLength(1);
+    const b = entries[0];
+    expect(b.key).toBe("B7@2:3");
+    expect(b.classSectionIds).toEqual([11, 12]);
+    // The card has no subject or teacher of its own — the lessons do.
+    expect(b.subjectId).toBeNull();
+    expect(b.teacherId).toBeNull();
+    expect(b.options.map((o) => o.optionId)).toEqual([21, 22, 23]);
   });
 
-  it("leaves every other cell alone", () => {
-    const eng = new BoardEngine(
-      inputFor(),
-      [row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
-      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
-    );
-    expect(eng.checkMove(K(11, 1, 1), 2, 4).ok).toBe(true);
+  it("moves to a cell that is free in every member section", () => {
+    const eng = new BoardEngine(electiveInput(), blockRows(7, 2, 3, [11, 12], OPTIONS));
+    expect(eng.checkMove(BK(2, 3), 4, 5).ok).toBe(true);
   });
 
-  it("only reserves the sections that actually attend the block", () => {
-    const eng = new BoardEngine(
-      inputFor(),
-      [row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 })],
-      [{ classSectionId: 11, day: 2, period: 3, label: "Class 5 Third Language" }],
-    );
-    // 5-B does not attend, so its own grid is untouched at that cell
-    expect(eng.checkMove(K(12, 1, 1), 2, 3).ok).toBe(true);
+  it("refuses a cell where one member section is busy, and names that section", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      // only 5-B is busy at Thu P5 — the block still cannot go there
+      row({ classSectionId: 12, dayOfWeek: 4, periodNumber: 5, subjectId: 300, teacherId: 101 }),
+    ]);
+    const v = eng.checkMove(BK(2, 3), 4, 5);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/5-B/);
+  });
+
+  it("refuses a cell where one OPTION teacher is already teaching", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      // Hr. Bauer takes an ordinary lesson elsewhere at Thu P5. Every option
+      // runs at once, so his clash takes the whole block off that cell.
+      row({ classSectionId: 13, dayOfWeek: 4, periodNumber: 5, subjectId: 503, teacherId: 203 }),
+    ]);
+    const v = eng.checkMove(BK(2, 3), 4, 5);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBeTruthy();
+  });
+
+  it("respects the block's own daily cap, not a subject's", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      ...blockRows(7, 4, 1, [11, 12], OPTIONS),
+    ]);
+    // maxPeriodsPerDay 1: the Tue occurrence cannot join the Thu one.
+    expect(eng.checkMove(BK(2, 3), 4, 6).ok).toBe(false);
+  });
+
+  it("group-swaps onto an occupied cell, sending each displaced lesson back", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      // Thu P5 holds a DIFFERENT lesson in each member section — the case a
+      // two-card swap cannot express and a plain move always refuses.
+      row({ classSectionId: 11, dayOfWeek: 4, periodNumber: 5, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 4, periodNumber: 5, subjectId: 301, teacherId: 102 }),
+    ]);
+    const v = eng.checkSwapGroup(BK(2, 3), 4, 5);
+    expect(v.ok).toBe(true);
+    expect(v.displaced.map((d) => d.key).sort()).toEqual(["S11@4:5", "S12@4:5"]);
+
+    // and the check is pure: the board is exactly as it was
+    expect(eng.get(BK(2, 3))?.day).toBe(2);
+    expect(eng.entryAt(11, 4, 5)?.key).toBe("S11@4:5");
+  });
+
+  it("refuses the group swap when a displaced lesson cannot live at the source", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      row({ classSectionId: 11, dayOfWeek: 4, periodNumber: 5, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 4, periodNumber: 5, subjectId: 301, teacherId: 102 }),
+      // T.English is already teaching 5-C at Tue P3, where the swap would
+      // send him. The block's own side is fine; this side is not.
+      row({ classSectionId: 13, dayOfWeek: 2, periodNumber: 3, subjectId: 300, teacherId: 101 }),
+    ]);
+    const v = eng.checkSwapGroup(BK(2, 3), 4, 5);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/cannot take the slot this card is leaving/);
+  });
+
+  it("applies the group swap as one transaction — nothing lands twice", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      row({ classSectionId: 11, dayOfWeek: 4, periodNumber: 5, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 4, periodNumber: 5, subjectId: 301, teacherId: 102 }),
+    ]);
+    const v = eng.checkSwapGroup(BK(2, 3), 4, 5);
+    eng.applySwapGroup(BK(2, 3), 4, 5, v.roomAtTarget, v.displaced);
+
+    expect(eng.get("B7@4:5")?.classSectionIds).toEqual([11, 12]);
+    expect(eng.entryAt(11, 2, 3)?.subjectId).toBe(300);
+    expect(eng.entryAt(12, 2, 3)?.subjectId).toBe(301);
+    // the board must still be internally consistent: moving the block back is
+    // legal again, which it would not be if a ghost were left behind
+    expect(eng.checkSwapGroup("B7@4:5", 2, 3).ok).toBe(true);
+  });
+
+  it("refuses a swap with its own other occurrence — that would change nothing", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      ...blockRows(7, 4, 1, [11, 12], OPTIONS),
+    ]);
+    // Both cells hold the identical card, so the "swap" is a no-op. Offering
+    // it as a legal destination is a green cell that does nothing when clicked
+    // — on a full school it was the ONLY kind of destination a block had.
+    const v = eng.checkSwapGroup(BK(2, 3), 4, 1);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/already runs in this slot/);
+    expect(eng.legalDestinations(BK(2, 3)).get("4:1")?.kind).toBe("illegal");
+  });
+
+  it("an ordinary card cannot be dropped where a block sits — it names the block", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 }),
+    ]);
+    const v = eng.checkMove(K(11, 1, 1), 2, 3);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/Class 5 Third Language/);
+  });
+
+  it("leaves sections that do not attend the block alone", () => {
+    const eng = new BoardEngine(electiveInput(), [
+      ...blockRows(7, 2, 3, [11, 12], OPTIONS),
+      row({ classSectionId: 13, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 105 }),
+    ]);
+    // 5-C does not attend, so its own grid is untouched at that cell
+    expect(eng.checkMove(K(13, 1, 1), 2, 3).ok).toBe(true);
+  });
+});
+
+describe("BoardEngine — merged groups can swap now (§7.3)", () => {
+  it("group-swaps a merged card onto a cell holding a different lesson per section", () => {
+    const eng = new BoardEngine(inputFor(), [
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 3, subjectId: 300, teacherId: 101, mergedGroupId: 7, roomId: 55 }),
+      row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 3, subjectId: 300, teacherId: 101, mergedGroupId: 7 }),
+      row({ classSectionId: 11, dayOfWeek: 3, periodNumber: 4, subjectId: 301, teacherId: 102 }),
+      row({ classSectionId: 12, dayOfWeek: 3, periodNumber: 4, subjectId: 302, teacherId: 103 }),
+    ]);
+    const key = entryKeyOf({ classSectionId: 11, mergedGroupId: 7, dayOfWeek: 1, periodNumber: 3 });
+    const v = eng.checkSwapGroup(key, 3, 4);
+    expect(v.ok, v.reason).toBe(true);
+    expect(v.displaced).toHaveLength(2);
+
+    // and it shows up as a swap in the highlight map, which is what changed:
+    // before this, every occupied cell was flatly illegal for a merged card.
+    expect(eng.legalDestinations(key).get("3:4")?.kind).toBe("swap");
+  });
+});
+
+describe("BoardEngine — minimum periods per day (§20)", () => {
+  /** T.English at exactly 3 periods on Monday, one on Tuesday to move onto. */
+  const boardAtMinimum = () => {
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+    return new BoardEngine(inputFor({ snapshot: snap }), [
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 2, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 3, subjectId: 300, teacherId: 101 }),
+    ]);
+  };
+
+  it("warns — but does not refuse — when a move leaves a teacher a short day", () => {
+    const v = boardAtMinimum().checkMove(K(11, 1, 1), 2, 1);
+    expect(v.ok, "a deliberate admin move is never blocked by §20").toBe(true);
+    expect(v.warning).toContain("T.English");
+    expect(v.warning).toContain("2 periods on Mon");
+  });
+
+  it("says nothing when the day it leaves behind is still a proper day", () => {
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.minPeriodsPerDay = 3;
+    // Four English periods on Monday (two per section, the subject's daily
+    // cap) — moving one away still leaves a full day behind.
+    const engine = new BoardEngine(inputFor({ snapshot: snap }), [
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 1, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 11, dayOfWeek: 1, periodNumber: 2, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 3, subjectId: 300, teacherId: 101 }),
+      row({ classSectionId: 12, dayOfWeek: 1, periodNumber: 4, subjectId: 300, teacherId: 101 }),
+    ]);
+    const v = engine.checkMove(K(11, 1, 1), 2, 1);
+    expect(v.ok).toBe(true);
+    expect(v.warning).toBeUndefined();
+  });
+
+  it("moving within the same day is not a §20 event at all", () => {
+    const v = boardAtMinimum().checkMove(K(11, 1, 1), 1, 5);
+    expect(v.ok).toBe(true);
+    expect(v.warning).toBeUndefined();
   });
 });

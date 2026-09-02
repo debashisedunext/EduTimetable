@@ -135,15 +135,16 @@ CREATE TABLE teacher_unavailability (
 
 -- ===================== MAPPINGS =====================
 
--- which subject applies to which class (curriculum)
+-- which subject applies to which class, in which session (curriculum)
 CREATE TABLE class_subjects (
   id INT PRIMARY KEY AUTO_INCREMENT,
   class_id INT NOT NULL REFERENCES classes(id),
+  academic_year_id INT NOT NULL REFERENCES academic_years(id),  -- §3.11
   subject_id INT NOT NULL REFERENCES subjects(id),
   periods_per_week INT NOT NULL,        -- e.g. English = 6 periods/week
   max_periods_per_day INT DEFAULT 1,    -- prevents same subject twice same day unless intended
   same_period_across_week BOOLEAN DEFAULT FALSE,  -- "same subject same period every day" rule
-  UNIQUE KEY uq_class_subject (class_id, subject_id)
+  UNIQUE KEY uq_class_subject (class_id, subject_id, academic_year_id)
 );
 
 -- which teacher teaches which subject, in which class-section (the core mapping)
@@ -269,9 +270,49 @@ ALTER TABLE class_sections ADD COLUMN timetable_config_id INT NOT NULL REFERENCE
 
 **Break placement** (`periods.is_break` rows, §3) already supports "break after period N, for M minutes" per config — each break is just a row inserted into that `timetable_config`'s period sequence with `is_break = true`, positioned between the two periods it separates. Zero period is the same mechanism at the boundary: a `period_number = 0` row placed before (or, if configured, immediately after) `period_number = 1`, flagged separately from ordinary subject periods so it's excluded from subject-load totals (§4.1) but still occupies real wall-clock time for the computed end time.
 
-**Cross-wing teachers:** a teacher who teaches in more than one timetable (e.g. a Class 2 art teacher who also covers Class 6 art) is mapped via `teacher_subject_class_section` rows that point at class-sections in *different* `timetable_config`s — this is allowed by design (the table has no config-scoping of its own). The Feasibility Engine's Check 2 (§4.2) sums that teacher's `periods_per_week` **across every timetable_config they appear in**, not per-config in isolation, so a teacher can never be silently over-loaded just because the overload is split across two wings' configs. The Readiness Dashboard for either wing surfaces the same blocker, with a note naming the other timetable involved.
+**Cross-wing teachers:** a teacher who teaches in more than one timetable (e.g. a Class 2 art teacher who also covers Class 6 art) is mapped via `teacher_subject_class_section` rows that point at class-sections in *different* `timetable_config`s — this is allowed by design (the table has no config-scoping of its own). The Feasibility Engine's Check 2 (§4.2) sums that teacher's `periods_per_week` **across every timetable_config they appear in *within the same academic year***, not per-config in isolation, so a teacher can never be silently over-loaded just because the overload is split across two wings' configs. The Readiness Dashboard for either wing surfaces the same blocker, with a note naming the other timetable involved.
+
+The academic-year qualifier is load-bearing (§3.11): a teacher's periods in *next* session's timetable do not consume *this* session's capacity. Without it a school that had rolled over into a new year counted every teacher twice, and Check 2 failed for the entire staff before anybody had touched the new timetable.
 
 **Solver scope:** Phase B (§5) solves one `timetable_config` at a time — its variable set is exactly the class-sections scoped to that config — so Middle Wing can be regenerated, edited, and published independently of Senior Wing without touching its slots. `timetable_slots.timetable_config_id` (already the leading column in every unique key in §3) is what makes this safe: two configs' slots never collide in the uniqueness checks even if, coincidentally, they'd otherwise land on the same `(day, period)` — because their teachers, rooms, and class-sections are typically disjoint by wing, and where they aren't (the cross-wing teacher case above), the load-sum check in §4.2 is what catches it, not the slot-uniqueness constraint.
+
+### 3.11 The Academic Year is Part of the Curriculum (Phase 19)
+
+`class_subjects` is keyed **(class_id, subject_id, academic_year_id)**. It was originally keyed on class and subject alone, with no year dimension at all — so a single row served every session the school had ever run, and editing Class 5's periods/week for 2026-27 silently rewrote what 2025-26's readiness report said about the same class. No school hit it, because every school shipped so far runs one academic year.
+
+Cloning a timetable into a new session (§3.12) makes two live years the ordinary case rather than a curiosity, so the year joins the key. Three consequences, each of which was a real defect before:
+
+1. **The snapshot filters by year.** `buildFeasibilitySnapshot` selects only the config's own `academic_year_id`. This is what keeps the engines untouched: `solver/variables.ts` keys subject requirements by `classId:subjectId` in a plain `Map`, so two sessions' rows reaching the snapshot would collapse to whichever loaded last — timetabling the wrong syllabus with no error anywhere.
+2. **Cross-config teacher load is same-year only** (§3.10 above).
+3. **Weekly capacity is capped by the session's own week.** `capacityForClass` takes the year; a class has sections in every session it has ever run, so without it a 2026-27 curriculum entry was capped by whichever session happened to have the shortest day — including ones long finished — and the rejection named that session's timetable.
+
+**The year is required on write, never inferred.** `POST /class-subjects` and the importer's Curriculum sheet both demand it rather than defaulting to the school's active year: a curriculum row filed against the wrong session is invisible until the timetable comes out wrong, and the importer loads hundreds of them at once. Reads are the opposite — `GET /class-subjects` takes the year as an *optional* filter, because reading every session is merely noisy. The Curriculum screen supplies it from the timetable already chosen in the top bar; there is deliberately no second selector, since two ways to say which session you mean is two ways to disagree.
+
+`PUT /class-subjects/:id` cannot move a row between sessions — that is a re-key, not an edit.
+
+Scoped by academic year rather than by timetable config on purpose: what Class 5 studies is a property of the session, not of whichever wing timetables it. A class whose sections are split across two configs in one year correctly shares one curriculum.
+
+### 3.12 Cloning a Timetable into a New Session (Phase 19)
+
+A school does not rebuild its timetable from nothing every April. Next session has the same classes, the same syllabus and very nearly the same staffing; what changes is a handful of rows. On the reference school, cloning carries **637 rows** — 11 periods, 56 class-sections with their home rooms and class teachers, 100 curriculum rows, **376 subject mappings**, 6 merged groups, and 8 elective blocks with 24 options — computed in 152 ms.
+
+**`POST /timetable-configs/:id/clone/preview`** and **`POST /timetable-configs/:id/clone`**, both `masters.manage`.
+
+**The rule: copy the inputs, never the outputs.** Config settings, periods, class-sections, curriculum, mappings, merged groups and elective blocks are copied. `timetable_slots`, `timetable_drafts` and `timetable_publications` are not — the admin adjusts and presses Generate, which is what they were going to do anyway. That also keeps the whole feature clear of the §22 `draft_scope` unique-key machinery, which is where the risk would otherwise be.
+
+Also deliberately not copied, each for its own reason: **extra classes** (§18 — they run on dates, and next session's revision class is not this session's), **holidays** (a property of the year), **absences and substitutions** (dated events), **auto-fix runs** (an audit trail of what somebody did to *that* config).
+
+**The whole algorithm is one map.** `class_sections` is keyed (class, section, academic_year), so cloning into a new session mints new section rows; build `oldSectionId → newSectionId` once and every dependent table is a straight re-point. Teachers, subjects and rooms are school-wide and carry over unchanged, which is what makes this tractable.
+
+**A different session, always.** A class-section belongs to one session and one timetable (§3.10), so one session cannot hold two copies of it — a same-session clone is refused, pointing at named drafts (§22) as the tool for trying alternative *placements* within a session. Cloning varies the inputs; drafts vary the arrangement.
+
+**The preview writes nothing** — not even the target academic year, which the commit path alone mints. The commit recomputes the plan from the database and acts only on its own findings; the request names the source and the target session, never the rows to write (the rule §21's auto-resolve follows).
+
+**Staffing that cannot come across is dropped and reported by name.** A teacher who is inactive, or a `guest` holding regular curriculum (§18 forbids it), has their lessons left out. Dropped rather than copied on purpose: the curriculum row still records that Class 5-A needs six periods of English, so Readiness says "no teacher for English in 5-A" — the actionable sentence — whereas a copied dead mapping says nothing until Generate fails. A §18 **eligibility** breach is warned about but *not* dropped: unlike a departure, that is a declared scope the admin can simply widen, and dropping would lose a real teaching assignment.
+
+The clone always arrives with `status = 'draft'`: it has not been generated, let alone checked, so it must not wear the source's `active` badge.
+
+**Sessions must be visibly apart afterwards.** Cloning is what makes duplicate-looking rows normal, so the three list screens that would otherwise show two sessions at once take an optional `academicYearId`: `GET /class-subjects` (§3.11), `GET /mappings`, and `GET /elective-blocks`. Each screen supplies it from the timetable already chosen in the top bar. Without this the Teacher Mapping screen shows "Class 5-A · English · Mrs Rao" twice with nothing to tell the rows apart, and the Electives screen shows "Class 5 Third Language" twice — a feature that breaks the screens it feeds is not finished.
 
 ---
 
@@ -402,6 +443,32 @@ IF class_teacher_period_rule = 'always_first_period':
 ```
 This is exactly the kind of interaction that would silently break a naive solver — by pruning domains up front and re-running Check 2/Check 4 with pattern-aware math, the Readiness Score stays accurate and still catches it before generation, not after.
 
+### 4.7a Teacher Availability (§4.7's hard rule, made sayable)
+
+`teacher_unavailability` is one row per blocked cell — `(teacher_id, day_of_week, period_number)`, with **`period_number = NULL` meaning the whole day**. It has been enforced everywhere that matters since Phase 1:
+
+| Where | How |
+|---|---|
+| Solver | `buildTeacherCtx` removes the cells from the teacher's domain **before search** — invariant 2, a hard constraint, never a penalty |
+| Drag-drop board | a move into a blocked cell is refused, naming the teacher |
+| Feasibility Check 2 | full off-days and blocked periods are subtracted from weekly capacity, so Readiness never counts hours the teacher does not work |
+| Substitute engine | `t.unavailablePeriods.includes(slot.period)` drops them from the candidate list outright, before scoring |
+
+What was missing was any way to **enter** it: the Excel importer's "Teacher Unavailability" sheet, or a raw `PUT /teachers/:id/unavailability`. So in practice it stayed empty, and a rule nobody can set is a rule that does not exist. The Teacher Availability screen (`/availability`, under Build) is that entry point — a teacher list beside a week grid of the current timetable's own days and periods, clicked cell by cell, or by day, or by period.
+
+**The patterns are entry shortcuts, not a second model.** Everything an admin describes reduces to cells, so that is all that is ever stored:
+
+| What they say | What is written |
+|---|---|
+| "not available Monday and Friday, periods 1–4" | 8 cells |
+| "not available second half, daily" | the back half of each working day |
+| "comes in after 10am" | every period whose `start_time` is before 10:00, every day |
+| "leaves early" | every period whose `end_time` is after the time, every day |
+
+The last two are computed from the config's real period times, which is why the grid shows them. One representation whichever way it was typed: the solver cannot tell a pattern from hand-clicked cells, and neither can the next person to edit it.
+
+Two rules the screen holds to. A day with **every** teaching period blocked is saved as one whole-day row rather than N rows — that is what the NULL means, and it keeps meaning it if the timetable later gains a period. And availability belongs to the **teacher, not to a timetable**: the grid is drawn from the current config's day, but the rule applies wherever that teacher is timetabled, which the screen says plainly rather than letting somebody assume otherwise.
+
 ### 4.8 Class-Subject-Level Consecutive Period Configuration
 
 Extend `class_subjects` (§3) — this is per class-section, per subject (Maths in 10-A might need double periods; Maths in 10-B might not):
@@ -487,6 +554,41 @@ CREATE TABLE elective_options (            -- the parallel subject/teacher/room 
 All `elective_options` under one `elective_block_id` are placed as a **synchronized group** — they must land on the identical `(day, period)` for every occurrence (so a student can validly be "free" from their home class-section grid at that slot and routed to whichever option they're enrolled in). Same domain-intersection logic as merged groups, but here the intersection is across the *set of teachers/rooms* rather than class-sections, while all member class-sections' grids just need that one shared slot free once per occurrence (not per-option).
 
 **Implementation note (Phase 10):** an occurrence is written as **one member row per attending section** — carrying the block but no subject, teacher or room, so each section's grid shows the shared cell and `uq_class_slot` still guards it — plus **one option row per parallel lesson**, carrying `class_section_id = NULL`. The NULL is deliberate and is the same device merged groups already use for `teacher_occupancy_key`: MySQL unique indexes ignore NULLs, so option rows drop out of `uq_class_slot` (they belong to a block, not a section — there is no enrolment model, so an option genuinely has no class-section) while `uq_teacher_slot` and `uq_room_slot` still refuse a double-booked language teacher or room. Invariant 1 keeps its teeth and it stays one table.
+
+**Placement (Phase 15).** A block did not choose *when* it ran — the solver placed it wherever it fitted, so a school's third-language slot landed Mon P3, Tue P6, Wed P2. Real schools run the language period at a known time so a whole grade changes rooms in one movement. `elective_blocks` therefore gains two columns:
+
+```sql
+ALTER TABLE elective_blocks
+  ADD COLUMN placement ENUM('solver', 'same_period', 'fixed') NOT NULL DEFAULT 'solver',
+  ADD COLUMN fixed_slots JSON NULL;      -- [{"day":1,"period":4}, …], one per occurrence
+```
+
+- `solver` — the pre-Phase-15 behaviour, and the default, so no existing block changes.
+- `same_period` — one period *number* across the block's days (P4 Mon–Fri). Implemented by giving the block's variables `samePeriodKey = B{id}`, which is the §4.6 same-period-across-week machinery already in `SolverState`: nothing new in the state machine.
+- `fixed` — exact cells. Occurrence *i* is handed `fixed_slots[i]` intersected with what its option teachers can work.
+
+All three are **domain pruning before search** (invariant 2), never a penalty score: the solver must not be able to consider a slot the school ruled out. `fixed_slots` is read only under `fixed`, so a stale pin cannot quietly narrow a block the school has since set free.
+
+Pinning is the only setting on the Electives screen that takes cells *away* from the solver rather than expressing a preference, so **Check 7b** exists to name every way it can be wrong before Generate: `ELECTIVE_PIN_COUNT` (fewer or more slots than periods/week), `ELECTIVE_PIN_INVALID` (a cell outside the working days or the teaching periods), `ELECTIVE_PIN_DUPLICATE` (the same cell twice, or more on one day than the block's cap), `ELECTIVE_PIN_UNAVAILABLE` (an option teacher who does not work that day — every option runs at once, so one of them takes the whole block off that day), `ELECTIVE_PIN_CLASH` (two blocks pinned to one cell that share a section, a teacher or a room — sharing a cell alone is fine and normal), and `ELECTIVE_SAME_PERIOD_TIGHT` (one period number cannot come round more times than there are days).
+
+Every one of those carries a §21 remedy, and every one of those remedies is the same shape: hand the block back to the solver. That is the invariant-19 rule applied here — a relax remedy changes the *rule*, never the teaching. Auto-resolve may turn a pin off, with the cost shown; it may never move a block to a day nobody chose, which is why `fixed_slots` is absent from the `WRITABLE` allow-list while `placement` is on it.
+
+**Reading a block back (Phase 15).** A member row carries no subject, teacher or room by design, so any screen that renders a class's week from the section's own rows shows the elective as an empty cell. `ReportsService.classSectionTimetable` therefore joins the block's **option rows** for each member cell and returns them as `electiveOptions` beside a `blockName`, so one slot reads as *"Third Language — French / B. Rao (Lang 1); Sanskrit / S. Iyer (Lang 2); German / K. Mehta (Lang 3)"*. It reads the written option *rows* rather than the block's configured options, so a covered option shows its substitute. Because that one function also feeds My Classes, the CSV export and the §13.1 AI tools, all four were wrong together and are right together. The flat `subject` field carries the block name so an older consumer never sees a blank.
+
+**The same mistake, one layer down.** `GET /timetable-configs/:id/slots` — the compact payload behind the Allocation Matrix and the Draft Board — dropped option rows server-side for the same reason: they are not cells in a section's grid. But that one payload feeds **two dimensions**, By Class-Section (cells) *and* By Teacher (lessons), so a teacher whose only work is an elective option appeared completely unscheduled on both screens. In the reference school that was nine language teachers and 130 lessons.
+
+The rule this establishes: **invariant 9's distinction is a property of the consumer, not of the transport.** A payload serving both meanings must carry both, and each reader filters on `classSectionId === null` for the meaning it wants. Applying the filter once at the source looks like tidiness and is silently lossy for whichever consumer meant the other thing. **Dragging a block (Phase 16).** The sentence above described the limit, and Phase 16 removes it: a block IS a draggable card, and moving it moves every option and every member section at once — which is precisely why it took its own phase rather than being folded into a display fix.
+
+The load-bearing point is that no new rules engine was written. `SolverState` already validates an elective macro-variable (`optionTeachersOf` / `optionRoomsOf` occupy every option's teacher and room at once) — that is how the solver places blocks. `BoardEngine.varOf` previously hard-coded `electiveBlockId: null, options: []` and treated blocks as opaque `reserved` cells; it now emits the real macro-variable, so drag legality is the same check the solver made, per the one-rules-engine rule. `reserved` is deleted.
+
+Two consequences follow from a block being multi-section:
+
+- **The group swap.** A card holding N sections can only *move* to a cell free in all N, which in a full school essentially never happens — the feature would read as broken. `checkSwapGroup` instead lifts the dragged card and every distinct entry standing at the target across its member sections, checks the card at the target and each displaced entry at the source, then restores the board exactly (it is a pure query). A displaced entry may span sections the dragged card does not — a merged group over 5-A and 6-A — so 6-A's source cell must be free too; lifting everything and asking `SolverState` makes that fall out instead of needing its own rule. The same machinery lifts the long-standing merged-group limitation: `legalDestinations` routes to the group swap whenever **either** side is multi-section, so merged groups became swappable in the same change.
+- **A swap with another occurrence of the same block is refused.** Both cells hold the identical card afterwards, so it changes nothing; offering it as a green destination is a lie the user acts on. On the reference school it was *every* destination a block had — 4 of 4 — until it was excluded.
+
+The block card carries **no 📌 and no ✕**, and neither is an oversight. `lockedSlots` is built filtered to rows with a section, a subject and a teacher, so a block's rows never reach the solver as locks — a pin would be silently ignored by the next Generate, violating invariant 13. §4.9 Phase 15's `placement: fixed` is the tool that actually holds a block's time, and being domain pruning it survives regeneration; the card points there. Removal is refused for a different reason: the unplaced tray is per-section *mapping* demand, and a block is not a mapping, so a removed block would have no way back.
+
+Server-side, a block is addressed by `electiveBlockId` rather than a section — its option rows belong to no section, so a section-based lookup would move the members and leave the lessons behind — and staleness is checked against the **set of option ids**, because comparing subject and teacher would compare two NULLs and call any block equal to any other. `POST board/swap-group` is separate from `board/swap` because the client cannot name what gets displaced: one card can push a different lesson out of each member section, and the server resolves that from the engine's own answer, never from the request.
 
 The solver treats a block as one macro-variable whose domain is the intersection of every member section's free slots **and every option teacher's** — so a single alternate-day language teacher narrows the whole block, which the Feasibility Engine warns about by name before search starts (`ELECTIVE_DAY_INTERSECTION`). Per-day caps count against the *block*, not each option: a student takes one language period a day, not one of French and one of German. CP-SAT (§5.6) deliberately skips a config that has blocks rather than optimising around them — a payload that cannot express several simultaneous teachers would propose placements that collide with the blocks and fail the replay gate, burning the budget to be rejected. Fast-mode output is already valid, so this is the same graceful degradation as the optimizer being down.
 
@@ -652,6 +754,16 @@ Manually placed/approved cells can be pinned (`is_locked = true`) so a future re
 8. **Reports** — Class-section weekly grid (printable), Teacher weekly grid (printable), Room utilization report, Free-period report
 9. **Master Data screens** — Classes, Sections, Rooms, Subjects, Teachers, Curriculum Mapping, Teacher Mapping (standard CRUD grids, each with the same live-validation pattern)
 10. **Notification Center** — timeline of alerts (over-load warnings, unresolved absences, publish events)
+
+#### 8.1c Curriculum step = edit in the row
+
+List-first/form-second (§8.1a) is right for a teacher: a dozen fields, edited rarely, one at a time. It is wrong for the curriculum, and the reason is arithmetic — a real school is 14 classes × ~8 subjects, so the table runs past a hundred rows and the form sat underneath all of them. Pressing Edit on row 90 scrolled the row you were editing off the screen, and put the fields you were editing it with somewhere else entirely.
+
+So this one step edits **in the row**: the same seven columns become inputs, Save and Cancel replace the row's actions, Enter saves and Escape cancels. Nothing moves. Class and subject lock while editing, because together with the year they *are* the row's identity (`class_id, subject_id, academic_year_id`) — changing one is a different row, not an edit of this one.
+
+Two supports matter as much as the inline form. **Filters come first** (class, subject, free-text), because the fastest edit is the one where you never scrolled to find the row; and the **capacity mirror travels with the field it constrains** — `35/40 of the Main Timetable week`, under the periods/week input, turning red and disabling Save when the class is over its week. It used to be a hint under a form on another part of the page.
+
+This also gave `same_period_across_week` a control. The field was in the payload, in the table and in the edit state, but nothing on the screen could set it — so a same-period subject could not be declared from the screen that owns it.
 
 #### 8.1a Teacher step = list first, form second
 
@@ -857,6 +969,181 @@ All reports share one query shape — filter `timetable_slots WHERE status='publ
 
 ---
 
+
+### 10.4 Print / PDF (Phase 18)
+
+"Print / PDF" was a bare `window.print()` with **no `@media print` stylesheet at all**, so the browser printed the whole application — navy sidebar, top bar, filter row and buttons — with the timetable squeezed into what was left. A printed timetable leaves the app: it goes on a staffroom wall and into a parent's hand, and it has to read as a document.
+
+**The rule is inverted, not enumerated.** Rather than listing what to hide, the screen is wrapped in `.screen-only` and the sheets in `.print-root`; print hides the first and reveals the second. Enumerating what to hide means every screen element added later is one somebody forgot.
+
+**A sheet says on its own face** what the chrome used to say around it: school logo (initials when the ERP has supplied no `logoUrl` — a broken image is worse than no image), school name, the timetable's name, class or teacher, class teacher or weekly load, days, periods/day, cells filled, and whether the sheet is the standing timetable or a dated view with substitutions overlaid. `@page` is A4 **landscape** — a five-to-seven-column week in portrait squeezes teacher names to three lines — and `print-color-adjust: exact` keeps the break shading, elective tint and substitute highlight, all of which carry meaning.
+
+**Print all** renders one sheet per class-section (or per teacher) with `page-break-after: always`, from the same `GridPayload` the screen renders — so a printed week can never disagree with the one on screen, §4.9 electives included. Sheets are fetched four at a time: the reports are Redis-cached (§14), but firing sixty parallel requests at the API is how a report screen becomes an outage. They render into the page rather than a popup, because a popup inherits none of the app's stylesheet and is blocked about half the time; `window.print()` is called after two animation frames, or it prints the previous render — a blank page.
+
+### 10.5 The Subject and Class Colour Code (Phase 20)
+
+A timetable grid is a wall of small text. Colour is what lets somebody find every Maths period in a week at a glance instead of reading forty cells, and it is the first thing a printed timetable is judged on.
+
+**One module chooses every colour** — `packages/shared/src/colors/palette.ts`. If the Board, the Matrix and the report grids each derived their own, Maths would be green on one screen and blue on the next, which is worse than no colour at all: a reader would have learned something untrue. Same discipline as the rules engine — one source, several call sites.
+
+**The palette is 32 swatches: 16 hues × 2 tones**, ordered so consecutive slots differ in *hue* rather than in shade. Each swatch is a light fill plus text that is a **dark shade of that same hue** — never a neutral grey. Both properties are enforced by `palette.spec.ts`, which recomputes every WCAG contrast ratio and every hue gap from the hex values rather than trusting the comment: minimum **5.50:1** on the swatch's own background and **5.96:1** on white, both clear of AA's 4.5:1 with deliberate headroom so a later tweak cannot quietly drop a pair below the line.
+
+**The assignment is set-aware, and has to be.** A name hashes (FNV-1a — byte-identical in every JS runtime, so a colour never depends on which machine drew it) to a preferred slot and takes it; a taken slot probes forward, with names processed in sorted order so the result depends on the *set* and never on the order it arrived in. A bare hash cannot do this: 20 subjects into 32 slots leaves about five sharing a colour with another, and that is the birthday problem, not a palette that is too small. On the reference school the set-aware version gives **20 of 20 subjects and 14 of 14 classes distinct colours**. Adding a subject that hashes to a free slot changes nothing; one that collides can push a single later name along its probe chain.
+
+**Colour the thing the cell is about.** A class's grid headlines the subject, a teacher's headlines the class — so the fill follows the headline instead of becoming a second, competing signal. Classes are keyed on the **class**, not the class-section, so 5-A, 5-B and 5-C read as one family; three shades would spend three palette slots saying one thing.
+
+**Existing meanings outrank colour, and none were painted over.** A **substituted** cell keeps its cyan and its ↺: on a cover sheet "what changed today" outranks which subject it is. A **pinned** card keeps the grey locked fill, because 🔒 is a state you must be able to see across a full board. A **§4.9 elective block** is several subjects at once, so no single colour would be truthful — it keeps its dashed steel tint; but in a *teacher's* row the same block is one option, so it is truthfully that subject's colour. A **merged group** keeps its double border and 🔗, and a **break** its hatching.
+
+**Served from `GET /me/colors`**, which needs a session and no permission. `/subjects` and `/classes` are `masters.manage`, so a teacher reading them is a 403 — and a teacher falling back to a different scheme would see Maths in a different colour from the admin looking at the same timetable. The scheme belongs to the school, not to the role. Names and ids only: a teacher already reads every one of these on their own grid.
+
+**On paper**, `print-color-adjust: exact` is applied to `*`, not just the root. The property does not inherit reliably to descendants across engines — Chrome honours it on the root, Safari and some Chromium builds drop a `<td>` background unless the element itself carries it — and the staffroom wall is the copy most people read.
+
+## 23. ERP Master-Data Sync (Phase 22)
+
+The ERP already owns the school's staff, classes, sections, subjects and sessions, and SSO already proves the two systems agree on who a user is. Retyping the same masters into the timetable is the largest remaining piece of pointless work after the §16 importer removed the first.
+
+### 23.1 It is the import pipeline with a different source
+
+`validateWorkbook(rows, existing)` takes **plain rows, not Excel** — §16 was built that way deliberately. So a sync needs no second import engine, only an adapter that produces the same shape:
+
+```
+Excel upload ─┐
+              ├─→ RawSheet[] ─→ reconcile ─→ dry-run preview ─→ one transaction
+ERP REST API ─┘
+```
+
+Everything downstream — reference resolution, duplicate detection, the all-or-nothing commit — is shared. What a sync adds is the middle step: an import only ever *adds*, a sync has to *change* an existing row and, since §23.3, remove one.
+
+### 23.2 The ERP owns identity; the timetable owns scheduling
+
+This is the whole reason a sync is safe to run unattended, and it is a declared table (`packages/shared/src/sync/contract.ts`), not a convention each writer follows.
+
+| | ERP owns | Timetable owns |
+|---|---|---|
+| Teacher | name, active/left | max & min periods/day, periods/week, period pattern, alternate days, class-teacher rule, engagement type |
+| Class-section | strength | which timetable, home room, class teacher |
+| Subject | name, code | is-lab, requires double period |
+| Class | name, sequence | — |
+| Academic year | name, dates, which is current | — |
+
+A sync that overwrote `max_periods_per_day` from a staff master would change the next Generate's output with nothing on any screen saying why. `updatePayload` is built from the *reconciled plan*, not from the incoming row, and `applyUpdate` re-checks the table before writing — so a field the ERP does not own cannot reach the database even if the adapter fetched it.
+
+`employment_type` is deliberately timetable-owned: our enum carries `guest`, a §18 concept the ERP has no equivalent for, and mapping their vocabulary onto it would silently change who may be offered as a substitute.
+
+### 23.3 Deleting is allowed, and it is counted first
+
+The first design never deleted: a teacher who left became `is_active = false`, a row the ERP stopped returning was left alone. That was rescinded — an admin who asks for the ERP's list means the ERP's list, and rows nobody has removed accumulate until Readiness reports demand for staff who left two sessions ago.
+
+What makes deleting safe is not refusing to do it. It is **counting the consequences before anything goes**, and one fact about the schema decides how:
+
+> `timetable_slots` has **no foreign keys to the masters.** Only `school_id` and `draft_id` are constrained. Delete a teacher and MySQL raises nothing, says nothing, and every generated and published timetable quietly becomes rows pointing at a teacher that no longer exists — blank cells on the Board with no error anywhere to explain them. The same is true of `users.teacher_id`, `substitution_log.original_teacher_id` and `substitution_log.substitute_teacher_id`.
+
+So `apps/api/src/sync/dependencies.ts` writes the cascade by hand, under two rules:
+
+1. **A dangling reference is never an acceptable end state.** If a master row goes, everything pointing at it goes with it — including the slot rows the database would have let us abandon, and including `users.teacher_id`, which is *cleared* rather than left aimed at an id that will be reused.
+2. **The sync never deletes a timetable.** A `timetable_config`, its periods, its draft registry and its publications are not master data and were not what the admin pressed a button about. Where a removal would require deleting one — replacing an academic session, say — the sync **refuses** and names the timetable.
+
+Every step in that file declares its count and its delete **in one object**. Two separate lists would be free to disagree, and the day they did, the confirmation dialog would under-report a destructive write — the one failure this feature cannot have.
+
+The confirmation is therefore a fact, not a warning: *"This deletes 1 Teachers row and with them 4 timetable slots, 3 subject mappings, 1 class-teacher assignment and 1 teacher login (cleared) — 1 of those slots is in a published timetable."* Then the admin types the school's name.
+
+`fingerprint` binds that consent to the numbers shown. The ERP is somebody else's live system; if its answer moves between the preview and the press, the figures move with it and the token stops matching (§21's compare-and-set discipline).
+
+### 23.3.1 Two modes
+
+| | `refresh` (default) | `replace` |
+|---|---|---|
+| Matching | on the natural key | none — everything goes |
+| Existing rows | updated in place | deleted, re-inserted |
+| Rows the ERP no longer has | deleted | deleted |
+| Resulting data | identical | identical |
+| Row ids | **survive** | all new |
+
+Both end with our rows saying exactly what the ERP says. `replace` is right for a first load and wrong for a live school, because every mapping, timetable row and teacher login that pointed at a re-minted id is left behind. `refresh` reaches the same data without that cost, which is why a missing `mode` field selects it — a destructive default is not something an omission should choose.
+
+Two masters are quieter than they look. **Inactive is not absent:** a teacher the ERP still returns but marks inactive is an *update*, and keeps their row, mappings and substitution history. And a **class-section's `sections` rows** (the A, B, C under a class) are deliberately left behind on a removal — they are the class's own alphabet, not the ERP's, and the next sync reuses them rather than minting duplicates.
+
+### 23.4 The adapter: REST only, described rather than coded
+
+The sync reads the ERP's **REST API and nothing else**. An earlier build also offered a direct read of the ERP's database (`erp-map.ts`, one visible SELECT per master); that came out. Two sources meant two things to keep correct for one job, and an integration that needs database credentials on somebody else's production server is a harder conversation than one that needs a read token.
+
+**What an ERP has to provide.** Nothing exotic, and no changes to how it already works: up to five endpoints returning a JSON array of records for one school, plus one that resolves a school `code` to the ERP's own id. No particular field names, no envelope shape, no pagination style is demanded — all of that is *described* in `ERP_API_FILE` rather than required of the ERP, so integrating is filling in JSON, not changing code (`scripts/erp-api.example.json` is the worked template).
+
+```jsonc
+// ERP_API_FILE — the ERP's shape, declared rather than coded
+{
+  "school": { "path": "/schools?code={code}", "pick": "data.0.id" },
+  "sheets": {
+    "Teachers": {
+      "path":   "/staff?school_id={schoolId}&page={page}",
+      "list":   "data",                       // where the array lives; "" = the body IS it
+      "fields": { "employeeCode": "employee_code",
+                  "name": "profile.full_name", // dotted paths for nested JSON
+                  "isActive": "profile.active" },
+      "page":   { "from": 1, "lastPagePath": "meta.last_page", "size": 200, "max": 50 }
+    }
+  }
+}
+```
+
+**The unit of configuration is one master, not the feature.** A master with no entry is *not configured*: its card says so by name, its button is disabled, and the other four sync normally. An ERP that has a staff endpoint today and a sections endpoint next month is integrated one master at a time. There are no built-in default endpoints — an earlier build shipped plausible Laravel-shaped guesses, and a guessed path that 404s reads as "the ERP is broken" when the truth is "nobody configured this".
+
+Three rules the reader holds to. It issues **GET only** — a sync has no business writing to the ERP, and the surface that cannot do it is the one that never will. A field whose path does not resolve is **omitted, not nulled**, because `changedFields` treats an absent field as "this source does not carry it, leave ours alone" — the difference between a partial API and data loss. And pagination always has a **hard stop**, so a misread page field cannot loop against somebody else's production API.
+
+`GET /sync/erp/probe` calls every configured endpoint for real and reports, per master: whether it answered, how many records, which of our fields the mapping failed to produce **by name and with the path it looked at**, and one record exactly as the ERP returned it — because a wrong mapping is only obvious next to what actually came back. Authentication failures say which setting to fix rather than repeating a 401. `POST /sync/erp/reload` re-reads the mapping file from disk, because integrating is an edit-and-check loop and restarting the service between attempts is a poor one.
+
+### 23.4.1 Every run is logged
+
+`erp_sync_runs` records one row per master per run — mode, status, the endpoint called, rows fetched/created/updated/deleted, duration, the ERP's own error text, and the impact the admin consented to. **Failed and refused runs are logged as loudly as successful ones:** "we synced and nothing changed" and "the sync could not reach the ERP" look identical from the outside and have completely different remedies. A destructive run's `detail` carries what was agreed to, so a question six weeks later about a missing teacher has an answer.
+
+### 23.8 Authenticating to a secured ERP
+
+**The ERP's SSO token cannot be replayed at its API, and shouldn't be.** Three reasons, all facts about this system rather than preferences:
+
+1. **It is single-use.** `AuthService` burns the `jti` in Redis and refuses a replay (§15.1). An ERP worth trusting does the same.
+2. **It is a login credential with a short `exp`.** A sync happens minutes or hours after login; a scheduled sync has no user and no token at all.
+3. **We do not keep it.** `/sso/callback` verifies it and discards it in favour of our own session JWT — which the ERP has no reason to trust, because *we* signed it.
+
+What does carry over is the useful half. `auth.actingUserHeader` puts the ERP user id of whoever pressed Sync on every outgoing request, so the ERP's own audit log can name them. A scheduled run omits it, and **that absence is meaningful** — the ERP can tell an unattended sync from an admin's. Identity propagated, never a credential replayed.
+
+Authentication is **described in the mapping file**, like the endpoints, and handled by `apps/api/src/sync/erp-auth.ts`:
+
+| mode | credential |
+|---|---|
+| `oauth2` | client-credentials grant against the ERP's token endpoint |
+| `bearer` | a static long-lived token (`ERP_API_TOKEN`, or `ERP_API_KEY_HEADER` + `ERP_API_KEY`) |
+| `none` | an unauthenticated API — an internal network, or a stand-in |
+
+```jsonc
+"auth": {
+  "mode": "oauth2",
+  "tokenUrl": "https://erp.example.com/oauth/token",
+  "clientId": "edutimetable",
+  "clientSecretEnv": "ERP_API_CLIENT_SECRET",   // the NAME of the variable
+  "scope": "masters:read",
+  "actingUserHeader": "X-ERP-Acting-User"
+}
+```
+
+**The secret is never in the mapping file** — that file is committed, environment is not. `clientSecretEnv` names the variable holding it, and no error message ever echoes its value, because those messages are shown on screen and written to `erp_sync_runs.error`.
+
+Four properties the token cache holds to, each of which is silent when it works and expensive when it doesn't:
+
+- **One token, many requests.** Five masters syncing at once share one in-flight grant — some providers rate-limit repeated grants, others count each as a session.
+- **Refresh while still valid.** The cache expires a token 30 seconds before the ERP would, so a token cannot die between our check and theirs — which would be a 401 in the middle of a write.
+- **Never cache indefinitely.** A response without `expires_in` gets a bounded assumed lifetime, not eternity.
+- **A 401 is retried exactly once**, after discarding the cached token, so a rotated or revoked credential self-heals. Once, not in a loop: if the credential is genuinely wrong, hammering somebody's token endpoint is how an integration gets blocked.
+
+A missing or refused credential is reported **once, by name** — "the ERP client secret is not set; put it in `ERP_API_CLIENT_SECRET`" — rather than as five identical connection failures on five cards. `isConfigured()` is defined as "nothing to complain about", so the boolean the screen greys a button on and the sentence it prints cannot disagree.
+
+### 23.5 Scope and tenancy
+
+The endpoints (`status`, `probe`, `preview`, `apply`, `reload`, `logs` — all `masters.manage`) take **no id from the request**. The school comes from the session, and the ERP is read using that school's `code` — the identifier §15.1 already establishes as the contract between the two systems. A body-supplied code would be a way to pull another school's staff master into this one.
+
+`preview` writes nothing. `apply` recomputes the plan from the ERP and our own tables, so a stale preview can never become the list of writes (§16's rule, and §21's) — the request carries the master, the mode and the confirmation, never the rows. `erp_sync_runs` is scoped like every other table, so a school's history is its own.\n\nThe route family's §17.8 exemption is earned by `erp-sync-smoke.cjs` step 13: two schools against one stand-in ERP, each asserting it sees, writes and logs only its own rows.
+
+---
+
 ## 11. Rule-Based Intelligence vs AI — Summary Table
 
 | Capability | Technique |
@@ -1000,6 +1287,75 @@ CREATE TABLE role_permissions (
 - `ai.configure` — see the **AI Settings** screen: provider, key, budget, feature toggles, and the role-access matrix itself.
 - **Enforcement is middleware on every AI endpoint** (REST + the Socket.IO chat namespace) — hiding the nav item is cosmetic; the guard is server-side. Defaults: Super Admin gets all three; Principal and Timetable Admin get `ai.chat` + `ai.reports`; Teacher and Front Office get none until explicitly granted.
 - Every conversation is attributable (`ai_chat_log.user_id`) and reviewable by `ai.configure` holders.
+
+### 13.3.1 Rendering the answer
+
+The assistant replies in Markdown, and most of what it has to say **is a table** — a class's week, a teacher's load, a room's utilisation. The chat bubble originally printed the raw string inside `white-space: pre-wrap`, so every one of those arrived as pipe soup the reader had to parse by eye.
+
+`apps/web/src/markdown.tsx` renders it. Two properties matter more than the feature:
+
+- **It emits React elements, never HTML.** No `dangerouslySetInnerHTML` anywhere. Model output is shaped by tool results, which come from the database; treating any of it as trusted markup would put an injection on a page already holding an admin's session. A renderer that can only produce elements cannot inject — asserted directly, with `<script>` and `<img onerror>` payloads both in prose and inside a table cell.
+- **It survives half a document.** Answers stream token by token, so it is called on a table with no delimiter row yet, an unclosed `**`, an unterminated fence. A header line alone stays a paragraph and only becomes a table once its shape is known, so a streaming answer never flickers between the two.
+
+It is a deliberately small subset (tables, headings, emphasis, lists, code, quotes, rules) rather than a Markdown library: react-markdown + remark-gfm is ~100KB against a `dependencies` list of six, and anything unrecognised falls through as plain text — the previous behaviour, so the worst case is no worse than before. `scripts/md-render-check.mjs` compiles the real component and renders it with `react-dom/server`, since the web app has no test runner and adding one for a single component was not this change's decision to make.
+
+### 13.5 Natural-language master-data entry (Phase 24)
+
+§12 always listed this — *"natural-language bulk data entry (with confirmation screen)"* — and the confirmation screen is not a nicety in that sentence, it is the mechanism. **The LLM never writes.** It drafts rows; a human applies them.
+
+**A third source into one pipe.** `validateWorkbook(raw, existing)` takes plain rows, which is why §23's ERP sync could reuse it instead of growing a second validator. AI entry is the third:
+
+```
+Excel upload ─┐
+ERP REST API ─┼─→ RawSheet[] ─→ validate ─→ preview ─→ one transaction
+AI prompt ────┘
+```
+
+So duplicate detection, cross-sheet reference resolution, `did you mean 'Mathematics'?`, the §4.8 block rule and the weekly-capacity guard all apply to a drafted batch unchanged — not because they were re-implemented for the assistant, but because it is the same code. A separate validator for the AI path would eventually disagree with the Excel one, and the disagreement would be silent.
+
+**One tool, not six.** `draftMasterData` takes several sheets in one call because the validator is cross-sheet: "Class 6 with sections A–D" is Classes *and* Class Sections in one batch, and splitting them would make the sections reference a class that does not exist yet.
+
+**The adapter.** `RawSheet` cells are keyed by header text (`"Employee Code"`), which a model reproduces unreliably and fails at *silently* — the cell just reads blank. `packages/shared/src/ai/data-entry.ts` accepts either the header or the field key, in any casing or spacing, and **reports a key it cannot place** rather than dropping it. Its column guide is generated from the import contract, so a column added to the importer is one the assistant knows about on the next build.
+
+**Apply takes a proposal id, never rows.** The batch is stashed under `s{schoolId}:aiproposal:{id}` with a 30-minute TTL, re-validated at the moment of the write, deleted on success. Nothing a browser holds can become a write; another school's id is simply not found; and a refresh cannot apply the same batch twice.
+
+**Authority.** `masters.manage`, not a new AI permission — the assistant is a different way to exercise an authority the user already has on a screen, never a way around it. The tool is filtered out of the model's tool list for anyone lacking it, and refused again inside the handler.
+
+#### 13.5.1 Changing what already exists (Phase B)
+
+Phase A could only add; a row the school already had came back as "already exists". That is right for an Excel upload, which promises never to overwrite hand-entered data, and wrong for a conversation — *"make Class 5's English six periods"* is the commonest thing anyone says.
+
+**The natural key is never writable.** `UPDATABLE` in `data-entry.update.ts` is the whole of the assistant's authority over existing rows, and every sheet's key columns are absent from it. A changed key reads as a **new row**, not a rename, and the preview says so.
+
+**A field the draft did not mention is not a change.** This is the subtle one, and it is where the first implementation was wrong. `validateWorkbook` returns a *fully populated* row — every column, with defaults filled in for the ones nobody typed — so a diff computed against it reported a change for every untouched field, including a `null` for each blank optional column. Applied, that would have wiped nine fields on a teacher to change one. The adapter now records **which fields the draft actually named** (`mentioned`), and only those are candidates. An omission means "leave it", never "set it to null" — the same rule §23's reconcile engine holds to, for the same reason.
+
+**The diff is computed against the database, in the API layer.** The shared validator knows a row *exists* — it matches names — but not what it currently contains, so it cannot produce `old → new`. Keeping that in the API layer leaves the Excel path untouched.
+
+**Re-planned at the moment of the write**, never taken from the stash: a diff computed half an hour ago is not the diff that should be written now.
+
+**`Subject Mapping` stays add-only.** One drafted row expands to a mapping per class-section and may carry a merged group, so "the row" is not one database row. Updating it needs the expansion logic the importer already owns, and a second copy of that is how the two would come to disagree.
+
+**What it may never do.** Delete anything, ever. Change a natural key. Touch a slot, a publication, a role, an academic year, a room or an elective block. Those are decisions made on a screen, not dictated into a chat box.
+
+#### 13.5.2 The sheet where one row is not one row (Phase C)
+
+`Subject Mapping` was held back from Phase B for a reason worth stating plainly: **one drafted row is not one database row.** A row naming three class-sections creates three `teacher_subject_class_section` rows; the same row with `Merged = Yes` creates a single `merged_teaching_group` with three members instead. Until the row is expanded the way the importer expands it, `change this row` has no referent.
+
+`apps/api/src/ai/data-entry.mapping.ts` does that expansion and nothing else does — a second copy is precisely how the assistant and the importer would come to disagree about what a row means.
+
+**Expand first, diff second.** A row becomes *units*: one per class-section for a plain mapping, one for the whole row when merged. Each unit is matched on its own key and diffed on its own.
+
+**The key is still never writable — but the key differs per unit.** A plain mapping is keyed `(subject, class-section)`, so the *teacher* is a value; that is what makes *"move Class 5-A maths to Rekha"* an edit rather than an impossibility. A merged group is keyed `(subject, teacher, member sections)` — the importer's own dedupe key — so on that side the teacher is part of the identity and cannot move. Same principle, opposite answer, because the two tables are keyed differently. A draft that tries it is **refused by name**, because the importer would otherwise create a second merged group over the same children and nobody would notice until the solver double-booked them.
+
+**The validator had to stop throwing information away.** A row naming five sections where two are already mapped has those two *removed* from `classSections` so the committer leaves them alone. For an Excel upload that is the end of the story — it never overwrites. Phase C needs exactly the half that was taken away, so `ValidatedRow` gained `existingParts`: the natural-key parts that already exist. Recomputing it downstream would have meant a second copy of the matching rules.
+
+**The §18 and capacity guards run at PLAN time.** `assertCanTeach` / `assertCanOwnClass` and `assertWithinWeek` are the same functions the Mapping and Class-Teacher screens call, and a conversation must not be a way round either. Running them while planning turns *"the Apply button exploded"* into a named problem on the preview beside the row that caused it — and they run **again at apply**, because the world may have moved in between.
+
+**`Class Teachers` rides along** as a seventh draftable master: one pointer on a class-section that already exists, governed by the same §18 check, and the thing people ask for in the same breath as a mapping.
+
+**`listSubjectMappings`** is the read tool that makes any of it draftable. `Periods/Week` is a required column on that sheet, so changing only the teacher still means sending the periods already stored — and a model with no way to look it up would guess, silently rewriting it. Scoped like every other read.
+
+**A batch that only changes rows now invalidates readiness.** `applyValidated` returns early when there is nothing to *create*, and its `readiness.invalidate` sat after that return — so the whole of Phases B and C left the Readiness Score cached at its old value. Changing a curriculum row's periods per week is about as direct a change to readiness as exists.
 
 ### 13.4 UI — two screens (added to §8's list as screens 11 & 12)
 
@@ -1422,3 +1778,188 @@ Writing the sweep found four endpoints that answered **success for another schoo
 `scripts/control-plane-smoke.cjs` asserts the schools table is populated, all 30 foreign keys exist, a row naming a nonexistent school is refused by the database, every school is registered as a tenant, a shared tenant stores no credentials, a suspended school cannot sign in and a reinstated one can, and the control plane is unreachable from the application API.
 
 `scripts/tenant-isolation.cjs` stands up a real second school against the live stack and attempts, from School B's session, every cross-school read, edit, delete, reference and nested-write laundering; asserts B's own writes land stamped as B's on parent and child tables; runs a real solver generation for B and checks every slot it wrote; and asserts School A is **byte-identical** afterwards. `scripts/tenant-socket-check.cjs` connects one client per school and asserts B's socket receives nothing when A acts. `school-scope.spec.ts` unit-pins the extension's reasoning.
+
+## 19a. Cache invalidation on publish (§14)
+
+Report aggregates are cached for an hour (`CacheKeysService.report`). Publishing used to drop only the `slots:*` keys, so a class-section report anyone had opened *while the timetable was still a draft* went on being served afterwards — a full week of "Free" for a timetable that had just gone live, on exactly the sections somebody happened to look at early.
+
+**Every write that changes a published slot or a substitution calls `CacheKeysService.invalidateTimetable()`** — publish, extra classes (which write published rows directly) and the substitute engine. It drops the config's slot caches and *this school's* report aggregates, by SCAN, never `KEYS`. Reports are keyed by what they are about (a class-section, a teacher, a date) and never by config, so there is no way to delete "the reports affected by publishing config 7" one key at a time; they are cheap to recompute and publishing is rare, so the whole set goes.
+
+The substitute engine's version of this was `redis.keys("slots:*")`, wrong three ways: `KEYS` blocks the whole Redis instance (§14), the pattern stopped matching anything once §17 put the school prefix in front of every key — so it was a silent no-op — and had it matched it would have flushed every other school's caches too. `scripts/report-cache-smoke.cjs` (isolation suite step 13) publishes twice over a warmed cache and checks the report against the database.
+
+## 20. Minimum Periods per Day (Phase 13)
+
+`teachers.max_periods_per_day` has always bounded the top of a teacher's day. Nothing bounded the bottom, and the solver's value ordering actively preferred the emptiest day — so a light load was smeared one period at a time across the week and a teacher could travel in to teach a single period. `teachers.min_periods_per_day` (default **3**) is the floor.
+
+**The rule is "zero or at least N", not "at least N every day."** A teacher with 8 periods in the week cannot have 3 on each of 5 days; demanding it would make every part-time teacher unschedulable. Concentrating those 8 into two proper days is the outcome a school actually wants — days off stay days off.
+
+### The effective minimum (`packages/shared/src/feasibility/min-day.ts`)
+
+One module turns the declared minimum into the number every other component uses, so the Feasibility Engine, the CSP search, the CP-SAT payload and the drag-drop board cannot disagree. It is the declared value clipped by two things:
+
+- the teacher's **weekly load** — 2 periods a week means a 2-period day, not two 1-period days;
+- their **daily reach**: the most their own subjects could put in one day, i.e. Σ over their (section, subject) pairs of that pair's `max_periods_per_day`, with merged groups and elective blocks counted once. A French teacher running one class's third-language block (5 periods a week, 1 a day) can never have more than one period on any day, whatever their personal maximum says. Judging them against `max_periods_per_day` would demand three and no timetable could deliver it.
+
+### Check 10 — Feasibility
+
+The mirror of Check 4a: that one asks whether a load can be spread thinly enough, this one whether it can be packed densely enough. A load `L` divides into whole days of `[min, cap]` exactly when `ceil(L/cap) <= floor(L/min)` and that many days are available.
+
+- `MIN_DAY_IMPOSSIBLE` (blocker) — no whole number of days works, naming the numbers and two fixes.
+- `MIN_DAY_RELAXED` (warning, aggregated) — the declared minimum is more than the teacher's load or reach allows, saying **which bound binds** so the admin fixes the right number.
+
+### Enforcement in the solver
+
+The rule is a lower bound, so no single placement can break it — adding a lesson only ever helps. What a placement *can* break is the ability to finish: opening a fourth day for a teacher with two lessons left strands the days already started. So `SolverState` carries, per teacher, a **shortfall** (periods owed to started days) and a **budget** (periods left to place), and `check()` refuses any value where `shortfall > budget`. Because the budget reaches zero exactly when the last lesson lands, a completed search satisfies the rule by construction — which is also how `verifyAssignment` holds a CP-SAT answer to it, and why CP-SAT models it directly as a reified `works[t][d]` literal.
+
+Value ordering changes to match: a day the teacher has started but not filled is the cheapest place for a lesson (−8), opening a fresh day is the most expensive (+6), and past the minimum the old spread preference resumes.
+
+### Completeness wins
+
+A school whose sections are 100% full and whose average teaching load per teacher-day sits barely above the minimum has very little slack, and there the rule and completeness pull against each other. `solveTimetable` therefore runs two passes: the enforced one first (40% of the budget), and if it leaves lessons on the floor, **the pre-§20 solver exactly** with the full budget. A timetable missing four periods is worse for a school than one where two teachers have a short Tuesday.
+
+Whatever survives is then improved by `consolidateShortDays`, which only ever *moves* lessons and so cannot cost a placement. It evacuates a thin teacher-day **all or nothing** — taking one lesson off a two-period Tuesday leaves a one-period Tuesday, which is worse — and swaps rather than merely moves, because a 100%-full school has no empty cell for a move to land in. `stats.shortTeacherDays` and `stats.consolidatedDays` report what was achieved rather than hiding it.
+
+On the drag-drop board the rule is a **warning, not a refusal**: refusing would freeze every card on a day sitting exactly at the minimum, including the ones you would move to clear it properly.
+
+## 21. Auto-resolve (Phase 14)
+
+The Readiness Dashboard names every problem and recommends a fix. Auto-resolve applies the recommendation, for the issues where "the recommendation" is a definite thing rather than a judgement call.
+
+### The remedy is data, not prose
+
+Every issue already carried `fix` — *"Reassign [5-A Maths: 6 periods] to another teacher, or raise their max load"* — written for a person. A resolver that parsed that would be guessing at the exact moment it was about to write to a school's master data. So `FeasibilityIssue` gained a structured `remedy`, emitted where the numbers are already in scope, and the applier gets exact writes with no judgement of its own:
+
+```ts
+remedy: { kind, summary, changes: [{ op: "set", entity: "teacher", id: 41, field: "maxPeriodsPerDay", from: 5, to: 6 }] }
+```
+
+`packages/shared/src/feasibility/remedy.ts` owns every *choice* a remedy makes — which teacher, which room, which days — so the reason one candidate beat another lives in one place and is testable without a database.
+
+### Three kinds, because they carry different risk
+
+| Kind | Meaning | Consent |
+|---|---|---|
+| `complete` | Fills in something the school has not stated: a class teacher, a home room, a teaching scope, a lab's subjects | Covered by "do not ask again" |
+| `redistribute` | Real change, no rule loosened: the same teaching moved to somebody with room for it | Covered by "do not ask again" |
+| `relax` | Raises a cap or lowers a floor | **Always asks**, as one grouped card |
+
+This split is the safety property, not a nicety. Nine of the eleven relax-able codes work by loosening a limit, so a resolver free to apply them could take any school to a Readiness Score of 100 **without changing one real thing** — and the score is the product's central promise. `TEACHER_OVERLOAD` therefore only ever offers to move classes off the teacher; the "or raise their max load" half of its own printed fix is deliberately not on offer here.
+
+### Three rules in `AutoFixService`
+
+1. **The server never applies a change the engine did not propose.** A request names issue keys and the changes consented to; the engine is re-run server-side and only *its* current remedies are applied. The payload is not what gets written — it is only what gets matched. A crafted change is refused (`outcome: "changed"`), and a `WRITABLE` allow-list bounds which fields any remedy may touch at all.
+2. **Compare and set.** Every change carries the value the field held when the admin looked. Moved since → skipped and said so, the same discipline as the drag-drop board's `expect`.
+3. **Fixed is a verdict, not a claim.** After applying, feasibility re-runs; an issue counts as fixed only if it has actually gone. A remedy that applies cleanly and resolves nothing reports `applied-not-resolved` — that is a bug in the remedy, and hiding it would be worse than the bug. The same property is pinned without a database by the round-trip tests, which apply each remedy to a snapshot via `applyToSnapshot` and re-run the engine.
+
+### What "do not ask again" reaches, and what it does not
+
+Ticking it applies `complete` and `redistribute` on the next press with no drawer at all. It never reaches `relax`: those are shown as **one grouped card** — nine dialogs is not consent, it is attrition — with every change priced (`Allow 2 periods/day of Maths, up from 1`) and every box starting unticked.
+
+The server cannot enforce this and does not pretend to: a blanket consent and a deliberate tick arrive as the same list. What the server owes is the record, so every outcome carries its `kind` and a run that loosened a limit says so in `auto_fix_runs` for as long as the log is kept.
+
+### Relax remedies change the rule, never the teaching
+
+Each of the eleven picks the half of its own printed fix that touches configuration rather than what children are taught or who is responsible for them:
+
+| Issue | Applied | Deliberately *not* applied |
+|---|---|---|
+| `SAME_PERIOD_IMPOSSIBLE` | Turn the same-period rule off | Cut the subject's periods/week |
+| `CT_P1_DEADLOCK` | Set the Period-1 rule to `random` | Remove a class teacher from a section |
+| `BLOCK_FRAGMENTED` | Shorten the block to the day's longest run | Move a break — it lands on every class in the school |
+| `BLOCK_MATH_INVALID` | Fit blocks/week to the periods available | Raise periods/week to justify the blocks |
+| `ELECTIVE_DAILY_PIGEONHOLE` | Raise the block's periods/day | Cut the block's periods/week |
+| `OVER_MAPPED` | Trim mappings to the curriculum, never to zero | Delete a mapping |
+| `MIN_DAY_IMPOSSIBLE` | The largest minimum the load can actually keep, found by search | - |
+
+`MIN_DAY_IMPOSSIBLE` is searched rather than computed because the printed fix ("one less than the effective minimum") is usually right and occasionally is not: a load of 5 with a cap of 3 fails at a minimum of 3 *and* at 2. A remedy that leaves its own issue standing is not a remedy.
+
+`DAILY_PIGEONHOLE` and the other cap-raisers are bounded by the day itself - and, for an alternate-period teacher, by every other period of it. Past that the number is not what is stopping them and no remedy is offered.
+
+### Undo
+
+Every run is one transaction recorded in `auto_fix_runs` with the value each field held before it. *Undo this run* reverses them in reverse order, guarded by the same compare-and-set, so a value edited by hand since is named rather than stamped over.
+
+---
+
+## 22. Multiple Named Drafts — the Draft Board (Phase 17)
+
+### 22.1 The requirement
+
+A school does not generate one draft and publish it. They generate, look, tweak the masters, generate **again as a new draft**, edit one by hand, and only then decide which of the three is the timetable the school will live with for a term. That comparison needs numbers, not memory: each draft must carry its **generation percentage, total allocation (required lessons), actual allocation (placed lessons), and error count**, visible side by side, so "which draft is looking good" is a reading, not a recollection. The Draft Board grows a **draft selector (dropdown)** in its filter row and a **stats card row directly below it**, and Publish operates on *the selected draft*.
+
+### 22.2 Schema — one table still, one new dimension
+
+Invariant 3 (draft vs. published in one table) survives intact; drafts become **rows in a registry** and a **scope column** on the slots:
+
+```sql
+CREATE TABLE timetable_drafts (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  school_id INT NOT NULL REFERENCES schools(id),        -- §17: on every table
+  timetable_config_id INT NOT NULL REFERENCES timetable_config(id),
+  draft_no SMALLINT NOT NULL,                           -- per-config sequence: Draft #1, #2…
+  label VARCHAR(80) NULL,                               -- optional: "Labs freed on Friday"
+  status ENUM('draft','published','archived','discarded') DEFAULT 'draft',
+  -- stats snapshot (recomputed after generation and after every board edit batch)
+  required_lessons INT NULL,      -- total allocation: Σ curriculum periods/week, Check-1 arithmetic
+  placed_lessons  INT NULL,       -- actual allocation: lessons placed (option rows counted, extras excluded)
+  generation_pct  DECIMAL(5,2) NULL,   -- placed / required × 100
+  error_count     INT NULL,       -- unplaced lessons + hard-constraint violations on the stored grid
+  warning_count   INT NULL,       -- §20 short teacher days, gap warnings — advisory, never blocking
+  locked_count    INT NULL, manual_count INT NULL,
+  solver_stats    JSON NULL,      -- runtime, backtracks, optimizer adopted, fallback used
+  generated_at DATETIME NULL, created_by INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  published_at DATETIME NULL, published_by INT NULL,
+  UNIQUE KEY uq_draft_no (school_id, timetable_config_id, draft_no)
+);
+
+ALTER TABLE timetable_slots
+  ADD COLUMN draft_id INT NULL REFERENCES timetable_drafts(id),
+  ADD COLUMN draft_scope INT NOT NULL
+    AS (CASE WHEN status='published' OR source='extra' THEN 0 ELSE draft_id END) STORED;
+
+-- the three §3 unique keys each gain draft_scope after status:
+--   uq_class_slot   (timetable_config_id, status, draft_scope, class_section_id, day_of_week, period_id)
+--   uq_teacher_slot (timetable_config_id, status, draft_scope, teacher_occupancy_key, day_of_week, period_id)
+--   uq_room_slot    (timetable_config_id, status, draft_scope, room_id, day_of_week, period_id)
+```
+
+**Why a generated `draft_scope` and not `draft_id` in the keys directly** — the same trick as `teacher_occupancy_key`, for the same reason: the key must collapse where the guarantee must stay global. All **published** rows collapse to scope `0`, so there can never be two published sets for a config no matter which draft each came from; each **draft** keeps its own scope, so Draft #1 and Draft #2 may both put Mrs. Sharma in Monday P3 — they are alternative futures, not a double-booking. `source='extra'` rows also collapse to `0` (they exist once per config, in both statuses, outside any draft — §18's "regeneration is not a cancellation" survives verbatim, and `draft-from-published` still must not count them as a draft).
+
+**Migration of existing data:** every config with existing draft rows gets one `timetable_drafts` row (`draft_no = 1`, back-stamped stats), and its slots get that `draft_id`. Published rows keep `draft_id` as provenance ("published from Draft #2 on…"), which the Publish Confirmation screen shows.
+
+**Cap:** at most **5 live drafts** per config (`draft`,`archived` count; `discarded` do not). The sixth "New draft" asks which one to discard. A draft is ~2,000 rows; the cap is about legibility, not disk.
+
+### 22.3 The stats — defined once, computed in one place
+
+| Card | Definition | Source of the arithmetic |
+|---|---|---|
+| **Generation %** | `placed_lessons / required_lessons × 100` | derived, never stored independently of its parts |
+| **Total allocation** | required lessons for the config: Σ `periods_per_week` over the curriculum, block-aware | **Feasibility Check 1's own function** — never re-derived at a call site (the §20 rule) |
+| **Actual allocation** | grid cells filled in this draft: **section rows only** (`class_section_id IS NOT NULL`), `source='extra'` excluded, restricted to teaching periods | the same counter the Matrix fill-rate uses |
+| **Errors** | unplaced lessons + hard-constraint violations reported by replaying `SolverState.check()` over the stored grid (0 by construction after a solve; can rise after imports or concurrent master edits) | the one rules engine, third call site |
+| **Warnings** | `stats.shortTeacherDays` (§20) + gap warnings | solver stats, advisory |
+
+**Both sides count grid cells, not lessons.** An earlier draft of this table defined actual allocation as "section rows + elective option rows" — invariant 9's *lesson* meaning. That is the wrong unit here: Check 1 counts a §4.9 block **once per member section**, so a school with electives would divide 2,360 placed by 2,240 required and report a generation percentage of **105.4%**. Required and actual must be the same unit or the ratio is meaningless, and the unit that makes "how full is this timetable" answerable is the grid cell. (The *lesson* count is still the right one for a teacher's own week — invariant 9's distinction is per-consumer, exactly as §4.9 Phase 15's follow-up established.)
+
+Recomputed and stamped onto `timetable_drafts` when: a generation completes, a board edit batch is confirmed, an import touches the draft, or on demand (`POST /drafts/:id/recompute`). Reads come from the row — the Draft Board never counts 2,000 slots per render (§14 budget).
+
+### 22.4 Lifecycle
+
+- **New draft** = a `timetable_drafts` row + (optionally) a copy of another draft's or the published set's rows (`draft-from-published` now targets a *named* draft). Generate always runs **into the selected draft**, deleting and rewriting only that draft's rows (`source='extra'` excluded, locked rows honoured as fixed).
+- **Publish** is one transaction, per config: supersede the current published set (archive its rows), flip the selected draft's rows `draft → published` (they keep their `draft_id`), stamp `timetable_drafts.status='published'`/`published_at`, and leave every other draft untouched — the school keeps them for next term's thinking. Cache invalidation as §19a.
+- **Discard** marks the registry row `discarded` and deletes its slot rows. **Archive** keeps rows read-only (board opens it, drag-drop disabled).
+- **Substitutions** (invariant 4) remain date-specific overlays over the *published* set only — drafts never take substitutions.
+
+### 22.5 Draft Board UX
+
+The Board's filter row gains, left of the class-section selector: **Draft ▾** (`Draft #2 — "Labs freed Friday" · 98.4%`), a **＋ New draft** button, and **Compare**. Directly below the filter row, five cards (`.stat-box` row): **Generation %**, **Total allocation**, **Actual allocation**, **Errors** (red when > 0), **Warnings** (amber when > 0). The status pill reflects the selected draft (`DRAFT #2 — not published`, `ARCHIVED`, `PUBLISHED 14 Apr`). **Compare** opens a side-by-side table of every live draft's card row, best value per column highlighted, with Publish available per row — the "which one is looking good" moment happens on numbers, on one screen. Switching draft re-renders the same board (one `?draftId=` on `GET /timetable-configs/:id/slots`); every existing consumer that reads draft rows takes the same parameter, defaulting to the config's **latest live draft** so single-draft schools see no change.
+
+**As built (Phase 17).** `＋ New draft` **forks the draft on screen** rather than creating an empty one — an empty draft is two thousand cells of nothing to drag, and "try something on a copy of this" is what the button is for. In the Compare table, a column where every draft **ties is not highlighted**: marking all of them as the winner tells a reader nothing, and the panel exists to answer "which one is looking good". Discard lives in the Compare rows, because the five-draft cap needs an escape or a school reaches it and is stuck. The board's status pill states the *selected* draft's standing (`not published` / `ARCHIVED` / `PUBLISHED`), and the publish button carries its id, so a Compare row publishes the draft it names.
+
+**Generating at the cap (Phase 21).** The Generate screen carries a **Write into ▾** picker: `＋ A new draft` by default — so no button press can destroy hand-editing — plus every live draft with its number, label, status and fill %. The cap itself is unchanged; what changed is that reaching it no longer forces a school to throw work away. At the cap the new-draft option is disabled and **the Generate button stays disabled until a target is chosen**: when every remaining option overwrites a week somebody may want, there is nothing safe to default to. The picker states in words what the choice does, and `DraftsService.assertWritable` refuses a *discarded* draft — generating into one would produce a timetable no screen shows.
+
+Nothing in the writer needed changing: `writeDraftSlots` already scopes its delete to `status='draft' AND draft_id = <this draft>`, keeps 🔒 pinned cells and skips `source='extra'`, and `buildSolverInput` already resolves locked cells per draft — so regenerating Draft #4 respects Draft #4's pins, not Draft #2's. Phase 17 built the targeting; only the way to ask for it was missing.
+
+**Regenerating a *published* draft is allowed, and is not the trap it looks like.** Publish flips the draft's rows in place, so a published draft has no `status='draft'` rows left — which is why the Board renders it empty. Generating into it refills that working copy and cannot touch the published set, which lives at `draft_scope = 0`. "Revise what we published" is a real workflow, so it is offered rather than blocked, and the picker says exactly that instead of leaving the admin to infer it.
+
+**RBAC:** drafts stay behind `timetable.edit`/`timetable.generate` (§15.3); draft CRUD wants `timetable.generate`; Publish keeps `timetable.publish`. All new routes are swept or classified by the §17.8 isolation gate like any other.

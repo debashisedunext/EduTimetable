@@ -5,10 +5,9 @@
  * version number. Draft and published live in one table, so the §3 unique
  * keys guard both sides throughout.
  */
-import { BadRequestException, Inject, Injectable } from "@nestjs/common";
-import type Redis from "ioredis";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { REDIS } from "../redis/redis.module";
+import { DraftsService } from "../drafts/drafts.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { TenantContextService } from "../tenant/tenant-context.service";
 import { EventsGateway } from "../events/events.gateway";
@@ -35,12 +34,22 @@ export class PublishService {
     private readonly notifications: NotificationsService,
     private readonly keys: CacheKeysService,
     private readonly tenant: TenantContextService,
-    @Inject(REDIS) private readonly redis: Redis,
+    private readonly drafts: DraftsService,
   ) {}
 
-  private async computeDiff(configId: number) {
+  private async computeDiff(configId: number, draftId?: number | null) {
+    const scope = draftId === undefined ? await this.drafts.currentId(configId) : draftId;
     const [slots, snapshot, lastPub] = await Promise.all([
-      this.prisma.timetableSlot.findMany({ where: { timetableConfigId: configId } }),
+      // §22: the published set, plus the ONE draft being compared against it.
+      // Extras belong to neither and are filtered out of the diff below anyway.
+      this.prisma.timetableSlot.findMany({
+        where: {
+          timetableConfigId: configId,
+          ...(scope !== null
+            ? { OR: [{ status: "published" as const }, { status: "draft" as const, draftId: scope }, { source: "extra" as const }] }
+            : {}),
+        },
+      }),
       buildFeasibilitySnapshot(this.prisma, configId).catch((e) => {
         throw new BadRequestException((e as Error).message);
       }),
@@ -147,13 +156,26 @@ export class PublishService {
     };
   }
 
-  async preview(configId: number) {
-    const diff = await this.computeDiff(configId);
-    return { ...diff, snapshot: undefined };
+  /** §22 — the diff for ONE draft against the published set. */
+  async preview(configId: number, draftId?: number | null) {
+    const scope = draftId != null ? (await this.drafts.assertOwned(configId, draftId)).id : undefined;
+    const diff = await this.computeDiff(configId, scope);
+    return { ...diff, snapshot: undefined, draftId: scope ?? (await this.drafts.currentId(configId)) };
   }
 
-  async publish(configId: number, userId: number | null) {
-    const diff = await this.computeDiff(configId);
+  /**
+   * §22.4 — publish ONE named draft.
+   *
+   * Every other draft is left exactly as it is: the school keeps its
+   * alternatives for next term's thinking, and the published rows keep their
+   * `draft_id` as provenance ("published from Draft #2"). They collapse to
+   * `draft_scope = 0` regardless, so there is still exactly one published set
+   * per config however many drafts it was chosen from.
+   */
+  async publish(configId: number, userId: number | null, draftId?: number | null) {
+    const draft = draftId != null ? await this.drafts.assertOwned(configId, draftId) : null;
+    const scope = draft?.id ?? (await this.drafts.currentId(configId));
+    const diff = await this.computeDiff(configId, scope);
     if (diff.draftCount === 0) {
       throw new BadRequestException("Nothing to publish — the draft is empty. Generate or build a draft first.");
     }
@@ -165,8 +187,14 @@ export class PublishService {
         where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
       }),
       // flip the whole draft in place (§3): one table, one status column
+      // flip the SELECTED draft in place (§3): one table, one status column
       this.prisma.timetableSlot.updateMany({
-        where: { timetableConfigId: configId, status: "draft", source: { not: "extra" } },
+        where: {
+          timetableConfigId: configId,
+          status: "draft",
+          source: { not: "extra" },
+          ...(scope !== null ? { draftId: scope } : {}),
+        },
         data: { status: "published" },
       }),
       this.prisma.timetablePublication.create({
@@ -181,11 +209,25 @@ export class PublishService {
         },
       }),
     ]);
-    await this.redis.del(
-      this.keys.slots(configId, "draft"),
-      this.keys.slots(configId, "published"),
-      this.keys.slots(configId, "ctx"),
-    );
+    // §22.4 — the registry follows the rows: this draft IS the school's
+    // timetable now, and whichever draft was published before becomes an
+    // archive of it. Every other draft is left untouched, on purpose — the
+    // school keeps its alternatives for next term's thinking.
+    if (scope !== null) {
+      await this.prisma.$transaction([
+        this.prisma.timetableDraft.updateMany({
+          where: { timetableConfigId: configId, status: "published", id: { not: scope } },
+          data: { status: "archived" },
+        }),
+        this.prisma.timetableDraft.update({
+          where: { id: scope },
+          data: { status: "published", publishedAt: new Date(), publishedById: userId },
+        }),
+      ]);
+    }
+    // Reports included (§14): a class-section grid someone opened while the
+    // timetable was still a draft must not survive the publish as "Free".
+    await this.keys.invalidateTimetable(configId);
     this.events.emitToCurrentSchool("slots:changed", { configId });
     this.events.emitToCurrentSchool("timetable:published", { configId, version: pub.version });
     // §9 trigger "Timetable published" — every teacher whose slots are in this
@@ -208,39 +250,33 @@ export class PublishService {
   }
 
   /** Start the next editing cycle: copy the live timetable back into a draft. */
+  /**
+   * §22.4 — start a NEW named draft from the published timetable.
+   *
+   * Until Phase 17 this refused outright when any draft existed ("A draft
+   * already exists — edit or publish it first"), which was the single-draft
+   * assumption written as a rule. A school may now hold several alternatives,
+   * so this simply adds one more.
+   *
+   * Delegated to `DraftsService.create` rather than copying rows here: that is
+   * the code that stamps `draft_id` (without which the copy lands in scope 0,
+   * outside every draft), excludes `source='extra'` (§18: extras live once per
+   * config, in both statuses) and — a bug this had on its own — carries
+   * `elective_block_id` / `elective_option_id`, without which restoring a draft
+   * from the published week silently lost every §4.9 split elective.
+   */
   async draftFromPublished(configId: number) {
-    const [draftCount, published] = await Promise.all([
-      // Extra classes always sit in draft, so they must not count as "a draft
-      // already exists" — that would make this button permanently unusable for
-      // any school that runs one.
-      this.prisma.timetableSlot.count({
-        where: { timetableConfigId: configId, status: "draft", source: { not: "extra" } },
-      }),
-      this.prisma.timetableSlot.findMany({
-        where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
-      }),
-    ]);
-    if (draftCount > 0) throw new BadRequestException("A draft already exists — edit or publish it first.");
-    if (published.length === 0) throw new BadRequestException("Nothing published yet to draft from.");
-    await this.prisma.timetableSlot.createMany({
-      data: published.map((s) => ({
-        schoolId: s.schoolId,
-        timetableConfigId: s.timetableConfigId,
-        status: "draft" as const,
-        classSectionId: s.classSectionId,
-        dayOfWeek: s.dayOfWeek,
-        periodNumber: s.periodNumber,
-        subjectId: s.subjectId,
-        teacherId: s.teacherId,
-        roomId: s.roomId,
-        mergedGroupId: s.mergedGroupId,
-        teacherOccupancyKey: s.teacherOccupancyKey,
-        isLocked: s.isLocked,
-        source: s.source,
-      })),
+    const published = await this.prisma.timetableSlot.count({
+      where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
     });
-    await this.redis.del(this.keys.slots(configId, "draft"), this.keys.slots(configId, "ctx"));
+    if (published === 0) throw new BadRequestException("Nothing published yet to draft from.");
+    const draft = await this.drafts.create(configId, {
+      label: "From the published timetable",
+      copyPublished: true,
+    });
+    await this.keys.invalidateTimetable(configId);
     this.events.emitToCurrentSchool("slots:changed", { configId });
-    return { ok: true, rows: published.length };
+    return { ok: true, rows: published, draftId: draft.id, draftNo: draft.draftNo };
   }
+
 }

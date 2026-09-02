@@ -106,7 +106,16 @@ export interface SolverResult {
   placements: Placement[];
   unplaced: UnplacedVariable[];
   totalVariables: number;
-  stats: { steps: number; backtracks: number; restarts: number; ms: number };
+  stats: {
+    steps: number;
+    backtracks: number;
+    restarts: number;
+    ms: number;
+    /** §20: teacher-days that ended below the teacher's minimum. 0 is the goal. */
+    shortTeacherDays: number;
+    /** §20: short teacher-days the consolidation pass managed to clear. */
+    consolidatedDays: number;
+  };
 }
 
 export interface SolveOptions {

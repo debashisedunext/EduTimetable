@@ -179,7 +179,7 @@ const refused = (status) => status === 404 || status === 403 || status === 400;
   check(csRow?.schoolId === SCHOOL_B, "class_sections.school_id stamped", `${csRow?.schoolId}`);
 
   const mkCurr = await call("POST", "/class-subjects", admB, {
-    classId: mkClass.json.id, subjectId: mkSubj.json.id, periodsPerWeek: 5,
+    classId: mkClass.json.id, academicYearId: mkYear.json.id, subjectId: mkSubj.json.id, periodsPerWeek: 5,
   });
   const currRow = await prisma.classSubject.findFirst({ where: { classId: mkClass.json.id } });
   check(mkCurr.status === 201 && currRow?.schoolId === SCHOOL_B, "class_subjects.school_id stamped", `${currRow?.schoolId}`);
@@ -195,13 +195,27 @@ const refused = (status) => status === 404 || status === 403 || status === 400;
   // ownership check can refuse this one.
   const csB = await prisma.classSection.findFirst({ where: { schoolId: SCHOOL_B } });
   const crossCurr = await call("POST", "/class-subjects", admB, {
-    classId: classA.id, subjectId: mkSubj.json.id, periodsPerWeek: 2,
+    classId: classA.id, academicYearId: mkYear.json.id, subjectId: mkSubj.json.id, periodsPerWeek: 2,
   });
   const crossCurrLanded = await prisma.classSubject.findFirst({
     where: { classId: classA.id, subjectId: mkSubj.json.id },
   });
   check(refused(crossCurr.status) && crossCurrLanded === null,
     "B: curriculum row on A's class", `${crossCurr.status}`);
+
+  // Phase 19 gave class_subjects a second cross-school reference. A new FK is a
+  // new way to point into somebody else's data, so it gets its own check rather
+  // than riding on the classId one above: B's own class and subject, but A's
+  // academic year — nothing collides, so only the ownership check can refuse it.
+  const yearA = await prisma.academicYear.findFirst({ where: { schoolId: SCHOOL_A } });
+  const crossYear = await call("POST", "/class-subjects", admB, {
+    classId: mkClass.json.id, academicYearId: yearA.id, subjectId: mkSubj.json.id, periodsPerWeek: 2,
+  });
+  const crossYearLanded = await prisma.classSubject.findFirst({
+    where: { classId: mkClass.json.id, academicYearId: yearA.id },
+  });
+  check(refused(crossYear.status) && crossYearLanded === null,
+    "B: curriculum row filed against A's academic year", `${crossYear.status}`);
 
   const mkTeacherB = await call("POST", "/teachers", admB, { employeeCode: `${P}-T1`, name: `${P} Teacher B` });
   const crossMap = await call("POST", "/mappings", admB, {
@@ -227,7 +241,7 @@ const refused = (status) => status === 404 || status === 403 || status === 400;
 
   // The legitimate version of the same call must still work.
   const okCurr = await call("POST", "/class-subjects", admB, {
-    classId: mkClass.json.id, subjectId: mkSubj.json.id, periodsPerWeek: 3,
+    classId: mkClass.json.id, academicYearId: mkYear.json.id, subjectId: mkSubj.json.id, periodsPerWeek: 3,
   });
   check(okCurr.status === 409 || okCurr.status === 201,
     "B's own class + own subject is still accepted", `${okCurr.status}`);

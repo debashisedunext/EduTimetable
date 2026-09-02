@@ -61,6 +61,11 @@ export class DevAiToolsController {
       schoolId: req.user.schoolId,
       scope,
       canReport: perms.includes("ai.reports" as Permission),
+      // §13.5 — mirrors the real gate, exactly as `canReport` does. Hardcoding
+      // this false made the seam refuse everyone, which would have tested the
+      // refusal and nothing else.
+      canWrite: perms.includes("masters.manage" as Permission),
+      userId: req.user.sub ?? null,
     };
 
     try {

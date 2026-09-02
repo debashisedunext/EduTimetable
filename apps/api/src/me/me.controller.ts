@@ -104,4 +104,27 @@ export class MeController {
           : null,
     };
   }
+
+  /**
+   * §10.5 — the names the subject/class colour code is computed from.
+   *
+   * Lives here, and needs no permission beyond a session, because the colour
+   * scheme has to be the SAME for everybody. `/subjects` and `/classes` are
+   * `masters.manage`, so a teacher reading them is a 403 — and a teacher
+   * falling back to a different scheme would mean Maths is green on the
+   * admin's Board and blue on the teacher's own timetable, which is worse than
+   * no colour at all, because they would each have learned something untrue.
+   *
+   * Names and ids only: a teacher already reads every one of these on their own
+   * grid, so nothing is disclosed that the timetable does not. Scoped like
+   * everything else by the ambient tenant context (§17).
+   */
+  @Get("colors")
+  async colors() {
+    const [subjects, classes] = await Promise.all([
+      this.prisma.subject.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      this.prisma.schoolClass.findMany({ select: { id: true, name: true }, orderBy: { sequence: "asc" } }),
+    ]);
+    return { subjects, classes };
+  }
 }

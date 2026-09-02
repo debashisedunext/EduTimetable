@@ -1,9 +1,7 @@
-import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Post, Query, Req } from "@nestjs/common";
-import type Redis from "ioredis";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Query, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
-import { REDIS } from "../redis/redis.tokens";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { EventsGateway } from "../events/events.gateway";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
@@ -35,7 +33,6 @@ export class ExtraClassesController {
     private readonly prisma: PrismaService,
     private readonly keys: CacheKeysService,
     private readonly events: EventsGateway,
-    @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
   @Get()
@@ -195,12 +192,10 @@ export class ExtraClassesController {
     return { ok: true };
   }
 
+  /** An extra class writes *published* rows, so the class's and the teacher's
+   *  report aggregates are stale the moment one is scheduled or cancelled. */
   private async invalidate(configId: number) {
-    await this.redis.del(
-      this.keys.slots(configId, "draft"),
-      this.keys.slots(configId, "published"),
-      this.keys.slots(configId, "ctx"),
-    );
+    await this.keys.invalidateTimetable(configId);
     this.events.emitToCurrentSchool("slots:changed", { configId });
   }
 }

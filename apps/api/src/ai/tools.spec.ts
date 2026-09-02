@@ -41,9 +41,11 @@ const prisma = {
 };
 const readiness = { getReadiness: vi.fn(async () => ({ score: 100, ready: true, blockers: [], warnings: [] })) };
 
-const svc = new AiToolsService(prisma as never, reports as never, readiness as never);
+const dataEntry = { propose: vi.fn(async () => ({ ok: true, proposalId: null })) };
+const svc = new AiToolsService(prisma as never, reports as never, readiness as never, dataEntry as never);
 
-const ctxFor = (scope: ViewScope, canReport = true): ToolContext => ({ schoolId: 1, scope, canReport });
+const ctxFor = (scope: ViewScope, canReport = true, canWrite = false): ToolContext =>
+  ({ schoolId: 1, scope, canReport, canWrite, userId: 1 });
 const TEACHER_SCOPE: ViewScope = { level: "class", teacherId: 7, classSectionIds: [11, 12] };
 const OWN_SCOPE: ViewScope = { level: "own", teacherId: 7 };
 

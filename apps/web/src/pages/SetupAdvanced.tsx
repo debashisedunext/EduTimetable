@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api } from "../api";
 import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
@@ -24,96 +24,370 @@ function weekCapFor(
   return min;
 }
 
-/** Step 5 — Curriculum mapping (class_subjects, §4.8 block fields). */
+/** Step 5 — Curriculum mapping (class_subjects, §4.8 block fields).
+ *
+ *  Editing happens IN the row. A real school has 14 classes × ~8 subjects, so
+ *  this table runs past a hundred rows; the form used to sit underneath all of
+ *  them, which meant pressing Edit on row 90 scrolled the thing you were
+ *  editing off the screen and the fields you were editing it with were somewhere
+ *  else entirely. Now the row's own cells become inputs and nothing moves.
+ *
+ *  The filters above matter as much as the inline form: the fastest edit is the
+ *  one where you never scrolled to find the row. Class + subject + search cut a
+ *  120-row table to the handful somebody actually came here for.
+ */
 export function StepCurriculum() {
-  const { data, refetch } = useApi<any[]>("/class-subjects");
+  // Phase 19: the curriculum belongs to an academic year, and the year comes
+  // from the timetable already chosen in the top bar. No second selector —
+  // picking a timetable is how you say which session you are editing, and two
+  // ways to say it is two ways to disagree.
+  const { configs, current } = useConfigCtx();
+  const yearId = current?.academicYearId ?? null;
+  const { data, refetch } = useApi<any[]>(yearId ? `/class-subjects?academicYearId=${yearId}` : "/class-subjects");
   const { data: classes } = useApi<any[]>("/classes");
   const { data: subjects } = useApi<any[]>("/subjects");
   const { data: sectionRows } = useApi<any[]>("/class-sections");
-  const { configs } = useConfigCtx();
-  const blank = { classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1", consecutiveBlockSize: "1", consecutiveBlocksPerWeek: "", samePeriodAcrossWeek: false };
-  const [form, setForm] = useState(blank);
+
+  const blank: CurriculumDraft = {
+    classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1",
+    consecutiveBlockSize: "1", consecutiveBlocksPerWeek: "", samePeriodAcrossWeek: false,
+  };
   const [editId, setEditId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<CurriculumDraft>(blank);
+  const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reset = () => { setForm(blank); setEditId(null); };
-  const save = async () => {
+  // Filters. `fClass` also seeds the add form, because "add a subject to
+  // Class 5" is the same intent as "show me Class 5".
+  const [fClass, setFClass] = useState("");
+  const [fSubject, setFSubject] = useState("");
+  const [q, setQ] = useState("");
+
+  const stopEditing = () => { setEditId(null); setAdding(false); setDraft(blank); };
+
+  const save = async (id: number | null) => {
     try {
+      if (!id && yearId === null) {
+        setError("Choose a timetable first — a curriculum row belongs to that timetable's academic year.");
+        return;
+      }
       const body = JSON.stringify({
-        classId: Number(form.classId), subjectId: Number(form.subjectId),
-        periodsPerWeek: Number(form.periodsPerWeek), maxPeriodsPerDay: Number(form.maxPeriodsPerDay),
-        consecutiveBlockSize: Number(form.consecutiveBlockSize),
-        consecutiveBlocksPerWeek: form.consecutiveBlocksPerWeek ? Number(form.consecutiveBlocksPerWeek) : null,
-        samePeriodAcrossWeek: form.samePeriodAcrossWeek,
+        classId: Number(draft.classId), subjectId: Number(draft.subjectId),
+        academicYearId: yearId,
+        periodsPerWeek: Number(draft.periodsPerWeek), maxPeriodsPerDay: Number(draft.maxPeriodsPerDay),
+        consecutiveBlockSize: Number(draft.consecutiveBlockSize),
+        consecutiveBlocksPerWeek: draft.consecutiveBlocksPerWeek ? Number(draft.consecutiveBlocksPerWeek) : null,
+        samePeriodAcrossWeek: draft.samePeriodAcrossWeek,
       });
-      if (editId) await api(`/class-subjects/${editId}`, { method: "PUT", body });
+      if (id) await api(`/class-subjects/${id}`, { method: "PUT", body });
       else await api("/class-subjects", { method: "POST", body });
-      reset(); setError(null); refetch();
+      stopEditing(); setError(null); refetch();
     } catch (e) { setError(asMessage(e)); }
   };
+
   const startEdit = (r: any) => {
+    setAdding(false);
     setEditId(r.id);
-    setForm({
+    setDraft({
       classId: String(r.classId), subjectId: String(r.subjectId),
       periodsPerWeek: String(r.periodsPerWeek), maxPeriodsPerDay: String(r.maxPeriodsPerDay),
       consecutiveBlockSize: String(r.consecutiveBlockSize),
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek == null ? "" : String(r.consecutiveBlocksPerWeek),
-      samePeriodAcrossWeek: r.samePeriodAcrossWeek,
+      samePeriodAcrossWeek: Boolean(r.samePeriodAcrossWeek),
     });
   };
+
+  const startAdd = () => {
+    setEditId(null);
+    setAdding(true);
+    // Carry the class filter into the new row: somebody filtered to Class 5 and
+    // pressed Add meant "for Class 5".
+    setDraft({ ...blank, classId: fClass });
+  };
+
   const remove = async (r: any) => {
     if (!confirmDelete(`the ${r.className} · ${r.subjectName} curriculum row`)) return;
     try { await api(`/class-subjects/${r.id}`, { method: "DELETE" }); setError(null); refetch(); }
     catch (e) { setError(asMessage(e)); }
   };
 
-  // weekly capacity of the selected class's timetable (mirrors the server guard)
-  const classId = form.classId ? Number(form.classId) : null;
-  const capInfo = classId !== null
-    ? weekCapFor(sectionRows ?? [], (sectionRows ?? []).filter((s) => s.classId === classId).map((s) => s.id), configs)
-    : null;
-  const usedByClass = classId !== null
-    ? (data ?? []).filter((r) => r.classId === classId && r.id !== editId).reduce((n, r) => n + r.periodsPerWeek, 0)
-    : 0;
+  /** Weekly capacity of a class's timetable — mirrors the server guard. */
+  const capFor = (cid: number | null) =>
+    cid === null ? null : weekCapFor(
+      sectionRows ?? [],
+      (sectionRows ?? [])
+        .filter((s) => s.classId === cid && (yearId === null || s.academicYearId === yearId))
+        .map((s) => s.id),
+      configs,
+    );
+  /** Periods already committed for a class, excluding the row being edited. */
+  const usedBy = (cid: number | null, exceptId: number | null) =>
+    cid === null ? 0
+      : (data ?? []).filter((r) => r.classId === cid && r.id !== exceptId)
+        .reduce((n, r) => n + r.periodsPerWeek, 0);
+
+  const rows = (data ?? [])
+    .filter((r) => !fClass || r.classId === Number(fClass))
+    .filter((r) => !fSubject || r.subjectId === Number(fSubject))
+    .filter((r) => {
+      const needle = q.trim().toLowerCase();
+      return !needle || `${r.className} ${r.subjectName}`.toLowerCase().includes(needle);
+    })
+    .sort((a, b) => a.className.localeCompare(b.className) || a.subjectName.localeCompare(b.subjectName));
+
+  const total = (data ?? []).length;
+  const filtered = fClass || fSubject || q.trim();
+
+  const cellStyle: React.CSSProperties = {
+    padding: "7px 10px", borderBottom: "1px solid var(--line)", fontSize: 13, verticalAlign: "middle",
+  };
+  const smallInput: React.CSSProperties = { ...inputStyle, padding: "5px 7px", fontSize: 12.5, width: "100%" };
 
   return (
-    <Card title="Curriculum Mapping" sub="Which subjects each class takes, how often, and any double-period rules (§4.8).">
-      <ErrorNote message={error} />
-      <DataTable
-        headers={["Class", "Subject", "Periods/wk", "Max/day", "Blocks", "Same period", ""]}
-        rows={(data ?? []).map((r) => [
-          r.className, r.subjectName, r.periodsPerWeek, r.maxPeriodsPerDay,
-          r.consecutiveBlockSize > 1 ? <span key="b" className="chip mono">{r.consecutiveBlocksPerWeek ?? "auto"}×{r.consecutiveBlockSize}</span> : "—",
-          r.samePeriodAcrossWeek ? "yes" : "—",
-          <RowActions key="d" onEdit={() => startEdit(r)} onDelete={() => remove(r)} />,
-        ])}
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr) auto auto", gap: 8, marginTop: 14, alignItems: "end" }}>
-        <Field label="Class">
-          <select style={inputStyle} disabled={editId !== null} value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value })}>
-            <option value="">—</option>
-            {(classes ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Subject">
-          <select style={inputStyle} disabled={editId !== null} value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}>
-            <option value="">—</option>
-            {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Periods/wk"
-          hint={capInfo ? `${capInfo.name} week = ${capInfo.cap} · class uses ${usedByClass + (Number(form.periodsPerWeek) || 0)}/${capInfo.cap}` : undefined}>
-          <input type="number" min={1} max={capInfo?.cap} style={inputStyle} value={form.periodsPerWeek} onChange={(e) => setForm({ ...form, periodsPerWeek: e.target.value })} />
-        </Field>
-        <Field label="Max/day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
-        <Field label="Block size"><input type="number" style={inputStyle} value={form.consecutiveBlockSize} onChange={(e) => setForm({ ...form, consecutiveBlockSize: e.target.value })} /></Field>
-        <Field label="Blocks/wk"><input type="number" style={inputStyle} placeholder="auto" value={form.consecutiveBlocksPerWeek} onChange={(e) => setForm({ ...form, consecutiveBlocksPerWeek: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.classId || !form.subjectId}>
-          {editId ? "✓ Save" : "＋ Add"}
-        </button>
-        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
+    <Card
+      title="Curriculum Mapping"
+      sub="Which subjects each class takes, how often, and any double-period rules (§4.8)."
+      actions={
+        <button className="btn btn-primary" onClick={startAdd} disabled={adding}>＋ Add subject</button>
+      }
+    >
+      {/* A failure while editing is rendered under its own row instead — the
+          banner would sit above the scroll pane, out of sight of the row that
+          caused it. This one carries list-level failures, like a refused delete. */}
+      <ErrorNote message={editId === null && !adding ? error : null} />
+
+      {/* Finding the row is most of the work, so the filters come first. */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <select style={{ ...inputStyle, width: "auto", minWidth: 150 }} value={fClass} onChange={(e) => setFClass(e.target.value)}>
+          <option value="">All classes</option>
+          {(classes ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select style={{ ...inputStyle, width: "auto", minWidth: 150 }} value={fSubject} onChange={(e) => setFSubject(e.target.value)}>
+          <option value="">All subjects</option>
+          {(subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <input style={{ ...inputStyle, width: "auto", minWidth: 170 }} placeholder="Search class or subject…"
+          value={q} onChange={(e) => setQ(e.target.value)} />
+        {filtered && (
+          <button className="btn" style={{ border: "1px solid var(--line)" }}
+            onClick={() => { setFClass(""); setFSubject(""); setQ(""); }}>Clear</button>
+        )}
+        <span style={{ fontSize: 12, color: "var(--ink-faint)", marginLeft: "auto" }}>
+          {filtered ? `${rows.length} of ${total} rows` : `${total} row${total === 1 ? "" : "s"}`}
+        </span>
+      </div>
+
+      <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            {/* Sticky: on a long list the column meaning has to survive the scroll. */}
+            <tr>
+              {["Class", "Subject", "Periods/wk", "Max/day", "Blocks", "Same period", ""].map((h) => (
+                <th key={h} style={{
+                  padding: "8px 10px", textAlign: "left", fontSize: 11, letterSpacing: "0.06em",
+                  textTransform: "uppercase", color: "var(--ink-faint)", background: "var(--offwhite)",
+                  borderBottom: "1px solid var(--line)", position: "sticky", top: 0, zIndex: 1, whiteSpace: "nowrap",
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {adding && (
+              <>
+                <CurriculumEditRow
+                  draft={draft} setDraft={setDraft}
+                  classes={classes ?? []} subjects={subjects ?? []}
+                  lockKey={false}
+                  cap={capFor(draft.classId ? Number(draft.classId) : null)}
+                  used={usedBy(draft.classId ? Number(draft.classId) : null, null)}
+                  onSave={() => save(null)} onCancel={stopEditing}
+                  cellStyle={cellStyle} smallInput={smallInput}
+                />
+                <RowError message={error} cellStyle={cellStyle} />
+              </>
+            )}
+            {rows.length === 0 && !adding ? (
+              <tr><td colSpan={7} style={{ ...cellStyle, color: "var(--ink-faint)" }}>
+                {total === 0 ? "No curriculum rows yet." : "No rows match these filters."}
+              </td></tr>
+            ) : rows.map((r, i) =>
+              editId === r.id ? (
+                <Fragment key={r.id}>
+                  <CurriculumEditRow
+                    draft={draft} setDraft={setDraft}
+                    classes={classes ?? []} subjects={subjects ?? []}
+                    lockKey
+                    cap={capFor(r.classId)} used={usedBy(r.classId, r.id)}
+                    onSave={() => save(r.id)} onCancel={stopEditing}
+                    cellStyle={cellStyle} smallInput={smallInput}
+                  />
+                  <RowError message={error} cellStyle={cellStyle} />
+                </Fragment>
+              ) : (
+                <tr key={r.id} style={{
+                  // A hairline where the class changes: it groups the list
+                  // without a heading row that would break the column grid.
+                  borderTop: i > 0 && rows[i - 1].className !== r.className
+                    ? "2px solid var(--line)" : undefined,
+                }}>
+                  <td style={{ ...cellStyle, fontWeight: 600, whiteSpace: "nowrap" }}>{r.className}</td>
+                  <td style={cellStyle}>{r.subjectName}</td>
+                  <td style={cellStyle}>{r.periodsPerWeek}</td>
+                  <td style={cellStyle}>{r.maxPeriodsPerDay}</td>
+                  <td style={cellStyle}>
+                    {r.consecutiveBlockSize > 1
+                      ? <span className="chip mono">{r.consecutiveBlocksPerWeek ?? "auto"}×{r.consecutiveBlockSize}</span>
+                      : "—"}
+                  </td>
+                  <td style={cellStyle}>{r.samePeriodAcrossWeek ? "yes" : "—"}</td>
+                  <td style={{ ...cellStyle, textAlign: "right" }}>
+                    <RowActions onEdit={() => startEdit(r)} onDelete={() => remove(r)} />
+                  </td>
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
       </div>
     </Card>
+  );
+}
+
+/** A save failure, shown directly under the row that caused it. */
+function RowError({ message, cellStyle }: { message: string | null; cellStyle: React.CSSProperties }) {
+  if (!message) return null;
+  return (
+    <tr>
+      <td colSpan={7} style={{
+        ...cellStyle, background: "var(--signal-bg)", color: "var(--signal)", fontSize: 12.5,
+      }}>{message}</td>
+    </tr>
+  );
+}
+
+interface CurriculumDraft {
+  classId: string;
+  subjectId: string;
+  periodsPerWeek: string;
+  maxPeriodsPerDay: string;
+  consecutiveBlockSize: string;
+  consecutiveBlocksPerWeek: string;
+  samePeriodAcrossWeek: boolean;
+}
+
+/**
+ * One row, in edit mode — the same seven columns, as inputs.
+ *
+ * `lockKey` disables class and subject when editing an existing row: together
+ * they are the row's identity (`class_id, subject_id, academic_year_id`), so
+ * changing one is a different row, not an edit of this one.
+ */
+function CurriculumEditRow({
+  draft, setDraft, classes, subjects, lockKey, cap, used, onSave, onCancel, cellStyle, smallInput,
+}: {
+  draft: CurriculumDraft;
+  setDraft: (d: CurriculumDraft) => void;
+  classes: any[];
+  subjects: any[];
+  lockKey: boolean;
+  cap: { cap: number; name: string } | null;
+  used: number;
+  onSave: () => void;
+  onCancel: () => void;
+  cellStyle: React.CSSProperties;
+  smallInput: React.CSSProperties;
+}) {
+  const wanted = used + (Number(draft.periodsPerWeek) || 0);
+  const over = cap !== null && wanted > cap.cap;
+
+  // §4.8, mirrored client-side. `2 blocks × 2 periods = 4` against a subject
+  // that only has 3 periods a week is refused by the server, and the refusal
+  // used to arrive in a banner at the top of the card — which, with the row
+  // being edited deep inside the scroll pane, is somewhere nobody was looking.
+  // The arithmetic is shown next to the fields that produce it instead.
+  const ppw = Number(draft.periodsPerWeek) || 0;
+  const size = Number(draft.consecutiveBlockSize) || 1;
+  const perWk = draft.consecutiveBlocksPerWeek === "" ? null : Number(draft.consecutiveBlocksPerWeek) || 0;
+  const blockTotal = size > 1 && perWk !== null ? size * perWk : null;
+  const blocksTooMany = blockTotal !== null && ppw > 0 && blockTotal > ppw;
+
+  const editing: React.CSSProperties = { ...cellStyle, background: "var(--steel-pale)" };
+
+  // Enter saves, Escape cancels — an inline row that needs the mouse to leave
+  // it is only half an improvement.
+  const keys = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); if (!over && !blocksTooMany && draft.classId && draft.subjectId) onSave(); }
+    if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+  };
+
+  return (
+    <tr onKeyDown={keys}>
+      <td style={{ ...editing, minWidth: 130 }}>
+        <select style={smallInput} disabled={lockKey} value={draft.classId}
+          onChange={(e) => setDraft({ ...draft, classId: e.target.value })}>
+          <option value="">—</option>
+          {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </td>
+      <td style={{ ...editing, minWidth: 140 }}>
+        <select style={smallInput} disabled={lockKey} value={draft.subjectId}
+          onChange={(e) => setDraft({ ...draft, subjectId: e.target.value })}>
+          <option value="">—</option>
+          {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </td>
+      <td style={{ ...editing, minWidth: 108 }}>
+        <input type="number" min={1} max={cap?.cap} autoFocus={lockKey}
+          style={{ ...smallInput, borderColor: over ? "var(--signal)" : undefined }}
+          value={draft.periodsPerWeek}
+          onChange={(e) => setDraft({ ...draft, periodsPerWeek: e.target.value })} />
+        {/* The capacity mirror travels with the field it constrains, instead of
+            living in a hint under a form somewhere else on the page. */}
+        {cap && (
+          <div style={{ fontSize: 10.5, marginTop: 3, color: over ? "var(--signal)" : "var(--ink-faint)" }}>
+            {wanted}/{cap.cap} of the {cap.name} week{over ? " — over capacity" : ""}
+          </div>
+        )}
+      </td>
+      <td style={{ ...editing, minWidth: 80 }}>
+        <input type="number" min={1} style={smallInput} value={draft.maxPeriodsPerDay}
+          onChange={(e) => setDraft({ ...draft, maxPeriodsPerDay: e.target.value })} />
+      </td>
+      <td style={{ ...editing, minWidth: 130 }}>
+        <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+          <input type="number" min={1} style={{ ...smallInput, width: 52 }} title="Blocks per week"
+            placeholder="auto" value={draft.consecutiveBlocksPerWeek}
+            onChange={(e) => setDraft({ ...draft, consecutiveBlocksPerWeek: e.target.value })} />
+          <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>×</span>
+          <input type="number" min={1} style={{ ...smallInput, width: 52 }} title="Periods per block"
+            value={draft.consecutiveBlockSize}
+            onChange={(e) => setDraft({ ...draft, consecutiveBlockSize: e.target.value })} />
+        </div>
+        <div style={{ fontSize: 10.5, marginTop: 3, color: blocksTooMany ? "var(--signal)" : "var(--ink-faint)" }}>
+          {blockTotal === null
+            ? "blocks/wk × size"
+            : `${perWk}×${size} = ${blockTotal} of ${ppw}/wk${blocksTooMany ? " — too many" : ""}`}
+        </div>
+      </td>
+      <td style={editing}>
+        {/* This had no control at all before: the field was in the payload, in
+            the table and in the edit state, but nothing on the screen could set
+            it — so a same-period-across-week subject could not be declared here. */}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+          <input type="checkbox" checked={draft.samePeriodAcrossWeek}
+            onChange={(e) => setDraft({ ...draft, samePeriodAcrossWeek: e.target.checked })} />
+          same slot
+        </label>
+      </td>
+      <td style={{ ...editing, textAlign: "right", whiteSpace: "nowrap" }}>
+        <span style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+          <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11.5 }}
+            onClick={onSave} disabled={!draft.classId || !draft.subjectId || over || blocksTooMany}>✓ Save</button>
+          <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5, border: "1px solid var(--line)" }}
+            onClick={onCancel}>Cancel</button>
+        </span>
+      </td>
+    </tr>
   );
 }
 
@@ -124,14 +398,15 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
     try {
       const body = {
         name: form.name, employeeCode: form.employeeCode,
-        maxPeriodsPerDay: Number(form.maxPeriodsPerDay), maxPeriodsPerWeek: Number(form.maxPeriodsPerWeek),
+        maxPeriodsPerDay: Number(form.maxPeriodsPerDay), minPeriodsPerDay: Number(form.minPeriodsPerDay),
+        maxPeriodsPerWeek: Number(form.maxPeriodsPerWeek),
         classTeacherPeriodRule: form.classTeacherPeriodRule, periodPattern: form.periodPattern,
         alternateDaySet: form.periodPattern === "alternate_day" && form.alternateDaySet.length > 0 ? form.alternateDaySet : null,
         // §18: which classes this teacher may take, and how they are engaged.
@@ -177,8 +452,14 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
           </span>,
           <span key="et" className={`chip${t.employmentType === "guest" ? " chip-warn" : ""}`}>{t.employmentType ?? "permanent"}</span>,
           t.subjects.join(", ") || "—",
-          <span key="l" className={`badge ${t.weeklyLoad > t.maxPeriodsPerWeek ? "badge-error" : "badge-ok"}`}>
-            {t.weeklyLoad} / {t.maxPeriodsPerWeek}
+          <span key="l">
+            <span className={`badge ${t.weeklyLoad > t.maxPeriodsPerWeek ? "badge-error" : "badge-ok"}`}>
+              {t.weeklyLoad} / {t.maxPeriodsPerWeek}
+            </span>
+            <br />
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+              {t.minPeriodsPerDay ?? 3}–{t.maxPeriodsPerDay}/day
+            </span>
           </span>,
           <span key="p" className="chip">{t.periodPattern}</span>,
           <button key="e" className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: 11.5 }}
@@ -302,6 +583,15 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
         <Field label="Employee code"><input style={inputStyle} value={form.employeeCode} onChange={(e) => setForm({ ...form, employeeCode: e.target.value })} /></Field>
         <Field label="Max periods / day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Max periods / week"><input type="number" style={inputStyle} value={form.maxPeriodsPerWeek} onChange={(e) => setForm({ ...form, maxPeriodsPerWeek: e.target.value })} /></Field>
+        {/* §20: the floor to go with the cap above. */}
+        <Field label="Min periods / day">
+          <input type="number" min={0} style={inputStyle} value={form.minPeriodsPerDay ?? 3}
+            onChange={(e) => setForm({ ...form, minPeriodsPerDay: e.target.value })} />
+          <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 5, lineHeight: 1.5 }}>
+            A day {first} works carries at least this many periods — they come in for a proper day or not at
+            all. Days off are still days off. Set 1 to switch the rule off for this teacher.
+          </div>
+        </Field>
       </div>
 
       <div style={{ height: 1, background: "var(--line)", margin: "6px 0 22px" }} />
@@ -392,7 +682,13 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
 export function StepTeacherMapping() {
   const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
   const { data: teachers } = useApi<any[]>("/teachers");
-  const { data: mappings, refetch: refetchMappings } = useApi<any[]>("/mappings");
+  // §3.12: this session's mappings only — after a clone the same teacher,
+  // subject and class-section label exists in two sessions.
+  const { current: mapCurrent } = useConfigCtx();
+  const mapYearId = mapCurrent?.academicYearId ?? null;
+  const { data: mappings, refetch: refetchMappings } = useApi<any[]>(
+    mapYearId ? `/mappings?academicYearId=${mapYearId}` : "/mappings",
+  );
   const { data: subjects } = useApi<any[]>("/subjects");
   const { data: rooms } = useApi<any[]>("/rooms");
   const [view, setView] = useState<"list" | "form">("list");

@@ -10,7 +10,8 @@
  *     optimizer bug can never reach the database.
  */
 import type { Placement, SolverInput, SolverVariable } from "../solver/types";
-import { SolverState } from "../solver/state";
+import { effectiveMinByTeacher } from "../feasibility/min-day";
+import { SolverState, teacherPeriodBudget } from "../solver/state";
 import { cellKey } from "../solver/variables";
 import type { ObjectiveWeights } from "./objective";
 
@@ -36,6 +37,10 @@ export interface CpSatModel {
   variables: CpSatVariable[];
   /** teacher -> day -> periods still available under their daily cap */
   teacherDayCap: Record<string, number>;
+  /** §20: `${teacherId}@${day}` -> periods the model must add if the day is used */
+  teacherDayMin: Record<string, number>;
+  /** §20: days a locked cell has already opened — bound applies unconditionally */
+  teacherDayForced: string[];
   /** `${classSectionId}:${subjectId}` -> day -> remaining allowance */
   subjectDayCap: Record<string, number>;
   /** teachers who may never take two adjacent periods (§4.7) */
@@ -138,10 +143,20 @@ export function buildCpSatModel(
   });
 
   const teacherDayCap: Record<string, number> = {};
+  const teacherDayMin: Record<string, number> = {};
+  const teacherDayForced: string[] = [];
+  const minPerTeacher = effectiveMinByTeacher(input.snapshot);
   for (const t of input.snapshot.teachers) {
     for (const day of days) {
-      const used = lockedTeacherDay.get(`${t.id}@${day}`) ?? 0;
-      teacherDayCap[`${t.id}@${day}`] = Math.max(0, t.maxPeriodsPerDay - used);
+      const key = `${t.id}@${day}`;
+      const used = lockedTeacherDay.get(key) ?? 0;
+      teacherDayCap[key] = Math.max(0, t.maxPeriodsPerDay - used);
+      // The locked periods already count toward the day, so the model only has
+      // to make up the difference — and a day they have opened is used whatever
+      // the model does with it.
+      const min = minPerTeacher.get(t.id) ?? 1;
+      if (min > 1) teacherDayMin[key] = Math.max(0, min - used);
+      if (used > 0) teacherDayForced.push(key);
     }
   }
 
@@ -170,6 +185,8 @@ export function buildCpSatModel(
     workingDays: days,
     variables: cpVars,
     teacherDayCap,
+    teacherDayMin,
+    teacherDayForced,
     subjectDayCap,
     alternatePeriodTeachers: input.snapshot.teachers
       .filter((t) => t.periodPattern === "alternate_period")
@@ -197,7 +214,7 @@ export function verifyAssignment(
   variables: SolverVariable[],
   assignments: CpSatAssignment[],
 ): VerifyResult {
-  const state = new SolverState(input);
+  const state = new SolverState(input, { minPerDayBudget: teacherPeriodBudget(variables) });
   const byId = new Map(variables.map((v) => [v.id, v]));
   const placements: Placement[] = [];
   const seen = new Set<number>();
@@ -234,6 +251,21 @@ export function verifyAssignment(
       span: v.span,
       roomId: res.roomId,
     });
+  }
+
+  // §20 is the one rule a per-placement check cannot catch on its own: adding
+  // a lesson never breaks a minimum, so only the finished week can be judged.
+  // An optimizer answer that leaves someone a one-period Tuesday is rejected
+  // here and the fast engine's answer stands.
+  const short = state.shortDays();
+  if (short.length > 0) {
+    const worst = short[0];
+    const name = input.snapshot.teachers.find((t) => t.id === worst.teacherId)?.name ?? `teacher #${worst.teacherId}`;
+    return {
+      ok: false,
+      placements: [],
+      reason: `${name} would have ${worst.periods} period(s) on day ${worst.day}, below their minimum of ${worst.min}${short.length > 1 ? ` (and ${short.length - 1} more such day(s))` : ""}`,
+    };
   }
   return { ok: true, placements };
 }

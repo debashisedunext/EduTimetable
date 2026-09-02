@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
@@ -21,11 +21,22 @@ export class MappingsController {
     private readonly readiness: ReadinessService,
   ) {}
 
+  /**
+   * §3.12 — `academicYearId` narrows the list to one session. Optional, like
+   * the curriculum list: reading every session is merely noisy. But once a
+   * school has cloned a timetable it has two sessions' mappings, and a screen
+   * that shows "Class 5-A · English · Mrs Rao" twice with nothing to tell them
+   * apart is a screen nobody can use.
+   */
   @Get()
-  async list(@Req() req: AuthedRequest) {
+  async list(@Req() req: AuthedRequest, @Query("academicYearId") academicYearId?: string) {
+    const year = academicYearId ? toInt(academicYearId, "academicYearId") : null;
     const [rows, groups] = await Promise.all([
       this.prisma.teacherSubjectClassSection.findMany({
-        where: { teacher: { schoolId: req.user.schoolId } },
+        where: {
+          teacher: { schoolId: req.user.schoolId },
+          ...(year === null ? {} : { classSection: { academicYearId: year } }),
+        },
         include: {
           teacher: true,
           subject: true,
@@ -35,7 +46,13 @@ export class MappingsController {
         orderBy: [{ teacher: { name: "asc" } }],
       }),
       this.prisma.mergedTeachingGroup.findMany({
-        where: { schoolId: req.user.schoolId },
+        // A group belongs to a session through its members, having no year of
+        // its own — `some` is right because a group's members are always in one
+        // session (the clone refuses to copy one that spans timetables).
+        where: {
+          schoolId: req.user.schoolId,
+          ...(year === null ? {} : { members: { some: { classSection: { academicYearId: year } } } }),
+        },
         include: {
           teacher: true,
           subject: true,

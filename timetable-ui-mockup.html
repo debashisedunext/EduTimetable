@@ -1128,13 +1128,37 @@ h2.screen-title{font-family:var(--font-display); font-size:24px; font-weight:600
       <section class="screen" id="screen-board">
         <div class="board-head">
           <div class="board-select">
+            <select class="search-box" id="draft-select" onchange="selectDraft(this.value)">
+              <option value="1">Draft #1 — First full generation</option>
+              <option value="2" selected>Draft #2 — Labs freed on Friday</option>
+              <option value="3">Draft #3 — Manual edits on 6–8 wing</option>
+            </select>
             <select class="search-box"><option>5-A · Draft Timetable</option><option>5-B</option><option>6-A</option></select>
-            <span class="badge badge-warn">DRAFT — not published</span>
+            <span class="badge badge-warn" id="draft-badge">DRAFT #2 — not published</span>
           </div>
           <div style="display:flex; gap:10px;">
+            <button class="btn btn-secondary btn-sm">＋ New draft</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleCompare()">Compare drafts</button>
             <button class="btn btn-secondary btn-sm">Auto-fill remaining gaps</button>
-            <button class="btn btn-primary btn-sm">Publish</button>
+            <button class="btn btn-primary btn-sm" id="draft-publish">Publish Draft #2</button>
           </div>
+        </div>
+
+        <!-- §22.5 — per-draft stats, straight off the timetable_drafts registry row -->
+        <div style="display:flex; gap:10px; margin:12px 0 14px;" id="draft-stats"></div>
+
+        <!-- Compare panel (hidden until Compare drafts is clicked) -->
+        <div class="card" id="draft-compare" style="display:none; padding:16px 18px; margin-bottom:14px;">
+          <div class="section-label" style="display:block; margin-bottom:12px;">Compare live drafts — best value per column highlighted · publish straight from the winning row</div>
+          <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead><tr style="text-align:left; color:var(--ink-faint); font-size:11px;">
+              <th style="padding:6px 8px;">Draft</th><th style="padding:6px 8px;">Generation %</th>
+              <th style="padding:6px 8px;">Total allocation</th><th style="padding:6px 8px;">Actual</th>
+              <th style="padding:6px 8px;">Errors</th><th style="padding:6px 8px;">Warnings</th>
+              <th style="padding:6px 8px;">Generated</th><th></th>
+            </tr></thead>
+            <tbody id="draft-compare-body"></tbody>
+          </table>
         </div>
 
         <div class="dboard" id="dboard"></div>
@@ -2032,6 +2056,56 @@ function sendChat(){
     body.scrollTop = body.scrollHeight;
   }, 900);
 }
+
+/* ---------- §22 multiple named drafts — Draft Board stats ---------- */
+const DRAFTS = {
+  1:{no:1, label:'First full generation',      pct:96.2, req:2240, placed:2154, err:86, warn:9,  gen:'11 Apr, 09:12', status:'DRAFT #1 — not published'},
+  2:{no:2, label:'Labs freed on Friday',       pct:98.4, req:2240, placed:2205, err:35, warn:4,  gen:'12 Apr, 14:31', status:'DRAFT #2 — not published'},
+  3:{no:3, label:'Manual edits on 6–8 wing',   pct:100,  req:2240, placed:2240, err:0,  warn:2,  gen:'13 Apr, 10:05', status:'DRAFT #3 — not published'}
+};
+function draftStatBox(n,l,color){
+  return `<div class="stat-box"><div class="n" ${color?`style="color:${color};"`:''}>${n}</div><div class="l">${l}</div></div>`;
+}
+function selectDraft(id){
+  const d = DRAFTS[id];
+  document.getElementById('draft-stats').innerHTML =
+    draftStatBox(d.pct.toFixed(1).replace(/\.0$/,'') + '%','GENERATION', d.pct===100?'var(--accent)':(d.pct<97?'var(--amber)':undefined))
+  + draftStatBox(d.req.toLocaleString(),'TOTAL ALLOCATION (REQUIRED)')
+  + draftStatBox(d.placed.toLocaleString(),'ACTUAL ALLOCATION (PLACED)')
+  + draftStatBox(d.err,'ERRORS — UNPLACED / VIOLATIONS', d.err>0?'var(--signal)':'var(--accent)')
+  + draftStatBox(d.warn,'WARNINGS — ADVISORY', d.warn>0?'var(--amber)':'var(--accent)');
+  const badge = document.getElementById('draft-badge');
+  badge.textContent = d.status;
+  badge.className = 'badge ' + (d.err>0?'badge-warn':'badge-ok');
+  document.getElementById('draft-publish').textContent = 'Publish Draft #' + d.no;
+}
+function toggleCompare(){
+  const el = document.getElementById('draft-compare');
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  if(!show) return;
+  const ids = Object.keys(DRAFTS);
+  const best = {
+    pct: Math.max(...ids.map(i=>DRAFTS[i].pct)),
+    err: Math.min(...ids.map(i=>DRAFTS[i].err)),
+    warn: Math.min(...ids.map(i=>DRAFTS[i].warn))
+  };
+  const hi = 'background:var(--accent-bg); color:var(--accent); font-weight:700; border-radius:6px;';
+  document.getElementById('draft-compare-body').innerHTML = ids.map(i=>{
+    const d = DRAFTS[i];
+    return `<tr style="border-top:1px solid var(--line);">
+      <td style="padding:8px;"><b>Draft #${d.no}</b> <span style="color:var(--ink-faint);">· ${d.label}</span></td>
+      <td style="padding:8px;"><span style="padding:2px 7px; ${d.pct===best.pct?hi:''}">${d.pct}%</span></td>
+      <td style="padding:8px;">${d.req.toLocaleString()}</td>
+      <td style="padding:8px;">${d.placed.toLocaleString()}</td>
+      <td style="padding:8px;"><span style="padding:2px 7px; ${d.err===best.err?hi:''}">${d.err}</span></td>
+      <td style="padding:8px;"><span style="padding:2px 7px; ${d.warn===best.warn?hi:''}">${d.warn}</span></td>
+      <td style="padding:8px; color:var(--ink-faint);">${d.gen}</td>
+      <td style="padding:8px; text-align:right;"><button class="btn btn-primary btn-sm" onclick="document.getElementById('draft-select').value='${i}'; selectDraft('${i}'); showScreen('publish', document.querySelector('[data-target=publish]')||document.querySelector('.nav-item'));">Publish this →</button></td>
+    </tr>`;
+  }).join('');
+}
+selectDraft('2');
 
 /* ---------- initial computed values ---------- */
 recalcEndTime();

@@ -7,11 +7,9 @@
 import {
   BadRequestException,
   ConflictException,
-  Inject,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import type Redis from "ioredis";
 import {
   PERMISSIONS,
   planSubstitutes,
@@ -20,7 +18,7 @@ import {
   type SubstituteTeacher,
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
-import { REDIS } from "../redis/redis.module";
+import { CacheKeysService } from "../redis/cache-keys.service";
 import { EventsGateway } from "../events/events.gateway";
 import { NotificationsService } from "../notifications/notifications.service";
 
@@ -43,7 +41,7 @@ export class SubstitutesService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
-    @Inject(REDIS) private readonly redis: Redis,
+    private readonly keys: CacheKeysService,
   ) {}
 
   async listAbsences(schoolId: number, dateStr?: string) {
@@ -382,8 +380,17 @@ export class SubstitutesService {
     return { ok: true, confirmed: assignments.length };
   }
 
+  /**
+   * A substitution changes what the dated reports say, so they go with the
+   * slot caches (§14).
+   *
+   * This used to be `redis.keys("slots:*")`, which was wrong three times over:
+   * KEYS blocks the whole Redis instance (§14), the pattern has not matched a
+   * real key since 9.1 put the school prefix in front of it — so it was a
+   * silent no-op — and had it matched, it would have flushed every *other*
+   * school's caches too (§17).
+   */
   private async invalidateSlotCaches() {
-    const keys = await this.redis.keys("slots:*");
-    if (keys.length > 0) await this.redis.del(...keys);
+    await this.keys.invalidateTimetable();
   }
 }

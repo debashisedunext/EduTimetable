@@ -11,6 +11,7 @@ import { ElectiveBlocksController } from "./electives.controller";
 import { ExtraClassesController } from "./extra-classes.controller";
 import { TimetableConfigsController } from "./timetable-configs.controller";
 import { ReadinessService } from "../readiness/readiness.service";
+import { CloneService } from "./clone.service";
 
 /**
  * The Config Service (§2): every master-data mutation invalidates the readiness
@@ -33,7 +34,7 @@ import { ReadinessService } from "../readiness/readiness.service";
     ExtraClassesController,
     TimetableConfigsController,
   ],
-  providers: [ReadinessService],
+  providers: [ReadinessService, CloneService],
   exports: [ReadinessService],
 })
 export class MastersModule {}
