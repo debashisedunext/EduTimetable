@@ -1,5 +1,6 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
-import { PERMISSIONS } from "@edutimetable/shared";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { PERMISSIONS, isElectivePlacement, parsePins, type ElectivePin, type ElectivePlacement } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
@@ -28,9 +29,19 @@ export class ElectiveBlocksController {
     private readonly readiness: ReadinessService,
   ) {}
 
+  /**
+   * §3.12 — narrowed to one session on request. A block belongs to a session
+   * through its member sections, having no year of its own; after a clone the
+   * school has "Class 5 Third Language" in two sessions, and this is what tells
+   * them apart.
+   */
   @Get()
-  async list() {
+  async list(@Query("academicYearId") academicYearId?: string) {
+    const year = academicYearId ? toInt(academicYearId, "academicYearId") : null;
     const blocks = await this.prisma.electiveBlock.findMany({
+      ...(year === null
+        ? {}
+        : { where: { members: { some: { classSection: { academicYearId: year } } } } }),
       include: {
         members: { include: { classSection: { include: { class: true, section: true } } } },
         options: { include: { subject: true, teacher: true, room: true } },
@@ -42,6 +53,8 @@ export class ElectiveBlocksController {
       name: b.name,
       periodsPerWeek: b.periodsPerWeek,
       maxPeriodsPerDay: b.maxPeriodsPerDay,
+      placement: b.placement,
+      fixedSlots: parsePins(b.fixedSlots),
       members: b.members.map((m) => ({
         classSectionId: m.classSectionId,
         label: `${m.classSection.class.name}-${m.classSection.section.name}`,
@@ -80,6 +93,7 @@ export class ElectiveBlocksController {
             name: String(body.name),
             periodsPerWeek,
             maxPeriodsPerDay: body.maxPeriodsPerDay != null ? toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") : 1,
+            ...this.placement(body),
             members: {
               create: memberIds.map((classSectionId) => ({ classSectionId, schoolId: req.user.schoolId })),
             },
@@ -104,6 +118,9 @@ export class ElectiveBlocksController {
     if (body.name !== undefined) data.name = String(body.name);
     if (body.periodsPerWeek !== undefined) data.periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     if (body.maxPeriodsPerDay !== undefined) data.maxPeriodsPerDay = toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay");
+    if (body.placement !== undefined || body.fixedSlots !== undefined) {
+      Object.assign(data, this.placement({ ...body, placement: body.placement ?? existing.placement }));
+    }
 
     if (body.periodsPerWeek !== undefined) {
       const memberIds =
@@ -152,6 +169,61 @@ export class ElectiveBlocksController {
     await uniq(() => this.prisma.electiveBlock.delete({ where: { id: toInt(id, "id") } }), "Elective block");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
+  }
+
+  /**
+   * §4.9 Phase 15 — when the block runs.
+   *
+   * This is the only setting on the screen that takes slots AWAY from the
+   * solver rather than expressing a preference, so it is checked hard here:
+   * shape, range, duplicates. What it deliberately does NOT check is whether
+   * the pinned cells work for the school's teachers and other blocks — that
+   * needs the whole snapshot, and the Feasibility Engine already does it
+   * (Check 7b) with a specific fix and a §21 remedy. Refusing to save a pin
+   * the engine could explain would leave the admin with an error and no
+   * readiness row telling them what to do about it.
+   */
+  private placement(body: any): {
+    placement: ElectivePlacement;
+    fixedSlots: Prisma.InputJsonValue | typeof Prisma.DbNull;
+  } {
+    const placement = body.placement ?? "solver";
+    if (!isElectivePlacement(placement)) {
+      throw new BadRequestException(
+        `placement must be one of solver, same_period, fixed — got '${placement}'`,
+      );
+    }
+    // Leaving `fixed` clears the pins rather than keeping them warm: a pin the
+    // school cannot see on screen must not come back the next time somebody
+    // switches the setting on.
+    if (placement !== "fixed") return { placement, fixedSlots: Prisma.DbNull };
+
+    const raw = Array.isArray(body.fixedSlots) ? body.fixedSlots : [];
+    const pins: ElectivePin[] = raw.map((s: any, i: number) => {
+      requireFields(s, ["day", "period"]);
+      const day = toInt(s.day, `fixedSlots[${i}].day`);
+      const period = toInt(s.period, `fixedSlots[${i}].period`);
+      if (day < 1 || day > 7) {
+        throw new BadRequestException(`fixedSlots[${i}].day must be 1 (Mon) to 7 (Sun) — got ${day}`);
+      }
+      if (period < 1) throw new BadRequestException(`fixedSlots[${i}].period must be 1 or more — got ${period}`);
+      return { day, period };
+    });
+    // The same cell twice is never anything but a mistake: one slot cannot
+    // hold the block two times over, whatever the block's daily cap says.
+    const seen = new Set<string>();
+    for (const p of pins) {
+      const k = `${p.day}:${p.period}`;
+      if (seen.has(k)) {
+        throw new BadRequestException(
+          `Day ${p.day} period ${p.period} is fixed twice — one slot can only hold this block once`,
+        );
+      }
+      seen.add(k);
+    }
+    // Round-trip through the reader the solver and engine use, so anything
+    // those two would silently drop is refused here instead.
+    return { placement, fixedSlots: parsePins(pins).map((p) => ({ day: p.day, period: p.period })) };
   }
 
   private memberIds(body: any): number[] {
