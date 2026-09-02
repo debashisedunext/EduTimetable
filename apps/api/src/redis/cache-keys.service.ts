@@ -9,7 +9,16 @@ import { Inject, Injectable } from "@nestjs/common";
 import type Redis from "ioredis";
 import { TenantContextService } from "../tenant/tenant-context.service";
 import { REDIS } from "./redis.tokens";
-import { readinessKey, reportKey, schoolKeyPattern, slotsKey } from "./cache-keys";
+import {
+  configSlotsKeyPattern,
+  scanDel,
+  readinessKey,
+  reportKey,
+  reportKeyPattern,
+  schoolKeyPattern,
+  slotsKey,
+  slotsKeyPattern,
+} from "./cache-keys";
 
 @Injectable()
 export class CacheKeysService {
@@ -42,18 +51,42 @@ export class CacheKeysService {
 
   /**
    * Drop every cached value belonging to one school — and only that school.
+   */
+  async invalidateSchool(schoolId: number): Promise<number> {
+    return this.scanDel(schoolKeyPattern(schoolId));
+  }
+
+  /**
+   * Drop everything derived from a school's *published* timetable: the slot
+   * caches for the config, and this school's report aggregates.
+   *
+   * The reports are the half that used to be forgotten. Publishing dropped the
+   * slot caches only, so a class-section report anyone had opened before the
+   * publish went on being served from cache for the rest of its hour — showing
+   * a grid of "Free" for a timetable that had just gone live. Every write that
+   * changes a published slot or a substitution belongs here: publish, extra
+   * classes (which write published rows directly) and the substitute engine.
+   *
+   * `configId` is optional because a substitution is dated, not scoped to one
+   * timetable; without it every slot cache the school owns goes instead.
+   */
+  async invalidateTimetable(configId?: number): Promise<number> {
+    const schoolId = this.schoolId();
+    const removed =
+      configId === undefined
+        ? await this.scanDel(slotsKeyPattern(schoolId))
+        // §22: the suffix is open-ended now (`draft:d7`, `published:2026-04-11`),
+        // so naming three exact keys leaves every per-draft copy stale. Sweep
+        // the config's whole prefix instead.
+        : await this.scanDel(configSlotsKeyPattern(schoolId, configId));
+    return removed + (await this.scanDel(reportKeyPattern(schoolId)));
+  }
+
+  /**
    * SCAN rather than KEYS: KEYS blocks the whole Redis instance, which under
    * many tenants is a shared-fate stall (§14).
    */
-  async invalidateSchool(schoolId: number): Promise<number> {
-    const pattern = schoolKeyPattern(schoolId);
-    let cursor = "0";
-    let removed = 0;
-    do {
-      const [next, batch] = await this.redis.scan(cursor, "MATCH", pattern, "COUNT", 200);
-      cursor = next;
-      if (batch.length > 0) removed += await this.redis.del(...batch);
-    } while (cursor !== "0");
-    return removed;
+  private scanDel(pattern: string): Promise<number> {
+    return scanDel(this.redis, pattern);
   }
 }

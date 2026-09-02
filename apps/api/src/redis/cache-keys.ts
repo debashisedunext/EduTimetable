@@ -30,3 +30,56 @@ export const reportKey = (schoolId: number, name: string) =>
 
 /** Match pattern for "everything cached for this school". */
 export const schoolKeyPattern = (schoolId: number) => `${schoolPrefix(schoolId)}:*`;
+
+/** Match pattern for this school's slot caches, whatever the config. */
+export const slotsKeyPattern = (schoolId: number) => `${schoolPrefix(schoolId)}:slots:*`;
+
+/**
+ * Every cached payload of ONE timetable, whatever suffix it carries.
+ *
+ * §22 made the suffix open-ended: a draft payload is cached per draft
+ * (`…:slots:119:draft:d7`), so the old "delete these three exact keys" no
+ * longer reaches them and a board edit would leave every draft-scoped copy
+ * stale. Matching the config prefix is what keeps invalidation total.
+ */
+export const configSlotsKeyPattern = (schoolId: number, configId: number) =>
+  `${schoolPrefix(schoolId)}:slots:${configId}:*`;
+
+/**
+ * Match pattern for this school's report aggregates.
+ *
+ * Reports are keyed by what they are *about* — a class-section, a teacher, a
+ * date — never by the timetable config, so there is no way to delete "the
+ * reports affected by publishing config 7" one key at a time. They are cheap
+ * to recompute and publishing is rare, so the whole set goes.
+ */
+export const reportKeyPattern = (schoolId: number) => `${schoolPrefix(schoolId)}:rpt:*`;
+
+
+/**
+ * Delete every key matching a pattern, without blocking Redis.
+ *
+ * SCAN rather than KEYS: KEYS blocks the whole instance, which under many
+ * tenants is a shared-fate stall (§14). Lives here rather than on the service
+ * because the BullMQ worker has no Nest context and must sweep the same keys
+ * the same way — two implementations would drift the moment one changed.
+ */
+export async function scanDel(
+  redis: { scan(...args: never[]): Promise<[string, string[]]>; del(...keys: string[]): Promise<number> },
+  pattern: string,
+): Promise<number> {
+  let cursor = "0";
+  let removed = 0;
+  do {
+    const [next, batch] = await (redis.scan as unknown as (
+      c: string,
+      m: "MATCH",
+      p: string,
+      c2: "COUNT",
+      n: number,
+    ) => Promise<[string, string[]]>)(cursor, "MATCH", pattern, "COUNT", 200);
+    cursor = next;
+    if (batch.length > 0) removed += await redis.del(...batch);
+  } while (cursor !== "0");
+  return removed;
+}
