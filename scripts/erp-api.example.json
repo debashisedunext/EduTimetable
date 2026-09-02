@@ -1,0 +1,117 @@
+{
+  "_README": [
+    "§23.6 — how the timetable reads your ERP's REST API. Copy this file, point",
+    "ERP_API_FILE at it, and fill in the real paths and field names.",
+    "",
+    "Nothing here is required of the ERP. It describes what the ERP ALREADY",
+    "returns: any paths, any field names, any envelope, any pagination style.",
+    "The one thing that must exist is a way to look up a school by the code the",
+    "SSO token carries — that code is the contract between the two systems.",
+    "",
+    "A master with no entry under `sheets` is simply 'not configured': its card",
+    "says so and its Sync button is disabled. The other masters still work, so",
+    "an ERP that has a staff endpoint today and a sections endpoint next month",
+    "can be integrated one master at a time.",
+    "",
+    "After editing, run the probe from the Sync screen. It calls every endpoint",
+    "for real and names any field whose path did not resolve, showing your own",
+    "record beside it.",
+    "",
+    "Placeholders: {code} {schoolId} {page} {size}",
+    "Field paths are dotted and may index arrays: 'profile.full_name', 'data.0.id'.",
+    "A field whose path is absent is LEFT ALONE by the sync, never blanked."
+  ],
+
+  "_AUTH": [
+    "§23.8 — how we authenticate to a secured ERP API.",
+    "",
+    "The ERP's SSO token is NOT used here and cannot be: it is single-use, it",
+    "expires in minutes, and we discard it at login. What IS carried over is",
+    "the useful half — `actingUserHeader` puts the ERP user id of whoever",
+    "pressed Sync on every request, so your audit log can name them. A",
+    "scheduled run omits it, and that absence is meaningful.",
+    "",
+    "THE CLIENT SECRET NEVER GOES IN THIS FILE. This file is committed;",
+    "environment is not. `clientSecretEnv` names the variable holding it.",
+    "",
+    "modes: 'oauth2' (client credentials) | 'bearer' (static token in",
+    "ERP_API_TOKEN, or ERP_API_KEY_HEADER + ERP_API_KEY) | 'none'."
+  ],
+  "auth": {
+    "mode": "oauth2",
+    "tokenUrl": "https://erp.example.com/oauth/token",
+    "clientId": "edutimetable",
+    "clientSecretEnv": "ERP_API_CLIENT_SECRET",
+    "scope": "masters:read",
+
+    "_optional": "audience, if your provider requires it on the grant",
+    "_style": "'post' (default: credentials in the form body) or 'basic' (HTTP Basic)",
+    "_paths": "accessTokenPath / expiresInPath, if the response nests them elsewhere",
+    "actingUserHeader": "X-ERP-Acting-User"
+  },
+
+  "school": {
+    "_": "Turns our schools.code into the id your ERP knows the school by.",
+    "path": "/schools?code={code}",
+    "pick": "data.0.id"
+  },
+
+  "sheets": {
+    "Academic Years": {
+      "path": "/academic-sessions?school_id={schoolId}",
+      "list": "data",
+      "fields": {
+        "name": "name",
+        "startDate": "start_date",
+        "endDate": "end_date",
+        "isActive": "is_current"
+      }
+    },
+
+    "Classes": {
+      "path": "/classes?school_id={schoolId}",
+      "list": "data",
+      "fields": {
+        "className": "name",
+        "sequence": "display_order"
+      }
+    },
+
+    "Class Sections": {
+      "_": "A REST API usually nests what SQL would join — hence the dotted paths.",
+      "path": "/sections?school_id={schoolId}",
+      "list": "data",
+      "fields": {
+        "className": "class.name",
+        "sectionName": "name",
+        "academicYear": "session.name",
+        "strength": "strength"
+      }
+    },
+
+    "Subjects": {
+      "path": "/subjects?school_id={schoolId}",
+      "list": "data",
+      "fields": {
+        "subjectName": "name",
+        "code": "code"
+      }
+    },
+
+    "Teachers": {
+      "_page": [
+        "Only needed if the endpoint pages. `max` is a hard stop: if lastPagePath",
+        "is misread, this is what keeps the sync from looping against your",
+        "production API until something times out."
+      ],
+      "path": "/staff?school_id={schoolId}&is_teaching=1&page={page}&per_page={size}",
+      "list": "data",
+      "fields": {
+        "employeeCode": "employee_code",
+        "name": "name",
+        "isActive": "is_active"
+      },
+      "page": { "from": 1, "lastPagePath": "meta.last_page", "size": 200, "max": 50 }
+    }
+  }
+}

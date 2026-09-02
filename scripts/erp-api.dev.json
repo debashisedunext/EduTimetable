@@ -1,0 +1,50 @@
+{
+  "_": [
+    "§23.6 — the mapping that reads the dev stand-in ERP (scripts/fake-erp-api.cjs).",
+    "It is also a worked example of the real thing: nested field paths on",
+    "/sections, pagination on /staff. Copy scripts/erp-api.example.json when",
+    "wiring up a real ERP and point ERP_API_FILE at your copy."
+  ],
+  "auth": {
+    "mode": "oauth2",
+    "tokenUrl": "/oauth/token",
+    "clientId": "edutimetable",
+    "clientSecretEnv": "ERP_API_CLIENT_SECRET",
+    "scope": "masters:read",
+    "actingUserHeader": "X-ERP-Acting-User"
+  },
+  "school": { "path": "/schools?code={code}", "pick": "data.0.id" },
+  "sheets": {
+    "Academic Years": {
+      "path": "/academic-sessions?school_id={schoolId}",
+      "list": "data",
+      "fields": { "name": "name", "startDate": "start_date", "endDate": "end_date", "isActive": "is_current" }
+    },
+    "Classes": {
+      "path": "/classes?school_id={schoolId}",
+      "list": "data",
+      "fields": { "className": "name", "sequence": "display_order" }
+    },
+    "Class Sections": {
+      "path": "/sections?school_id={schoolId}",
+      "list": "data",
+      "fields": {
+        "className": "class.name",
+        "sectionName": "name",
+        "academicYear": "session.name",
+        "strength": "strength"
+      }
+    },
+    "Subjects": {
+      "path": "/subjects?school_id={schoolId}",
+      "list": "data",
+      "fields": { "subjectName": "name", "code": "code" }
+    },
+    "Teachers": {
+      "path": "/staff?school_id={schoolId}&page={page}&per_page={size}",
+      "list": "data",
+      "fields": { "employeeCode": "employee_code", "name": "name", "isActive": "is_active" },
+      "page": { "from": 1, "lastPagePath": "meta.last_page", "size": 200, "max": 50 }
+    }
+  }
+}
