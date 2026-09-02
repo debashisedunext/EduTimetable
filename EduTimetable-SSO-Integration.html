@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Token contract, parameters and rules for signing users into the EduTimetable module from the Edunext ERP.">
+<title>EduTimetable SSO Contract</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Palette: the EduTimetable design system (CLAUDE.md §UI).
+     Blue-biased neutrals, brand #2563EB, signal red, amber, cyan.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --brand:       #2563EB;
+    --brand-dark:  #1E4FC4;
+    --brand-deep:  #0B1F44;
+    --steel:       #5578A8;
+    --steel-light: #B6CBE8;
+    --steel-pale:  #E7EEFA;
+
+    --bg:          #F4F7FC;
+    --surface:     #FFFFFF;
+    --surface-2:   #EEF3FB;
+    --line:        #DBE3F0;
+    --line-strong: #C3D2E8;
+
+    --ink:         #141B26;
+    --ink-soft:    #4F5D70;
+    --ink-faint:   #8695A9;
+
+    --signal:      #C2372F;
+    --signal-bg:   #FCEDEC;
+    --amber:       #B9791A;
+    --amber-bg:    #FBF3E4;
+    --accent:      #0891B2;
+    --accent-bg:   #E3F5F9;
+
+    --code-bg:     #0B1F44;
+    --code-ink:    #DCE7F7;
+    --code-key:    #8FB8F0;
+    --code-str:    #7FD8C4;
+    --code-num:    #E9B77A;
+    --code-dim:    #6E86AB;
+
+    --radius: 10px;
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --brand:       #6E9BF5;
+      --brand-dark:  #8FB4F8;
+      --brand-deep:  #CBDDF9;
+      --steel:       #91AACB;
+      --steel-light: #35507A;
+      --steel-pale:  #17243B;
+
+      --bg:          #0A121F;
+      --surface:     #111C2E;
+      --surface-2:   #16243A;
+      --line:        #24354F;
+      --line-strong: #34496A;
+
+      --ink:         #E8EFF9;
+      --ink-soft:    #A9BBD2;
+      --ink-faint:   #7186A1;
+
+      --signal:      #F08279;
+      --signal-bg:   #2E1614;
+      --amber:       #E5AE5E;
+      --amber-bg:    #2B2113;
+      --accent:      #4FC5DF;
+      --accent-bg:   #102B33;
+
+      --code-bg:     #060D18;
+      --code-ink:    #D3E1F5;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --brand:       #6E9BF5;
+    --brand-dark:  #8FB4F8;
+    --brand-deep:  #CBDDF9;
+    --steel:       #91AACB;
+    --steel-light: #35507A;
+    --steel-pale:  #17243B;
+
+    --bg:          #0A121F;
+    --surface:     #111C2E;
+    --surface-2:   #16243A;
+    --line:        #24354F;
+    --line-strong: #34496A;
+
+    --ink:         #E8EFF9;
+    --ink-soft:    #A9BBD2;
+    --ink-faint:   #7186A1;
+
+    --signal:      #F08279;
+    --signal-bg:   #2E1614;
+    --amber:       #E5AE5E;
+    --amber-bg:    #2B2113;
+    --accent:      #4FC5DF;
+    --accent-bg:   #102B33;
+
+    --code-bg:     #060D18;
+    --code-ink:    #D3E1F5;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+  @media (min-width: 1000px) {
+    .page { grid-template-columns: 216px minmax(0, 1fr); gap: 56px; align-items: start; }
+  }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  .masthead {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--line);
+    padding: 56px 0 32px;
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--steel);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: Fraunces, Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(34px, 5.2vw, 52px);
+    line-height: 1.06;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0 0 18px;
+    color: var(--ink);
+  }
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 18px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ── side nav ─────────────────────────────────────────────── */
+  nav.toc { display: none; }
+  @media (min-width: 1000px) {
+    nav.toc {
+      display: block;
+      position: sticky;
+      top: 28px;
+      font-size: 13.5px;
+      line-height: 1.45;
+      border-left: 1px solid var(--line);
+      padding-left: 18px;
+    }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+    nav.toc a {
+      color: var(--ink-soft);
+      text-decoration: none;
+      display: block;
+      border-left: 2px solid transparent;
+      margin-left: -20px;
+      padding-left: 18px;
+    }
+    nav.toc a:hover { color: var(--brand); border-left-color: var(--brand); }
+    nav.toc .grp {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 10.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      margin-top: 14px;
+    }
+    nav.toc li:first-child .grp { margin-top: 0; }
+  }
+
+  main { min-width: 0; display: grid; gap: 44px; }
+
+  section { scroll-margin-top: 24px; }
+
+  h2 {
+    font-family: Fraunces, Georgia, serif;
+    font-weight: 600;
+    font-size: 27px;
+    line-height: 1.18;
+    letter-spacing: -0.012em;
+    text-wrap: balance;
+    margin: 0 0 6px;
+    color: var(--ink);
+  }
+  h3 {
+    font-size: 16.5px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    margin: 30px 0 8px;
+    color: var(--ink);
+  }
+  h2 + p, h3 + p { margin-top: 0; }
+  p { max-width: var(--measure); margin: 0 0 14px; }
+  p:last-child { margin-bottom: 0; }
+  ul, ol.prose { max-width: var(--measure); padding-left: 20px; margin: 0 0 14px; }
+  li { margin-bottom: 7px; }
+  a { color: var(--brand); }
+
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.875em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  /* ── code blocks ──────────────────────────────────────────── */
+  .code {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    margin: 0 0 16px;
+    border: 1px solid var(--line-strong);
+  }
+  .code pre { margin: 0; }
+  .code .k { color: var(--code-key); }
+  .code .s { color: var(--code-str); }
+  .code .n { color: var(--code-num); }
+  .code .c { color: var(--code-dim); font-style: italic; }
+  .code-label {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 7px;
+  }
+
+  /* ── tables ───────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { background: transparent; border: none; padding: 0; color: var(--brand-dark); font-weight: 500; }
+  td:first-child { white-space: nowrap; }
+
+  /* required / optional markers encode the contract, not decoration */
+  .req, .opt, .never {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 999px;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .req   { background: var(--signal-bg); color: var(--signal); }
+  .opt   { background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--line); }
+  .never { background: var(--amber-bg); color: var(--amber); }
+
+  /* ── callouts ─────────────────────────────────────────────── */
+  .note {
+    border-left: 3px solid var(--steel);
+    background: var(--steel-pale);
+    padding: 14px 18px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin: 0 0 16px;
+    max-width: var(--measure);
+  }
+  .note p { margin-bottom: 8px; }
+  .note p:last-child { margin-bottom: 0; }
+  .note.warn   { border-left-color: var(--amber);  background: var(--amber-bg); }
+  .note.danger { border-left-color: var(--signal); background: var(--signal-bg); }
+  .note-title {
+    font-weight: 700;
+    font-size: 14px;
+    display: block;
+    margin-bottom: 5px;
+    color: var(--ink);
+  }
+
+  /* ── numbered flow: a real sequence, so it is numbered ────── */
+  .flow { display: grid; gap: 0; margin: 6px 0 0; counter-reset: step; }
+  .step {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 16px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .step:last-child { border-bottom: none; }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--brand);
+    background: var(--steel-pale);
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: grid; place-items: center;
+    margin-top: 2px;
+  }
+  .step h3 { margin: 0 0 4px; font-size: 15.5px; }
+  .step p  { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+  .step .who {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  /* ── endpoint block ───────────────────────────────────────── */
+  .endpoint {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    margin: 0 0 16px;
+    overflow-x: auto;
+  }
+  .endpoint .verb {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--surface);
+    background: var(--brand);
+    padding: 3px 9px;
+    border-radius: 5px;
+    margin-right: 10px;
+  }
+  .endpoint .url {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 14px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .endpoint .url .var { color: var(--accent); }
+
+  /* ── checklist ────────────────────────────────────────────── */
+  .cols { display: grid; gap: 20px; }
+  @media (min-width: 760px) { .cols { grid-template-columns: 1fr 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+  .card h3 { margin-top: 0; }
+  .card ul { max-width: none; margin-bottom: 0; }
+
+  footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+
+  a:focus-visible, nav.toc a:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+<style>
+  /* ── Print / PDF build ────────────────────────────────────────
+     The screen design, laid out for a page: no sticky sidebar, no
+     mid-element page breaks, and colours forced on so the code
+     blocks and severity markers survive a printer's default of
+     dropping backgrounds.
+     ──────────────────────────────────────────────────────────── */
+  @page {
+    size: A4;
+    margin: 15mm 14mm 16mm;
+  }
+
+  @media print {
+    /* Pin the light palette: a PDF has no viewer theme to follow, and
+       inheriting the render machine's dark mode would produce a
+       document nobody can print. */
+    :root, :root[data-theme="dark"], :root:not([data-theme="light"]) {
+      --brand: #2563EB; --brand-dark: #1E4FC4; --brand-deep: #0B1F44;
+      --steel: #5578A8; --steel-light: #B6CBE8; --steel-pale: #E7EEFA;
+      --bg: #FFFFFF; --surface: #FFFFFF; --surface-2: #EEF3FB;
+      --line: #DBE3F0; --line-strong: #C3D2E8;
+      --ink: #141B26; --ink-soft: #4F5D70; --ink-faint: #77869A;
+      --signal: #B02F27; --signal-bg: #FCEDEC;
+      --amber: #9C6614; --amber-bg: #FBF3E4;
+      --accent: #06758F; --accent-bg: #E3F5F9;
+      --code-bg: #0B1F44; --code-ink: #DCE7F7;
+    }
+
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+    body { font-size: 10.5pt; line-height: 1.5; background: #FFFFFF; }
+    .page { display: block; max-width: none; padding: 0; }
+    nav.toc { display: none !important; }
+    main { display: block; }
+
+    .masthead { padding: 0 0 14pt; margin-bottom: 18pt; }
+    h1 { font-size: 27pt; }
+    .standfirst { font-size: 11.5pt; }
+    .eyebrow { font-size: 8pt; }
+
+    /* Each major section starts clean; a heading never ends a page. */
+    section { margin-bottom: 20pt; break-inside: auto; }
+    h2 { font-size: 16pt; margin-top: 0; break-after: avoid; break-inside: avoid; }
+    h3 { font-size: 11.5pt; break-after: avoid; break-inside: avoid; }
+
+    /* Never split the things that stop making sense when split. */
+    .code, .note, .endpoint, .card, .step, tr, .table-wrap { break-inside: avoid; }
+    table { font-size: 9pt; }
+    th, td { padding: 6pt 8pt; }
+    .code { font-size: 8.5pt; line-height: 1.55; padding: 11pt 13pt; }
+    p, li { orphans: 3; widows: 3; }
+
+    /* Wide content cannot scroll on paper — let it wrap instead. */
+    .code, .endpoint { overflow-x: visible; }
+    .code pre { white-space: pre-wrap; word-break: break-word; }
+    .endpoint .url { white-space: normal; word-break: break-all; }
+    .table-wrap { overflow-x: visible; }
+    /* Cells may wrap — a rules table's first column is a whole sentence — but
+       an identifier must never break mid-word: "erpUse / rId" is not the name
+       of anything, and this is a field reference people copy from. */
+    td:first-child { white-space: normal; }
+    td code, th code { white-space: nowrap; }
+
+    a { color: var(--ink); text-decoration: none; }
+    footer { break-inside: avoid; margin-top: 18pt; }
+  }
+</style>
+
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Edunext ERP → Timetable · Integration reference</p>
+    <h1>Signing in from the ERP</h1>
+    <p class="standfirst">
+      The Timetable module has <strong>no login of its own</strong>. Users arrive from the ERP menu
+      carrying a short-lived, RS256-signed token; the Timetable verifies it, provisions the user and
+      their school on the spot, and issues its own session. This is everything the ERP team needs to
+      mint that token.
+    </p>
+  </header>
+
+  <nav class="toc" aria-label="Contents">
+    <ol>
+      <li><span class="grp">Overview</span></li>
+      <li><a href="#flow">How it works</a></li>
+      <li><a href="#endpoint">The endpoint</a></li>
+      <li><span class="grp">The token</span></li>
+      <li><a href="#header">Header</a></li>
+      <li><a href="#claims">Claims</a></li>
+      <li><a href="#school">School identity</a></li>
+      <li><a href="#roles">Roles</a></li>
+      <li><a href="#teacher">Teacher linking</a></li>
+      <li><a href="#trust">Multi-school</a></li>
+      <li><span class="grp">Behaviour</span></li>
+      <li><a href="#rules">Rules we enforce</a></li>
+      <li><a href="#outcome">Success &amp; failure</a></li>
+      <li><span class="grp">Doing it</span></li>
+      <li><a href="#example">Worked example</a></li>
+      <li><a href="#exchange">What we need</a></li>
+      <li><a href="#testing">Testing</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ───────────────────────────── FLOW ───────────────────────────── -->
+    <section id="flow">
+      <h2>How it works</h2>
+      <p>
+        Four steps. The ERP does step 1; everything after it is ours.
+      </p>
+      <div class="flow">
+        <div class="step">
+          <div>
+            <span class="who">ERP</span>
+            <h3>Mint a signed token</h3>
+            <p>When a user clicks the Timetable item in the ERP menu, sign a short-lived RS256 JWT
+              describing who they are, what role they hold, and which school they are opening.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <span class="who">ERP</span>
+            <h3>Redirect to the callback</h3>
+            <p>Send the browser to our callback URL with the token in the query string. No POST, no
+              form, no shared cookie — a plain redirect.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <span class="who">Timetable</span>
+            <h3>Verify, provision, mint a session</h3>
+            <p>We check the signature and expiry, burn the token's nonce so it cannot be reused,
+              create or refresh the school and the user, and apply the role your token names.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <span class="who">Timetable</span>
+            <h3>Redirect into the app</h3>
+            <p>The browser lands in the Timetable web app carrying our own 8-hour session token. The
+              ERP's token is discarded and never used again.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────── ENDPOINT ─────────────────────────── -->
+    <section id="endpoint">
+      <h2>The endpoint</h2>
+      <p>One public endpoint. It is a browser redirect target, not an AJAX call.</p>
+
+      <div class="endpoint">
+        <span class="verb">GET</span><span class="url"><span class="var">{TIMETABLE_API_BASE}</span>/api/sso/callback?token=<span class="var">{JWT}</span></span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Parameter</th><th></th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>token</code></td>
+              <td><span class="req">required</span></td>
+              <td>The compact RS256 JWT described below. JWTs are base64url so they are URL-safe as-is,
+                but URL-encode anyway if your HTTP client does not.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Note the <code>/api</code> prefix — every route on the service carries it. In our development
+        stack the base is <code>http://localhost:3001</code>; for your environments we will give you the
+        real hostname.
+      </p>
+
+      <div class="note">
+        <span class="note-title">Open it in the same tab</span>
+        <p>The response is a 302 into the Timetable web app, which then holds an 8-hour session. Opening
+          it in a new tab works equally well — what matters is that a <em>browser</em> follows the
+          redirect, since the session lands in the URL fragment.</p>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────── HEADER ──────────────────────────── -->
+    <section id="header">
+      <h2>Token header</h2>
+      <p>
+        <strong>RS256 only.</strong> HS256 and every other algorithm is rejected — we hold your public
+        key, never a shared secret, so a symmetric algorithm would mean giving both sides the power to
+        mint tokens.
+      </p>
+
+      <p class="code-label">JOSE header</p>
+      <div class="code"><pre>{
+  <span class="k">"alg"</span>: <span class="s">"RS256"</span>,
+  <span class="k">"typ"</span>: <span class="s">"JWT"</span>,
+  <span class="k">"kid"</span>: <span class="s">"edunext-prod-2026"</span>   <span class="c">// optional, but recommended — see below</span>
+}</pre></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th></th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>alg</code></td>
+              <td><span class="req">required</span></td>
+              <td>Must be <code>RS256</code>. Anything else fails verification.</td>
+            </tr>
+            <tr>
+              <td><code>kid</code></td>
+              <td><span class="opt">recommended</span></td>
+              <td>Key id. If present, it selects your registered public key. <strong>An unrecognised
+                <code>kid</code> is rejected outright</strong> — it never falls back to a default key,
+                because falling back is how one ERP installation would end up trusted to sign for
+                another's schools. Omit it and we use the single configured key.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────── CLAIMS ──────────────────────────── -->
+    <section id="claims">
+      <h2>Token claims</h2>
+      <p>The payload. Five required claims, the rest optional.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Claim</th><th>Type</th><th></th><th>Description</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>erpUserId</code></td><td>string</td><td><span class="req">required</span></td>
+              <td>Your stable identifier for this user. It is the key we match on, so it must not change
+                for a given person. Max 50 characters.</td>
+            </tr>
+            <tr>
+              <td><code>name</code></td><td>string</td><td><span class="req">required</span></td>
+              <td>Display name. Refreshed on every login, so a rename in the ERP propagates without
+                anyone retyping it. Max 100 characters.</td>
+            </tr>
+            <tr>
+              <td><code>email</code></td><td>string</td><td><span class="req">required</span></td>
+              <td>Used for display and notifications. Max 120 characters.</td>
+            </tr>
+            <tr>
+              <td><code>erpRole</code></td><td>string</td><td><span class="req">required</span></td>
+              <td>Your role name for this user in this school. Mapped to a Timetable role — see
+                <a href="#roles">Roles</a>. An unmapped value is refused.</td>
+            </tr>
+            <tr>
+              <td><code>school</code></td><td>object</td><td><span class="req">required</span></td>
+              <td>The school this session opens in. See <a href="#school">School identity</a>.</td>
+            </tr>
+            <tr>
+              <td><code>jti</code></td><td>string</td><td><span class="req">required</span></td>
+              <td>A nonce, unique to every token you mint. We store it and refuse a second presentation.
+                A UUID is ideal.</td>
+            </tr>
+            <tr>
+              <td><code>exp</code></td><td>number</td><td><span class="req">required</span></td>
+              <td>Standard JWT expiry, in seconds since the epoch. Keep it short — see
+                <a href="#rules">Rules we enforce</a>.</td>
+            </tr>
+            <tr>
+              <td><code>schools</code></td><td>array</td><td><span class="opt">optional</span></td>
+              <td>Every school this user may work in. Drives the in-app school switcher. See
+                <a href="#trust">Multi-school</a>.</td>
+            </tr>
+            <tr>
+              <td><code>trust</code></td><td>object</td><td><span class="opt">optional</span></td>
+              <td><code>{ code, name }</code> of the trust or management body these schools belong to.</td>
+            </tr>
+            <tr>
+              <td><code>teacherId</code></td><td>number</td><td><span class="opt">optional</span></td>
+              <td>Links this login to a teacher record. Read <a href="#teacher">Teacher linking</a>
+                before sending it.</td>
+            </tr>
+            <tr>
+              <td><code>iss</code></td><td>string</td><td><span class="opt">optional</span></td>
+              <td>Your issuer identifier. A fallback way to select your public key when no
+                <code>kid</code> is present.</td>
+            </tr>
+            <tr>
+              <td><code>schoolId</code></td><td>number</td><td><span class="never">legacy</span></td>
+              <td>A numeric id, honoured only for deployments predating the <code>school</code> claim.
+                <strong>Do not use it for a new integration:</strong> a number carries no name, so it can
+                only find a school that already exists and can never create one.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────── SCHOOL ──────────────────────────── -->
+    <section id="school">
+      <h2>School identity</h2>
+      <p>
+        <strong>The ERP owns school identity.</strong> We never hardcode or invent a school name — it
+        arrives on the token, and an unknown school is created on the spot, complete with its permission
+        registry and role mappings. Names are refreshed on every login.
+      </p>
+
+      <p class="code-label">The <code>school</code> claim</p>
+      <div class="code"><pre>{
+  <span class="k">"code"</span>:      <span class="s">"DPS-NOIDA-01"</span>,        <span class="c">// required — the stable key between our systems</span>
+  <span class="k">"name"</span>:      <span class="s">"Demo Public School"</span>,  <span class="c">// required</span>
+  <span class="k">"shortName"</span>: <span class="s">"DPS Noida"</span>,           <span class="c">// optional</span>
+  <span class="k">"logoUrl"</span>:   <span class="s">"https://…/logo.png"</span>,  <span class="c">// optional</span>
+  <span class="k">"timezone"</span>:  <span class="s">"Asia/Kolkata"</span>,        <span class="c">// optional, defaults to Asia/Kolkata</span>
+  <span class="k">"address"</span>:   <span class="s">"Sector 62, Noida"</span>     <span class="c">// optional</span>
+}</pre></div>
+
+      <div class="note danger">
+        <span class="note-title"><code>code</code> must be stable and unique, forever</span>
+        <p>It is the only identifier the two systems share. It is what the master-data sync matches on,
+          what decides which database a school's rows live in, and what school switching is authorised
+          against. Changing a school's code after go-live orphans its data. Pick something that will
+          never be edited for cosmetic reasons — not the display name.</p>
+      </div>
+
+      <p>
+        Maximum lengths: <code>code</code> 40, <code>name</code> 120, <code>shortName</code> 40,
+        <code>timezone</code> 40, <code>logoUrl</code> and <code>address</code> 255.
+      </p>
+    </section>
+
+    <!-- ───────────────────────────── ROLES ──────────────────────────── -->
+    <section id="roles">
+      <h2>Roles</h2>
+      <p>
+        Send <em>your</em> role name in <code>erpRole</code>. We map it to a Timetable role, per school.
+        Every newly provisioned school starts with these four mappings:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>erpRole you send</th><th>Timetable role</th><th>What they get</th></tr></thead>
+          <tbody>
+            <tr><td><code>ADMIN</code></td><td>Super Admin</td><td>Everything, including master data, generation and the role editor.</td></tr>
+            <tr><td><code>PRINCIPAL</code></td><td>Principal</td><td>Full visibility across the school; publishing and reports.</td></tr>
+            <tr><td><code>TEACHER</code></td><td>Teacher</td><td>Scoped views — their own timetable and their linked class-sections only.</td></tr>
+            <tr><td><code>FRONT_OFFICE</code></td><td>Front Office</td><td>Substitute management and day-to-day operations.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note warn">
+        <span class="note-title">An unmapped role is refused, not defaulted</span>
+        <p>If you send an <code>erpRole</code> with no mapping in that school, sign-in fails with
+          <em>"No timetable role mapped for ERP role 'X'"</em>. This is deliberate — silently granting a
+          default role to an unrecognised one is how someone ends up with authority nobody chose to give
+          them. Send us the exact list of role strings you will use and we will map them, or a school
+          Admin can map them in-app on the Roles &amp; Access page.</p>
+      </div>
+
+      <p>
+        The role is re-applied from your token on every login, so a promotion in the ERP takes effect
+        immediately — <em>unless</em> a school Admin has deliberately overridden that user's role in the
+        Timetable, in which case their override stands.
+      </p>
+    </section>
+
+    <!-- ──────────────────────────── TEACHER ─────────────────────────── -->
+    <section id="teacher">
+      <h2>Teacher linking</h2>
+      <p>
+        A user with the Teacher role sees only their own grid and their linked class-sections. That
+        scoping needs the login connected to a teacher record, which is what <code>teacherId</code> does.
+      </p>
+
+      <div class="note warn">
+        <span class="note-title">Open item — please read before implementing</span>
+        <p><code>teacherId</code> is currently <strong>our internal numeric id</strong>, which your ERP
+          has no natural way of knowing. That is a gap on our side, not yours.</p>
+        <p>For now: <strong>omit <code>teacherId</code></strong>. Teacher logins will work and see the
+          app, but their personal timetable scope will be empty until the link exists.</p>
+        <p>The fix we intend is to match on <strong>employee code</strong> instead — the same identifier
+          the master-data sync already uses for staff — so the ERP sends something it actually owns.
+          Tell us the field name you use for employee code and we will wire it up.</p>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── TRUST ──────────────────────────── -->
+    <section id="trust">
+      <h2>Multi-school and trusts</h2>
+      <p>
+        A user who works across several schools — a trust administrator, a teacher shared between
+        branches — gets a <code>schools</code> array listing every school they may open. The
+        <code>school</code> claim decides which one the session <em>starts</em> in.
+      </p>
+
+      <p class="code-label">Trust administrator token, abbreviated</p>
+      <div class="code"><pre>{
+  <span class="k">"erpUserId"</span>: <span class="s">"EDX-10422"</span>,
+  <span class="k">"erpRole"</span>:   <span class="s">"ADMIN"</span>,
+  <span class="k">"trust"</span>:     { <span class="k">"code"</span>: <span class="s">"EDUNEXT-TRUST"</span>, <span class="k">"name"</span>: <span class="s">"Edunext Education Trust"</span> },
+  <span class="k">"school"</span>:    { <span class="k">"code"</span>: <span class="s">"DPS-NOIDA-01"</span>, <span class="k">"name"</span>: <span class="s">"Demo Public School"</span> },
+  <span class="k">"schools"</span>: [
+    { <span class="k">"code"</span>: <span class="s">"DPS-NOIDA-01"</span>, <span class="k">"name"</span>: <span class="s">"Demo Public School"</span> },
+    { <span class="k">"code"</span>: <span class="s">"DPS-GZB-02"</span>,   <span class="k">"name"</span>: <span class="s">"Second Branch"</span> }
+  ],
+  <span class="c">// … erpUserId, name, email, jti, exp as usual</span>
+}</pre></div>
+
+      <p>
+        Every school in <code>schools</code> is created or refreshed at login, and the in-app switcher
+        offers exactly that list. <strong>Switching is authorised by the signed token, never by a
+        permission</strong> — the server will not switch to a school that was not on it. A user's role
+        is resolved per school, so the same person can be an Admin in one and a Teacher in another.
+      </p>
+
+      <p>Single-school users can omit <code>schools</code> and <code>trust</code> entirely.</p>
+    </section>
+
+    <!-- ───────────────────────────── RULES ──────────────────────────── -->
+    <section id="rules">
+      <h2>Rules we enforce</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Rule</th><th>What happens if broken</th></tr></thead>
+          <tbody>
+            <tr><td><strong>RS256 signature</strong>, verified against your registered public key</td>
+                <td>Rejected. Wrong algorithm, wrong key, or a tampered payload all fail here.</td></tr>
+            <tr><td><strong>Not expired</strong> (<code>exp</code>)</td>
+                <td>Rejected.</td></tr>
+            <tr><td><strong><code>jti</code> not seen before</strong></td>
+                <td>Rejected — <em>"SSO token replayed"</em>. Each token opens exactly one session.</td></tr>
+            <tr><td><strong>A registered <code>kid</code></strong>, when one is present</td>
+                <td>Rejected. No fallback to a default key.</td></tr>
+            <tr><td><strong>A mapped <code>erpRole</code></strong></td>
+                <td>Rejected, naming the unmapped role.</td></tr>
+            <tr><td><strong>An active user</strong></td>
+                <td>Rejected if the user was deactivated in the Timetable.</td></tr>
+            <tr><td><strong>An active school</strong></td>
+                <td>Rejected if the school is suspended.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note danger">
+        <span class="note-title">Keep <code>exp</code> at 60 seconds</span>
+        <p>The nonce that makes a token single-use is remembered for <strong>120 seconds</strong>. A token
+          that outlives that window is, in principle, replayable again afterwards. A sign-in token only
+          has to survive one redirect, so 60 seconds is generous — our own test issuer uses exactly that.
+          Do not issue minutes-long or hour-long SSO tokens.</p>
+      </div>
+
+      <p>
+        The token is <strong>consumed once and discarded</strong>. We do not store it and it cannot be
+        presented back to your APIs — which is why the master-data sync authenticates separately, with
+        OAuth2 client credentials.
+      </p>
+    </section>
+
+    <!-- ──────────────────────────── OUTCOME ─────────────────────────── -->
+    <section id="outcome">
+      <h2>Success and failure</h2>
+
+      <h3>On success</h3>
+      <p>A <code>302</code> to the Timetable web app, carrying our own session token in the URL fragment:</p>
+      <div class="code"><pre><span class="k">Location:</span> https://timetable.example.com/sso#token=<span class="n">&lt;session JWT, valid 8 hours&gt;</span></pre></div>
+      <p>
+        The fragment is deliberate: it never reaches a server log or a <code>Referer</code> header. The
+        web app reads it, stores it, and replaces the URL. Nothing further is required of the ERP.
+      </p>
+
+      <h3>On failure</h3>
+      <div class="code"><pre><span class="k">Location:</span> https://timetable.example.com/sso-error</pre></div>
+      <p>
+        The user sees a plain "return to the ERP and open Timetable again" page. <strong>The browser is
+        told nothing about why</strong> — the specific reason is written to our server log instead, so a
+        bad token and an operational fault are distinguishable to an operator but not to an attacker.
+        If sign-in fails during integration, ask us for the log line; it names the exact cause.
+      </p>
+    </section>
+
+    <!-- ──────────────────────────── EXAMPLE ─────────────────────────── -->
+    <section id="example">
+      <h2>Worked example</h2>
+
+      <p class="code-label">Complete payload — a school administrator</p>
+      <div class="code"><pre>{
+  <span class="k">"erpUserId"</span>: <span class="s">"EDX-10422"</span>,
+  <span class="k">"name"</span>:      <span class="s">"Aditi Verma"</span>,
+  <span class="k">"email"</span>:     <span class="s">"aditi.verma@dpsnoida.edu.in"</span>,
+  <span class="k">"erpRole"</span>:   <span class="s">"ADMIN"</span>,
+  <span class="k">"school"</span>: {
+    <span class="k">"code"</span>:      <span class="s">"DPS-NOIDA-01"</span>,
+    <span class="k">"name"</span>:      <span class="s">"Demo Public School"</span>,
+    <span class="k">"shortName"</span>: <span class="s">"DPS Noida"</span>,
+    <span class="k">"timezone"</span>:  <span class="s">"Asia/Kolkata"</span>
+  },
+  <span class="k">"jti"</span>: <span class="s">"7c1f9e64-3b2a-4d51-9f7e-0a2b6c8d1e34"</span>,
+  <span class="k">"exp"</span>: <span class="n">1788249660</span>
+}</pre></div>
+
+      <h3>PHP</h3>
+      <div class="code"><pre><span class="k">use</span> Firebase\JWT\JWT;
+
+<span class="n">$payload</span> = [
+  <span class="s">'erpUserId'</span> =&gt; <span class="n">$user</span>-&gt;code,
+  <span class="s">'name'</span>      =&gt; <span class="n">$user</span>-&gt;full_name,
+  <span class="s">'email'</span>     =&gt; <span class="n">$user</span>-&gt;email,
+  <span class="s">'erpRole'</span>   =&gt; <span class="n">$user</span>-&gt;role_code,          <span class="c">// ADMIN | PRINCIPAL | TEACHER | FRONT_OFFICE</span>
+  <span class="s">'school'</span>    =&gt; [
+    <span class="s">'code'</span> =&gt; <span class="n">$school</span>-&gt;code,
+    <span class="s">'name'</span> =&gt; <span class="n">$school</span>-&gt;name,
+  ],
+  <span class="s">'jti'</span> =&gt; (string) Str::uuid(),
+  <span class="s">'exp'</span> =&gt; time() + <span class="n">60</span>,
+];
+
+<span class="n">$token</span> = JWT::encode(<span class="n">$payload</span>, <span class="n">$privateKeyPem</span>, <span class="s">'RS256'</span>, <span class="s">'edunext-prod-2026'</span>);
+
+<span class="k">return</span> redirect(<span class="s">'https://timetable.example.com/api/sso/callback?token='</span> . <span class="n">$token</span>);</pre></div>
+
+      <h3>Node</h3>
+      <div class="code"><pre><span class="k">const</span> jwt = <span class="k">require</span>(<span class="s">"jsonwebtoken"</span>);
+<span class="k">const</span> { randomUUID } = <span class="k">require</span>(<span class="s">"node:crypto"</span>);
+
+<span class="k">const</span> token = jwt.sign(
+  {
+    erpUserId: user.code,
+    name:      user.fullName,
+    email:     user.email,
+    erpRole:   user.roleCode,
+    school:    { code: school.code, name: school.name },
+  },
+  privateKeyPem,
+  { algorithm: <span class="s">"RS256"</span>, expiresIn: <span class="s">"60s"</span>, jwtid: randomUUID(), keyid: <span class="s">"edunext-prod-2026"</span> },
+);
+
+res.redirect(<span class="s">`https://timetable.example.com/api/sso/callback?token=<span class="n">${token}</span>`</span>);</pre></div>
+
+      <p>
+        Both libraries set <code>iat</code> automatically. <code>expiresIn</code> / <code>exp</code> and
+        <code>jwtid</code> / <code>jti</code> are the same claims under the libraries' own names.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────── EXCHANGE ─────────────────────────── -->
+    <section id="exchange">
+      <h2>What each side needs</h2>
+
+      <div class="cols">
+        <div class="card">
+          <h3>From the ERP team</h3>
+          <ul>
+            <li><strong>RSA public key</strong>, PEM format (2048-bit or better). We never need the
+              private key.</li>
+            <li><strong>The <code>kid</code></strong> you will stamp on tokens, and your
+              <code>iss</code> value if you set one.</li>
+            <li><strong>The exact <code>erpRole</code> strings</strong> you will send, so we can map any
+              beyond the four defaults.</li>
+            <li><strong>The school codes</strong> you will use, and confirmation they are stable.</li>
+            <li>Your <strong>employee-code field name</strong>, if you want teacher linking (see
+              <a href="#teacher">Teacher linking</a>).</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>From us</h3>
+          <ul>
+            <li>The <strong>callback URL</strong> for each environment.</li>
+            <li>Confirmation your key is registered and which <code>kid</code> it answers to.</li>
+            <li>Role mappings applied for any non-default roles.</li>
+            <li>Server-side log access during integration, so a failed sign-in has a reason rather than
+              a shrug.</li>
+          </ul>
+        </div>
+      </div>
+
+      <p>
+        Key rotation is supported: several keys can be registered at once, each under its own
+        <code>kid</code>, so you can roll over without a flag day.
+      </p>
+    </section>
+
+    <!-- ──────────────────────────── TESTING ─────────────────────────── -->
+    <section id="testing">
+      <h2>Testing the integration</h2>
+      <p>
+        Work through it in this order — each step isolates a different thing, so a failure tells you
+        where the problem is.
+      </p>
+      <ol class="prose">
+        <li><strong>Decode your own token</strong> at any JWT decoder and check the claims match the
+          table above. Most integration failures are a missing <code>jti</code> or a misspelt claim name.</li>
+        <li><strong>Confirm the signature</strong> verifies against the public key you sent us, using the
+          key file itself rather than the one in your config.</li>
+        <li><strong>Open the callback in a browser.</strong> Landing on the Timetable dashboard means the
+          whole chain works. Landing on <code>/sso-error</code> means ask us for the log line.</li>
+        <li><strong>Try a second click within the same minute.</strong> A fresh <code>jti</code> each
+          time must succeed; reusing one token twice must fail. If reuse succeeds, your
+          <code>jti</code> is not unique.</li>
+        <li><strong>Try each role</strong> you intend to send, and confirm the user lands with the
+          expected menu.</li>
+      </ol>
+
+      <div class="note">
+        <span class="note-title">A test issuer exists in our development stack</span>
+        <p>Our non-production environment can mint tokens with a built-in key, which lets us reproduce a
+          scenario without involving your systems. It is disabled in production and its key does not
+          exist there. Useful when we need to isolate whether a problem is in the token or in us.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    Edunext ERP → EduTimetable · SSO integration reference. Questions on any claim, rule or failure mode
+    go back to the Timetable team — particularly the teacher-linking item, which needs a decision from
+    both sides.
+  </footer>
+
+</div>
+</body>
+</html>
