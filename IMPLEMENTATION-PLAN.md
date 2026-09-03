@@ -1633,7 +1633,7 @@ Small *because* of decision 8: it reuses 25.2–25.4 rather than duplicating it.
 
 ---
 
-## Phase 25.6 — Users and teacher logins
+## Phase 25.6 — Users and teacher logins ✅
 
 **Goal:** an admin creates users and generates teacher logins; a teacher signs in and looks, and can
 do nothing else. **Depends on:** 25.1 (for `origin`) and 25.4c (for the teacher list the bulk invite
@@ -1647,6 +1647,43 @@ reads).
 | 25.6d | **Bulk teacher invite** from the teacher master: filter by wing, role defaults to the view-only `Teacher`, optional email pattern for blanks. **Skips** teachers who already have a login and says so; **excludes `guest` teachers** (§18 keeps them out of the regular timetable, so there is nothing for them to see); **reports** teachers with no email rather than dropping them from the count. |
 | 25.6e | Invitation acceptance at `/invite/:token` — identity fixed and shown but not editable, password chosen, single-use, 7-day expiry, reusing 25.0b rather than a second token table. |
 | 25.6f | A prompt to invite teachers on the post-publish screen — the first moment there is anything for them to look at. |
+
+> **Status — 25.6 landed.** Spec: **§24.7**. Lint, 186 api tests, both typechecks, the web build,
+> the §17.8 isolation gate, `scripts/users-smoke.cjs`, and the auth, schools, onboarding, control-plane
+> and RBAC smokes. **No migration was needed** — 25.0 had already added `users.account_id`, the
+> `invite` token purpose and `account_tokens.meta`, so the schema was waiting.
+>
+> **A latent bug 25.1 left behind, and this phase surfaced.** `schoolsFor` was keyed on
+> `schools.created_by_account_id` — the same set as "schools I can enter" right up until an invited
+> teacher, who created nothing. Their school list would have been empty while
+> `POST /schools/:id/enter` was perfectly willing to let them in, and that endpoint had always
+> stated the real rule in words: *an account may enter a school exactly when it has a user row
+> there.* The list is keyed on membership now; the cap still counts what the account **created**, so
+> being a teacher in six schools does not exhaust an allowance to run one's own.
+>
+> **A duplicate I nearly shipped.** I wrote `PUT /users/:id` before noticing `PUT /admin/users/:id`
+> already changes a role and a teacher link, with its own audit entry. Worse, mine refused ERP
+> schools — which would have quietly broken §15.1's `role_overridden`, the flag that exists so an
+> admin's explicit role choice survives sync-on-login. Deleted; the one guard it added that was
+> genuinely missing (§18: one teacher, one login) went into the existing endpoint, where both screens
+> get it.
+>
+> **The isolation gate caught a real flaw, not just an unclassified route.** `POST /users/:id/*`
+> answered *"this school signs in through your ERP"* for another school's user id — a refusal that
+> confirms the id matched something. The sweep reported it by the rule it exists to enforce: a route
+> that refuses everyone proves nothing and is never counted as a pass. Ownership is now settled
+> before policy, so a stranger gets 404 and the owner gets 403 — which is both more correct and what
+> makes the sweep able to tell them apart.
+>
+> **What the smoke asserts is mostly negatives**, because a teacher who can reach a write endpoint is
+> the whole feature failing quietly: 403 from the *server* on `/classes`, `/teachers`, `/admin/roles`,
+> `/admin/users/:id`, `/users/invite`, `/class-sections/:id` and `/onboarding/commit/2`; 403 on
+> `POST /schools`; and — the one worth having — **another teacher's timetable refused**, so
+> `view.own` is a row filter rather than a label.
+>
+> **Deferred: 25.6f**, the post-publish prompt to invite teachers. It is a placement decision on a
+> screen that already exists, not a capability; the Users & Access screen is reachable from the nav
+> and does the whole job.
 
 **Exit criteria:** invite a teacher, accept, sign in, and get **their own grid and their linked
 sections only** — the existing §15 scope negatives, re-run against a locally-created user rather than

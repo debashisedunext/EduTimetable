@@ -13,6 +13,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Query,
   Req,
@@ -91,6 +92,33 @@ export class LocalAuthController {
   @Post("reset")
   reset(@Body() body: { token: string; password: string }) {
     return this.accounts.reset(body?.token, body?.password);
+  }
+
+  /**
+   * What an invitation says, without spending it (§24.8).
+   *
+   * The acceptance screen shows who is being invited before a password is
+   * typed, and looking must not be accepting: a mail client that pre-fetches
+   * links would otherwise burn the invitation before anybody clicked it.
+   * `needsPassword` is false for somebody who already has an identity here and
+   * is simply joining a second school.
+   */
+  @Public()
+  @Get("invite/:token")
+  async inviteDetails(@Param("token") token: string) {
+    const details = await this.accounts.inviteDetails(token);
+    if (!details) {
+      // 200 with `valid: false`, not a 404: the screen has something to say
+      // ("ask for a new link"), and a 404 would make it say "page not found".
+      return { valid: false, message: "That invitation has expired or has already been used." };
+    }
+    return { valid: true, ...details };
+  }
+
+  @Public()
+  @Post("invite/accept")
+  accept(@Body() body: { token: string; password?: string }) {
+    return this.accounts.acceptInvite(body?.token, body?.password);
   }
 
   /**

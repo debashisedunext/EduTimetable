@@ -105,7 +105,10 @@ export class SchoolsController {
       // to decide whether to show the tile — and `POST /schools` refuses
       // independently, because hiding a tile is cosmetic (§15).
       canCreate: account.kind === "owner",
-      remaining: Math.max(0, this.selfServe.cap - cards.length),
+      // Counted on schools this account CREATED, not on the list above — since
+      // 25.6 the list also holds schools they were invited into, and being a
+      // teacher in six schools must not exhaust their allowance to run their own.
+      remaining: Math.max(0, this.selfServe.cap - (await this.selfServe.countFor(account.id))),
       cap: this.selfServe.cap,
     };
   }

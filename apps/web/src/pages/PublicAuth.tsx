@@ -21,7 +21,7 @@
  * design still to come.
  */
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 // The app's own session store — never a hand-written key, or signing in here
 // would write somewhere `getToken()` does not read.
 import { setToken } from "../api";
@@ -492,6 +492,109 @@ export function ResetPassword() {
             </button>
           </form>
         )}
+      </Card>
+    </PublicShell>
+  );
+}
+
+/**
+ * §24.8 Phase 25.6e — accepting an invitation.
+ *
+ * Two shapes behind one link, decided by the server: somebody new chooses a
+ * password, and somebody who already has an identity here is simply joining a
+ * second school and is asked for nothing. Asking the second group for a new
+ * password would be asking them to change the one they use everywhere else.
+ *
+ * The identity is **shown and not editable**. The invitation was issued to an
+ * address; letting the recipient edit the name or email would make it a way to
+ * create an arbitrary account with somebody else's link.
+ */
+export function AcceptInvite() {
+  const { token = "" } = useParams();
+  const [details, setDetails] = useState<
+    { valid: boolean; email?: string; name?: string; needsPassword?: boolean; message?: string } | null
+  >(null);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nav = useNavigate();
+
+  useEffect(() => {
+    // A GET that only LOOKS. Accepting is a POST, so a mail scanner following
+    // the link cannot spend the invitation on the recipient's behalf.
+    fetch(`/api/auth/invite/${encodeURIComponent(token)}`)
+      .then((r) => r.json())
+      .then(setDetails)
+      .catch(() => setDetails({ valid: false, message: "That link could not be checked. Try again." }));
+  }, [token]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (details?.needsPassword && password !== confirm) { setError("Those two do not match."); return; }
+    setBusy(true); setError(null);
+    try {
+      const r = await post<{ accountToken: string }>("/auth/invite/accept", {
+        token, ...(details?.needsPassword ? { password } : {}),
+      });
+      localStorage.setItem(ACCOUNT_TOKEN_KEY, r.accountToken);
+      // Straight to the school list, which is one card for most invitees — and
+      // is the screen that actually checks they still have a login there.
+      nav("/schools");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!details) {
+    return (
+      <PublicShell>
+        <Card title="Checking your invitation"><p style={{ fontSize: 13, color: "var(--ink-soft)" }}>One moment…</p></Card>
+      </PublicShell>
+    );
+  }
+
+  if (!details.valid) {
+    return (
+      <PublicShell>
+        <Card title="This invitation cannot be used">
+          <Note tone="error">{details.message ?? "That invitation has expired or has already been used."}</Note>
+          <p style={{ fontSize: 12.5, margin: 0 }}>
+            Ask whoever invited you to send it again, or <Link to="/login">sign in</Link> if you
+            already have a password.
+          </p>
+        </Card>
+      </PublicShell>
+    );
+  }
+
+  return (
+    <PublicShell>
+      <Card
+        title={details.needsPassword ? "Set up your login" : "Join this school"}
+        lede={details.needsPassword
+          ? "Choose a password and you're in. You'll use your email address to sign in."
+          : "You already have an account here — accepting adds this school to it."}
+      >
+        <form onSubmit={submit}>
+          {/* Shown, never editable: the invitation was issued to this address. */}
+          <Field label="Name" value={details.name ?? ""} readOnly />
+          <Field label="Email" value={details.email ?? ""} readOnly />
+          {details.needsPassword && (
+            <>
+              <Field label="Choose a password" type="password" value={password} autoComplete="new-password"
+                required onChange={(e) => setPassword(e.target.value)} hint="At least 12 characters." />
+              <Field label="Confirm" type="password" value={confirm} autoComplete="new-password"
+                required onChange={(e) => setConfirm(e.target.value)} />
+            </>
+          )}
+          {error && <Note tone="error">{error}</Note>}
+          <button className="btn btn-primary" disabled={busy} style={{ width: "100%", padding: 11 }}>
+            {busy ? "One moment…" : details.needsPassword ? "Create my login" : "Accept the invitation"}
+          </button>
+        </form>
       </Card>
     </PublicShell>
   );

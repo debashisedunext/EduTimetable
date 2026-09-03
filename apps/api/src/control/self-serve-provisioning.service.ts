@@ -205,10 +205,29 @@ export class SelfServeProvisioningService {
     this.registry.invalidate();
   }
 
-  /** Every school this account may enter, newest first. */
+  /**
+   * Every school this account may enter.
+   *
+   * Keyed on the **`users` row**, not on who created the school. Creation is a
+   * fact about provenance; access is a fact about membership, and Phase 25.6
+   * makes the two come apart for the first time — an invited teacher created
+   * nothing, and a list keyed on `createdByAccountId` would have shown them
+   * nothing to enter while `mintSession` was perfectly willing to let them in.
+   *
+   * This is also the rule `POST /schools/:id/enter` already states in words:
+   * *an account may enter a school exactly when it has a user row there.* Two
+   * places asserting the same thing differently is how the list and the door
+   * end up disagreeing.
+   */
   async schoolsFor(accountId: number) {
+    const memberships = await this.prisma.user.findMany({
+      where: { accountId, isActive: true },
+      select: { schoolId: true },
+    });
+    const ids = [...new Set(memberships.map((m) => m.schoolId))];
+    if (ids.length === 0) return [];
     return this.prisma.school.findMany({
-      where: { createdByAccountId: accountId, isActive: true },
+      where: { id: { in: ids }, isActive: true },
       orderBy: { id: "asc" },
     });
   }

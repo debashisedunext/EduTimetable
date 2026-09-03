@@ -31,6 +31,8 @@ import { PasswordService } from "./password.service";
 
 const VERIFY_TTL_HOURS = 24;
 const RESET_TTL_HOURS = 1;
+/** A week: long enough to survive a holiday, short enough to be worth re-issuing. */
+const INVITE_TTL_HOURS = 24 * 7;
 const ACCOUNT_SESSION = "8h";
 
 /**
@@ -347,6 +349,148 @@ export class AccountService {
     });
     this.logger.log(`Password reset completed for account ${row.accountId}`);
     return { message: "Your password has been changed. Sign in with it." };
+  }
+
+  // ───────────────────────────────────────────────────────────── invite
+
+  /**
+   * The control-plane half of inviting somebody into a school (§24.8).
+   *
+   * Returns the account to attach a `users` row to, and the secret to email.
+   * The `users` row itself is the caller's business — it lives in a tenant
+   * database and this service has never touched one.
+   *
+   * **An invitation is not a way to take over an account.** Where the address
+   * already belongs to somebody, this attaches the invitation to that account
+   * and changes nothing else about it: not its password, not its `kind`, not
+   * its verification. A school administrator can decide who may enter *their*
+   * school; they cannot decide anything about a person who already exists — and
+   * an invite that could downgrade an owner to a member would let any admin
+   * strip school-creation from anyone whose email address they can guess.
+   */
+  async invite(input: {
+    email: string;
+    name: string;
+    schoolId: number;
+    schoolName: string;
+    roleId: number;
+    teacherId?: number | null;
+  }): Promise<{ accountId: number; secret: string; isNew: boolean; email: string; name: string }> {
+    const email = this.normalise(input.email);
+    const name = String(input.name ?? "").trim().slice(0, 120);
+    if (!this.looksLikeEmail(email)) throw new BadRequestException(`"${input.email}" is not a valid email address.`);
+    if (name.length < 2) throw new BadRequestException("Enter the person's name.");
+
+    const db = this.db();
+    let account = await db.account.findUnique({ where: { email } });
+    const isNew = account === null;
+
+    if (!account) {
+      account = await db.account.create({
+        data: {
+          email,
+          name,
+          // An unguessable value, not an empty string: until they accept there
+          // is no password that works, and there is no state in which a blank
+          // or a default one would.
+          passwordHash: await this.passwords.hash(randomBytes(32).toString("base64url")),
+          // Invited, therefore a member: they may enter the schools they are
+          // invited into and can never create one (§17.6's reasoning, one level
+          // down — the authority to make a school is not a school's to grant).
+          kind: "member",
+          status: "pending",
+        },
+      });
+    } else if (account.status === "suspended") {
+      throw new BadRequestException(
+        "That address belongs to a suspended account and cannot be invited. Contact support.",
+      );
+    }
+
+    const secret = await this.issueToken(account.id, "invite", INVITE_TTL_HOURS, {
+      schoolId: input.schoolId,
+      roleId: input.roleId,
+      teacherId: input.teacherId ?? null,
+    });
+    await this.email.sendInvite(account.email, account.name, input.schoolName, secret);
+    this.logger.log(`Invited account ${account.id} into school ${input.schoolId}${isNew ? " (new)" : ""}`);
+    return { accountId: account.id, secret, isNew, email: account.email, name: account.name };
+  }
+
+  /**
+   * What an invitation link says, WITHOUT spending it.
+   *
+   * The acceptance screen has to show who is being invited before a password is
+   * typed, and looking is not accepting: a mail client that pre-fetches links
+   * would otherwise burn the invitation before the person ever clicked it.
+   */
+  async inviteDetails(secret: string): Promise<{ email: string; name: string; needsPassword: boolean } | null> {
+    const row = await this.db().accountToken.findUnique({
+      where: { tokenHash: this.hashToken(secret) },
+      include: { account: true },
+    });
+    if (!row || row.purpose !== "invite" || row.usedAt !== null) return null;
+    if (row.expiresAt.getTime() < Date.now()) return null;
+    return {
+      email: row.account.email,
+      name: row.account.name,
+      // Somebody who already has a working password is joining a second school,
+      // not creating an identity. Asking them to choose a new one would be
+      // asking them to change the password they use everywhere else.
+      needsPassword: row.account.status === "pending",
+    };
+  }
+
+  /**
+   * Accept an invitation: set a password if this is a new identity, and hand
+   * back a session-less account token.
+   *
+   * Deliberately control-plane ONLY. It does not create or check the `users`
+   * row — `POST /schools/:id/enter` already refuses an account with no active
+   * user row in the school, and that is the right place for the check to live:
+   * an invitation that was revoked between sending and accepting must be
+   * refused at the door, not remembered here.
+   */
+  async acceptInvite(
+    secret: string,
+    password: string | undefined,
+  ): Promise<{ accountToken: string; account: PublicAccount; schoolId: number | null }> {
+    const preview = await this.inviteDetails(secret);
+    if (!preview) {
+      throw new BadRequestException(
+        "That invitation has expired or has already been used. Ask for a new one.",
+      );
+    }
+    if (preview.needsPassword) {
+      const bad = this.passwords.problemWith(password ?? "");
+      if (bad) throw new BadRequestException(bad);
+    }
+
+    const row = await this.consumeToken(secret, "invite");
+    if (!row) throw new BadRequestException("That invitation has expired or has already been used.");
+
+    const db = this.db();
+    const account = await db.account.update({
+      where: { id: row.accountId },
+      data: {
+        ...(preview.needsPassword && password
+          ? { passwordHash: await this.passwords.hash(password) }
+          : {}),
+        status: "active",
+        // Clicking a link in the mailbox proves control of it, exactly as the
+        // verification link does.
+        emailVerifiedAt: row.account.emailVerifiedAt ?? new Date(),
+        failedLogins: 0,
+        lockedUntil: null,
+      },
+    });
+    const meta = (row.meta ?? {}) as { schoolId?: number };
+    this.logger.log(`Account ${account.id} accepted an invitation into school ${meta.schoolId}`);
+    return {
+      accountToken: await this.signAccountToken(account),
+      account: publicAccount(account),
+      schoolId: typeof meta.schoolId === "number" ? meta.schoolId : null,
+    };
   }
 
   // ──────────────────────────────────────────────────────────── session

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { Forgot, Home, ResetPassword, MySchools, SignIn, SignUp, Verify } from "./pages/PublicAuth";
+import { AcceptInvite, Forgot, Home, ResetPassword, MySchools, SignIn, SignUp, Verify } from "./pages/PublicAuth";
 import { PERMISSIONS, type MeResponse } from "@edutimetable/shared";
 import { api, getToken, setToken } from "./api";
 import { ConfigContext, type TimetableConfigSummary } from "./hooks";
@@ -12,6 +12,7 @@ import { Timetables } from "./pages/Timetables";
 import { Setup } from "./pages/Setup";
 import { Readiness } from "./pages/Readiness";
 import { Roles } from "./pages/Roles";
+import { Users } from "./pages/Users";
 import { Generate } from "./pages/Generate";
 import { Matrix } from "./pages/Matrix";
 import { Board } from "./pages/Board";
@@ -118,6 +119,10 @@ export default function App() {
       <Route path="/forgot" element={<Forgot />} />
       <Route path="/verify" element={<Verify />} />
       <Route path="/reset" element={<ResetPassword />} />
+      {/* §24.8 — the token is in the PATH, not a query string: an invitation
+          link is pasted into chat as often as it is clicked in a mail client,
+          and a path survives that intact. */}
+      <Route path="/invite/:token" element={<AcceptInvite />} />
       {!authed || !me ? (
         <>
           <Route path="/" element={<Home />} />
@@ -177,6 +182,7 @@ export default function App() {
           <Route path="/school" element={<SchoolProfile me={me} />} />
           <Route path="/platform" element={<Platform />} />
           <Route path="/roles" element={<Roles />} />
+          <Route path="/users" element={<Users />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

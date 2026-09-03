@@ -4,6 +4,7 @@ import { ConfigModule } from "@nestjs/config";
 import { BullModule } from "@nestjs/bullmq";
 import { PrismaModule } from "./prisma/prisma.module";
 import { OnboardingModule } from "./onboarding/onboarding.module";
+import { UsersModule } from "./users/users.module";
 import { TenantModule } from "./tenant/tenant.module";
 import { ControlModule } from "./control/control.module";
 import { TenantContextMiddleware } from "./tenant/tenant-context.middleware";
@@ -37,6 +38,7 @@ import { AutoFixService } from "./readiness/auto-fix.service";
 @Module({
   imports: [
     OnboardingModule,
+    UsersModule,
     ConfigModule.forRoot({ isGlobal: true }),
     // Supplies DiscoveryService/MetadataScanner to the dev route census (9.10).
     DiscoveryModule,

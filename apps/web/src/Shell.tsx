@@ -74,6 +74,8 @@ const NAV: NavGroup[] = [
     items: [
       { label: "School Profile", to: "/school", requires: PERMISSIONS.MASTERS_MANAGE },
       { label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE },
+      // §24.8 — the same authority: deciding who signs in is deciding what a role may do.
+      { label: "Users & Access", to: "/users", requires: PERMISSIONS.ROLES_MANAGE },
     ],
   },
   {
@@ -108,6 +110,7 @@ const TITLES: Record<string, [string, string]> = {
   "/school": ["Administration", "School Profile"],
   "/platform": ["System", "Platform Console"],
   "/roles": ["Administration", "Roles & Access"],
+  "/users": ["Administration", "Users & Access"],
   "/system": ["System", "Status & Jobs"],
 };
 

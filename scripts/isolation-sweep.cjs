@@ -126,6 +126,10 @@ const PARAM_RESOURCE = [
   ["/academic-years/:id", "year"],
   ["/admin/roles/:id/permissions", "role"],
   ["/admin/users/:id", "user"],
+  // §24.8 — swept, not merely classified: these take another school's user
+  // id perfectly happily unless somebody checks, and "deactivate that
+  // login" is the one you least want working across a boundary.
+  ["/users/:id", "user"],
   ["/ai/settings/roles/:id", "role"],
   ["/class-sections/:id", "classSection"],
   ["/elective-blocks/:id", "electiveBlock"],
@@ -303,6 +307,13 @@ const NO_ID = {
   // offered ONE tool, which reaches nothing but that draft. interview-smoke.cjs
   // drives the whole conversation without an LLM in the loop.
   "POST /onboarding/interview": { how: "effect", reason: "§24.6 one interview turn; writes only the caller's own onboarding draft, and the model has no tool that reaches further" },
+
+  // §24.8 Phase 25.6 — inviting people. Neither takes a row id: the school comes
+  // from the session, and both are refused outright unless the school is
+  // self-serve. users-smoke.cjs drives the whole invite → accept → sign-in →
+  // refused-everything story, including the ERP refusal.
+  "POST /users/invite": { how: "effect", reason: "§24.8 creates a users row in the SESSION's school; roles.manage, and refused for an ERP school" },
+  "POST /users/invite-teachers": { how: "effect", reason: "§24.8 the same, in bulk, over the session school's own teacher master" },
 
   "PUT /school": { how: "effect", reason: "edits the session's own school row" },
   "PUT /ai/settings": { how: "effect", reason: "edits the session's own settings row" },
@@ -717,10 +728,19 @@ const LIST_NO_IDS = {
     // §15.3 Phase 25.1 — the account-level school endpoints. Same story as
     // /auth/account: `@Public()` here means "not a SCHOOL session", not
     // "unauthenticated". `AccountAuthGuard` requires an account token, and each
-    // one then scopes to that account: the list is `createdByAccountId`, and
+    // one then scopes to that account: the list is every school it has an
+    // active `users` row in (since 25.6, which is when creating a school and
+    // being able to enter one came apart), and
     // `enter` mints a session only where the account already has a `users` row
     // — a school it does not is *not found*, never a refusal that confirms the
     // school exists.
+    // §24.8 Phase 25.6 — accepting an invitation. The emailed one-shot token IS
+    // the credential, exactly as the verify and reset links are. The GET only
+    // LOOKS: it names who was invited without spending the token, so a mail
+    // scanner that pre-fetches links cannot burn the invitation — and it says
+    // nothing about any school, only the address the invitation was issued to.
+    "GET /auth/invite/:token": "§24.8 shows an invitation without consuming it; the token is the credential",
+    "POST /auth/invite/accept": "§24.8 redeem an invitation; one-shot, and grants nothing beyond the account",
     "GET /schools": "§15.3 AccountAuthGuard; lists only this account's own schools",
     "POST /schools": "§15.3 AccountAuthGuard; owners only, verified only, capped — refused server-side",
     "POST /schools/:id/enter": "§15.3 AccountAuthGuard; mints a session only where this account has a user row",

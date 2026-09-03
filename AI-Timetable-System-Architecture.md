@@ -2024,8 +2024,30 @@ The same eleven questions, asked in conversation. The design is a refusal to bui
 
 **Testing it does not require a provider key.** `POST /dev/interview-turn` is the same dev-gated seam as `/dev/ai-tool` (§17.8), for the same reason: the property under test — *does a model's report become the draft the wizard would have produced?* — is not a property of the model, and a test that needed a key would be a test nobody runs.
 
-### 24.7 Exit criterion
+### 24.7 Users and teacher logins (Phase 25.6)
+
+A self-serve school has to be able to create its own logins, and the shape of the feature follows from one distinction that is easy to blur: **an account is a person; a `users` row is a membership.** Credentials live once in the control plane, `users` is one row per school per person and carries the role and the teacher link, and every scope filter in §15 and §17 reads the membership. So inviting somebody is two writes in two databases meaning two different things — the account may already exist and belong to someone with schools of their own, while the membership is always new and always this school's business.
+
+**`roles.manage`, not `masters.manage`.** Deciding who signs in is the same authority as deciding what a role may do. Anything less would let whoever maintains the teacher list mint logins.
+
+**Refused outright for an ERP school.** There the ERP owns identity and provisions on login (§15.1); a user created here would be overwritten on the next sign-in, or would survive as a second way in the ERP cannot revoke. The screen is read-only behind a banner that says which, and the server refuses independently.
+
+**An invitation is not a way to take over an account.** Where the address already exists, the invitation attaches to that account and changes nothing else about it — not its password, not its `kind`, not its verification. An invite that could downgrade an owner to a member would let any administrator strip school-creation from anyone whose email address they can guess.
+
+**The `users` row is created at invite time, not at acceptance**, and that is not a hole: until they accept, the account holds an unguessable password and `status: pending`, so there is nothing to sign in with. What it buys is that revoking an un-accepted invitation is the same action as revoking a live login, and that the list can distinguish **invited** from **active** — which looks identical in a list of names and is the commonest thing an administrator needs to see. Acceptance is therefore purely control-plane work: `POST /schools/:id/enter` already refuses an account with no active `users` row, and an invitation revoked between sending and accepting should be refused at the door rather than remembered.
+
+**Looking at an invitation is not accepting it.** `GET /auth/invite/:token` names who was invited without spending the token, because a mail client that pre-fetches links would otherwise burn it before anybody clicked. Accepting is a POST, once, and the link is dead afterwards.
+
+**Deactivate, never delete.** A user named in `audit_log` must stay resolvable, and the row is what resolves them. The last login that can manage roles cannot deactivate itself — counted on the *permissions* of the remaining roles rather than on the name "Super Admin", since a school may rename it or build its own.
+
+**Bulk invite reports rather than counts.** Teachers who already have a login, teachers with no email address, and `guest` teachers (§18 keeps them off the regular timetable, so there is nothing for them to look at) are each named, because each has a different fix. A count that quietly excluded them would say "invited 40 of 40" while eight people got nothing. The preview and the write run the same server-side arithmetic, so the confirmation cannot describe something the write does not do.
+
+**One change this phase forced elsewhere.** `schoolsFor` was keyed on `schools.created_by_account_id`, which was the same set as "schools I can enter" until an invited teacher created nothing — and `POST /schools/:id/enter` had always stated the real rule in words: *an account may enter a school exactly when it has a user row there.* The list is now keyed on membership; the school cap still counts what the account created, so being a teacher in six schools does not exhaust an allowance to run one's own.
+
+### 24.8 Exit criteria
 
 `scripts/guided-setup-smoke.cjs` drives the whole story against the live stack: a stranger registers, verifies, creates a school, and walks steps 1–11. It asserts **100% Readiness with zero blockers in every wing, and a generation with nothing unplaced** — plus that an edited curriculum row and an edited assignment are what reach the database. If that path cannot produce a solvable school, the phase has not worked however good the screens look.
 
 `scripts/interview-smoke.cjs` does the same for the third door: eight scripted turns, then the assertion that matters — the answers equal the wizard's, the staff list accumulated across two turns rather than being replaced, a hallucinated class and an unknown field were both refused *by name*, and the resulting draft commits through the same endpoints to a school at 100% Readiness.
+
+`scripts/users-smoke.cjs` covers §24.7, and its assertions are deliberately mostly negatives — a teacher who can reach a write endpoint is the whole feature failing quietly. Invite, accept once (and the link is dead the second time), sign in, land in the one school they were invited into, read their own timetable but **not** another teacher's, and be refused by the server with a 403 on every write endpoint and on `POST /schools`. Then: the bulk preview names the guest and the emailless rather than counting them, deactivation shuts the door while keeping the row, the last remaining administrator cannot deactivate themselves, and an ERP school refuses the lot.
