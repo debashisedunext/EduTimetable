@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ladderIndex, mergeAnswers, sanitizeTurn, stepFrom } from "./interview.answers";
+import { cleanOptions, ladderIndex, mergeAnswers, sanitizeTurn, stepFrom } from "./interview.answers";
 
 /**
  * §24.6 Phase 25.5 — what a language model is allowed to put in a draft.
@@ -268,5 +268,36 @@ describe("§24.6 the exit criterion — a conversation equals a wizard", () => {
     // …and nothing else was disturbed by the removal.
     expect(trimmed.teachers).toHaveLength(3);
     expect(Object.keys(trimmed.weeks as object)).toEqual(["Primary", "Senior"]);
+  });
+});
+
+describe("§24.6 the answers offered as buttons", () => {
+  it("keeps the ordinary case untouched", () => {
+    expect(cleanOptions(["Monday to Friday", "Monday to Saturday"]))
+      .toEqual(["Monday to Friday", "Monday to Saturday"]);
+  });
+
+  it("caps the row at four, because the screen adds its own 'Something else'", () => {
+    expect(cleanOptions(["a", "b", "c", "d", "e", "f"])).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("drops an option too long to be a button", () => {
+    // The label IS the message when it is tapped, so an unbounded string is a
+    // paragraph submitted as somebody's answer as well as an unreadable chip.
+    const long = "x".repeat(81);
+    expect(cleanOptions(["8 periods", long])).toEqual(["8 periods"]);
+  });
+
+  it("treats two spellings of one choice as one choice", () => {
+    // Two chips reading the same thing are one option wearing two hats, and
+    // whichever is tapped sends the same answer.
+    expect(cleanOptions(["Monday to Friday", "monday to friday", "  Monday   to Friday "]))
+      .toEqual(["Monday to Friday"]);
+  });
+
+  it("survives a model that sends something other than a list of strings", () => {
+    expect(cleanOptions(undefined)).toEqual([]);
+    expect(cleanOptions("Monday to Friday")).toEqual([]);
+    expect(cleanOptions([1, null, { a: 1 }, "8 periods"])).toEqual(["8 periods"]);
   });
 });

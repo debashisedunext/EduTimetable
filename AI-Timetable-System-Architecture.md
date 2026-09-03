@@ -2022,6 +2022,10 @@ The same eleven questions, asked in conversation. The design is a refusal to bui
 
 **The conversation covers steps 1–8 and stops.** The curriculum is a matrix, the mapping a table and the settings three toggles: read at a glance, painful to hear dictated one cell at a time. At the handover the wizard opens at step 8 on the same draft. *(The plan said "Setup Wizard → Curriculum"; that was written before 25.4e gave the guided wizard its own curriculum matrix, which is the better destination.)*
 
+**Every question offers ready-made answers.** The tool returns two to four `options` beside its `nextQuestion` — the ordinary answers, commonest first — and the screen renders them as chips with **"Something else…"** always last. Tapping one *sends it as the message*, deliberately the same path a typed answer takes, so it is recorded, confirmed and moved past identically; a second route into the draft is a second place for the two to disagree. Options are cleared the instant anything is sent, or chips from "which working days?" would sit under a question about periods a day looking answerable. The model is told to leave them empty for a genuinely open question — the school's name, its subjects, its staff — because an option there is a guess at something only the school knows, and "Something else…" is what makes an incomplete list honest rather than a dead end.
+
+**The prompt carries today's date, and this is why.** Asked for session options without it, the model proposed *2024–25* from memory — plausible, tappable, and a whole year of timetable filed against the wrong session. It now receives the date and the April–March convention, and proposes the same session the wizard's own `defaultSession()` would, so the two doors cannot differ about what year it is.
+
 **Testing it does not require a provider key.** `POST /dev/interview-turn` is the same dev-gated seam as `/dev/ai-tool` (§17.8), for the same reason: the property under test — *does a model's report become the draft the wizard would have produced?* — is not a property of the model, and a test that needed a key would be a test nobody runs.
 
 ### 24.7 Users and teacher logins (Phase 25.6)

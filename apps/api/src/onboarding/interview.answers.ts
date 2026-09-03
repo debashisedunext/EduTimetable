@@ -330,6 +330,34 @@ export function mergeAnswers(
 }
 
 /**
+ * The model's suggested answers to its own question, made safe to render.
+ *
+ * These become BUTTONS, and a button's label is what gets sent when it is
+ * pressed — so an unbounded "option" would be both an unreadable chip and a
+ * paragraph submitted as somebody's answer. Trimmed, length-capped,
+ * de-duplicated case-insensitively (two chips reading "Monday to Friday" and
+ * "monday to friday" are one choice wearing two hats), and limited to four so
+ * the row stays scannable. The screen adds its own "Something else" beyond
+ * them, which is why four is a ceiling rather than a target.
+ */
+export function cleanOptions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    const s = v.trim().replace(/\s+/g, " ");
+    if (s === "" || s.length > 80) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+    if (out.length === 4) break;
+  }
+  return out;
+}
+
+/**
  * Which step the conversation has reached, from what has been collected.
  *
  * Derived rather than tracked, because the model is not a reliable narrator of

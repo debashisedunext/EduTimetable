@@ -32,7 +32,7 @@ import { AiSettingsService } from "../ai/settings.service";
 import type { LlmMessage, LlmTool } from "../ai/providers";
 import { PrismaService } from "../prisma/prisma.service";
 import { OnboardingService } from "./onboarding.service";
-import { mergeAnswers, sanitizeTurn, stepFrom } from "./interview.answers";
+import { cleanOptions, mergeAnswers, sanitizeTurn, stepFrom } from "./interview.answers";
 
 /** Where the conversation stops and the wizard takes over (§24.6). */
 export const HANDOVER_STEP = 8;
@@ -75,18 +75,45 @@ const RECORD_TOOL: LlmTool = {
           "The single next question to put to the user, in plain English. Ask about ONE thing. " +
           "Empty when everything up to teachers has been collected.",
       },
+      options: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "TWO to FOUR ready-made answers to `nextQuestion`, each a short phrase the user can tap " +
+          "instead of typing — the ordinary answers a school would give, commonest first " +
+          "(e.g. \"Monday to Friday\", \"Monday to Saturday\"; or \"8 periods\", \"7 periods\", " +
+          "\"6 periods\"). Make each one a COMPLETE answer on its own, because tapping it sends it " +
+          "as the reply. Leave this empty ONLY for a genuinely open question — a school's name, a " +
+          "list of its teachers — where any option would be a guess at something only they know.",
+      },
     },
     required: ["learned"],
   },
 };
 
-function systemPrompt(collected: Record<string, unknown>, step: number): string {
+/**
+ * The session an Indian school is most likely setting up, right now.
+ *
+ * The same April-March rule the wizard's own `defaultSession()` uses, so the
+ * two doors propose the same thing rather than each having an opinion.
+ */
+function currentSession(now: Date): { name: string; startDate: string; endDate: string } {
+  const startYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    name: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`,
+    startDate: `${startYear}-04-01`,
+    endDate: `${startYear + 1}-03-31`,
+  };
+}
+
+function systemPrompt(collected: Record<string, unknown>, step: number, now: Date): string {
+  const session = currentSession(now);
   return [
     "You are setting up a school timetable by interviewing an administrator. Your job is to collect, in order, exactly what the guided setup wizard collects — nothing more.",
     "",
     "WHAT TO COLLECT, in this order:",
     "  1. The school's name.",
-    "  2. The academic session — its name and its start and end dates.",
+    `  2. The academic session — its name and its start and end dates. TODAY IS ${now.toISOString().slice(0, 10)}, and most Indian schools run April to March, so the session being set up is almost certainly "${session.name}" (${session.startDate} to ${session.endDate}). Offer that first. You have no other way to know the date, and a session guessed from memory is a whole year of timetable filed against the wrong one.`,
     "  3. The wings that are timetabled separately (most schools have one to three; one is normal), and for each: the range of classes it runs and how many sections each class has.",
     "  4. Each wing's week: working days, periods per day, when the day starts, how long a period is, and any breaks.",
     "  5. The subjects taught, marking which ones need a laboratory.",
@@ -98,6 +125,8 @@ function systemPrompt(collected: Record<string, unknown>, step: number): string 
     "- Accept several facts at once when the user gives them, and record all of them.",
     "- Never invent a value to complete the shape. If a number was not stated, do not record it; ask, or leave it out and let the setup use its own default.",
     "- Confirm a list back briefly after recording it, so a mistake is caught while it is cheap.",
+    "- OFFER OPTIONS. With almost every question, send two to four ready-made answers in `options` — the ordinary answers, commonest first. Tapping one sends it as the reply, so each must stand alone as a complete answer. A person setting up a school on a phone between lessons should be able to get most of the way through by tapping.",
+    "- Leave `options` empty only where any option would be a guess at something only they know: the school's name, the list of subjects they teach, their staff. Ask those openly.",
     "",
     "HARD RULES:",
     "- Call recordSetupAnswers on EVERY turn. Anything you do not record is lost.",
@@ -135,6 +164,15 @@ export interface InterviewTurn {
   reply: string;
   /** The question it wants answered next; empty once the interview is done. */
   nextQuestion: string;
+  /**
+   * Ready-made answers to `nextQuestion`, for tapping instead of typing.
+   *
+   * Never the whole story: the screen always leaves a way to type something
+   * else, because a list of options a school does not fit is a dead end — and
+   * the questions where that happens (their name, their subjects) are exactly
+   * the ones the model is told not to guess at.
+   */
+  options: string[];
   /** Everything collected so far — drives the live panel beside the chat. */
   answers: Record<string, unknown>;
   step: number;
@@ -239,6 +277,7 @@ export class InterviewService {
     ];
     let reply = "";
     let nextQuestion = "";
+    let options: string[] = [];
     let answers = collected;
     let step = stepFrom(collected);
     let rejected: string[] = [];
@@ -252,7 +291,7 @@ export class InterviewService {
     // one question into a paid infinite argument.
     for (let round = 0; round < 2; round++) {
       const turn = await provider.streamChat(
-        { system: systemPrompt(answers, step), messages, tools: [RECORD_TOOL], maxTokens: 2048 },
+        { system: systemPrompt(answers, step, new Date()), messages, tools: [RECORD_TOOL], maxTokens: 2048 },
         (delta) => { reply += delta; },
       );
       inputTokens += turn.usage.inputTokens;
@@ -272,7 +311,14 @@ export class InterviewService {
         step = applied.step;
         rejected = applied.rejected;
         const asked = typeof call.args?.nextQuestion === "string" ? call.args.nextQuestion.trim() : "";
-        if (asked) nextQuestion = asked;
+        if (asked) {
+          nextQuestion = asked;
+          // Tied to the question they belong to: a turn that asks something new
+          // must not leave the previous question's chips underneath it, which
+          // is how somebody taps "Monday to Friday" at a question about
+          // periods per day.
+          options = cleanOptions(call.args?.options);
+        }
         results.push({
           id: call.id,
           name: call.name,
@@ -295,6 +341,6 @@ export class InterviewService {
     });
     this.logger.log(`interview turn: step ${step}, ${rejected.length} refused, ${inputTokens} in / ${outputTokens} out`);
 
-    return { reply, nextQuestion, answers, step, done: step >= HANDOVER_STEP, rejected };
+    return { reply, nextQuestion, options, answers, step, done: step >= HANDOVER_STEP, rejected };
   }
 }

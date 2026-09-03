@@ -23,6 +23,7 @@ import { CLASS_LADDER, type WingAnswer } from "@edutimetable/shared";
 interface TurnResult {
   reply: string;
   nextQuestion: string;
+  options?: string[];
   answers: Record<string, any>;
   step: number;
   done: boolean;
@@ -50,7 +51,18 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Ready-made answers to the question on screen — tap instead of type.
+   *
+   * Cleared the moment anything is sent, so the chips can never belong to a
+   * question that has already been answered. That is the failure worth
+   * designing against: chips left over from "which working days?" under a
+   * question about periods a day would look answerable and send nonsense.
+   */
+  const [options, setOptions] = useState<string[]>([]);
+  const [typing, setTyping] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
 
   // Resume whatever is already there, whichever door filled it in — the two
   // paths share one draft, so arriving here after five wizard steps must show
@@ -67,10 +79,18 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [lines, busy]);
 
-  const send = async () => {
-    const message = draft.trim();
+  /**
+   * One turn. `text` comes either from the box or from a tapped option — and
+   * they are deliberately the same path: a tapped option IS the answer, sent
+   * as if typed, so it is recorded, confirmed and moved past exactly like one.
+   * Anything else would be a second way for an answer to reach the draft.
+   */
+  const send = async (text?: string) => {
+    const message = (text ?? draft).trim();
     if (!message || busy) return;
     setDraft("");
+    setOptions([]);
+    setTyping(false);
     setLines((l) => [...l, { who: "you", text: message }]);
     setBusy(true);
     setError(null);
@@ -85,6 +105,7 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
       // nothing would otherwise leave the conversation with no way forward.
       const said = [r.reply?.trim(), r.nextQuestion?.trim()].filter(Boolean).join("\n\n");
       setLines((l) => [...l, { who: "assistant", text: said || "Recorded." }]);
+      setOptions(r.options ?? []);
     } catch (e) {
       setError(asMessage(e));
       // Put the message back rather than swallowing it: retyping a paragraph
@@ -139,6 +160,28 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
                   thinking…
                 </div>
               )}
+              {!busy && options.length > 0 && (
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 2 }}>
+                  {options.map((o) => (
+                    <button key={o} onClick={() => void send(o)} style={{
+                      font: "500 12.8px/1.3 Inter", padding: "8px 13px", borderRadius: 20,
+                      border: "1px solid var(--brand)", background: "var(--paper)",
+                      color: "var(--brand)", cursor: "pointer",
+                    }}>{o}</button>
+                  ))}
+                  {/* Always last, and always present. A list of options a school
+                      does not fit is a dead end, and the questions where that
+                      happens are the ones the model is told not to guess at. */}
+                  <button onClick={() => { setTyping(true); boxRef.current?.focus(); }}
+                    style={{
+                      font: "500 12.8px/1.3 Inter", padding: "8px 13px", borderRadius: 20,
+                      border: "1px dashed var(--line)", background: "var(--paper)",
+                      color: "var(--ink-faint)", cursor: "pointer",
+                    }}>
+                    Something else…
+                  </button>
+                </div>
+              )}
               {error && (
                 <div style={{
                   borderLeft: "3px solid var(--signal)", background: "var(--signal-bg)",
@@ -152,6 +195,7 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
           <div style={{ borderTop: "1px solid var(--line)", background: "var(--paper)", padding: "12px 22px" }}>
             <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", gap: 9, alignItems: "flex-end" }}>
               <textarea
+                ref={boxRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -160,13 +204,15 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
                 }}
                 rows={2}
-                placeholder="Answer in your own words…"
+                placeholder={options.length > 0 && !typing
+                  ? "…or type your own answer"
+                  : "Answer in your own words…"}
                 aria-label="Your answer"
                 style={{
                   flex: 1, resize: "none", padding: "10px 12px", border: "1px solid var(--line)",
                   borderRadius: 10, fontSize: 13.5, fontFamily: "inherit", background: "var(--paper)",
                 }} />
-              <button className="btn btn-primary" onClick={send} disabled={busy || !draft.trim()}>
+              <button className="btn btn-primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
                 {busy ? "…" : "Send"}
               </button>
             </div>
