@@ -203,18 +203,23 @@ export const inputStyle: React.CSSProperties = {
  * progress, it is history, and a permanent "11 of 11" would be clutter on every
  * visit forever.
  */
+interface SetupState {
+  resumeStep: number | null;
+  resumeMode: string | null;
+  resumeWings?: { name: string; weekReady: boolean }[];
+}
+
 function SetupProgress() {
-  const [state, setState] = useState<{ resumeStep: number | null; resumeMode: string | null } | null>(null);
+  const [state, setState] = useState<SetupState | null>(null);
 
   useEffect(() => {
-    api<{ resumeStep: number | null; resumeMode: string | null }>("/me/onboarding")
-      .then(setState)
-      .catch(() => setState(null));
+    api<SetupState>("/me/onboarding").then(setState).catch(() => setState(null));
   }, []);
 
   const step = state?.resumeStep ?? null;
   if (step === null) return null;
 
+  const wings = state?.resumeWings ?? [];
   const done = Math.max(0, step - 1);
   const pct = Math.round((done / TOTAL_STEPS) * 100);
   const next = STEP_TITLES[step - 1] ?? "Settings";
@@ -238,6 +243,43 @@ function SetupProgress() {
               transition: "width 520ms cubic-bezier(.22,.68,.36,1)",
             }} />
           </div>
+
+          {/*
+            Which wings this is for — and the answer is "all of them".
+            A guided setup is one draft for the whole school: step 3 names every
+            wing at once and everything after covers all of them, so a progress
+            bar per wing would be the same number drawn several times. What IS
+            per wing is the week (step 5), which is filled in wing by wing — so
+            a two-wing school can be half-way through one step, and this is the
+            only place that would show it.
+          */}
+          {wings.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
+              <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+                {wings.length === 1 ? "Wing:" : "Wings:"}
+              </span>
+              {wings.map((w) => (
+                <span
+                  key={w.name}
+                  title={w.weekReady
+                    ? `${w.name}'s week is set`
+                    : `${w.name} has no working days or periods yet — step 5`}
+                  style={{
+                    font: "600 11px/1 Inter", padding: "5px 9px", borderRadius: 20,
+                    background: w.weekReady ? "var(--accent-bg)" : "var(--offwhite)",
+                    color: w.weekReady ? "var(--accent)" : "var(--ink-faint)",
+                    border: `1px solid ${w.weekReady ? "transparent" : "var(--line)"}`,
+                  }}>
+                  {w.weekReady ? "✓ " : ""}{w.name}
+                </span>
+              ))}
+              {wings.some((w) => !w.weekReady) && (
+                <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+                  · ticked once its week is set
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <span style={{
           font: "700 15px/1 var(--mono, monospace)", color: "var(--brand-dark)",

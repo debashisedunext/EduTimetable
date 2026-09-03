@@ -254,6 +254,39 @@ async function newOwnerWithSchool(email, schoolName) {
   // Put the school back as this suite found it.
   await call("DELETE", "/onboarding/session", reSession);
 
+  // ────────────────────────────── 7d. WHICH WINGS THE SETUP IS BUILDING
+  //
+  // A guided setup is ONE draft for the whole school — step 3 names every wing
+  // at once — so "which wing is this progress for?" answers "all of them", and
+  // the useful form of that answer is the list. `weekReady` is the one
+  // genuinely per-wing fact: step 5 is filled in wing by wing, so a two-wing
+  // school can be half-way through a single step with nothing else showing it.
+  console.log("\nThe progress card knows which wings it is building:");
+  await call("PUT", "/onboarding/session", reSession, {
+    currentStep: 5,
+    answers: {
+      wings: [
+        { name: "ZZOB Primary", fromIndex: 4, toIndex: 8, sections: 2 },
+        { name: "ZZOB Senior", fromIndex: 12, toIndex: 13, sections: 2 },
+      ],
+    },
+  });
+  const both = (await call("GET", "/me/onboarding", reSession)).json?.resumeWings ?? [];
+  check(both.length === 2 && both.every((w) => w.weekReady === false),
+    "both wings are named, neither with a week yet",
+    both.map((w) => `${w.name}:${w.weekReady}`).join(" "));
+
+  await call("PUT", "/onboarding/session", reSession, {
+    currentStep: 5,
+    answers: { weeks: { "ZZOB Primary": { workingDays: [1, 2, 3, 4, 5], periodsPerDay: 8 } } },
+  });
+  const half = (await call("GET", "/me/onboarding", reSession)).json?.resumeWings ?? [];
+  check(half.find((w) => w.name === "ZZOB Primary")?.weekReady === true
+    && half.find((w) => w.name === "ZZOB Senior")?.weekReady === false,
+    "and a step finished for one wing and not the other SHOWS as that",
+    half.map((w) => `${w.weekReady ? "✓" : "–"} ${w.name}`).join(" · "));
+  await call("DELETE", "/onboarding/session", reSession);
+
   // ────────────────────── 7c. LOOKING AT THE AI DOOR STARTS NOTHING
   //
   // The regression this exists for: opening the conversational setup used to

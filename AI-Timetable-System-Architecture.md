@@ -2078,6 +2078,8 @@ The burst is canvas and the sound is two oscillators: a confetti library and an 
 
 **The rail is navigable, as far as the answers reach.** A step is open when every step before it is complete — derived from the answers by asking the *same* validator the Next button asks, eleven times, rather than by a second set of rules that would drift from it. Derived rather than remembered as a high-water mark, which means it survives a refresh and a different machine, and it tells the truth in the other direction too: empty the teacher list and the steps after it stop being reachable. A step that is not open says which one to finish first rather than merely greying out.
 
+**The progress card names the wings the setup is building**, because a guided setup is one draft for the *whole school*: step 3 names every wing at once and everything after it covers all of them. So "which wing is this progress for?" answers "all of them", and the useful form of that answer is the list — a bar per wing would be the same number drawn several times. `weekReady` is the one genuinely per-wing fact worth surfacing: step 5 is filled in wing by wing, so a two-wing school can be half-way through a single step, and nothing else on the screen would show it.
+
 Moving **backwards is free** — those rows are already written, and going back to look at something must never be a write. Moving **forwards commits each step it passes over**, in order, because steps 2–10 create real rows and skipping one would land somebody on a screen whose data does not exist yet. Every commit is idempotent, so re-crossing ground already covered costs a round trip and changes nothing.
 
 ### 24.6a Outgoing mail

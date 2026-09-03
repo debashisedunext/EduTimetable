@@ -36,6 +36,8 @@ export interface OnboardingState {
   /** Whether a half-finished guided setup is waiting for them. */
   resumeStep: number | null;
   resumeMode: "wizard" | "ai" | null;
+  /** The wings this setup is building — one draft covers all of them. */
+  resumeWings: Array<{ name: string; weekReady: boolean }>;
   /** Whether the welcome screen should open on its own right now. */
   shouldPrompt: boolean;
 }
@@ -70,7 +72,7 @@ export class OnboardingService {
       }),
       this.prisma.onboardingSession.findFirst({
         where: { schoolId, userId, completedAt: null },
-        select: { currentStep: true, mode: true },
+        select: { currentStep: true, mode: true, answers: true },
       }),
     ]);
 
@@ -83,6 +85,7 @@ export class OnboardingService {
       hasPublished: published > 0,
       dismissedAt: dismissedAt ? dismissedAt.toISOString() : null,
       resumeStep: draft?.currentStep ?? null,
+      resumeWings: this.wingsInDraft(draft?.answers),
       resumeMode: (draft?.mode as "wizard" | "ai") ?? null,
       // Two independent reasons to open, and the OR between them matters.
       //
@@ -102,6 +105,30 @@ export class OnboardingService {
       // this fails as a puzzling one-off nobody connects to this line.
       shouldPrompt: draft !== null || (isNew && dismissedAt === null),
     };
+  }
+
+  /**
+   * The wings this setup is building, and whether each has its week yet.
+   *
+   * A guided setup is **one draft for the whole school**, not one per wing: step
+   * 3 names every wing at once and everything after it covers all of them. So
+   * the honest thing to report is which wings it is building — the question
+   * "which wing is this progress for?" has the answer "all of them", and the
+   * useful version of that answer is the list.
+   *
+   * `weekReady` is the one genuinely per-wing fact worth surfacing: step 5 is
+   * filled in wing by wing, so a two-wing school can be half-way through a
+   * single step, and nothing else on the screen would show it.
+   */
+  private wingsInDraft(answers: unknown): Array<{ name: string; weekReady: boolean }> {
+    const a = (answers ?? {}) as { wings?: Array<{ name?: unknown }>; weeks?: Record<string, unknown> };
+    if (!Array.isArray(a.wings)) return [];
+    const weeks = a.weeks ?? {};
+    return a.wings
+      .map((w) => String(w?.name ?? "").trim())
+      .filter((name) => name !== "")
+      .slice(0, 12)
+      .map((name) => ({ name, weekReady: weeks[name] !== undefined }));
   }
 
   /** "I'll do this later." Per user, so a colleague still sees it. */
