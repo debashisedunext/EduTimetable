@@ -27,8 +27,24 @@ export class JwtAuthGuard implements CanActivate {
     const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
     if (!token) throw new UnauthorizedException("Missing bearer token");
 
+    let user: SessionTokenPayload;
     try {
-      const user = await this.jwtService.verifyAsync<SessionTokenPayload>(token);
+      user = await this.jwtService.verifyAsync<SessionTokenPayload>(token);
+    } catch {
+      throw new UnauthorizedException("Invalid or expired session");
+    }
+
+    // §15.3 — an ACCOUNT token (somebody signed in but not yet inside a school)
+    // is signed with the same key, so the signature alone does not tell the two
+    // apart. Refusing it is load-bearing: it carries no `schoolId`, and letting
+    // it through would call `tenant.attach(undefined)` and run the request with
+    // no school bound at all. Checked OUTSIDE the try, or the catch below would
+    // rewrite this into "invalid or expired" and hide the real reason.
+    if ((user as unknown as { typ?: string }).typ === "account") {
+      throw new UnauthorizedException("Choose a school before opening this");
+    }
+
+    try {
       request.user = user;
       // From here on every Prisma query in this request is filtered to this
       // school — the authority is the signed token, never a request parameter

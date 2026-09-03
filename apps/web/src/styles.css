@@ -410,3 +410,23 @@ button { font-family: inherit; cursor: pointer; }
 .print-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; font-size: 11.5px; color: var(--ink-soft); }
 .print-meta b { color: var(--ink); font-weight: 600; }
 .print-foot { margin-top: 10px; font-size: 9.5px; color: var(--ink-faint); display: flex; justify-content: space-between; }
+
+/* §15.3 Phase 25.3 — the class ladder's two-handle range.
+   Both inputs are stacked and transparent to pointer events; only the thumbs
+   accept them, which is what lets two ranges share one track. */
+.ladder-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--brand); border: 3px solid var(--paper);
+  box-shadow: 0 1px 4px rgba(11, 31, 68, .35);
+  cursor: grab;
+}
+.ladder-range::-moz-range-thumb {
+  pointer-events: auto;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--brand); border: 3px solid var(--paper);
+  box-shadow: 0 1px 4px rgba(11, 31, 68, .35);
+  cursor: grab;
+}
+.ladder-range:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--brand-deep); outline-offset: 2px; }

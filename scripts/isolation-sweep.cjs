@@ -239,6 +239,21 @@ const NEEDS_FRESH = new Set([
  * assertion covers it — an exemption without a covering check is a hole, and
  * writing the reason down is what stops one being added quietly.
  */
+/**
+ * Routes whose path parameter is NOT a row id.
+ *
+ * The census assumes `:something` addresses a resource, because it almost
+ * always does — and that assumption is what catches a new controller taking an
+ * id it forgot to scope. A step number is the exception: it names a position in
+ * a wizard, not a row, so there is no other school's version of it to reach.
+ * Recorded here rather than given a fake resource mapping, which would have the
+ * sweep call it with a class-section id and prove nothing.
+ */
+const PARAM_NOT_AN_ID = {
+  "POST /onboarding/commit/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; the draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
+  "GET /onboarding/preview/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; reads the caller's own draft and writes nothing" },
+};
+
 const NO_ID = {
   "POST /absences": { how: "body", reason: "takes the other school's teacherId in the body" },
   "POST /class-subjects": { how: "body", reason: "takes the other school's classId in the body" },
@@ -269,6 +284,25 @@ const NO_ID = {
   // tries to apply from the other.
   "POST /ai/data-entry/apply": { how: "effect", reason: "proposal stash is school-keyed — ai-data-entry-smoke.cjs proves B cannot apply A's proposal" },
   "GET /ai/data-entry/common-subjects": { how: "none", reason: "a static catalogue of subject names; carries no school data" },
+
+  // §15.3 Phase 25.2 — the guided setup's saved answers. No id in any of these:
+  // the draft is keyed (school, user) from the SESSION, so there is nothing in
+  // a request that could name somebody else's. onboarding-smoke.cjs drives the
+  // crossing case directly — two schools, two drafts, and a second school of
+  // the SAME owner starting empty, which is the one that would catch scoping by
+  // account instead of by school.
+  "POST /me/onboarding/dismiss": { how: "effect", reason: "stamps the caller's own users row; takes no id — onboarding-smoke.cjs asserts a colleague's is untouched" },
+  "PUT /onboarding/session": { how: "effect", reason: "draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
+  "DELETE /onboarding/session": { how: "effect", reason: "deletes only the caller's own draft; takes no id" },
+  // Phase 25.4g. Writes settings across the session's own school — the
+  // `updateMany` carries no id from the request, and the school-scope extension
+  // narrows it to the ambient school. guided-setup-smoke.cjs drives it.
+  "POST /onboarding/finish": { how: "effect", reason: "§24.5 writes timetable_config and teacher settings for the session's own school; takes no id" },
+  // Phase 25.5. Takes a sentence, not an id. Everything it writes goes into the
+  // caller's own draft, keyed (school, user) from the session — and the model is
+  // offered ONE tool, which reaches nothing but that draft. interview-smoke.cjs
+  // drives the whole conversation without an LLM in the loop.
+  "POST /onboarding/interview": { how: "effect", reason: "§24.6 one interview turn; writes only the caller's own onboarding draft, and the model has no tool that reaches further" },
 
   "PUT /school": { how: "effect", reason: "edits the session's own school row" },
   "PUT /ai/settings": { how: "effect", reason: "edits the session's own settings row" },
@@ -636,6 +670,9 @@ const LIST_NO_IDS = {
     if (r.platform) { buckets.platform.push(r); continue; }
     if (r.path.startsWith("/dev/")) { buckets.dev.push(r); continue; }
     if (r.path.includes(":")) {
+      // A parameter that is not a row id has nothing to cross schools with.
+      const notAnId = PARAM_NOT_AN_ID[key];
+      if (notAnId) { buckets[notAnId.how].push({ ...r, ...notAnId }); continue; }
       const hit = PARAM_RESOURCE.filter(([pat]) => r.path.startsWith(pat)).sort((x, y) => y[0].length - x[0].length)[0];
       if (hit) buckets.path.push({ ...r, resource: hit[1] });
       else unclassified.push(`${key} (parameterised, no resource mapping)`);
@@ -653,6 +690,56 @@ const LIST_NO_IDS = {
   }
   check(unclassified.length === 0, "no route is unclassified",
     unclassified.length ? `\n        ${unclassified.join("\n        ")}` : `${routes.length} classified`);
+
+  // A @Public() route is exempt from every scoping check below, so the set of
+  // them is the application's whole unauthenticated attack surface. Bucketing
+  // them automatically — as the loop above does — means a data endpoint that
+  // someone marks public by mistake passes this sweep in silence, which is the
+  // one thing this file exists not to allow. Every one must be named here, with
+  // the reason it is safe to serve a stranger.
+  const PUBLIC_ALLOWED = {
+    "GET /health": "liveness; reports no school's data",
+    "GET /sso/callback": "§15.1 the ERP door — the signed token IS the credential",
+    "POST /dev/erp-token": "dev-only stub ERP; refused when NODE_ENV=production",
+    "GET /dev/mail": "dev-only captured mail; refused when NODE_ENV=production",
+    "GET /dev/mail/token": "dev-only captured mail; refused when NODE_ENV=production",
+    // §15.3 Phase 25.0 — the local sign-in surface. Public by definition:
+    // whoever calls these has no credential yet. Each answers identically for a
+    // known and an unknown address, so none of them is an existence oracle.
+    "GET /auth/methods": "§15.3 which ways in this deployment offers; no data",
+    "POST /auth/register": "§15.3 create an account; same answer whoever you are",
+    "POST /auth/login": "§15.3 sign in; same body AND time for unknown vs wrong",
+    "POST /auth/forgot": "§15.3 request a reset; same answer whoever you are",
+    "POST /auth/reset": "§15.3 redeem a reset link; the one-shot token is the credential",
+    "POST /auth/verify": "§15.3 redeem a verification link; likewise",
+    "GET /auth/verify": "§15.3 landing hint only; reveals nothing",
+    "GET /auth/account": "§15.3 guarded by AccountAuthGuard, not JwtAuthGuard — @Public() only skips the SESSION guard",
+    // §15.3 Phase 25.1 — the account-level school endpoints. Same story as
+    // /auth/account: `@Public()` here means "not a SCHOOL session", not
+    // "unauthenticated". `AccountAuthGuard` requires an account token, and each
+    // one then scopes to that account: the list is `createdByAccountId`, and
+    // `enter` mints a session only where the account already has a `users` row
+    // — a school it does not is *not found*, never a refusal that confirms the
+    // school exists.
+    "GET /schools": "§15.3 AccountAuthGuard; lists only this account's own schools",
+    "POST /schools": "§15.3 AccountAuthGuard; owners only, verified only, capped — refused server-side",
+    "POST /schools/:id/enter": "§15.3 AccountAuthGuard; mints a session only where this account has a user row",
+  };
+  const unexpectedPublic = buckets.public
+    .map((r) => `${r.method} ${r.path}`)
+    .filter((k) => !(k in PUBLIC_ALLOWED));
+  check(unexpectedPublic.length === 0,
+    "every unauthenticated route is one somebody decided to expose",
+    unexpectedPublic.length
+      ? `\n        UNEXPECTED: ${unexpectedPublic.join("\n        UNEXPECTED: ")}`
+      : `${buckets.public.length} public route(s), all accounted for`);
+
+  // ...and the reverse: a route that stops being public should not leave a
+  // stale entry behind claiming it still is.
+  const goneFromApp = Object.keys(PUBLIC_ALLOWED)
+    .filter((k) => !buckets.public.some((r) => `${r.method} ${r.path}` === k));
+  check(goneFromApp.length === 0, "and the list has no entries for routes that no longer exist",
+    goneFromApp.join(", ") || "none stale");
   info("classified", Object.entries(buckets).map(([k, v]) => `${k} ${v.length}`).join(" · "));
 
   // Print the exemptions rather than only counting them. An exemption that
@@ -927,7 +1014,15 @@ const LIST_NO_IDS = {
   //   ai:models:      the provider catalogue, identical for every school
   //   sso:nonce:      replay protection, written while verifying the ERP token —
   //                   before any school is known, which is the point of it
-  const infra = /^(bull:|sched:inflight:|ai:models:|sso:nonce:)/;
+  //   mail:           §15.3 — captured verification and reset messages, keyed by
+  //                   EMAIL ADDRESS. Deliberately school-less: a person
+  //                   registering has no school, and an address is not a
+  //                   school's property. Dev-read-only, short TTL.
+  //   throttle:*:ip:  §15.3 — sign-in budgets, keyed by source address. Also
+  //                   deliberately school-less, and for the same reason: at
+  //                   sign-in nobody has chosen a school, and an IP belongs to
+  //                   no tenant.
+  const infra = /^(bull:|sched:inflight:|ai:models:|sso:nonce:|mail:|throttle:)/;
   const stray = keys.filter((k) => !infra.test(k) && !/^s\d+:/.test(k));
   const aKeys = keys.filter((k) => k.startsWith(`s${SCHOOL_A}:`));
   const bKeys = keys.filter((k) => k.startsWith(`s${SCHOOL_B}:`));

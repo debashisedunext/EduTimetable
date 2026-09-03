@@ -1963,3 +1963,69 @@ Nothing in the writer needed changing: `writeDraftSlots` already scopes its dele
 **Regenerating a *published* draft is allowed, and is not the trap it looks like.** Publish flips the draft's rows in place, so a published draft has no `status='draft'` rows left — which is why the Board renders it empty. Generating into it refills that working copy and cannot touch the published set, which lives at `draft_scope = 0`. "Revise what we published" is a real workflow, so it is offered rather than blocked, and the picker says exactly that instead of leaving the admin to infer it.
 
 **RBAC:** drafts stay behind `timetable.edit`/`timetable.generate` (§15.3); draft CRUD wants `timetable.generate`; Publish keeps `timetable.publish`. All new routes are swept or classified by the §17.8 isolation gate like any other.
+
+---
+
+## 24. Guided Setup — the wizard that fills an empty school (Phase 25)
+
+A new school arrives at an empty app, and §16's spreadsheet import only helps a school that already keeps its data in a spreadsheet shaped the way we want. §24 adds the other door: **eleven steps that ask what a school looks like and derive everything else.** The welcome screen offers three of them — Manual entry (the existing Setup Wizard), this guided wizard, and (§24.6) the same questions in conversation.
+
+### 24.1 The wizard is a face, not a fourth committer
+
+Nothing in the wizard writes a master row. Every step builds the **§16 importer's own sheets** and hands them to `commitSheets`, which is what the Excel upload, the ERP sync and the AI assistant already use. Two properties fall out of that and both are load-bearing:
+
+- **Idempotency is free.** The importer skips rows that already exist by natural key, so pressing Next twice, resuming a draft or re-running a step creates nothing extra. The alternative — the wizard keeping its own "have I made these yet?" bookkeeping — is precisely where duplicate classes come from.
+- **Validation is identical.** An over-long name, a class-section naming a year that does not exist, a section already claimed by another timetable: all refused by the code an upload meets, with the same messages.
+
+Two things are deliberately outside it. Period and break structure is not master data, so wings and the week go through `POST /timetable-configs` and `PUT /:id/structure`, which already own that shape; and the §24.5 settings live on `timetable_config`, written directly by `finish`.
+
+### 24.2 Answers are a draft, not data
+
+`onboarding_sessions` holds one row per person per school: current step, mode, and an `answers` JSON. Answers are **merged** on save, never replaced — a step sends only its own keys, and a client that sent the whole object would blank a step it never rendered, which is exactly how a Back button loses work. An abandoned wizard therefore leaves nothing in `classes`, `rooms` or `teachers`; a completed one is marked `completed_at` rather than deleted, so "did this school come through the guided setup?" stays answerable.
+
+### 24.3 The suggesters, and what they are not allowed to propose
+
+Steps 8–10 propose rather than ask: rooms from the classes and subjects, a curriculum from a per-band weight table, and mappings from what each teacher said they teach. The rule governing all three is that **a proposal that cannot generate is worse than no proposal, because it looks like an answer.** Every one of the following was a real defect caught by the Feasibility Engine refusing a school the wizard had just built:
+
+- A curriculum is **scaled to the wing's real weekly capacity**, in *both* directions — a fixed table hands an 8-period week a 40-period curriculum, and rounding that only ever trims leaves eight subjects each a fraction short and two unallocated periods per class.
+- `maxPerDay` is floored at `ceil(periods / days)`. Six periods a week at one a day needs six days; in a five-day week that pair is impossible however it is staffed, because it is a property of the curriculum row rather than of who teaches it.
+- A teacher's real weekly ceiling is their **daily reach** (Σ of their subjects' per-day caps) × working days, not `max_periods_per_week`. Assigning to the weekly cap alone produces a school that looks fully staffed and cannot be timetabled.
+- Labs are **sized to demand**, not one per subject: at ten sections a single lab supplies 40 periods a week against 50 required. Every proposed lab carries its `room_subjects` mapping, because a lab with no subjects listed is general and serves everything (§19).
+- Home rooms are **linked**, not merely created. `class_sections.home_room_id` is written from the Rooms sheet's `Home Room For` column; without it every ordinary lesson shows no room, and generation still succeeds, so nothing but Readiness notices.
+- `min_periods_per_day` is written as **0**, not the application default of 3. That default is right for a school that chose it and hostile as a silent imposition — a one-subject teacher with 13 periods a week and a floor *and* ceiling of 3 has no whole number of days that works. §24.5 offers it as a decision.
+
+Anything a suggester cannot cover is **named, with its reason**, never silently left out — the same "tell me what to fix" contract the Feasibility Engine holds to.
+
+### 24.4 The correction wins
+
+Each suggested step stores its edits under its own key in `answers`. The server reads that key if it is there and re-proposes if it is not, so going back to add a teacher changes the proposal while an edit made here survives. Three rules keep that honest:
+
+- **The halves fall back independently.** `mappings` and `classTeachers` are two tables on one screen; treating them as one edited object means reassigning a single lesson wipes every class teacher in the school.
+- **Periods/week is quoted, not stored.** Who teaches a class is step 10's decision; how many periods it runs for is step 9's. A stored quote goes stale the moment the curriculum is edited, and Readiness then reports *"only 7 of 8 periods/week mapped"* — a blocker whose cause is two screens from where it is named. `withCurriculumPeriods` refreshes the quote at every use.
+- **Coverage is stated once.** `coverageGaps` is the function the mapping screen shows live *and* the commit uses for its issue list, because a proposal's own `uncovered` list stops describing reality the moment a row is edited. Load and capacity are deliberately *not* re-checked in the browser: the importer runs `assertWithinWeek` on every row it writes, and a second opinion the server contradicts is worse than none.
+
+### 24.5 Settings, and the one that is not a flag
+
+Step 11 writes `class_teacher_gets_first_period`, `allow_consecutive_periods` and `min_periods_per_day`. **Inter-wing teaching is not a setting** — turning it on clears the `teacher_class_eligibility` rows step 7 wrote, because an empty scope means "not stated" rather than "no classes" (§18). An existing, already-enforced mechanism, rather than a new flag nothing reads.
+
+### 24.6 The third door — the assistant as interviewer (Phase 25.5)
+
+The same eleven questions, asked in conversation. The design is a refusal to build a second setup: the interviewer fills in the **same** `onboarding_sessions.answers` and commits through the **same** `POST /onboarding/commit/:step`, so switching between chat and wizard mid-setup loses nothing and there is exactly one definition of what a school is.
+
+**The model is offered one tool, `recordSetupAnswers`, and none of the §13.1 registry.** It cannot read the school, draft master data or place a slot; it gains no authority the conversation did not already have. What that tool writes is a *draft* — the same JSON a person produces by typing, which becomes rows only when somebody presses Next, at which point the §16 importer validates all of it again. So `interview.answers.ts` is not the safety net; it is what keeps the draft **coherent**, and it holds to three rules:
+
+- **An unknown key is dropped, and said.** Every refusal is handed back as the tool result. Silently ignoring a field the model believed it recorded produces a conversation where the assistant confirms something that never happened.
+- **Classes are named, never indexed.** The ladder position is an implementation detail of a slider; asking a model for `fromIndex: 4` is asking it to hallucinate an integer. It says "Class 1" — or "class 5", "Grade 5", "std 5", "LKG" — and an unknown name is refused *with the vocabulary attached*, because a guess here is a wing quietly covering the wrong classes.
+- **Progress is derived, never taken from the model**, which will happily announce step 5 while three of step 3's answers are missing.
+
+**A turn accumulates; it does not replace.** The draft's own merge is per top-level key, which is right for a wizard screen holding a whole list and catastrophic for a conversation adding to one: "and we also have three part-time teachers" would *delete* every teacher named before it, and the setup would shrink as the conversation went on — the worst possible failure, because it looks like progress. So collections merge by the thing that identifies them (employee code, else name), restating one is a **correction** rather than a duplicate, and `replace: ["subjects"]` is the only way to remove something — the model declaring a list complete.
+
+**The conversation covers steps 1–8 and stops.** The curriculum is a matrix, the mapping a table and the settings three toggles: read at a glance, painful to hear dictated one cell at a time. At the handover the wizard opens at step 8 on the same draft. *(The plan said "Setup Wizard → Curriculum"; that was written before 25.4e gave the guided wizard its own curriculum matrix, which is the better destination.)*
+
+**Testing it does not require a provider key.** `POST /dev/interview-turn` is the same dev-gated seam as `/dev/ai-tool` (§17.8), for the same reason: the property under test — *does a model's report become the draft the wizard would have produced?* — is not a property of the model, and a test that needed a key would be a test nobody runs.
+
+### 24.7 Exit criterion
+
+`scripts/guided-setup-smoke.cjs` drives the whole story against the live stack: a stranger registers, verifies, creates a school, and walks steps 1–11. It asserts **100% Readiness with zero blockers in every wing, and a generation with nothing unplaced** — plus that an edited curriculum row and an edited assignment are what reach the database. If that path cannot produce a solvable school, the phase has not worked however good the screens look.
+
+`scripts/interview-smoke.cjs` does the same for the third door: eight scripted turns, then the assertion that matters — the answers equal the wizard's, the staff list accumulated across two turns rather than being replaced, a hallucinated class and an unknown field were both refused *by name*, and the resulting draft commits through the same endpoints to a school at 100% Readiness.

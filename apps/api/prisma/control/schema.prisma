@@ -94,11 +94,11 @@ model Trust {
 /// This is the row that answers "an SSO token arrived claiming ERP instance X,
 /// school code Y — which database, and which school_id inside it?".
 model Tenant {
-  id            Int          @id @default(autoincrement())
-  erpInstanceId Int          @map("erp_instance_id")
-  erpInstance   ErpInstance  @relation(fields: [erpInstanceId], references: [id])
-  trustId       Int?         @map("trust_id")
-  trust         Trust?       @relation(fields: [trustId], references: [id])
+  id            Int         @id @default(autoincrement())
+  erpInstanceId Int         @map("erp_instance_id")
+  erpInstance   ErpInstance @relation(fields: [erpInstanceId], references: [id])
+  trustId       Int?        @map("trust_id")
+  trust         Trust?      @relation(fields: [trustId], references: [id])
 
   /// The ERP's stable code for this school. Together with the installation it
   /// is the only identifier meaningful across databases — a numeric id is not,
@@ -161,4 +161,122 @@ model PlatformUser {
 
   @@unique([erpInstanceId, erpUserId])
   @@map("platform_users")
+}
+
+// ═══════════════════ SELF-SERVE ACCOUNTS (§15.3, Phase 25.0) ═══════════════════
+//
+// Until Phase 25 there was no local login at all: the ERP owned every
+// credential and this app only ever verified its signed token. Selling the
+// Timetable module on its own means owning the credential ourselves.
+//
+// WHY CREDENTIALS LIVE HERE, in the control plane, and not in `users`:
+//
+//   1. One person, one password, many schools. A self-serve admin may run
+//      several schools; `users` is one row PER school, keyed
+//      (school_id, erp_user_id). A password on that row would be a password
+//      per school — several to change, several to leak.
+//   2. `users` is an ERP-identity table. It records who the ERP said this
+//      person is; it has never held a secret and should not start.
+//   3. `platform_users` already sets the precedent: identity that outranks any
+//      one school lives out here, where a school's Super Admin cannot reach it.
+//
+// A school's `users` row still exists for every account, unchanged — that is
+// what carries the role, the scope and the audit trail. The account is only
+// the credential.
+
+/// Whether this account may create schools.
+///
+/// The distinction is load-bearing: a self-serve admin invites their teachers,
+/// and a teacher's login must never be able to create schools of its own — on
+/// the admin's cap, in the admin's billing, in the same list.
+enum AccountKind {
+  /// Registered themselves from the home page. May create schools.
+  owner
+  /// Was invited into a school. May never create one.
+  member
+}
+
+enum AccountStatus {
+  /// Registered, email not yet verified. May sign in to nothing.
+  pending
+  active
+  suspended
+}
+
+/// A person who signs in with an email and a password (§15.3).
+///
+/// ERP users have no row here and never will — their credential is the ERP's.
+/// The two identity sources are kept entirely apart on purpose: there is no
+/// path by which an ERP user acquires a password, or a local account acquires
+/// an ERP identity.
+model Account {
+  id           Int    @id @default(autoincrement())
+  email        String @unique @db.VarChar(160)
+  /// Encoded with its own algorithm and parameters (see password.service.ts),
+  /// so the cost can be raised later and old hashes upgraded on next sign-in
+  /// rather than forcing a reset.
+  passwordHash String @map("password_hash") @db.VarChar(255)
+
+  name         String  @db.VarChar(120)
+  phone        String? @db.VarChar(30)
+  organisation String? @db.VarChar(160)
+  country      String? @db.VarChar(60)
+  /// Their job, for support and sales context. Never used to authorise.
+  jobRole      String? @map("job_role") @db.VarChar(60)
+
+  kind   AccountKind   @default(owner)
+  status AccountStatus @default(pending)
+
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  lastLoginAt     DateTime? @map("last_login_at")
+
+  /// Consecutive failures since the last success, and the lockout they earned.
+  /// Per account; the per-IP half lives in Redis, because an attacker spraying
+  /// many addresses never trips any single account's counter.
+  failedLogins Int       @default(0) @map("failed_logins")
+  lockedUntil  DateTime? @map("locked_until")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tokens AccountToken[]
+
+  @@map("accounts")
+}
+
+enum AccountTokenPurpose {
+  verify
+  reset
+  /// Phase 25.6 — inviting somebody into a school they do not yet belong to.
+  invite
+}
+
+/// One-shot, expiring links: verify an address, reset a password, accept an
+/// invitation.
+///
+/// ONE TABLE FOR ALL THREE, because they are the same object with a different
+/// label, and three tables would be three places to get expiry and single-use
+/// wrong.
+///
+/// The token itself is NEVER stored — only its SHA-256. A leaked backup of this
+/// table therefore hands nobody a working link, which is the whole reason to
+/// hash something that is already short-lived.
+model AccountToken {
+  id        Int                 @id @default(autoincrement())
+  accountId Int                 @map("account_id")
+  account   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  purpose   AccountTokenPurpose
+  /// SHA-256 hex of the token that was emailed. Unique so a lookup is a point
+  /// read and two tokens can never collide silently.
+  tokenHash String              @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime            @map("expires_at")
+  usedAt    DateTime?           @map("used_at")
+  /// For `invite`: which school, role and teacher the acceptance should join.
+  /// Null for verify and reset, which need nothing beyond the account.
+  meta      Json?
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  @@index([accountId, purpose])
+  @@index([expiresAt])
+  @@map("account_tokens")
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Forgot, Home, ResetPassword, MySchools, SignIn, SignUp, Verify } from "./pages/PublicAuth";
 import { PERMISSIONS, type MeResponse } from "@edutimetable/shared";
 import { api, getToken, setToken } from "./api";
 import { ConfigContext, type TimetableConfigSummary } from "./hooks";
@@ -27,6 +28,7 @@ import { SyncErp } from "./pages/SyncErp";
 import { Electives } from "./pages/Electives";
 import { Availability } from "./pages/Availability";
 import { AiDock } from "./ai/AiDock";
+import { Onboarding } from "./onboarding/Onboarding";
 import { SchoolProfile } from "./pages/SchoolProfile";
 import { Platform } from "./pages/Platform";
 
@@ -105,8 +107,25 @@ export default function App() {
     <Routes>
       <Route path="/sso" element={<SsoCapture />} />
       <Route path="/sso-error" element={<SsoError />} />
+      {/* §15.3 Phase 25.0 — the second way in. These sit OUTSIDE the
+          authenticated shell on purpose: whoever is on them may have no
+          account at all, so anything reading `me` would crash. They are
+          declared before the authed branch so they resolve whether or not a
+          session exists — a signed-in user opening /login should still see the
+          form rather than being bounced by the catch-all. */}
+      <Route path="/signup" element={<SignUp />} />
+      <Route path="/login" element={<SignIn />} />
+      <Route path="/forgot" element={<Forgot />} />
+      <Route path="/verify" element={<Verify />} />
+      <Route path="/reset" element={<ResetPassword />} />
       {!authed || !me ? (
-        <Route path="*" element={<DevLogin />} />
+        <>
+          <Route path="/" element={<Home />} />
+          <Route path="/schools" element={<MySchools />} />
+          {/* the dev SSO shortcut stays reachable, but is no longer what a
+              stranger meets at the front door */}
+          <Route path="*" element={<DevLogin />} />
+        </>
       ) : (
         <Route
           element={
@@ -120,6 +139,14 @@ export default function App() {
                     appear only with masters.manage — enforced on the server,
                     not here. */}
                 <AiDock permissions={me.permissions} />
+                {/* §15.3 Phase 25.2 — the welcome screen and the guided setup.
+                    Opens by itself only for a school with no timetable, and
+                    only for somebody who could act on it. The server decides;
+                    a second definition of "new" here would drift from it. */}
+                <Onboarding
+                  userName={me.name}
+                  canManage={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE)}
+                />
               </ColorProvider>
             </ConfigContext.Provider>
           }

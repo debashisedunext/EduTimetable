@@ -143,6 +143,8 @@ export async function buildFeasibilitySnapshot(
       name: t.name,
       maxPeriodsPerDay: t.maxPeriodsPerDay,
       minPeriodsPerDay: t.minPeriodsPerDay,
+      maxConsecutivePeriodsPerDay: t.maxConsecutivePeriodsPerDay,
+      canSubstitute: t.canSubstitute,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
       classTeacherPeriodRule: t.classTeacherPeriodRule,
       periodPattern: t.periodPattern,

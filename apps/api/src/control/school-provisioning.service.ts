@@ -71,6 +71,11 @@ export class SchoolProvisioningService {
     // a token that omits a logo should not erase one somebody configured here.
     const descriptive = {
       name,
+      // Records that the ERP genuinely named this school, which is what makes a
+      // rename here refusable. `origin` alone cannot tell a real ERP name from
+      // a Phase 9.2 placeholder, and refusing both would strand a placeholder
+      // school called "School 1" forever (§15.3).
+      erpNameSyncedAt: new Date(),
       ...(claim.shortName !== undefined ? { shortName: claim.shortName?.slice(0, 40) ?? null } : {}),
       ...(claim.logoUrl !== undefined ? { logoUrl: claim.logoUrl?.slice(0, 255) ?? null } : {}),
       ...(claim.timezone ? { timezone: claim.timezone.slice(0, 40) } : {}),
@@ -145,8 +150,14 @@ export class SchoolProvisioningService {
     const control = this.control.client;
     if (!control) return null;
 
+    // The self-serve installation (§15.3) is a sentinel, not an ERP — filing a
+    // real ERP school under it would be wrong, and "first by id" would do
+    // exactly that on a deployment where a self-serve school was created first.
     const instance =
-      (await control.erpInstance.findFirst({ orderBy: { id: "asc" } })) ??
+      (await control.erpInstance.findFirst({
+        where: { NOT: { name: { contains: "Self-serve" } } },
+        orderBy: { id: "asc" },
+      })) ??
       (await control.erpInstance.create({
         data: { name: "Edunext ERP (default installation)", publicKeyPem: "" },
       }));

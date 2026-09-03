@@ -119,9 +119,44 @@ async function call(method, path, token, body) {
   const before = await call("GET", "/school", admin);
   check(before.status === 200, "GET /school", `${before.json?.name}`);
 
+  // §15.3 Phase 25.1 — this used to assert "an admin can fix the placeholder
+  // name", and that assertion was testing a BUG.
+  //
+  // This session arrived through SSO with a school claim, so the ERP has named
+  // this school — and `syncSchool` rewrites the name from the token on EVERY
+  // login. A local rename therefore appeared to work and reverted invisibly the
+  // next time anybody signed in, which is worse than refusing it. The old test
+  // never checked that the rename survived a login, so it passed for years
+  // while the behaviour was broken. Demonstrated rather than asserted, below.
   const renamed = await call("PUT", "/school", admin, { name: "ZZCTL Renamed School", shortName: "ZZCTL" });
-  check(renamed.status === 200 && renamed.json?.name === "ZZCTL Renamed School",
-    "an admin can fix the placeholder name", renamed.json?.name);
+  check(renamed.status === 400,
+    "an ERP-NAMED school cannot be renamed here — the ERP overwrites it on the next login",
+    `${renamed.status}`);
+  check(/comes from your ERP/i.test(renamed.json?.message ?? ""),
+    "and is told where to do it instead", (renamed.json?.message ?? "").slice(0, 48));
+
+  // The proof, so the refusal above is grounded rather than asserted: force the
+  // rename past the guard, sign in again, and watch it disappear.
+  await prisma.school.update({ where: { id: 1 }, data: { name: "ZZCTL Forced Rename" } });
+  await sessionFor({
+    erpUserId: "ZZCTL-PROOF", erpRole: "ADMIN", name: "ZZCTL Proof", email: "proof@zzctl.test",
+    school: { code: "SCHOOL-1", name: "School 1" },
+  });
+  const reverted = await prisma.school.findUnique({ where: { id: 1 } });
+  check(reverted?.name === "School 1",
+    "a rename forced past the guard IS wiped by the next SSO login — which is exactly why it is refused",
+    reverted?.name);
+
+  // ...while a school the ERP has never named stays editable, which is the
+  // Phase 9.2 placeholder case the old assertion was really about.
+  await prisma.school.update({ where: { id: 1 }, data: { erpNameSyncedAt: null } });
+  const placeholderRename = await call("PUT", "/school", admin, { name: "ZZCTL Renamed School" });
+  check(placeholderRename.status === 200,
+    "a school the ERP has NEVER named is still renameable — a 9.2 placeholder is not stranded",
+    `${placeholderRename.status}`);
+  await prisma.school.update({
+    where: { id: 1 }, data: { name: "School 1", erpNameSyncedAt: new Date() },
+  });
 
   // `code` is what the registry resolves logins against — editable from inside
   // the school, it would be a way to lock your own users out.

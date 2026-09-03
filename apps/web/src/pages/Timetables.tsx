@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, switchSchool } from "../api";
+import { openOnboarding } from "../onboarding/Onboarding";
 import { Card, ErrorNote, Field } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { CloneTimetable } from "./CloneTimetable";
@@ -72,6 +73,11 @@ export function Timetables({ me }: { me: MeResponse }) {
         </p>
         <div style={{ display: "flex", gap: 10 }}>
           {/* §16: skip the hand-entry route entirely and load the masters from a spreadsheet */}
+          {/* §15.3 Phase 25.2 — the permanent way back to the three doors. The
+              welcome screen stops opening by itself once a school has a
+              timetable, or once somebody has waved it away; this is how they
+              get to it afterwards, and how a colleague finds it at all. */}
+          <button className="btn btn-secondary" onClick={openOnboarding}>✦ Set up a timetable</button>
           <Link to="/import" className="btn btn-secondary" style={{ textDecoration: "none" }}>⬆ Import from Excel</Link>
           <button className="btn btn-primary" onClick={() => setCreating(true)}>＋ New Timetable</button>
         </div>

@@ -1,7 +1,8 @@
-import { Body, Controller, Get, NotFoundException, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, NotFoundException, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { SelfServeProvisioningService } from "../control/self-serve-provisioning.service";
 import { type AuthedRequest } from "./crud.util";
 
 /**
@@ -18,7 +19,10 @@ import { type AuthedRequest } from "./crud.util";
  */
 @Controller("school")
 export class SchoolController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly selfServe: SelfServeProvisioningService,
+  ) {}
 
   @Get()
   async get(@Req() req: AuthedRequest) {
@@ -40,6 +44,41 @@ export class SchoolController {
       const s = String(v ?? "").trim();
       return s.length === 0 ? null : s.slice(0, max);
     };
+
+    // §15.3 Phase 25.1 — a name the ERP writes is not ours to change.
+    //
+    // The ERP overwrites it from the token on EVERY login, so accepting an edit
+    // would store a change that silently reverts the next time anybody signs
+    // in — and produce a bug report nobody who did not sign in again can
+    // reproduce.
+    //
+    // Keyed on `erpNameSyncedAt`, NOT on `origin`, and the difference matters:
+    // Phase 9.2 back-filled PLACEHOLDER names ("School 1") for schools that
+    // predate school claims, and explicitly documented that an admin fixes them
+    // here. Those receive no name from the ERP, so nothing would overwrite the
+    // edit — refusing them would strand a school called "School 1" forever.
+    // Only a school the ERP has actually named is refused.
+    //
+    // The descriptive fields below (logo, address, timezone) stay editable
+    // either way: SSO only overwrites those when the ERP actually sends them.
+    const school = await this.prisma.school.findUnique({ where: { id: req.user.schoolId } });
+    if (!school) throw new NotFoundException("School not found");
+    const renaming =
+      body.name !== undefined && str(body.name, 120) !== school.name;
+    if (renaming && school.erpNameSyncedAt !== null) {
+      throw new BadRequestException(
+        `${school.name}'s name comes from your ERP, so it is set there — a change made here ` +
+          `would be overwritten the next time anyone signs in. Rename it in the ERP and it will ` +
+          `update here automatically.`,
+      );
+    }
+
+    // A self-serve school's registry entry carries a display name too; leaving
+    // it stale would make the Platform Console disagree with the app.
+    if (renaming) {
+      await this.selfServe.renameTenant(school.code, str(body.name, 120) ?? school.name);
+    }
+
     return this.prisma.school.update({
       where: { id: req.user.schoolId },
       data: {

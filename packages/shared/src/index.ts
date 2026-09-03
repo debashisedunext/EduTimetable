@@ -111,6 +111,31 @@ export interface ErpSsoTokenPayload {
 }
 
 /** The Timetable app's own session token claims. */
+/**
+ * §15.3 Phase 25.0 — the credential of somebody who has signed in but is not
+ * yet *inside* a school.
+ *
+ * A self-serve admin who has just registered owns no school, so there is no
+ * `schoolId`, no `roleId` and no tenant to bind — and `SessionTokenPayload`
+ * requires all three. Rather than loosen that type (which every guard, scope
+ * filter and audit path reads), a pre-school account gets its own, deliberately
+ * tiny token that can reach exactly the account-level endpoints: list my
+ * schools, create one, sign out.
+ *
+ * `typ` is the discriminator, and it is load-bearing: `JwtAuthGuard` must
+ * REFUSE a token carrying it, or an account token would be read as a session
+ * with `schoolId: undefined` and attach an undefined school to the request.
+ * Entering a school exchanges this for a real `SessionTokenPayload`.
+ */
+export interface AccountTokenPayload {
+  typ: "account";
+  /** accounts.id, in the control plane — NOT users.id */
+  sub: number;
+  email: string;
+  /** `owner` may create schools; `member` was invited into one and may not. */
+  kind: "owner" | "member";
+}
+
 export interface SessionTokenPayload {
   sub: number; // users.id
   schoolId: number;
@@ -158,6 +183,8 @@ export * from "./optimize/objective";
 export * from "./optimize/model";
 export * from "./electives/pins";
 export * from "./import/contract";
+export * from "./onboarding/wizard";
+export * from "./onboarding/suggest";
 export * from "./ai/data-entry";
 export * from "./import/types";
 export * from "./import/validate";

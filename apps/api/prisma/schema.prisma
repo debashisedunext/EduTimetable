@@ -12,6 +12,13 @@ datasource db {
 
 // ===================== PHASE 9.2 (§17): THE SCHOOL ITSELF =====================
 
+enum SchoolOrigin {
+  /// Provisioned from an ERP SSO token; identity is the ERP's.
+  erp
+  /// Created here by a self-serve account; identity is the admin's.
+  self_serve
+}
+
 /// Until Phase 9.2, `school_id` was a bare Int on 30 tables with no parent row
 /// anywhere — no name, no code, and nothing stopping a typo from inventing a
 /// school. This is that missing parent: every school_id column now has a real
@@ -21,21 +28,45 @@ datasource db {
 /// the control-plane tenant registry (prisma/control/schema.prisma) resolves an
 /// incoming SSO token against — a numeric id is meaningless across databases.
 model School {
-  id        Int      @id @default(autoincrement())
-  code      String   @unique @db.VarChar(40)
-  name      String   @db.VarChar(120)
-  shortName String?  @map("short_name") @db.VarChar(40)
-  logoUrl   String?  @map("logo_url") @db.VarChar(255)
-  timezone  String   @default("Asia/Kolkata") @db.VarChar(40)
-  address   String?  @db.VarChar(255)
+  id                 Int          @id @default(autoincrement())
+  code               String       @unique @db.VarChar(40)
+  name               String       @db.VarChar(120)
+  shortName          String?      @map("short_name") @db.VarChar(40)
+  logoUrl            String?      @map("logo_url") @db.VarChar(255)
+  timezone           String       @default("Asia/Kolkata") @db.VarChar(40)
+  address            String?      @db.VarChar(255)
   /// The trust this school belongs to, as the ERP reports it. Denormalized
   /// from the control-plane `trusts` table because /me reads it on every page
   /// load and the ERP is the source of truth for both — refreshed on every
   /// login, so the two cannot meaningfully drift (§17.4).
-  trustCode String?  @map("trust_code") @db.VarChar(40)
-  trustName String?  @map("trust_name") @db.VarChar(120)
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
+  trustCode          String?      @map("trust_code") @db.VarChar(40)
+  trustName          String?      @map("trust_name") @db.VarChar(120)
+  /// §15.3 Phase 25.1 — where this school's identity came from, and therefore
+  /// whether anybody here may edit it.
+  ///
+  /// `erp`: the ERP named it, and refreshes that name on EVERY login. Letting
+  /// an admin edit it would produce an edit that silently reverts, and a bug
+  /// report nobody who did not sign in again can reproduce.
+  /// `self_serve`: an admin typed it, because nobody else knows it.
+  ///
+  /// One column decides read-only vs editable on Step 1, School Profile, My
+  /// Schools and Users — rather than each screen guessing.
+  origin             SchoolOrigin @default(erp)
+  /// Which self-serve account created it. Null for ERP schools.
+  createdByAccountId Int?         @map("created_by_account_id")
+  /// When the ERP last wrote this school's NAME from an SSO token.
+  ///
+  /// The distinction `origin` alone cannot make. Phase 9.2 back-filled schools
+  /// with PLACEHOLDER names ("School 1") for rows predating school claims, and
+  /// documented that an admin fixes them on the Masters screen — those schools
+  /// receive no name from the ERP, so an edit is never overwritten and refusing
+  /// it would strand them called "School 1" forever. A school the ERP genuinely
+  /// names is the opposite case: an edit there really would silently revert on
+  /// the next login. Null means "the ERP has never named this", which is the
+  /// only honest test.
+  erpNameSyncedAt    DateTime?    @map("erp_name_synced_at")
+  isActive           Boolean      @default(true) @map("is_active")
+  createdAt          DateTime     @default(now()) @map("created_at")
 
   roles                       Role[]
   rolePermissions             RolePermission[]
@@ -73,6 +104,7 @@ model School {
   autoFixRuns                 AutoFixRun[]
   timetableDrafts             TimetableDraft[]
   erpSyncRuns                 ErpSyncRun[]
+  onboardingSessions          OnboardingSession[]
 
   @@map("schools")
 }
@@ -107,23 +139,40 @@ model RolePermission {
 }
 
 model User {
-  id             Int            @id @default(autoincrement())
-  schoolId       Int            @map("school_id")
-  school         School         @relation(fields: [schoolId], references: [id])
-  erpUserId      String         @map("erp_user_id") @db.VarChar(50)
-  name           String         @db.VarChar(100)
-  email          String         @db.VarChar(120)
+  id                    Int            @id @default(autoincrement())
+  schoolId              Int            @map("school_id")
+  school                School         @relation(fields: [schoolId], references: [id])
+  /// The stable external identity of this person.
+  ///
+  /// For an ERP user it is the ERP's own id. For somebody who signed in with a
+  /// password it is `local:{account_id}` — synthetic, but stable and unique,
+  /// which is all this column has ever needed to be. Writing it that way keeps
+  /// `@@unique([schoolId, erpUserId])`, the session token and every scope
+  /// filter working untouched. (The name now slightly overstates itself;
+  /// renaming it to `external_user_id` touches auth, SSO, platform admin and
+  /// the isolation sweep, and is its own change.)
+  erpUserId             String         @map("erp_user_id") @db.VarChar(50)
+  /// §15.3 — the control-plane account that signs in as this user. Null for
+  /// ERP users, who have no account and never will.
+  accountId             Int?           @map("account_id")
+  name                  String         @db.VarChar(100)
+  email                 String         @db.VarChar(120)
   // FK to teachers arrives in Phase 1; kept as a plain nullable column until then.
-  teacherId      Int?           @map("teacher_id")
-  roleId         Int            @map("role_id")
-  role           Role           @relation(fields: [roleId], references: [id])
-  isActive       Boolean        @default(true) @map("is_active")
+  teacherId             Int?           @map("teacher_id")
+  roleId                Int            @map("role_id")
+  role                  Role           @relation(fields: [roleId], references: [id])
+  isActive              Boolean        @default(true) @map("is_active")
   /// set by an Admin override on the Roles & Responsibility page; when true,
   /// sync-on-login must NOT reset the role from the ERP mapping (§15.1)
-  roleOverridden Boolean        @default(false) @map("role_overridden")
-  lastLoginAt    DateTime?      @map("last_login_at")
-  createdAt      DateTime       @default(now()) @map("created_at")
-  notifications  Notification[]
+  roleOverridden        Boolean        @default(false) @map("role_overridden")
+  lastLoginAt           DateTime?      @map("last_login_at")
+  /// §15.3 Phase 25.2 — when THIS user last said "I'll do it later".
+  ///
+  /// Per user rather than per school on purpose: one admin dismissing the
+  /// welcome screen must not hide it from a colleague who has never seen it.
+  onboardingDismissedAt DateTime?      @map("onboarding_dismissed_at")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  notifications         Notification[]
 
   @@unique([schoolId, erpUserId])
   @@map("users")
@@ -169,6 +218,12 @@ enum ClassTeacherPeriodRule {
 /// §18 — how a teacher is engaged. Recorded on every teacher, and load-bearing
 /// in two places: a guest may not be mapped into the regular curriculum (they
 /// take extra classes only), and guests are not offered as substitutes.
+enum TeacherGender {
+  male
+  female
+  other
+}
+
 enum EmploymentType {
   permanent
   adhoc
@@ -205,14 +260,14 @@ model AcademicYear {
 }
 
 model SchoolClass {
-  id            Int            @id @default(autoincrement())
-  schoolId      Int            @map("school_id")
-  school        School         @relation(fields: [schoolId], references: [id])
-  name          String         @db.VarChar(20)
-  sequence      Int            @default(0)
-  sections      Section[]
-  classSections ClassSection[]
-  classSubjects ClassSubject[]
+  id               Int                       @id @default(autoincrement())
+  schoolId         Int                       @map("school_id")
+  school           School                    @relation(fields: [schoolId], references: [id])
+  name             String                    @db.VarChar(20)
+  sequence         Int                       @default(0)
+  sections         Section[]
+  classSections    ClassSection[]
+  classSubjects    ClassSubject[]
   eligibleTeachers TeacherClassEligibility[]
 
   @@unique([schoolId, name])
@@ -331,6 +386,32 @@ model Teacher {
   classTeacherPeriodRule ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
   periodPattern          PeriodPattern                @default(every_period) @map("period_pattern")
   alternateDaySet        Json?                        @map("alternate_day_set")
+  /// §15.3 Phase 25.4 — recorded for the staff directory and printed lists.
+  /// Never used to authorise or to schedule anything.
+  gender                 TeacherGender?
+  /// Short form for grids and printed timetables, where a full name will not
+  /// fit. Proposed from first + last name, editable, and NOT unique-enforced:
+  /// a school with an Anil Yadav and an Ajay Yadav will have a collision the
+  /// grid resolves visibly rather than the database refusing at 3am.
+  initials               String?                      @db.VarChar(6)
+  /// Where an invitation is sent (§15.3 Phase 25.6). Nullable — a teacher who
+  /// never signs in does not need one.
+  email                  String?                      @db.VarChar(120)
+  /// §15.3 Phase 25.4 — the longest run of back-to-back periods this teacher
+  /// will take in one day.
+  ///
+  /// Null means no limit. ENFORCED by `SolverState.check()`, not merely stored:
+  /// a field that records a preference the solver ignores is worse than no
+  /// field, because it reads as a promise. Being in `check()` means the board's
+  /// drag-and-drop and the legal-destination highlighting honour it too — one
+  /// rules engine, three call sites.
+  maxConsecutivePeriodsPerDay Int?                     @map("max_consecutive_periods_per_day")
+  /// Whether this teacher may be offered as a substitute (§9).
+  ///
+  /// A refusal, not a low score — the same treatment §4.7a unavailability gets.
+  /// Somebody who has said they will not cover should not appear at the bottom
+  /// of the list; they should not appear.
+  canSubstitute          Boolean                      @default(true) @map("can_substitute")
   employmentType         EmploymentType               @default(permanent) @map("employment_type")
   isActive               Boolean                      @default(true) @map("is_active")
   /// §18: which classes this teacher may be given at all. A primary teacher
@@ -456,11 +537,11 @@ model TimetableConfig {
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]
+  autoFixRuns                 AutoFixRun[]
+  drafts                      TimetableDraft[]
 
   @@unique([schoolId, name, academicYearId])
-  autoFixRuns    AutoFixRun[]
   @@map("timetable_config")
-  drafts         TimetableDraft[]
 }
 
 model Period {
@@ -696,13 +777,13 @@ enum SlotSource {
 // several sections. The occupancy key is written by the single slot-writer
 // service (T-{teacherId} / MG-{groupId}), never by callers.
 model TimetableSlot {
-  id                  BigInt     @id @default(autoincrement())
-  timetableConfigId   Int        @map("timetable_config_id")
-  status              SlotStatus @default(draft)
+  id                  BigInt          @id @default(autoincrement())
+  timetableConfigId   Int             @map("timetable_config_id")
+  status              SlotStatus      @default(draft)
   /// §22 — which named draft this row belongs to. NULL on published rows that
   /// pre-date Phase 17 and on `source='extra'` rows, which live once per
   /// config outside any draft (§18).
-  draftId             Int?       @map("draft_id")
+  draftId             Int?            @map("draft_id")
   draft               TimetableDraft? @relation(fields: [draftId], references: [id])
   /// §22 — a STORED GENERATED column in MySQL: `0` for published and extra
   /// rows, `draft_id` otherwise. It exists solely to sit inside the three
@@ -713,29 +794,29 @@ model TimetableSlot {
   /// CLIENT-side and sends the column in the INSERT, which MySQL rejects
   /// outright ("The value specified for generated column 'draft_scope' ... is
   /// not allowed"). This annotation is what tells Prisma the database owns it.
-  draftScope          Int        @default(dbgenerated()) @map("draft_scope")
+  draftScope          Int             @default(dbgenerated()) @map("draft_scope")
   /// NULL only on a §4.9 elective *option* row, which belongs to a block
   /// rather than to any one section — there is no enrolment model, so an
   /// option genuinely has no class-section. NULL also takes the row out of
   /// `uq_class_slot`, which is what lets several parallel lessons share one
   /// slot while every member section keeps exactly one guarded cell.
-  classSectionId      Int?       @map("class_section_id")
-  dayOfWeek           Int        @map("day_of_week") @db.TinyInt
-  periodNumber        Int        @map("period_number")
-  subjectId           Int?       @map("subject_id")
-  teacherId           Int?       @map("teacher_id")
-  roomId              Int?       @map("room_id")
-  mergedGroupId       Int?       @map("merged_group_id")
+  classSectionId      Int?            @map("class_section_id")
+  dayOfWeek           Int             @map("day_of_week") @db.TinyInt
+  periodNumber        Int             @map("period_number")
+  subjectId           Int?            @map("subject_id")
+  teacherId           Int?            @map("teacher_id")
+  roomId              Int?            @map("room_id")
+  mergedGroupId       Int?            @map("merged_group_id")
   /// §4.9 split electives. Set on both the member rows (the shared cell each
   /// section sees) and the option rows (the parallel lessons underneath).
-  electiveBlockId     Int?       @map("elective_block_id")
+  electiveBlockId     Int?            @map("elective_block_id")
   /// Set on option rows only — which parallel lesson this row is.
-  electiveOptionId    Int?       @map("elective_option_id")
-  teacherOccupancyKey String?    @map("teacher_occupancy_key") @db.VarChar(30)
-  isLocked            Boolean    @default(false) @map("is_locked")
-  source              SlotSource @default(auto)
-  schoolId            Int        @map("school_id")
-  school              School     @relation(fields: [schoolId], references: [id])
+  electiveOptionId    Int?            @map("elective_option_id")
+  teacherOccupancyKey String?         @map("teacher_occupancy_key") @db.VarChar(30)
+  isLocked            Boolean         @default(false) @map("is_locked")
+  source              SlotSource      @default(auto)
+  schoolId            Int             @map("school_id")
+  school              School          @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableConfigId, status, draftScope, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
   @@unique([timetableConfigId, status, draftScope, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
@@ -960,4 +1041,50 @@ model ErpSyncRun {
   @@index([schoolId, sheet])
   @@index([schoolId, createdAt])
   @@map("erp_sync_runs")
+}
+
+/// §15.3 Phase 25.2 — a guided setup in progress.
+///
+/// Eleven steps is more than one sitting for a real school, so the answers live
+/// on the server from the first Next. Losing twenty minutes of typing to a
+/// refresh is the failure that would sink the feature — people do not start
+/// again, they go and do something else.
+///
+/// **Nothing here is committed data.** `answers` is what somebody has typed so
+/// far; the actual rows are written at the end, through the endpoints that
+/// already exist (§16's validated pipeline). That separation is what lets a
+/// half-finished wizard leave no trace in `classes`, `rooms` or anywhere else.
+///
+/// Keyed by (school, user) rather than by school alone: two admins setting up
+/// the same school get their own drafts instead of overwriting each other's
+/// half-typed answers. A shared draft would need conflict resolution nobody
+/// asked for.
+model OnboardingSession {
+  id       Int    @id @default(autoincrement())
+  schoolId Int    @map("school_id")
+  school   School @relation(fields: [schoolId], references: [id])
+  userId   Int    @map("user_id")
+
+  /// Which door they came through. The AI interviewer (25.5) writes into the
+  /// SAME row as the step-by-step wizard, so switching keeps everything.
+  mode        OnboardingMode @default(wizard)
+  /// 1-based, matching the step numbers people see.
+  currentStep Int            @default(1) @map("current_step")
+  /// Everything typed so far, by step. Deliberately opaque to the database:
+  /// the shape belongs to the wizard, and a column per field would mean a
+  /// migration every time a step gained one.
+  answers     Json?
+
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@unique([schoolId, userId])
+  @@index([schoolId])
+  @@map("onboarding_sessions")
+}
+
+enum OnboardingMode {
+  wizard
+  ai
 }

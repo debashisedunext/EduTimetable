@@ -219,6 +219,11 @@ export class ImportService {
           classNames: t.eligibility.map((e) => e.class.name),
           employmentType: t.employmentType,
           isActive: t.isActive,
+          initials: t.initials,
+          gender: t.gender,
+          email: t.email,
+          maxConsecutivePeriodsPerDay: t.maxConsecutivePeriodsPerDay,
+          canSubstitute: t.canSubstitute,
         })),
         "Teacher Unavailability": unavailability.map((u) => ({
           employeeCode: u.teacher.employeeCode, day: DAYS[u.dayOfWeek], period: u.periodNumber, reason: u.reason,
@@ -565,6 +570,15 @@ export class ImportService {
               alternateDaySet: days.length > 0 ? days.map((d) => dayNumber(d)!) : undefined,
               employmentType: (r.data.employmentType ?? "permanent") as never,
               isActive: r.data.isActive ?? true,
+              // §15.3 Phase 25.4. Blank means "not stated" for all five, which
+              // is exactly what every teacher predating these columns has:
+              // no initials, no gender, no consecutive limit, and covering as
+              // they always did.
+              initials: r.data.initials ?? null,
+              gender: (r.data.gender ?? null) as never,
+              email: r.data.email ?? null,
+              maxConsecutivePeriodsPerDay: r.data.maxConsecutivePeriodsPerDay ?? null,
+              canSubstitute: r.data.canSubstitute ?? true,
             },
           });
           bump("teachers");

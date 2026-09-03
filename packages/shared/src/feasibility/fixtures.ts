@@ -14,6 +14,8 @@ export function teacher(id: number, name: string, over: Partial<SnapshotTeacher>
     // here keeps every pre-Phase-13 fixture measuring the check it was written
     // for rather than tripping the new one.
     minPeriodsPerDay: 1,
+    maxConsecutivePeriodsPerDay: null,
+    canSubstitute: true,
     maxPeriodsPerWeek: 30,
     classTeacherPeriodRule: "none",
     periodPattern: "every_period",

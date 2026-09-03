@@ -239,6 +239,42 @@ describe("§18 teaching scope and engagement", () => {
     expect(plan.slots[0].assigned).toBeNull();
   });
 
+  it("a teacher who does not cover is never OFFERED, not merely ranked last (§15.3)", () => {
+    // The distinction the flag exists for. Scoring them down still puts them on
+    // the screen, at the bottom, where somebody assigns them anyway on a bad
+    // morning. "I don't cover" has to mean they do not appear.
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3 })],
+        [teacher(4, "Does Not Cover", { canSubstitute: false })],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBeNull();
+    expect(plan.slots[0].candidates).toEqual([]);
+  });
+
+  it("and is absent even when they are the ONLY person free", () => {
+    // The case where a soft penalty would quietly stop mattering.
+    const plan = planSubstitutes(
+      inputFor(
+        [slot({ slotId: "s1", period: 3 })],
+        [
+          teacher(4, "Does Not Cover", { canSubstitute: false }),
+          teacher(5, "Busy All Day", { busyPeriods: [1, 2, 3, 4, 5, 6] }),
+        ],
+      ),
+    );
+    expect(plan.slots[0].assigned).toBeNull();
+    expect(plan.slots[0].candidates.map((c) => c.teacherId)).not.toContain(4);
+  });
+
+  it("an absent flag means what it always did — every teacher predating the column still covers", () => {
+    const plan = planSubstitutes(
+      inputFor([slot({ slotId: "s1", period: 3 })], [teacher(4, "Ordinary")]),
+    );
+    expect(plan.slots[0].assigned).toBe(4);
+  });
+
   it("an unstated scope still allows cover — it means 'not filled in', not 'nothing'", () => {
     const plan = planSubstitutes(
       inputFor(

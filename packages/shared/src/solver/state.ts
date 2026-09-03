@@ -122,6 +122,26 @@ export class SolverState {
   }
 
   /**
+   * §15.3 Phase 25.4 — how long a back-to-back run this placement would create.
+   *
+   * Walks out from the block in both directions over cells this teacher already
+   * holds, and counts the whole resulting run — not just the neighbours. Two
+   * separate runs of three, joined by placing the period between them, is a run
+   * of seven; checking only the adjacent cells would call that legal.
+   *
+   * A per-placement veto rather than a budget (contrast §20's minimum, which is
+   * a floor and therefore has to be reasoned about globally). A maximum can be
+   * decided from the board as it stands: if this cell would make the run too
+   * long it is illegal now, whatever happens later.
+   */
+  private consecutiveRun(teacherId: number, day: number, period: number, span: number): number {
+    let run = span;
+    for (let p = period - 1; this.teacher.has(`${teacherId}@${cellKey(day, p)}`); p--) run++;
+    for (let p = period + span; this.teacher.has(`${teacherId}@${cellKey(day, p)}`); p++) run++;
+    return run;
+  }
+
+  /**
    * §20 — would this placement leave the teacher unable to fill every day they
    * have started?
    *
@@ -204,6 +224,20 @@ export class SolverState {
       // work they have left can fill.
       if (this.strandsShortDay(t, day, v.span)) {
         return { ok: false, roomId: null, reason: "teacher daily minimum", blockers };
+      }
+
+      // constraint 12 — longest back-to-back run (§15.3 Phase 25.4). Null means
+      // no limit, which is every teacher who predates the column.
+      const maxRun = info?.maxConsecutivePeriodsPerDay ?? null;
+      if (maxRun !== null && maxRun > 0) {
+        // A block longer than the cap can never be placed anywhere, which is
+        // worth saying differently: it is a data problem, not a full board.
+        if (v.span > maxRun) {
+          return { ok: false, roomId: null, reason: "block longer than the teacher's consecutive limit", blockers };
+        }
+        if (this.consecutiveRun(t, day, period, v.span) > maxRun) {
+          return { ok: false, roomId: null, reason: "teacher consecutive limit", blockers };
+        }
       }
     }
 

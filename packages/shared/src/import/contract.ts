@@ -48,6 +48,8 @@ export interface SheetDef {
 }
 
 export const YES_NO = ["Yes", "No"] as const;
+/** §15.3 — recorded for staff lists; never used to authorise or to schedule. */
+const GENDERS = ["male", "female", "other"] as const;
 export const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 export const DAY_VALUES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
@@ -159,6 +161,14 @@ export const SHEETS: SheetDef[] = [
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
       { header: "Alternate Days", key: "alternateDaySet", type: "list", separator: ",", width: 18, help: "Only for alternate_day, e.g. Mon,Wed,Fri", sample: [""] },
       { header: "Teaching Scope", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes this teacher may take, comma separated. Leave blank if you have not decided yet", sample: ["Class 1, Class 2, Class 3"] },
+      // §15.3 Phase 25.4 — the guided setup's teacher grid writes these, and so
+      // does an uploaded workbook: one contract, so the template, the export
+      // and the wizard cannot disagree about what a teacher has.
+      { header: "Initials", key: "initials", type: "string", maxLength: 6, width: 10, help: "Short form for grids and printed timetables. Proposed from the name if left blank", sample: ["AY"] },
+      { header: "Gender", key: "gender", type: "enum", values: GENDERS, width: 10, help: "Optional; recorded for staff lists only", sample: [""] },
+      { header: "Email", key: "email", type: "string", maxLength: 120, width: 24, help: "Where a login invitation would be sent (optional)", sample: [""] },
+      { header: "Max Consecutive/Day", key: "maxConsecutivePeriodsPerDay", type: "int", min: 1, max: 12, width: 18, help: "Longest run of back-to-back periods. Blank = no limit. ENFORCED by the solver", sample: [""] },
+      { header: "Takes Substitutions", key: "canSubstitute", type: "enum", values: YES_NO, width: 16, help: "No removes them from cover suggestions entirely. Defaults to Yes", sample: ["Yes"] },
       { header: "Engagement", key: "employmentType", type: "enum", values: ENGAGEMENTS, aliases: { "full time": "permanent", "full-time": "permanent", contract: "adhoc", visiting: "guest" }, width: 14, help: "permanent, adhoc or guest. A guest teacher takes extra classes only", sample: ["permanent"] },
       { header: "Active", key: "isActive", type: "enum", values: YES_NO, width: 10, help: "Defaults to Yes", sample: ["Yes"] },
     ],

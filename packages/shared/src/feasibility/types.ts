@@ -202,6 +202,16 @@ export interface SnapshotTeacher {
   maxPeriodsPerDay: number;
   /** §20: a day is either free or carries at least this many periods. */
   minPeriodsPerDay: number;
+  /**
+   * §15.3 Phase 25.4 — the longest back-to-back run allowed in one day.
+   *
+   * Null means no limit, which is what every teacher had before this existed.
+   * Enforced in `SolverState.check()` rather than scored, so the board and the
+   * legal-destination highlighting honour it for free.
+   */
+  maxConsecutivePeriodsPerDay: number | null;
+  /** §9: whether this teacher may be OFFERED as a substitute at all. */
+  canSubstitute: boolean;
   maxPeriodsPerWeek: number;
   classTeacherPeriodRule: "none" | "always_first_period" | "random";
   periodPattern: "every_period" | "alternate_period" | "alternate_day";
