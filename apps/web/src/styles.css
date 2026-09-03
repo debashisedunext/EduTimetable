@@ -430,3 +430,29 @@ button { font-family: inherit; cursor: pointer; }
   cursor: grab;
 }
 .ladder-range:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--brand-deep); outline-offset: 2px; }
+
+/* §24 — the guided setup's current step: lifted and gently pulsing, so "you are
+   here" reads from across a desk. Halted under prefers-reduced-motion, where a
+   ring that never stops moving is the problem rather than the affordance. */
+.step-now {
+  box-shadow: 0 0 0 4px var(--steel-pale);
+  animation: step-pulse 2.2s ease-in-out infinite;
+}
+@keyframes step-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--steel-pale); }
+  50%      { box-shadow: 0 0 0 7px var(--steel-pale); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .step-now { animation: none; }
+}
+
+/* §24 — the line that appears after a step lands. It slides in once rather than
+   drawing attention indefinitely; `key` on the element restarts it per step. */
+.praise { animation: praise-in 420ms cubic-bezier(.22,.68,.36,1) both; }
+@keyframes praise-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .praise { animation: none; }
+}

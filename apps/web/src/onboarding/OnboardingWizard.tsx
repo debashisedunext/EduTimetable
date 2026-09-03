@@ -15,20 +15,79 @@
  *    classes, rooms and teachers are created at the end through the endpoints
  *    that already exist. That is what lets an abandoned wizard leave no trace.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { asMessage } from "../components";
 import { commitWeeks, commitWings, StepClasses, StepWeek, StepWings } from "./steps/Structure";
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepCurriculum, StepMapping, StepRooms, StepSettings } from "./steps/Syllabus";
 import { planClasses, type SubjectAnswer, type TeacherAnswer } from "@edutimetable/shared";
+import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
 
 export const TOTAL_STEPS = 11;
+
+/**
+ * What to say after a step lands.
+ *
+ * Built from what was actually CREATED, not from a list of compliments. "Nice
+ * work!" after every step is noise somebody learns to read past in about three
+ * of them; "14 sections, ready for a timetable" is the same encouragement and
+ * also tells them the thing they would otherwise scroll back to check. Where a
+ * step has no countable result the line says what it unlocked instead.
+ *
+ * `created` is the §16 importer's own tally, so these numbers cannot drift from
+ * what the database got.
+ */
+function wellDone(step: number, created: Record<string, number> | undefined): string {
+  const n = (k: string) => created?.[k] ?? 0;
+  switch (step) {
+    case 1: return "That's your school named. Everything else hangs off it.";
+    case 2: return "Session created — every class and timetable from here belongs to it.";
+    case 3: {
+      const wings = n("configs");
+      return wings > 1
+        ? `${wings} wings, each with its own week to come.`
+        : "Wing created. It gets its own working days and periods next.";
+    }
+    case 4: {
+      const c = n("classes");
+      const s2 = n("classSections");
+      return c || s2
+        ? `${c} class${c === 1 ? "" : "es"} and ${s2} section${s2 === 1 ? "" : "s"} — the shape of the school is in.`
+        : "Classes and sections created.";
+    }
+    case 5: return "The week is set. Every periods-per-week entry from here is checked against it.";
+    case 6: {
+      const c = n("subjects");
+      return c ? `${c} subjects on the list. That is what the curriculum is built from.` : "Subjects saved.";
+    }
+    case 7: {
+      const c = n("teachers");
+      return c ? `${c} teachers in. The hardest typing is behind you.` : "Teachers saved.";
+    }
+    case 8: {
+      const c = n("rooms");
+      return c ? `${c} rooms created and assigned — no lesson will be left without one.` : "Rooms created.";
+    }
+    case 9: {
+      const c = n("curriculum");
+      return c ? `${c} curriculum rows, every class filling its week.` : "Curriculum saved.";
+    }
+    case 10: {
+      const c = n("mappings");
+      return c ? `${c} assignments made. Every subject now has somebody teaching it.` : "Teachers assigned.";
+    }
+    default: return "Setup complete.";
+  }
+}
 
 export const STEP_TITLES = [
   "School", "Session", "Wings", "Classes", "Timetable", "Subjects",
   "Teachers", "Rooms", "Curriculum", "Mapping", "Settings",
 ];
+
+/** What a §16 commit reports back. */
+interface Committed { created?: Record<string, number> }
 
 export interface Draft {
   id?: number;
@@ -50,27 +109,72 @@ export interface SchoolIdentity {
 
 // ─────────────────────────────────────────────────────────────── chrome
 
+/**
+ * How far through, as a number and as a bar.
+ *
+ * Counted on steps COMPLETED — `step - 1` — not on the step being looked at.
+ * Showing 9% for having opened the first question is the kind of progress bar
+ * people stop believing, and the eleventh step reading 100% before it has been
+ * pressed would be worse.
+ */
+function Progress({ step }: { step: number }) {
+  const pct = Math.round(((step - 1) / TOTAL_STEPS) * 100);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+      <div style={{
+        flex: 1, height: 6, borderRadius: 3, background: "var(--steel-pale)", overflow: "hidden",
+      }}>
+        <div style={{
+          width: `${pct}%`, height: "100%", borderRadius: 3,
+          background: "linear-gradient(90deg,var(--brand),var(--accent))",
+          // Eases with the step rather than snapping, so the movement itself
+          // reads as "that worked".
+          transition: "width 520ms cubic-bezier(.22,.68,.36,1)",
+        }} />
+      </div>
+      <span style={{
+        font: "700 12px/1 var(--mono, monospace)", color: "var(--brand-dark)", minWidth: 34,
+        textAlign: "right",
+      }}>{pct}%</span>
+    </div>
+  );
+}
+
 function Rail({ step }: { step: number }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 8, marginBottom: 18 }}>
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 8, marginBottom: 14 }}>
       {STEP_TITLES.map((label, i) => {
         const n = i + 1;
         const state = n < step ? "done" : n === step ? "now" : "todo";
         return (
           <div key={label} style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
-            {i > 0 && <span style={{ width: 10, height: 1, background: "var(--line)", margin: "0 5px" }} />}
+            {i > 0 && (
+              <span style={{
+                width: 10, height: 2, margin: "0 5px", borderRadius: 2,
+                // The line fills in behind you, so the rail reads as a route
+                // travelled rather than eleven dots.
+                background: n <= step ? "var(--accent)" : "var(--line)",
+                transition: "background 400ms ease",
+              }} />
+            )}
             <span style={{
               display: "flex", alignItems: "center", gap: 5, fontSize: 11, whiteSpace: "nowrap",
               color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
               fontWeight: state === "now" ? 600 : 400,
             }}>
-              <span style={{
-                width: 20, height: 20, borderRadius: "50%", display: "grid", placeItems: "center",
-                font: "600 10px/1 var(--mono, monospace)",
-                background: state === "done" ? "var(--accent)" : state === "now" ? "var(--brand)" : "var(--paper)",
-                color: state === "todo" ? "var(--ink-faint)" : "#fff",
-                border: `1.5px solid ${state === "todo" ? "var(--line)" : "transparent"}`,
-              }}>{state === "done" ? "✓" : n}</span>
+              <span
+                // The current step is lifted, ringed and gently pulsing — at a
+                // glance, from across a desk, "you are here".
+                className={state === "now" ? "step-now" : undefined}
+                style={{
+                  width: state === "now" ? 26 : 20, height: state === "now" ? 26 : 20,
+                  borderRadius: "50%", display: "grid", placeItems: "center",
+                  font: `600 ${state === "now" ? 11 : 10}px/1 var(--mono, monospace)`,
+                  background: state === "done" ? "var(--accent)" : state === "now" ? "var(--brand)" : "var(--paper)",
+                  color: state === "todo" ? "var(--ink-faint)" : "#fff",
+                  border: `1.5px solid ${state === "todo" ? "var(--line)" : "transparent"}`,
+                  transition: "width 220ms ease, height 220ms ease, background 300ms ease",
+                }}>{state === "done" ? "✓" : n}</span>
               {/* Only the current step is named, or eleven labels wrap into a wall */}
               {state === "now" && label}
             </span>
@@ -209,6 +313,11 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The line shown after a step lands; cleared when the next one starts. */
+  const [praise, setPraise] = useState<string | null>(null);
+  const [sound, setSound] = useState(soundEnabled());
+  /** Where the burst comes from — the button that was pressed. */
+  const burstFrom = useRef<{ x: number; y: number } | null>(null);
 
   // Resume whatever was saved. A wizard that quietly restarted at step 1 would
   // be worse than one that never saved at all — the work is gone AND you cannot
@@ -333,14 +442,17 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
    *  - step 3 reads the configs first and creates only what is missing;
    *  - step 5's `PUT /:id/structure` rewrites the period rows wholesale.
    */
-  const commitStep = async (n: number) => {
-    if (n === 2) await api("/onboarding/commit/2", { method: "POST" });
-    if (n === 3) await commitWings(answers);
-    if (n === 4) await api("/onboarding/commit/4", { method: "POST" });
-    if (n === 5) await commitWeeks(answers);
+  const commitStep = async (n: number): Promise<Record<string, number> | undefined> => {
+    if (n === 2) return (await api<Committed>("/onboarding/commit/2", { method: "POST" })).created;
+    if (n === 3) return { configs: await commitWings(answers) };
+    if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
+    if (n === 5) { await commitWeeks(answers); return undefined; }
     // Steps 6–10 all go through the §16 importer, which is what makes them
     // idempotent — pressing Next twice, or coming back, creates nothing extra.
-    if (n >= 6 && n <= 10) await api(`/onboarding/commit/${n}`, { method: "POST" });
+    if (n >= 6 && n <= 10) {
+      return (await api<Committed>(`/onboarding/commit/${n}`, { method: "POST" })).created;
+    }
+    return undefined;
   };
 
   /**
@@ -362,10 +474,14 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
       return;
     }
     setBusy(false);
+    // The eleventh step earns more than the other ten.
+    celebrate(burstFrom.current ?? undefined);
+    window.setTimeout(() => celebrate(), 260);
     onClose("saved");
   };
 
   const next = async () => {
+    setPraise(null);
     const bad = problem();
     if (bad) { setError(bad); return; }
     // Step 1 has no editable field for an ERP school, so record what was shown
@@ -379,18 +495,27 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     if (!(await persist(step))) return;
 
     setBusy(true); setError(null);
+    let created: Record<string, number> | undefined;
     try {
-      await commitStep(step);
+      created = await commitStep(step);
     } catch (e) {
       setError(asMessage(e));
       setBusy(false);
       return;
     }
     setBusy(false);
-    if (await persist(Math.min(TOTAL_STEPS, step + 1))) setStep((s) => Math.min(TOTAL_STEPS, s + 1));
+    if (await persist(Math.min(TOTAL_STEPS, step + 1))) {
+      // Celebrated only after the advance is real — the commit landed AND the
+      // new position saved. A flourish for something that then failed to save
+      // is worse than no flourish at all.
+      setPraise(wellDone(step, created));
+      celebrate(burstFrom.current ?? undefined);
+      setStep((s) => Math.min(TOTAL_STEPS, s + 1));
+    }
   };
 
   const back = async () => {
+    setPraise(null);
     if (step === 1) return;
     await persist(step - 1);
     setStep((s) => Math.max(1, s - 1));
@@ -419,13 +544,41 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
         boxShadow: "0 24px 64px rgba(11,31,68,.3)", border: "1px solid var(--line)",
       }}>
         <div style={{ padding: "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
+          <Progress step={step} />
           <Rail step={step} />
-          <div style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
-            Step {step} of {TOTAL_STEPS} · {school.name}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
+            <span>Step {step} of {TOTAL_STEPS} · {school.name}</span>
+            <span style={{ flex: 1 }} />
+            {/* Opt-in, and remembered. A school office is a shared room, and a
+                browser blocks autoplay for good reasons. */}
+            <button
+              onClick={() => { setSoundEnabled(!sound); setSound(!sound); }}
+              title={sound ? "Turn the completion sound off" : "Play a short sound when a step completes"}
+              style={{
+                border: "none", background: "none", cursor: "pointer", fontSize: 12,
+                color: sound ? "var(--brand)" : "var(--ink-faint)", padding: 0,
+              }}>
+              {sound ? "🔊 Sound on" : "🔇 Sound off"}
+            </button>
           </div>
         </div>
 
         <div style={{ padding: "20px 28px", overflowY: "auto", flex: 1 }}>
+          {praise && (
+            <div
+              key={praise}
+              className="praise"
+              style={{
+                display: "flex", alignItems: "center", gap: 9, marginBottom: 16,
+                borderLeft: "3px solid var(--accent)", background: "var(--accent-bg)",
+                padding: "11px 14px", borderRadius: "0 9px 9px 0",
+                fontSize: 13, color: "var(--ink-soft)",
+              }}>
+              <span style={{ fontSize: 15 }} aria-hidden>✨</span>
+              {/* Announced, so the encouragement is not only visual. */}
+              <span role="status">{praise}</span>
+            </div>
+          )}
           {loading ? (
             <p style={{ fontSize: 13, color: "var(--ink-soft)" }}>Loading what you saved…</p>
           ) : (
@@ -462,11 +615,23 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
           <span style={{ flex: 1 }} />
           <button className="btn" onClick={saveAndClose} disabled={busy}>Save &amp; close</button>
           {step === TOTAL_STEPS ? (
-            <button className="btn btn-primary" onClick={finish} disabled={busy}>
+            <button className="btn btn-primary"
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                burstFrom.current = { x: r.left + r.width / 2, y: r.top };
+                void finish();
+              }}
+              disabled={busy}>
               {busy ? "Finishing…" : "Finish setup →"}
             </button>
           ) : (
-            <button className="btn btn-primary" onClick={next} disabled={busy}>
+            <button className="btn btn-primary"
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                burstFrom.current = { x: r.left + r.width / 2, y: r.top };
+                void next();
+              }}
+              disabled={busy}>
               {busy ? "Saving…" : `Next: ${STEP_TITLES[step]} →`}
             </button>
           )}

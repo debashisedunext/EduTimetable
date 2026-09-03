@@ -2058,6 +2058,20 @@ A self-serve school has to be able to create its own logins, and the shape of th
 
 **One change this phase forced elsewhere.** `schoolsFor` was keyed on `schools.created_by_account_id`, which was the same set as "schools I can enter" until an invited teacher created nothing — and `POST /schools/:id/enter` had always stated the real rule in words: *an account may enter a school exactly when it has a user row there.* The list is now keyed on membership; the school cap still counts what the account created, so being a teacher in six schools does not exhaust an allowance to run one's own.
 
+### 24.5a Knowing how far you are
+
+Eleven steps is a long way, and what carries somebody to the end of a long form is knowing the last bit worked. So each committed step is marked, and the marking is built to be information rather than applause.
+
+**The message says what actually happened.** *"14 sections — the shape of the school is in"* rather than *"Nice work!"*, because a compliment after every step is noise somebody reads past by the third one, while the count is the thing they would otherwise scroll back to check. The numbers come from the §16 importer's own tally, so they cannot drift from what the database got.
+
+**Percentage counts steps completed, not the step on screen.** Showing 9% for having opened the first question is the kind of progress bar people stop believing.
+
+**Celebrated only when the advance is real** — the commit landed *and* the new position saved. A flourish for something that then failed to save is worse than none.
+
+The burst is canvas and the sound is two oscillators: a confetti library and an audio file is weight on every page load for a flourish most people see eleven times, ever. `prefers-reduced-motion` turns both off — somebody who has told their operating system that motion makes them unwell has answered this already, and offering our own toggle instead would be ignoring the answer. Sound is additionally **opt-in and remembered**, because a school office is a shared room.
+
+**Progress appears on the Timetables page as its own card, not on each timetable's.** A card is one `timetable_config`; the guided setup is one draft per person per *school*, and it is what creates those configs. Drawn per card it would be the same number repeated against the wrong thing — and would be invisible on a school with no timetables yet, which is exactly when somebody most needs it. It disappears once the setup is finished: a permanent "11 of 11" is clutter on every visit forever.
+
 ### 24.6a Outgoing mail
 
 Four flows are a one-shot link in an inbox — verification, password reset, teacher invitation, bulk invite — so a deployment that cannot send is a deployment that cannot onboard anybody. There are **two transports**: `smtp`, which is the real one and speaks the protocol every provider offers, so choosing between SES, Postmark, Mailgun or a school's own server is a matter of credentials rather than code; and `log`, the default, which writes the link to the application log so an unconfigured deployment is *obviously* unconfigured rather than quietly failing to deliver.

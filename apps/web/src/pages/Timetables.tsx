@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, switchSchool } from "../api";
 import { openOnboarding } from "../onboarding/Onboarding";
+import { STEP_TITLES, TOTAL_STEPS } from "../onboarding/OnboardingWizard";
 import { Card, ErrorNote, Field } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { CloneTimetable } from "./CloneTimetable";
@@ -114,6 +115,8 @@ export function Timetables({ me }: { me: MeResponse }) {
         </Card>
       )}
 
+      <SetupProgress />
+
       {configs.length === 0 && !creating && (
         <Card><p style={{ color: "var(--ink-faint)", fontSize: 13 }}>No timetables yet — create one to start the Setup Wizard.</p></Card>
       )}
@@ -185,3 +188,62 @@ export const inputStyle: React.CSSProperties = {
   width: "100%", padding: "9px 11px", border: "1px solid var(--line)", borderRadius: 8,
   fontSize: 13, fontFamily: "inherit", background: "var(--paper)",
 };
+
+/**
+ * How far through the guided setup this school is, and the way back into it.
+ *
+ * On the Timetables page rather than on each timetable card, and the difference
+ * is not cosmetic: a card is one `timetable_config`, while the guided setup is
+ * one draft per person per SCHOOL that creates the configs in the first place.
+ * A progress bar drawn on each card would be the same number repeated, attached
+ * to the wrong thing — and would still be showing it on a school with no
+ * timetables at all, which is exactly when somebody most needs to see it.
+ *
+ * Shown only while there is something unfinished. A completed setup is not
+ * progress, it is history, and a permanent "11 of 11" would be clutter on every
+ * visit forever.
+ */
+function SetupProgress() {
+  const [state, setState] = useState<{ resumeStep: number | null; resumeMode: string | null } | null>(null);
+
+  useEffect(() => {
+    api<{ resumeStep: number | null; resumeMode: string | null }>("/me/onboarding")
+      .then(setState)
+      .catch(() => setState(null));
+  }, []);
+
+  const step = state?.resumeStep ?? null;
+  if (step === null) return null;
+
+  const done = Math.max(0, step - 1);
+  const pct = Math.round((done / TOTAL_STEPS) * 100);
+  const next = STEP_TITLES[step - 1] ?? "Settings";
+
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 7 }}>
+            <strong style={{ fontSize: 14 }}>
+              {state?.resumeMode === "ai" ? "✦ Setting up by conversation" : "⚡ Guided setup"}
+            </strong>
+            <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+              {done} of {TOTAL_STEPS} done · next up, {next}
+            </span>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: "var(--steel-pale)", overflow: "hidden" }}>
+            <div style={{
+              width: `${pct}%`, height: "100%", borderRadius: 3,
+              background: "linear-gradient(90deg,var(--brand),var(--accent))",
+              transition: "width 520ms cubic-bezier(.22,.68,.36,1)",
+            }} />
+          </div>
+        </div>
+        <span style={{
+          font: "700 15px/1 var(--mono, monospace)", color: "var(--brand-dark)",
+        }}>{pct}%</span>
+        <button className="btn btn-primary" onClick={openOnboarding}>Carry on →</button>
+      </div>
+    </Card>
+  );
+}

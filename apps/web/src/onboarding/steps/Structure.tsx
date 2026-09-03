@@ -119,8 +119,14 @@ export function StepWings({ answers, onChange }: {
   );
 }
 
-/** Create one config per wing, skipping any that already exist. */
-export async function commitWings(answers: Record<string, any>): Promise<void> {
+/**
+ * Create one config per wing, skipping any that already exist.
+ *
+ * Returns how many the school now has — not how many were created — because
+ * the sentence it feeds ("two wings, each with its own week to come") is about
+ * the school, and on a resumed draft nothing new is made.
+ */
+export async function commitWings(answers: Record<string, any>): Promise<number> {
   const wings: WingAnswer[] = answers.wings ?? [];
   if (wings.length === 0) throw new Error("Add at least one wing.");
 
@@ -139,6 +145,7 @@ export async function commitWings(answers: Record<string, any>): Promise<void> {
       body: JSON.stringify({ name: w.name, academicYearId: year.id }),
     });
   }
+  return wings.length;
 }
 
 // ─────────────────────────────────────────────────────── step 4: classes
