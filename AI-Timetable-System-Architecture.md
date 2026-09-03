@@ -2042,6 +2042,8 @@ A self-serve school has to be able to create its own logins, and the shape of th
 
 **Bulk invite reports rather than counts.** Teachers who already have a login, teachers with no email address, and `guest` teachers (§18 keeps them off the regular timetable, so there is nothing for them to look at) are each named, because each has a different fix. A count that quietly excluded them would say "invited 40 of 40" while eight people got nothing. The preview and the write run the same server-side arithmetic, so the confirmation cannot describe something the write does not do.
 
+**The prompt to invite lives on the publish screen**, because publishing is the first moment there is anything for a teacher to look at; before it, an invitation lands somebody in an empty app. It renders from the same dry run the Users & Access screen uses — so the two cannot disagree about who is missing a login — and renders nothing at all when the answer is not usable: a teacher gets a 403, an ERP school gets a 403, a fully-invited school gets an empty list.
+
 **One change this phase forced elsewhere.** `schoolsFor` was keyed on `schools.created_by_account_id`, which was the same set as "schools I can enter" until an invited teacher created nothing — and `POST /schools/:id/enter` had always stated the real rule in words: *an account may enter a school exactly when it has a user row there.* The list is now keyed on membership; the school cap still counts what the account created, so being a teacher in six schools does not exhaust an allowance to run one's own.
 
 ### 24.8 Exit criteria

@@ -1646,7 +1646,7 @@ reads).
 | 25.6c | *Users & Access* screen — list, add, edit role, link to a teacher, resend, deactivate. **Deactivate, never delete**: a user named in the audit log must stay resolvable. Read-only with a banner for ERP schools. |
 | 25.6d | **Bulk teacher invite** from the teacher master: filter by wing, role defaults to the view-only `Teacher`, optional email pattern for blanks. **Skips** teachers who already have a login and says so; **excludes `guest` teachers** (§18 keeps them out of the regular timetable, so there is nothing for them to see); **reports** teachers with no email rather than dropping them from the count. |
 | 25.6e | Invitation acceptance at `/invite/:token` — identity fixed and shown but not editable, password chosen, single-use, 7-day expiry, reusing 25.0b rather than a second token table. |
-| 25.6f | A prompt to invite teachers on the post-publish screen — the first moment there is anything for them to look at. |
+| 25.6f ✅ | A prompt to invite teachers on the post-publish screen — the first moment there is anything for them to look at. |
 
 > **Status — 25.6 landed.** Spec: **§24.7**. Lint, 186 api tests, both typechecks, the web build,
 > the §17.8 isolation gate, `scripts/users-smoke.cjs`, and the auth, schools, onboarding, control-plane
@@ -1681,9 +1681,13 @@ reads).
 > `POST /schools`; and — the one worth having — **another teacher's timetable refused**, so
 > `view.own` is a row filter rather than a label.
 >
-> **Deferred: 25.6f**, the post-publish prompt to invite teachers. It is a placement decision on a
-> screen that already exists, not a capability; the Users & Access screen is reachable from the nav
-> and does the whole job.
+> **25.6f landed too.** Publishing is the first moment there is anything for a teacher to look at,
+> so it is the honest place to ask — before it, an invitation lands somebody in an empty app. The
+> card renders from **the same dry run** the Users & Access screen uses, so the two cannot disagree
+> about who is missing a login, and anything other than a usable answer renders nothing at all: a
+> teacher reaching the screen gets a 403, an ERP school gets a 403, a fully-invited school gets an
+> empty list. Silence is right in all three, and none of them is worth an error message in front of
+> somebody who has just published.
 
 **Exit criteria:** invite a teacher, accept, sign in, and get **their own grid and their linked
 sections only** — the existing §15 scope negatives, re-run against a locally-created user rather than

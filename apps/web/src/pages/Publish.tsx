@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi, useConfigCtx } from "../hooks";
@@ -122,6 +122,7 @@ export function Publish() {
           <button className="btn" onClick={() => navigate("/matrix")}>View Allocation Matrix</button>
           <button className="btn btn-primary" onClick={() => navigate("/board")}>Back to Draft Board</button>
         </div>
+        <InviteTeachersPrompt />
       </div>
     );
   }
@@ -263,3 +264,78 @@ export function Publish() {
 
 const th: React.CSSProperties = { textAlign: "left", padding: "9px 14px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-faint)" };
 const td: React.CSSProperties = { padding: "9px 14px", verticalAlign: "top" };
+
+/**
+ * §24.7 Phase 25.6f — the moment a login is worth having.
+ *
+ * Publishing is the first point at which there is anything for a teacher to
+ * look at, so it is the honest place to ask. Before it, an invitation lands
+ * somebody in an empty app.
+ *
+ * It asks the SERVER rather than guessing, and it asks with the dry run the
+ * Users & Access screen uses — so this card and that screen cannot disagree
+ * about who is missing a login. Anything other than a usable answer renders
+ * nothing at all: a teacher reaching this screen gets a 403, an ERP school gets
+ * a 403 (its people come from the ERP), a school where everyone already has a
+ * login gets an empty list. Silence is right in all three, and none of them is
+ * an error worth putting in front of somebody who has just published.
+ */
+function InviteTeachersPrompt() {
+  const [names, setNames] = useState<string[] | null>(null);
+  const [sent, setSent] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api<{ wouldInvite?: string[] }>("/users/invite-teachers", {
+      method: "POST",
+      body: JSON.stringify({ dryRun: true }),
+    })
+      .then((r) => setNames(r.wouldInvite ?? []))
+      .catch(() => setNames([])); // not allowed, or an ERP school — say nothing
+  }, []);
+
+  if (sent !== null) {
+    return (
+      <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 18 }}>
+        {sent} invitation{sent === 1 ? "" : "s"} sent. They can sign in and see their own timetable.
+      </p>
+    );
+  }
+  if (!names || names.length === 0) return null;
+
+  return (
+    <div style={{
+      marginTop: 22, textAlign: "left", borderLeft: "3px solid var(--brand)",
+      background: "var(--steel-pale)", padding: "14px 16px", borderRadius: "0 9px 9px 0",
+    }}>
+      <strong style={{ fontSize: 13.5, display: "block", marginBottom: 3 }}>
+        {names.length} teacher{names.length === 1 ? " has" : "s have"} no login yet
+      </strong>
+      <p style={{ fontSize: 12.5, color: "var(--ink-soft)", margin: "0 0 10px" }}>
+        {names.slice(0, 6).join(", ")}{names.length > 6 ? `, and ${names.length - 6} more` : ""}.
+        {" "}They cannot see the timetable you have just published until they can sign in.
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn btn-primary" style={{ fontSize: 12.5 }} disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const r = await api<{ invited?: string[] }>("/users/invite-teachers", {
+                method: "POST", body: JSON.stringify({}),
+              });
+              setSent((r.invited ?? []).length);
+            } catch {
+              // The screen that owns this can say why properly; a publish
+              // confirmation is the wrong place to explain a mail failure.
+              setNames([]);
+            } finally {
+              setBusy(false);
+            }
+          }}>
+          {busy ? "Sending…" : `Invite ${names.length === 1 ? "them" : "all of them"}`}
+        </button>
+        <Link to="/users" style={{ fontSize: 12.5 }}>Choose individually on Users &amp; Access →</Link>
+      </div>
+    </div>
+  );
+}

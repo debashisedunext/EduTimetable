@@ -229,6 +229,27 @@ function staff() {
     "both show as invited, not active — nobody has accepted yet",
     users.map((u) => `${u.email.split("@")[0]}:${u.state}`).join(" "));
 
+  // 25.6f — the post-publish prompt. It renders from this exact dry run, so
+  // what the card offers and what Users & Access offers cannot diverge; and it
+  // must count only the teachers who are genuinely missing a login, or the
+  // first thing an admin sees after publishing is a wrong number.
+  // A THIRD teacher gets an address and no invitation, so the prompt has
+  // something real to count. Without them both sides of this were zero, and
+  // "0 === 0" is a check that passes without testing anything.
+  const third = (await prisma.teacher.findMany({
+    where: { schoolId, id: { notIn: onMaster.map((t) => t.id) } },
+    orderBy: { employeeCode: "asc" }, take: 1,
+  }))[0];
+  await prisma.teacher.update({ where: { id: third.id }, data: { email: `spare@${DOMAIN}` } });
+
+  const prompt = await call("POST", "/users/invite-teachers", A, { dryRun: true });
+  check((prompt.json?.wouldInvite ?? []).length === 1
+    && prompt.json.wouldInvite[0] === third.name,
+    "the post-publish prompt counts exactly the teachers still without a login",
+    `${(prompt.json?.wouldInvite ?? []).join(", ") || "nobody"} (expected ${third.name})`);
+  check((prompt.json?.alreadyHaveALogin ?? []).length === 2,
+    "…and names the two who already have one rather than counting them in");
+
   // ═════════════════════ 6. ONE ACCEPTS, AND SEES ONLY THEIR OWN WEEK
   console.log("\n6. One accepts, signs in, and looks:");
   const accepted = await call("POST", "/auth/invite/accept", null, {
