@@ -93,17 +93,33 @@ export class OnboardingController {
    */
   @Post("onboarding/interview")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE, PERMISSIONS.AI_CHAT)
-  interview(
-    @Req() req: AuthedRequest,
-    @Body() body: { message?: unknown; conversationId?: unknown },
-  ) {
+  interview(@Req() req: AuthedRequest, @Body() body: { message?: unknown }) {
     const message = typeof body?.message === "string" ? body.message.trim() : "";
     if (message === "") throw new BadRequestException("Say something for the assistant to answer.");
-    const conversationId =
-      typeof body?.conversationId === "string" && body.conversationId.trim() !== ""
-        ? body.conversationId.trim().slice(0, 64)
-        : `setup-${req.user.schoolId}-${req.user.sub}`;
-    return this.interviewer.turn(req.user.schoolId, req.user.sub, conversationId, message.slice(0, 4000));
+    // The conversation id is DERIVED, never taken from the request. It is what
+    // makes the chat resumable — the same person in the same school returns to
+    // the same thread — and a client-chosen one would let somebody read a
+    // colleague's setup conversation by naming their thread.
+    return this.interviewer.turn(
+      req.user.schoolId,
+      req.user.sub,
+      InterviewService.conversationIdFor(req.user.schoolId, req.user.sub),
+      message.slice(0, 4000),
+    );
+  }
+
+  /**
+   * §24.6 — the conversation so far, for redrawing it on the way back in.
+   *
+   * Half a setup is twenty minutes of somebody's afternoon. The answers already
+   * survived a refresh; without this the chat did not, so returning showed a
+   * blank thread beside a panel full of collected facts — which reads as though
+   * the assistant has forgotten a conversation it can in fact still remember.
+   */
+  @Get("onboarding/interview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE, PERMISSIONS.AI_CHAT)
+  interviewTranscript(@Req() req: AuthedRequest) {
+    return this.interviewer.transcript(req.user.schoolId, req.user.sub);
   }
 }
 

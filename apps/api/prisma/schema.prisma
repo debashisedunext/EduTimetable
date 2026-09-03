@@ -1076,6 +1076,16 @@ model OnboardingSession {
   answers     Json?
 
   completedAt DateTime? @map("completed_at")
+  /// Where THIS run of the conversation begins in `ai_chat_log` (§24.6).
+  ///
+  /// The transcript is not copied here — it is read from the audit log, which
+  /// is the record that already exists and can be checked. But the log is never
+  /// deleted: the monthly AI token budget is summed from it, so clearing a
+  /// conversation would refund the tokens it cost, and spend-discard-repeat
+  /// would make the cap meaningless. So a fresh setup moves this marker instead,
+  /// and everything before it stays as history without appearing on screen or
+  /// in what the model is told it said.
+  chatSince   DateTime? @map("chat_since")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 

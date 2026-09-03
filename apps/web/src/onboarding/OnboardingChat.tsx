@@ -61,20 +61,53 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
    */
   const [options, setOptions] = useState<string[]>([]);
   const [typing, setTyping] = useState(false);
+  const [resumed, setResumed] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLTextAreaElement>(null);
 
-  // Resume whatever is already there, whichever door filled it in — the two
-  // paths share one draft, so arriving here after five wizard steps must show
-  // those five, not an empty panel.
+  /**
+   * Come back to where you left off — the answers AND the conversation.
+   *
+   * The draft always survived a refresh; the transcript did not, so returning
+   * showed an empty thread beside a panel full of collected facts, which reads
+   * as though the assistant has forgotten a conversation it can in fact still
+   * remember. Both are loaded here, from the server, because the server is
+   * where both actually live.
+   *
+   * Opening the door also STARTS a run (`mode: "ai"`) when there is no live
+   * draft. That is what stamps the conversation's boundary, so a setup begun
+   * after finishing an earlier one starts with a clean thread rather than last
+   * term's questions.
+   */
   useEffect(() => {
-    api<{ answers?: Record<string, any>; currentStep?: number; empty?: boolean }>("/onboarding/session")
-      .then((d) => {
-        if (d.empty) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await api<{ answers?: Record<string, any>; currentStep?: number; empty?: boolean }>(
+          "/onboarding/session",
+        );
+        if (cancelled) return;
+        if (d.empty) {
+          await api("/onboarding/session", {
+            method: "PUT",
+            body: JSON.stringify({ currentStep: 1, mode: "ai" }),
+          });
+          return;
+        }
         setAnswers(d.answers ?? {});
         setStep(Math.max(1, d.currentStep ?? 1));
-      })
-      .catch(() => { /* an unreadable draft is not a reason to block a new one */ });
+
+        const t = await api<{ lines?: Line[] }>("/onboarding/interview");
+        if (cancelled || !t.lines?.length) return;
+        // The opener is replaced rather than kept above the history: it greets
+        // somebody who has just arrived, and they have not just arrived.
+        setLines(t.lines);
+        setResumed(true);
+      } catch {
+        /* an unreadable draft is not a reason to block a new one */
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [lines, busy]);
@@ -145,6 +178,14 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
         <div style={{ flex: "1 1 60%", display: "flex", flexDirection: "column", minWidth: 0 }}>
           <div style={{ flex: 1, overflowY: "auto", padding: "20px 22px" }}>
             <div style={{ maxWidth: 680, margin: "0 auto", display: "grid", gap: 14 }}>
+              {resumed && (
+                <div style={{
+                  justifySelf: "center", fontSize: 11.5, color: "var(--ink-faint)",
+                  background: "var(--steel-pale)", padding: "5px 12px", borderRadius: 20,
+                }}>
+                  Picking up where you left off
+                </div>
+              )}
               {lines.map((l, i) => (
                 <div key={i} style={{
                   justifySelf: l.who === "you" ? "end" : "start", maxWidth: "84%",

@@ -125,6 +125,9 @@ export class OnboardingService {
       mode: row.mode,
       currentStep: row.currentStep,
       answers: (row.answers as Record<string, unknown>) ?? {},
+      // §24.6 — where this run's conversation begins in the audit log. Part of
+      // the draft, because that is what it is a property of.
+      chatSince: row.chatSince,
       updatedAt: row.updatedAt.toISOString(),
     };
   }
@@ -172,6 +175,12 @@ export class OnboardingService {
       // Clearing it is what makes this row the live draft again. Harmless when
       // it is already null.
       completedAt: null,
+      // A run that is BEGINNING gets a fresh conversation boundary (§24.6): the
+      // AI transcript is read from `ai_chat_log` filtered to rows after this,
+      // so last time's questions do not reappear inside a setup somebody
+      // believes they are starting clean — and the log itself is never deleted,
+      // because the token budget is summed from it.
+      ...(resuming ? {} : { chatSince: new Date() }),
       ...(input.mode ? { mode: input.mode } : {}),
     };
 

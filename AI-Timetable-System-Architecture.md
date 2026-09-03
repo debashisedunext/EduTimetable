@@ -2026,6 +2026,12 @@ The same eleven questions, asked in conversation. The design is a refusal to bui
 
 **The prompt carries today's date, and this is why.** Asked for session options without it, the model proposed *2024–25* from memory — plausible, tappable, and a whole year of timetable filed against the wrong session. It now receives the date and the April–March convention, and proposes the same session the wizard's own `defaultSession()` would, so the two doors cannot differ about what year it is.
 
+**The conversation is resumable, and the transcript is the audit log.** Coming back reloads both the answers and the thread — the answers always survived a refresh, and a blank chat beside a panel full of collected facts reads as though the assistant has forgotten a conversation it can still remember. The transcript is read from `ai_chat_log` rather than copied into a second store, because two transcripts would eventually disagree and the one on screen would be the one nobody could check.
+
+That log is **never deleted**: the monthly AI token budget is summed from it, so clearing a conversation would refund what it cost and spend-discard-repeat would make the cap meaningless. A fresh setup therefore moves a boundary instead — `onboarding_sessions.chat_since` — and both the screen and the model's replayed history read only rows after it. A finished setup shows no live conversation at all.
+
+Two things had to be fixed to make any of this work. The conversation id is now **derived** (`setup-{schoolId}-{userId}`) and no longer accepted from the client, which is both what makes the thread resumable and what stops somebody reading a colleague's setup by naming their thread. And the assistant's turn is logged **as the person saw it** — `reply` holds only streamed prose, and a model that answers entirely through the tool call streams none, so every assistant row was being written empty while the question the user actually read lived in `nextQuestion`.
+
 **Testing it does not require a provider key.** `POST /dev/interview-turn` is the same dev-gated seam as `/dev/ai-tool` (§17.8), for the same reason: the property under test — *does a model's report become the draft the wizard would have produced?* — is not a property of the model, and a test that needed a key would be a test nobody runs.
 
 ### 24.7 Users and teacher logins (Phase 25.6)

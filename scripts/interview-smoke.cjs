@@ -249,6 +249,74 @@ function staff() {
       ((r.json?.blockers ?? [])[0] ? `: ${r.json.blockers[0].message.slice(0, 80)}` : ""));
   }
 
+  // ──────────────────────── 7. THE CONVERSATION SURVIVES LEAVING
+  //
+  // Deliberately LAST: it finishes the setup and starts a fresh one, which
+  // supersedes the draft everything above was built from. Run earlier it
+  // quietly emptied the answers and the commit steps failed several checks
+  // later, naming the wrong cause.
+  console.log("\nThe conversation survives leaving and coming back:");
+  //
+  // Half a setup is twenty minutes of somebody's afternoon. The answers always
+  // survived a refresh; the transcript did not, so coming back showed an empty
+  // thread beside a panel full of collected facts.
+  //
+  // Read through the real endpoint rather than the dev seam, because what is
+  // under test is the STORED conversation — and the assistant's own questions
+  // were being written to it empty (they arrive in the tool call, not in the
+  // streamed prose), so the record held one side of a conversation.
+  // Two turns SEEDED straight into the audit log, because this suite has no
+  // model in it: what is under test is the reader — the window, the ordering,
+  // the empty-row filter — and that is not a property of the model either. The
+  // live path was verified by hand against the real provider; asserting on an
+  // empty list here would have been a check that passes by having nothing to
+  // check.
+  // A live run to read: section 6 ended with `finish`, and a finished setup
+  // deliberately shows no live conversation. Beginning one here is also what
+  // stamps the boundary the rows below have to fall after.
+  await call("PUT", "/onboarding/session", S, { currentStep: 1, mode: "ai" });
+  const me = await prisma.user.findFirst({ where: { schoolId }, orderBy: { id: "asc" } });
+  const cid = `setup-${schoolId}-${me.id}`;
+  await prisma.aiChatLog.createMany({
+    data: [
+      { schoolId, userId: me.id, conversationId: cid, role: "user", content: "The school is ZZIN Guided School" },
+      { schoolId, userId: me.id, conversationId: cid, role: "assistant", content: "Which session are we setting up?" },
+      // An assistant row logged EMPTY is what the bug looked like: the question
+      // arrives in the tool call, not in the streamed prose, so the record held
+      // one side of a conversation. It must not be rendered as a blank bubble.
+      { schoolId, userId: me.id, conversationId: cid, role: "assistant", content: "" },
+      // Tool traffic is audit, not conversation, and belongs to neither side.
+      { schoolId, userId: me.id, conversationId: cid, role: "tool", content: "{\"recorded\":[]}" },
+    ],
+  });
+
+  const stored = await call("GET", "/onboarding/interview", S);
+  check(stored.status < 300, "the conversation can be read back", `${stored.status}`);
+  const lines = stored.json?.lines ?? [];
+  check(lines.length === 2, "with both sides of it, and nothing else",
+    lines.map((l) => l.who).join(" → ") || "empty");
+  check(lines[0]?.who === "you" && lines[1]?.who === "assistant",
+    "in the order it happened");
+  check(lines.every((l) => typeof l.text === "string" && l.text.trim() !== ""),
+    "and no blank bubbles — an assistant row logged empty is half a conversation");
+
+  // A finished setup is not a live conversation, and starting again begins a
+  // clean thread — without deleting anything, because the monthly AI token
+  // budget is summed from `ai_chat_log` and clearing it would refund the cost.
+  const rowsNow = async () => Number((await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*) AS n FROM ai_chat_log WHERE school_id = ${schoolId}`))[0].n);
+  const beforeRows = await rowsNow();
+  await call("POST", "/onboarding/finish", S);
+  check(((await call("GET", "/onboarding/interview", S)).json?.lines ?? []).length === 0,
+    "a finished setup shows no live conversation");
+  await call("PUT", "/onboarding/session", S, { currentStep: 1, mode: "ai" });
+  check(((await call("GET", "/onboarding/interview", S)).json?.lines ?? []).length === 0,
+    "and starting again begins a clean thread rather than replaying the last one");
+  check((await rowsNow()) >= beforeRows,
+    "…while the audit log keeps every row — deleting it would refund the tokens it cost",
+    `${beforeRows} rows kept`);
+
+
   // ───────────────────────────────────────────────────────────── cleanup
   console.log("\nCleanup:");
   await purge();

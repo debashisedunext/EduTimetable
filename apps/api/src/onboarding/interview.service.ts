@@ -201,9 +201,17 @@ export class InterviewService {
    * day" is exactly the kind of thing that would then be arguable. The log is
    * the record, so the log is the source.
    */
-  private async history(conversationId: string, schoolId: number): Promise<LlmMessage[]> {
+  private async history(conversationId: string, schoolId: number, since: Date | null): Promise<LlmMessage[]> {
     const rows = await this.prisma.aiChatLog.findMany({
-      where: { conversationId, schoolId, role: { in: ["user", "assistant"] } },
+      where: {
+        conversationId,
+        schoolId,
+        role: { in: ["user", "assistant"] },
+        // Only this run. Without it the model is handed a conversation about a
+        // school that has since been set up differently, and argues with the
+        // person about answers they never gave.
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
       orderBy: { id: "asc" },
       take: 60,
     });
@@ -214,6 +222,50 @@ export class InterviewService {
           ? ({ role: "user", text: r.content as string } as const)
           : ({ role: "assistant", text: r.content as string } as const),
       );
+  }
+
+  /**
+   * The conversation id for this person's setup chat.
+   *
+   * Derived, never supplied by the client: it is what makes the conversation
+   * resumable — the same person in the same school comes back to the same
+   * thread — and a client-chosen id would let one person read another's.
+   */
+  static conversationIdFor(schoolId: number, userId: number): string {
+    return `setup-${schoolId}-${userId}`;
+  }
+
+  /**
+   * The stored conversation, for redrawing the screen on the way back in.
+   *
+   * Read from `ai_chat_log`, which is the record the audit trail already keeps,
+   * rather than from a second copy kept for the UI — two transcripts would
+   * eventually disagree, and the one on screen would be the one nobody could
+   * check.
+   */
+  async transcript(schoolId: number, userId: number) {
+    const draft = await this.prisma.onboardingSession.findUnique({
+      where: { schoolId_userId: { schoolId, userId } },
+      select: { chatSince: true, completedAt: true },
+    });
+    // No live draft means no live conversation, whatever the log still holds.
+    if (!draft || draft.completedAt !== null) return { lines: [] };
+
+    const rows = await this.prisma.aiChatLog.findMany({
+      where: {
+        conversationId: InterviewService.conversationIdFor(schoolId, userId),
+        schoolId,
+        role: { in: ["user", "assistant"] },
+        ...(draft.chatSince ? { createdAt: { gte: draft.chatSince } } : {}),
+      },
+      orderBy: { id: "asc" },
+      take: 200,
+    });
+    return {
+      lines: rows
+        .filter((r) => (r.content ?? "").trim().length > 0)
+        .map((r) => ({ who: r.role === "user" ? "you" : "assistant", text: r.content as string })),
+    };
   }
 
   /**
@@ -272,7 +324,7 @@ export class InterviewService {
     const collected = (draft?.answers as Record<string, unknown>) ?? {};
 
     const messages: LlmMessage[] = [
-      ...(await this.history(conversationId, schoolId)),
+      ...(await this.history(conversationId, schoolId, draft?.chatSince ?? null)),
       { role: "user", text: message },
     ];
     let reply = "";
@@ -334,9 +386,21 @@ export class InterviewService {
       if (rejected.length === 0) break;
     }
 
+    /**
+     * Logged as the person SAW it, which is not the same as what was streamed.
+     *
+     * `reply` holds only prose deltas, and a model that answers entirely through
+     * the tool call streams none — so every assistant row in the transcript was
+     * being written empty while the question the user actually read lived in
+     * `nextQuestion`. That made the stored conversation a list of one side's
+     * answers, and `history()` (which drops empty rows) replayed the user
+     * talking to nobody. Joined here exactly as the screen joins them, so the
+     * record and the screen cannot tell different stories.
+     */
+    const said = [reply.trim(), nextQuestion.trim()].filter(Boolean).join("\n\n");
     await this.settings.log({
       schoolId, userId, conversationId, role: "assistant",
-      content: reply, toolsCalled: [{ name: RECORD_TOOL.name, args: {} }],
+      content: said, toolsCalled: [{ name: RECORD_TOOL.name, args: {} }],
       inputTokens, outputTokens,
     });
     this.logger.log(`interview turn: step ${step}, ${rejected.length} refused, ${inputTokens} in / ${outputTokens} out`);
