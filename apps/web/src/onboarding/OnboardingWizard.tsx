@@ -160,12 +160,20 @@ function Progress({ step }: { step: number }) {
   );
 }
 
-function Rail({ step }: { step: number }) {
+function Rail({ step, furthest, onJump, disabled }: {
+  step: number;
+  /** The last step whose prerequisites are all filled in. */
+  furthest: number;
+  onJump: (n: number) => void;
+  disabled: boolean;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 8, marginBottom: 14 }}>
       {STEP_TITLES.map((label, i) => {
         const n = i + 1;
         const state = n < step ? "done" : n === step ? "now" : "todo";
+        // Anything already passed, plus anything whose prerequisites are met.
+        const open = n <= Math.max(step, furthest);
         return (
           <div key={label} style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
             {i > 0 && (
@@ -177,11 +185,26 @@ function Rail({ step }: { step: number }) {
                 transition: "background 400ms ease",
               }} />
             )}
-            <span style={{
-              display: "flex", alignItems: "center", gap: 5, fontSize: 11, whiteSpace: "nowrap",
-              color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
-              fontWeight: state === "now" ? 600 : 400,
-            }}>
+            <button
+              type="button"
+              onClick={() => open && onJump(n)}
+              disabled={disabled || !open || n === step}
+              aria-current={state === "now" ? "step" : undefined}
+              title={
+                n === step ? `${label} — you are here`
+                  : open ? `Go to ${label}`
+                  // Named, not just greyed: "why can I not click this?" has an
+                  // answer, and it is always the same one.
+                  : `Finish ${STEP_TITLES[furthest - 1]} first`
+              }
+              style={{
+                display: "flex", alignItems: "center", gap: 5, fontSize: 11, whiteSpace: "nowrap",
+                color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
+                fontWeight: state === "now" ? 600 : 400,
+                background: "none", border: "none", padding: 0, font: "inherit",
+                cursor: !open || n === step || disabled ? "default" : "pointer",
+                opacity: open ? 1 : 0.45,
+              }}>
               <span
                 // The current step is lifted, ringed and gently pulsing — at a
                 // glance, from across a desk, "you are here".
@@ -197,7 +220,7 @@ function Rail({ step }: { step: number }) {
                 }}>{state === "done" ? "✓" : n}</span>
               {/* Only the current step is named, or eleven labels wrap into a wall */}
               {state === "now" && label}
-            </span>
+            </button>
           </div>
         );
       })}
@@ -375,7 +398,16 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     }
   };
 
-  const problem = (): string | null => {
+  /**
+   * What is stopping step `at` from being complete, or null.
+   *
+   * Takes the step rather than reading the one on screen, because the rail now
+   * asks the same question about steps nobody is looking at: "may I jump to
+   * 7?" is "is every step before 7 filled in?", and that is this function
+   * eleven times rather than a second set of rules that would drift from it.
+   */
+  const problemAt = (at: number): string | null => {
+    const step = at;
     if (step === 1) {
       const name = (answers.school?.name ?? school.name ?? "").trim();
       if (name.length < 2) return "Enter the school's name.";
@@ -476,6 +508,58 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
   };
 
   /**
+   * The furthest step that can be opened right now.
+   *
+   * "Freely, if the data entry is filled" — so a step is reachable when every
+   * step before it is complete. Derived from the answers rather than remembered
+   * as a high-water mark, which means it survives a refresh, a different
+   * machine, and going back to empty something out: take the teachers away and
+   * the steps after them stop being reachable, which is the honest answer.
+   */
+  const furthest = (() => {
+    for (let n = 1; n <= TOTAL_STEPS; n++) if (problemAt(n)) return n;
+    return TOTAL_STEPS;
+  })();
+
+  /**
+   * Jump to a step from the rail.
+   *
+   * Backwards is free — those steps are already committed, and going back to
+   * look at something must never be a write. Forwards COMMITS each step it
+   * passes over, in order, because steps 2-10 create real rows and skipping
+   * one would land somebody on a screen whose data does not exist yet. Every
+   * commit is idempotent, so re-crossing ground already covered costs a round
+   * trip and changes nothing.
+   */
+  const jumpTo = async (target: number) => {
+    if (busy || target === step) return;
+    setPraise(null);
+    setError(null);
+    if (target < step) {
+      if (await persist(target)) setStep(target);
+      return;
+    }
+    for (let n = step; n < target; n++) {
+      const bad = problemAt(n);
+      if (bad) {
+        setError(`${STEP_TITLES[n - 1]} is not finished yet — ${bad}`);
+        if (await persist(n)) setStep(n);
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      for (let n = step; n < target; n++) await commitStep(n);
+    } catch (e) {
+      setError(asMessage(e));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    if (await persist(target)) setStep(target);
+  };
+
+  /**
    * The last step is a different action, not a Next with nothing after it.
    *
    * `finish` writes the settings, marks the draft complete so it stops offering
@@ -502,7 +586,7 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
 
   const next = async () => {
     setPraise(null);
-    const bad = problem();
+    const bad = problemAt(step);
     if (bad) { setError(bad); return; }
     // Step 1 has no editable field for an ERP school, so record what was shown
     // — otherwise a resumed draft would have no school name in it at all.
@@ -565,7 +649,7 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
       }}>
         <div style={{ padding: "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
           <Progress step={step} />
-          <Rail step={step} />
+          <Rail step={step} furthest={furthest} onJump={(n) => void jumpTo(n)} disabled={busy} />
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span>Step {step} of {TOTAL_STEPS} · {school.name}</span>
             <span style={{ flex: 1 }} />

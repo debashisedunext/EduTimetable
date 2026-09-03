@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, switchSchool } from "../api";
-import { openOnboarding } from "../onboarding/Onboarding";
+import { openOnboarding, resumeOnboarding } from "../onboarding/Onboarding";
 import { STEP_TITLES, TOTAL_STEPS } from "../onboarding/OnboardingWizard";
 import { Card, ErrorNote, Field } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
@@ -242,7 +242,7 @@ function SetupProgress() {
         <span style={{
           font: "700 15px/1 var(--mono, monospace)", color: "var(--brand-dark)",
         }}>{pct}%</span>
-        <button className="btn btn-primary" onClick={openOnboarding}>Carry on →</button>
+        <button className="btn btn-primary" onClick={resumeOnboarding}>Carry on →</button>
       </div>
     </Card>
   );

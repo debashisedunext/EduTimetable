@@ -2072,6 +2072,14 @@ The burst is canvas and the sound is two oscillators: a confetti library and an 
 
 **Progress appears on the Timetables page as its own card, not on each timetable's.** A card is one `timetable_config`; the guided setup is one draft per person per *school*, and it is what creates those configs. Drawn per card it would be the same number repeated against the wrong thing — and would be invisible on a school with no timetables yet, which is exactly when somebody most needs it. It disappears once the setup is finished: a permanent "11 of 11" is clutter on every visit forever.
 
+### 24.5b Carrying on, and moving about
+
+**"Carry on" reopens the setup itself, not the welcome screen.** Somebody pressing it has already chosen a door and walked through it; showing them the three doors again asks a question they answered twenty minutes ago. Which door reopens comes from the draft's own `mode`, so a conversation resumes as a conversation. The wizard and the chat each resume from the saved draft on their own, so nothing has to carry the step.
+
+**The rail is navigable, as far as the answers reach.** A step is open when every step before it is complete — derived from the answers by asking the *same* validator the Next button asks, eleven times, rather than by a second set of rules that would drift from it. Derived rather than remembered as a high-water mark, which means it survives a refresh and a different machine, and it tells the truth in the other direction too: empty the teacher list and the steps after it stop being reachable. A step that is not open says which one to finish first rather than merely greying out.
+
+Moving **backwards is free** — those rows are already written, and going back to look at something must never be a write. Moving **forwards commits each step it passes over**, in order, because steps 2–10 create real rows and skipping one would land somebody on a screen whose data does not exist yet. Every commit is idempotent, so re-crossing ground already covered costs a round trip and changes nothing.
+
 ### 24.6a Outgoing mail
 
 Four flows are a one-shot link in an inbox — verification, password reset, teacher invitation, bulk invite — so a deployment that cannot send is a deployment that cannot onboard anybody. There are **two transports**: `smtp`, which is the real one and speaks the protocol every provider offers, so choosing between SES, Postmark, Mailgun or a school's own server is a matter of credentials rather than code; and `log`, the default, which writes the link to the application log so an unconfigured deployment is *obviously* unconfigured rather than quietly failing to deliver.

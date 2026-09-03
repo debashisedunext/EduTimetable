@@ -29,7 +29,21 @@ export const OPEN_ONBOARDING = "edutt:open-onboarding";
 
 /** "This tab has already been offered the welcome screen." */
 const OFFERED_KEY = "edutt.onboardingOffered";
+/**
+ * Open the three doors — for somebody choosing how to start.
+ */
 export const openOnboarding = () => window.dispatchEvent(new Event(OPEN_ONBOARDING));
+
+/**
+ * Go straight back into an unfinished setup, at the step it was left on.
+ *
+ * Deliberately NOT the welcome screen. Somebody pressing "Carry on" has already
+ * chosen a door and walked through it; showing them the three doors again is
+ * asking a question they answered twenty minutes ago. Which door reopens comes
+ * from the draft's own `mode`, so a conversation resumes as a conversation.
+ */
+export const resumeOnboarding = () => window.dispatchEvent(new Event(RESUME_ONBOARDING));
+export const RESUME_ONBOARDING = "edutt:resume-onboarding";
 
 export function Onboarding({
   userName,
@@ -100,8 +114,18 @@ export function Onboarding({
   // whole point of a button is that you asked for it.
   useEffect(() => {
     const open = () => { refresh().then(() => setView("welcome")); };
+    // "Carry on" skips the doors and reopens the one already in use. The wizard
+    // and the chat both resume from the saved draft on their own, so there is
+    // no step to pass — only which of the two to show.
+    const resume = () => {
+      refresh().then((s) => setView(s?.resumeMode === "ai" ? "chat" : "wizard"));
+    };
     window.addEventListener(OPEN_ONBOARDING, open);
-    return () => window.removeEventListener(OPEN_ONBOARDING, open);
+    window.addEventListener(RESUME_ONBOARDING, resume);
+    return () => {
+      window.removeEventListener(OPEN_ONBOARDING, open);
+      window.removeEventListener(RESUME_ONBOARDING, resume);
+    };
   }, [refresh]);
 
   if (!canManage || view === "none" || !state || !school) return null;
