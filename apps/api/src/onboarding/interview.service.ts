@@ -320,7 +320,21 @@ export class InterviewService {
     }
     await this.settings.assertWithinBudget(schoolId);
 
-    const draft = await this.onboarding.draftFor(schoolId, userId);
+    /**
+     * The run begins HERE, with the first message — not when the screen opens.
+     *
+     * Something has to stamp `chat_since` before anything is logged, or the
+     * first exchange falls outside the window that defines this run and the
+     * conversation comes back missing its own opening. Doing it when the screen
+     * mounted was worse: a draft created merely by *looking* made the welcome
+     * screen re-offer itself on every refresh, for somebody who had opened a
+     * door and closed it again.
+     */
+    let draft = await this.onboarding.draftFor(schoolId, userId);
+    if (!draft) {
+      await this.onboarding.save(schoolId, userId, { currentStep: 1, mode: "ai" });
+      draft = await this.onboarding.draftFor(schoolId, userId);
+    }
     const collected = (draft?.answers as Record<string, unknown>) ?? {};
 
     const messages: LlmMessage[] = [

@@ -123,10 +123,16 @@ export default function App() {
           link is pasted into chat as often as it is clicked in a mail client,
           and a path survives that intact. */}
       <Route path="/invite/:token" element={<AcceptInvite />} />
+      {/* Declared OUTSIDE the authed branch, with the other account-level
+          screens. It was inside it, so somebody already in a school who
+          followed the top bar's school name fell through to the app shell's
+          catch-all and landed back where they started — looking, from the
+          outside, exactly like the button did nothing. My Schools is about the
+          ACCOUNT, not about any school, so having a session must not hide it. */}
+      <Route path="/schools" element={<MySchools />} />
       {!authed || !me ? (
         <>
           <Route path="/" element={<Home />} />
-          <Route path="/schools" element={<MySchools />} />
           {/* the dev SSO shortcut stays reachable, but is no longer what a
               stranger meets at the front door */}
           <Route path="*" element={<DevLogin />} />

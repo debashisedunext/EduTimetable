@@ -26,6 +26,9 @@ import { OnboardingChat } from "./OnboardingChat";
  * with it.
  */
 export const OPEN_ONBOARDING = "edutt:open-onboarding";
+
+/** "This tab has already been offered the welcome screen." */
+const OFFERED_KEY = "edutt.onboardingOffered";
 export const openOnboarding = () => window.dispatchEvent(new Event(OPEN_ONBOARDING));
 
 export function Onboarding({
@@ -64,9 +67,33 @@ export function Onboarding({
     }
   }, [canManage]);
 
-  // On load: open by itself only when the server says so.
+  /**
+   * On load: open by itself only when the server says so — and only ONCE.
+   *
+   * `shouldPrompt` is a fact about the school and the draft, and it stays true
+   * until the setup is finished or thrown away. Read literally that means a
+   * modal across the screen on every single page load, which is what an
+   * unfinished setup actually produced: you close it, navigate, and it is back.
+   * A prompt that cannot be got past stops being an offer.
+   *
+   * So the server still decides WHETHER there is something to offer, and the
+   * browser decides it has now been offered. Per tab rather than remembered
+   * server-side, because "I have seen this" is a fact about this sitting, not
+   * about the person — tomorrow it should say so again. The permanent entry
+   * point on the Timetables screen is how anybody asks for it back.
+   */
   useEffect(() => {
-    refresh().then((s) => { if (s?.shouldPrompt) setView("welcome"); });
+    refresh().then((s) => {
+      if (!s?.shouldPrompt) return;
+      try {
+        if (sessionStorage.getItem(OFFERED_KEY)) return;
+        sessionStorage.setItem(OFFERED_KEY, "1");
+      } catch {
+        // A browser refusing storage should still see the welcome screen; it
+        // is the nagging that is the problem, not the offer.
+      }
+      setView("welcome");
+    });
   }, [refresh]);
 
   // On demand: the permanent entry point, which ignores `shouldPrompt` — the

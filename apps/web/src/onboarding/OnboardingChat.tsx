@@ -74,10 +74,7 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
    * remember. Both are loaded here, from the server, because the server is
    * where both actually live.
    *
-   * Opening the door also STARTS a run (`mode: "ai"`) when there is no live
-   * draft. That is what stamps the conversation's boundary, so a setup begun
-   * after finishing an earlier one starts with a clean thread rather than last
-   * term's questions.
+   * Opening the door does NOT start a run — see below.
    */
   useEffect(() => {
     let cancelled = false;
@@ -87,13 +84,11 @@ export function OnboardingChat({ onSwitchToWizard, onClose }: {
           "/onboarding/session",
         );
         if (cancelled) return;
-        if (d.empty) {
-          await api("/onboarding/session", {
-            method: "PUT",
-            body: JSON.stringify({ currentStep: 1, mode: "ai" }),
-          });
-          return;
-        }
+        // Deliberately does NOT start a setup. Opening a door is not walking
+        // through it, and a draft created merely by looking made the welcome
+        // screen re-offer itself on every refresh afterwards. The run begins on
+        // the first message, server-side, where the boundary is stamped.
+        if (d.empty) return;
         setAnswers(d.answers ?? {});
         setStep(Math.max(1, d.currentStep ?? 1));
 

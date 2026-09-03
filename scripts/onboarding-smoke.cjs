@@ -254,6 +254,27 @@ async function newOwnerWithSchool(email, schoolName) {
   // Put the school back as this suite found it.
   await call("DELETE", "/onboarding/session", reSession);
 
+  // ────────────────────── 7c. LOOKING AT THE AI DOOR STARTS NOTHING
+  //
+  // The regression this exists for: opening the conversational setup used to
+  // create a draft on mount, and a draft makes the welcome screen re-offer
+  // itself. Somebody who opened that door and closed it again then met a modal
+  // across the screen on every page load afterwards — a prompt that cannot be
+  // got past stops being an offer.
+  console.log("\nOpening the AI door is not starting a setup:");
+  await call("DELETE", "/onboarding/session", reSession);
+  const quiet = await call("GET", "/me/onboarding", reSession);
+  check(quiet.json?.shouldPrompt === false || quiet.json?.resumeStep === null,
+    "nothing is offered when there is no draft", `resume ${quiet.json?.resumeStep}`);
+
+  // Exactly what the chat screen does when it mounts, and nothing more.
+  await call("GET", "/onboarding/session", reSession);
+  await call("GET", "/onboarding/interview", reSession);
+  check((await prisma.onboardingSession.count({ where: { schoolId: a.schoolId } })) === 0,
+    "and reading it writes nothing — opening a door is not walking through it");
+  check((await call("GET", "/me/onboarding", reSession)).json?.resumeStep === null,
+    "so it still offers nothing to resume");
+
   // ─────────────────────────────────────────────────────── 8. PERMISSION
   console.log("\nA teacher can be told the state, and cannot touch a draft:");
   const teacherRole = await prisma.role.findFirst({ where: { schoolId: a.schoolId, name: "Teacher" } });
