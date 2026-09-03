@@ -1693,7 +1693,7 @@ invite token is dead on second use. With `origin = 'erp'`, `POST /users/invite` 
 
 ---
 
-## Phase 25 — verification as a whole
+## Phase 25 — verification as a whole ✅
 
 `scripts/onboarding-smoke.cjs`, in the live stack:
 
@@ -1709,6 +1709,28 @@ invite token is dead on second use. With `origin = 'erp'`, `POST /users/invite` 
 
 Plus: `pnpm test:isolation` (two accounts, two schools, every new route swept or classified), the
 existing SSO suite unchanged, and the auth negatives from 25.0.
+
+> **Status — run, and green.** `scripts/phase25-smoke.cjs`. It is deliberately **not** a fourth copy
+> of the per-phase suites: it tests the **joins**, which is exactly where nothing was asserted
+> because each suite stops at its own edge. The one that only exists here is step 6 —
+> `users-smoke.cjs` proves a teacher is refused every write, but against a hand-built school with no
+> timetable, and *"the teacher can read the published week the wizard built"* is the sentence the
+> whole phase is for. It now reads 20 cells of it, and gets a 403 on their colleague's.
+>
+> **One assertion deliberately weaker than the line above, and why.** The step-4 check is **zero
+> blockers**, not a bare 100% score. This suite uses a tiny school (one wing, three classes) so the
+> seams run fast, and at that size one science lab carries ~90% of its week — which the engine
+> correctly flags as *"the solver must spread lab periods thin; confirm this is acceptable."* The
+> proposal behind it is also correct: `suggestRooms` sizes labs at `ceil(demand / week)`, and adding
+> a second lab because the first is busy would be telling a school to **build a room it does not
+> need**. A test demanding 100 here would be demanding exactly that. The 100%-Readiness criterion is
+> asserted where it belongs — `guided-setup-smoke.cjs`, on a realistic two-wing school, both wings.
+>
+> **A test bug worth recording**, because it is the failure mode this file keeps warning about: the
+> teacher-grid assertion first read `mine.json.slots`, a field that does not exist. It returned
+> `undefined`, the count was 0, and the check failed loudly — but had I written `>= 0` it would have
+> passed while testing nothing. It now asserts on `grid` *and* the report's own `weeklyLoad`, so a
+> shape change cannot make it vacuous.
 
 ## Phase 25 — deliberately out of scope
 
