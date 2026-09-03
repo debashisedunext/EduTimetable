@@ -99,7 +99,13 @@ export class SchoolsController {
     );
 
     return {
-      account: { id: account.id, name: account.name, email: account.email, kind: account.kind },
+      account: {
+        id: account.id, name: account.name, email: account.email, kind: account.kind,
+        // Since an unverified account may now sign in and create its first
+        // school, the screen has to be able to ask for the confirmation that no
+        // longer blocks them.
+        emailVerified: account.emailVerified,
+      },
       schools: cards,
       // An owner may create schools; a member never can. The screen reads this
       // to decide whether to show the tile — and `POST /schools` refuses
@@ -116,12 +122,23 @@ export class SchoolsController {
   @Post()
   async create(@Req() req: AccountRequest, @Body() body: Record<string, string>) {
     const account = await this.requireAccount(req);
-    // Verification gates creation, not sign-in: an unverified address that can
-    // create schools is a mail cannon and a way to fill the registry with rows
-    // nobody can reach.
-    if (!account.emailVerified) {
+    /**
+     * An unverified account gets its FIRST school, and no more.
+     *
+     * The gate used to be absolute, and the reasoning behind it still holds:
+     * an unverified address that can create schools is a mail cannon and a way
+     * to fill the registry with rows nobody can reach. What it also did was
+     * stop a brand-new customer from doing the one thing they signed up for
+     * until they had been to their inbox and back.
+     *
+     * One school keeps the anti-abuse property — registration is already
+     * per-IP throttled, so the ceiling on unverified rows is one per address
+     * rather than ten — while letting somebody start. Verification is still
+     * required to go further, and the email still goes out.
+     */
+    if (!account.emailVerified && (await this.selfServe.countFor(account.id)) >= 1) {
       throw new ForbiddenException(
-        "Confirm your email address before creating a school — check your inbox for the link.",
+        "Confirm your email address before creating another school — check your inbox for the link.",
       );
     }
     const created = await this.selfServe.create(account, {

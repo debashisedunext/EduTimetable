@@ -2046,6 +2046,16 @@ A self-serve school has to be able to create its own logins, and the shape of th
 
 **One change this phase forced elsewhere.** `schoolsFor` was keyed on `schools.created_by_account_id`, which was the same set as "schools I can enter" until an invited teacher created nothing — and `POST /schools/:id/enter` had always stated the real rule in words: *an account may enter a school exactly when it has a user row there.* The list is now keyed on membership; the school cap still counts what the account created, so being a teacher in six schools does not exhaust an allowance to run one's own.
 
+### 24.7a Getting in without a detour (Phase 25.7)
+
+Verification originally gated sign-in and every school. A new customer therefore filled in the form and was sent to their inbox before seeing anything at all — the highest-friction moment in the product, spent on a round trip. It now gates the **second** school: an unverified account may sign in and create one. That preserves what the gate was for — an unverified address must not be able to fill the registry with rows nobody can reach, and registration is already per-IP throttled — while letting somebody start on the thing they signed up to build. The email still goes out, and *My Schools* carries a banner saying what confirming is for.
+
+**The anti-enumeration property in §15.3 is unchanged, and it shaped how this was done.** `POST /auth/register` still answers identically whether or not the address exists; returning a token for a new account and a message for an existing one would say which, in a single response. So the client signs in afterwards with the credentials it already holds — if the address was new that works, and if it belonged to somebody else, login refuses it in the same words it refuses any wrong password, which is a check it already performs.
+
+`AccountService.byId`, which every account-token request passes through, had to move with `login`: it also required `active`, and left alone would have issued a token that every subsequent request rejected.
+
+**The demo roles live on the sign-in screen**, where somebody trying to get in can see them. They render only where the dev ERP stub is live, and the screen asks the server that question rather than guessing from a hostname — `/auth/methods` reports the same condition `POST /dev/erp-token` gates itself on, so the two cannot drift into offering four buttons that all 404. Each one walks the real `/sso/callback`; it is the production hand-off with a stand-in ERP, not a route around it.
+
 ### 24.8 Exit criteria
 
 `scripts/guided-setup-smoke.cjs` drives the whole story against the live stack: a stranger registers, verifies, creates a school, and walks steps 1–11. It asserts **100% Readiness with zero blockers in every wing, and a generation with nothing unplaced** — plus that an edited curriculum row and an edited assignment are what reach the database. If that path cannot produce a solvable school, the phase has not worked however good the screens look.

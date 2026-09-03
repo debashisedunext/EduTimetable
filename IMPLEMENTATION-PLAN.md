@@ -1246,7 +1246,7 @@ passes with the new routes classified.
 | Task | Deliverable |
 |---|---|
 | 25.1a | `schools.origin` (`erp` / `self_serve`, default `erp`) and `schools.created_by_account_id`; `tenants.erp_instance_id` becomes nullable. |
-| 25.1b | `POST /schools` — creates the `schools` row, the shared-mode `tenants` entry, the §15.2 permission registry, a Super Admin role and the creator's `users` row, **in one transaction**. Never a database. Verified email required; per-account cap (default 10, operator-raisable). **Refused for `kind = member`.** |
+| 25.1b | `POST /schools` — creates the `schools` row, the shared-mode `tenants` entry, the §15.2 permission registry, a Super Admin role and the creator's `users` row, **in one transaction**. Never a database. Per-account cap (default 10, operator-raisable); a *confirmed* email is required from the **second** school onward (see the 25.7 note). **Refused for `kind = member`.** |
 | 25.1c | *My Schools* — one card per school with its readiness and its resume point. Creator tile for owners; **switcher only** for ERP users, whose `schools[]` comes from the token. |
 | 25.1d | Step 1 and School Profile read `origin`: read-only with a padlock and "managed by your ERP", or editable. |
 
@@ -1735,6 +1735,45 @@ existing SSO suite unchanged, and the auth negatives from 25.0.
 > `undefined`, the count was 0, and the check failed loudly — but had I written `>= 0` it would have
 > passed while testing nothing. It now asserts on `grid` *and* the report's own `weeklyLoad`, so a
 > shape change cannot make it vacuous.
+
+## Phase 25.7 — getting in without a detour ✅
+
+**Goal:** two pieces of friction removed, one of which changes a security posture and is therefore
+recorded rather than just done.
+
+| Task | Deliverable |
+|---|---|
+| 25.7a | The four demo roles on the **sign-in screen**, where somebody trying to get in can see them. Rendered only where the dev ERP stub is live, and it asks the server that question (`/auth/methods` gained `dev`, reporting the same condition `POST /dev/erp-token` gates itself on). Each button walks the **real** `/sso/callback` with a stand-in ERP — not a shortcut around it. |
+| 25.7b | A new client goes **straight into the application**: register, then sign in with the credentials just typed, then My Schools → create → inside. |
+
+> **The posture that changed, and why it is defensible.** Verification used to gate sign-in *and*
+> every school, so somebody filled in the form and was sent to their inbox before seeing anything at
+> all — the highest-friction moment in the product spent on a round trip. It now gates the **second**
+> school. That keeps what the gate was actually for (an unverified address must not be able to fill
+> the registry with rows nobody can reach; registration is already per-IP throttled, so the ceiling
+> is one row per address rather than ten) while letting somebody start on the thing they signed up to
+> build. The email still goes out, and My Schools carries a banner that says what confirming is *for*
+> — a reminder with no consequence attached is one people learn to scroll past.
+>
+> **Anti-enumeration is intact, and that shaped the implementation.** `POST /auth/register` still
+> answers **identically** whether or not the address exists; returning a token for a new account and
+> a message for an existing one would say which, in one response. So the *client* signs in
+> afterwards with the credentials it already holds: if the address was new that works, and if it
+> belonged to somebody else login refuses it in the words it refuses any wrong password — a check it
+> already performs, revealing nothing new. If that second call fails for any reason the screen falls
+> back to "check your email", because the verification mail has already been sent.
+>
+> **One consequence I nearly missed.** `AccountService.byId` — which every account-token request
+> passes through — also required `active`. Left alone it would have issued a token that every
+> subsequent request rejected: signed in, and unable to load the school list they were signed in to
+> see. It now refuses `suspended` and nothing else, matching `login`.
+>
+> **The test that had to change said so.** `schools-smoke.cjs` asserted an unverified account is
+> refused its first school. It now pins the **boundary** — first allowed, second refused, and the
+> school list reports `emailVerified: false` so the screen can ask — which is a stronger assertion
+> than the one it replaced.
+
+---
 
 ## Phase 25 — deliberately out of scope
 

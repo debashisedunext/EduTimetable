@@ -254,15 +254,40 @@ export function SignUp() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const nav = useNavigate();
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  /**
+   * Register, then sign straight in — no round trip to the inbox first.
+   *
+   * The second call is what keeps registration from becoming an address oracle.
+   * `POST /auth/register` still answers **identically** whether or not the
+   * address already exists; returning a token for a new one and a message for
+   * an existing one would say which, in a single response, to anybody who asked.
+   * So the client simply signs in with the credentials it has in hand: if the
+   * address was new, that works; if it belonged to somebody else, login refuses
+   * it in the same words it refuses any wrong password, which is a check it
+   * already performs and reveals nothing new.
+   *
+   * If that second call fails for any reason, fall back to what this screen did
+   * before — the verification mail is already sent, and the link still works.
+   */
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
       const r = await post<{ message: string }>("/auth/register", form);
-      setSent(r.message);
+      try {
+        const session = await post<{ accountToken: string }>("/auth/login", {
+          email: form.email, password: form.password,
+        });
+        localStorage.setItem(ACCOUNT_TOKEN_KEY, session.accountToken);
+        nav("/schools");
+        return;
+      } catch {
+        setSent(r.message);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -276,7 +301,7 @@ export function SignUp() {
         <Card title="Check your email">
           <Note tone="ok">{sent}</Note>
           <p style={{ fontSize: 12.5, color: "var(--ink-faint)", margin: 0 }}>
-            The link works once and expires in 24 hours. Nothing is set up until you open it.
+            The link works once and expires in 24 hours.
           </p>
         </Card>
       </PublicShell>
@@ -290,7 +315,7 @@ export function SignUp() {
         <form onSubmit={submit}>
           <Field label="Your name" value={form.name} onChange={set("name")} autoComplete="name" required />
           <Field label="Work email" type="email" value={form.email} onChange={set("email")}
-            autoComplete="email" required hint="We'll send a verification link here. This becomes your sign-in." />
+            autoComplete="email" required hint="This becomes your sign-in. We'll send a confirmation link here too." />
           <Field label="Password" type="password" value={form.password} onChange={set("password")}
             autoComplete="new-password" required
             hint="At least 12 characters. Three or four ordinary words are both stronger and easier than P@ssw0rd!" />
@@ -301,7 +326,7 @@ export function SignUp() {
           {error && <Note tone="error">{error}</Note>}
           <button className="btn btn-primary" disabled={busy}
             style={{ width: "100%", padding: 11, marginTop: 4 }}>
-            {busy ? "Creating…" : "Create account"}
+            {busy ? "Creating…" : "Create account and start"}
           </button>
         </form>
         <div style={{ margin: "18px 0", textAlign: "center", fontSize: 11.5, color: "var(--ink-faint)" }}>or</div>
@@ -364,7 +389,100 @@ export function SignIn() {
           New here? <Link to="/signup">Create an account</Link>
         </p>
       </Card>
+      <DemoPersonas />
     </PublicShell>
+  );
+}
+
+/**
+ * The four demo roles, on the screen where somebody is trying to get in.
+ *
+ * These are ERP sign-ins, not passwords: each one asks the dev stub to sign a
+ * token and then walks the REAL `/sso/callback`, so what you are looking at is
+ * the production hand-off with a stand-in ERP — not a back door that skips it.
+ *
+ * It renders only where the stub is actually live, and it asks the SERVER that
+ * question (`/auth/methods` reports the same condition `POST /dev/erp-token`
+ * gates itself on). Guessing from the hostname would eventually put four
+ * buttons that all 404 in front of a real customer.
+ */
+const DEMO_ROLES = [
+  { key: "admin", who: "R. Ahuja", role: "Super Admin", does: "everything — masters, generate, publish, roles" },
+  { key: "principal", who: "S. Iyer", role: "Principal", does: "sees every timetable and report; changes nothing" },
+  { key: "teacher", who: "R. Sharma", role: "Teacher", does: "their own grid and their classes only" },
+  { key: "frontoffice", who: "K. Mehta", role: "Front Office", does: "substitutions, and every timetable to pick from" },
+] as const;
+
+const DEMO_TOKENS: Record<string, Record<string, unknown>> = {
+  admin: { erpUserId: "ERP-1", erpRole: "ADMIN", name: "R. Ahuja", email: "admin@school.test" },
+  principal: { erpUserId: "ERP-2", erpRole: "PRINCIPAL", name: "S. Iyer", email: "principal@school.test" },
+  teacher: { erpUserId: "ERP-3", erpRole: "TEACHER", name: "R. Sharma", email: "rsharma@school.test", teacherId: 1 },
+  frontoffice: { erpUserId: "ERP-4", erpRole: "FRONT_OFFICE", name: "K. Mehta", email: "frontoffice@school.test" },
+};
+
+function DemoPersonas() {
+  const [available, setAvailable] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${API}/auth/methods`)
+      .then((r) => r.json())
+      .then((m) => setAvailable(Boolean(m?.dev)))
+      .catch(() => setAvailable(false));
+  }, []);
+
+  if (!available) return null;
+
+  const go = async (key: string) => {
+    setBusy(key); setError(null);
+    try {
+      const r = await post<{ token: string }>("/dev/erp-token", {
+        ...DEMO_TOKENS[key],
+        school: { code: "SCHOOL-1", name: "School 1" },
+      });
+      // Through the real callback, exactly as the ERP menu would.
+      window.location.href = `${API}/sso/callback?token=${encodeURIComponent(r.token)}`;
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div style={{
+      marginTop: 16, background: "var(--paper)", border: "1px dashed var(--line)",
+      borderRadius: 13, padding: "18px 20px",
+    }}>
+      <div style={{
+        font: "600 10.5px/1 Inter", textTransform: "uppercase", letterSpacing: "0.09em",
+        color: "var(--steel)", marginBottom: 4,
+      }}>Demo sign-in · this environment only</div>
+      <p style={{ fontSize: 12.3, color: "var(--ink-soft)", margin: "0 0 12px" }}>
+        Four roles in the sample school, to see what each one is allowed to do. These go through the
+        real ERP hand-off with a stand-in ERP — not a shortcut around it.
+      </p>
+      <div style={{ display: "grid", gap: 7 }}>
+        {DEMO_ROLES.map((r) => (
+          <button key={r.key} onClick={() => go(r.key)} disabled={busy !== null}
+            style={{
+              textAlign: "left", font: "inherit", cursor: busy ? "wait" : "pointer",
+              border: "1px solid var(--line)", borderRadius: 9, padding: "9px 12px",
+              background: busy === r.key ? "var(--steel-pale)" : "var(--paper)",
+            }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              {r.role} <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>· {r.who}</span>
+            </div>
+            <div style={{ fontSize: 11.8, color: "var(--ink-soft)", marginTop: 1 }}>{r.does}</div>
+          </button>
+        ))}
+      </div>
+      {error && <Note tone="error">{error}</Note>}
+      <p style={{ fontSize: 11.3, color: "var(--ink-faint)", margin: "10px 0 0" }}>
+        Signing in as a role you have already used returns you to the same person — the ERP id is the
+        identity, so nothing is duplicated.
+      </p>
+    </div>
   );
 }
 
@@ -615,7 +733,7 @@ export function AcceptInvite() {
 export function MySchools() {
   const nav = useNavigate();
   const [data, setData] = useState<{
-    account: { name: string; email: string; kind: string };
+    account: { name: string; email: string; kind: string; emailVerified?: boolean };
     schools: Array<{
       id: number; code: string; name: string; shortName: string | null;
       counts: { configs: number; classes: number; sections: number };
@@ -673,6 +791,17 @@ export function MySchools() {
     return <PublicShell><Card title="Your schools">{error ?? "Loading…"}</Card></PublicShell>;
   }
 
+  /**
+   * Asked for, not enforced here.
+   *
+   * Verification no longer stands between somebody and their first school, so
+   * the reminder has to be visible or it would simply be forgotten — and the
+   * second school genuinely does need it. It says what it is FOR, because
+   * "verify your email" with no consequence attached is the kind of banner
+   * people learn to scroll past.
+   */
+  const unverified = data.account.emailVerified === false;
+
   const badge = (s: { state: string; publishedAt: string | null }) =>
     s.state === "published" ? { text: "Published", color: "var(--accent)" }
       : s.state === "in-progress" ? { text: "Setup in progress", color: "var(--amber)" }
@@ -696,6 +825,18 @@ export function MySchools() {
           Signed in as {data.account.name} · {data.account.email}. Each school keeps its own classes,
           teachers and timetables — nothing is shared between them.
         </p>
+
+        {unverified && (
+          <div style={{
+            borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)",
+            padding: "12px 14px", borderRadius: "0 9px 9px 0", fontSize: 12.8,
+            color: "var(--ink-soft)", marginBottom: 18,
+          }}>
+            <strong>Confirm your email address.</strong> We sent a link to {data.account.email}. You
+            can set up your first school without it — but a second school, and anything sent to your
+            staff, needs a confirmed address.
+          </div>
+        )}
 
         {error && <Note tone="error">{error}</Note>}
 

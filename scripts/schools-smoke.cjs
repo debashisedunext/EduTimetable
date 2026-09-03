@@ -202,17 +202,36 @@ async function newAccount(email, name) {
   void memberToken;
 
   // ────────────────────────────────────────────────────── 7. UNVERIFIED
-  console.log("\nAn unconfirmed address cannot create anything:");
+  //
+  // The rule changed, and the test pins the new BOUNDARY rather than one side
+  // of it. Verification used to block sign-in and every school; a new customer
+  // filled in the form and was sent to their inbox before seeing anything at
+  // all. Now it blocks the SECOND school — which keeps what the gate was for
+  // (an unverified address must not be able to fill the registry with rows
+  // nobody can reach) while letting somebody start on the one they signed up
+  // to build.
+  console.log("\nAn unconfirmed address gets one school, and no more:");
   const pendingEmail = `pending@${DOMAIN}`;
   await call("POST", "/auth/register", null, { email: pendingEmail, password: PW, name: "ZZ Pending" });
-  // Signed in without following the link: forced here, because the product
-  // deliberately gives no other way to reach a token for an unverified account.
-  await control.account.update({ where: { email: pendingEmail }, data: { status: "active" } });
   const pendingLogin = await call("POST", "/auth/login", null, { email: pendingEmail, password: PW });
-  const pendingCreate = await call("POST", "/schools", pendingLogin.json.accountToken, { name: "ZZ Unverified School" });
-  check(pendingCreate.status === 403, "refused", `${pendingCreate.status}`);
-  check(/confirm your email/i.test(pendingCreate.json?.message ?? ""),
-    "with the reason and the fix", pendingCreate.json?.message?.slice(0, 52));
+  check(pendingLogin.status < 300,
+    "an unconfirmed account can sign in — the inbox is no longer in the way",
+    `${pendingLogin.status}`);
+
+  const firstUnverified = await call("POST", "/schools", pendingLogin.json.accountToken, { name: "ZZ Unverified School" });
+  check(firstUnverified.status < 300, "and can create its FIRST school", `${firstUnverified.status}`);
+
+  const secondUnverified = await call("POST", "/schools", pendingLogin.json.accountToken, { name: "ZZ Unverified Second" });
+  check(secondUnverified.status === 403, "but not a second one", `${secondUnverified.status}`);
+  check(/confirm your email/i.test(secondUnverified.json?.message ?? ""),
+    "with the reason and the fix", secondUnverified.json?.message?.slice(0, 60));
+  check((await prisma.school.count({ where: { name: "ZZ Unverified Second" } })) === 0, "and it was not created");
+
+  // The reminder has to be visible, or an address nobody confirms is one
+  // nothing can ever be sent to.
+  const pendingList = await call("GET", "/schools", pendingLogin.json.accountToken);
+  check(pendingList.json?.account?.emailVerified === false,
+    "and the school list SAYS the address is unconfirmed, so the screen can ask");
 
   // ────────────────────────────────────────────────────────────── 8. CAP
   console.log("\nThe per-account limit is real:");

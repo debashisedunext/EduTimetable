@@ -21,6 +21,7 @@
  * of the mailbox should not be shadowed by a link issued before they did.
  */
 import { BadRequestException, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { createHash, randomBytes } from "node:crypto";
 import type { AccountTokenPayload } from "@edutimetable/shared";
@@ -28,6 +29,7 @@ import { ControlPrismaService } from "../control/control-prisma.service";
 import { EmailService } from "./email.service";
 import { LoginThrottleService } from "./login-throttle.service";
 import { PasswordService } from "./password.service";
+import { ErpKeysService } from "./erp-keys.service";
 
 const VERIFY_TTL_HOURS = 24;
 const RESET_TTL_HOURS = 1;
@@ -68,6 +70,8 @@ export class AccountService {
     private readonly email: EmailService,
     private readonly throttle: LoginThrottleService,
     private readonly jwt: JwtService,
+    private readonly config: ConfigService,
+    private readonly erpKeys: ErpKeysService,
   ) {}
 
   /**
@@ -263,13 +267,21 @@ export class AccountService {
       throw new UnauthorizedException(LOGIN_REFUSED);
     }
 
-    // A locked or unverified account is refused with the SAME sentence as a
+    // A locked or suspended account is refused with the SAME sentence as a
     // wrong password. "Please verify your email first" would confirm the
     // address is registered.
+    //
+    // An UNVERIFIED account is deliberately let in. Verification used to gate
+    // sign-in, which meant a new customer filled in the form and was then sent
+    // to their inbox before they had seen anything at all — the highest-friction
+    // moment in the product, spent on a round trip. It still gates what actually
+    // needs proving (see `POST /schools`: an unverified account gets its first
+    // school and no more), and the email still goes out. What it no longer does
+    // is stand between somebody and the thing they just signed up to look at.
     const locked = this.throttle.isLocked(account);
     const ok = await this.passwords.verify(plain, account.passwordHash);
 
-    if (!ok || locked || account.status !== "active") {
+    if (!ok || locked || account.status === "suspended") {
       if (!ok) {
         const next = this.throttle.nextFailureState(account);
         await db.account.update({ where: { id: account.id }, data: next });
@@ -512,15 +524,32 @@ export class AccountService {
    * single-school install with no control plane can only be entered through
    * SSO, and a form that always fails is worse than no form.
    */
-  methods(): { local: boolean; sso: boolean } {
-    return { local: this.control.available, sso: true };
+  methods(): { local: boolean; sso: boolean; dev: boolean } {
+    return {
+      local: this.control.available,
+      sso: true,
+      // Whether the dev ERP stub is live, and therefore whether the sign-in
+      // screen should offer the demo personas. Asked of the server rather than
+      // guessed from a hostname: the stub 404s in production, and a panel of
+      // sign-in buttons that all fail is worse than no panel. It reports the
+      // SAME condition `POST /dev/erp-token` gates itself on, so the two cannot
+      // drift into offering something that is not there.
+      dev: this.config.get("NODE_ENV") !== "production" && Boolean(this.erpKeys.privateKey),
+    };
   }
 
-  /** The account behind a verified account token, or null if it has gone away. */
+  /**
+   * The account behind an account token, or null if it can no longer be used.
+   *
+   * `suspended` and nothing else. This used to require `active`, which — now
+   * that an unverified account may sign in — would have handed it a token that
+   * every subsequent request rejected: signed in, and unable to load the school
+   * list it was signed in to see.
+   */
   async byId(id: number): Promise<PublicAccount | null> {
     if (!this.control.available) return null;
     const a = await this.control.require().account.findUnique({ where: { id } });
-    return a && a.status === "active" ? publicAccount(a) : null;
+    return a && a.status !== "suspended" ? publicAccount(a) : null;
   }
 }
 
