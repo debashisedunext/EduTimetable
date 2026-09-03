@@ -295,6 +295,13 @@ const NO_ID = {
   // crossing case directly — two schools, two drafts, and a second school of
   // the SAME owner starting empty, which is the one that would catch scoping by
   // account instead of by school.
+  // §15.3 — swaps the session you are holding for an account token. Takes no
+  // id: the user comes from the session, and what comes back reaches only the
+  // schools that account already has a `users` row in — the same set the
+  // session token's own `schoolIds` names. Refused outright for an ERP user,
+  // who has no account.
+  "POST /auth/account/token": { how: "effect", reason: "§15.3 mints an account token for the SESSION's own user; grants strictly less than the session already does" },
+
   "POST /me/onboarding/dismiss": { how: "effect", reason: "stamps the caller's own users row; takes no id — onboarding-smoke.cjs asserts a colleague's is untouched" },
   "PUT /onboarding/session": { how: "effect", reason: "draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
   "DELETE /onboarding/session": { how: "effect", reason: "deletes only the caller's own draft; takes no id" },

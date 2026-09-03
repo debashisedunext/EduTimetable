@@ -539,6 +539,26 @@ export class AccountService {
   }
 
   /**
+   * An account token for somebody who is already inside a school.
+   *
+   * Grants strictly LESS than the session token they already hold: the account
+   * token reaches `/schools`, which lists the schools they have a `users` row
+   * in — the same set the session token's `schoolIds` already names. So this is
+   * not an escalation, it is the same authority expressed against the other
+   * credential.
+   *
+   * It exists because the two credentials expire independently. Somebody who
+   * signed in eight hours ago and clicks the school name would otherwise be
+   * bounced to a login form while holding a perfectly good session — losing the
+   * school they were in to reach a screen that lists it.
+   */
+  async tokenForAccountId(accountId: number): Promise<string | null> {
+    const account = await this.db().account.findUnique({ where: { id: accountId } });
+    if (!account || account.status === "suspended") return null;
+    return this.signAccountToken(account);
+  }
+
+  /**
    * The account behind an account token, or null if it can no longer be used.
    *
    * `suspended` and nothing else. This used to require `active`, which — now

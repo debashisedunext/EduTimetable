@@ -201,6 +201,21 @@ async function newAccount(email, name) {
   check((await prisma.school.count({ where: { name: "ZZ Sneaky School" } })) === 0, "nothing was created");
   void memberToken;
 
+  // ──────────────────────────────────── 6b. THE DOOR BACK TO MY SCHOOLS
+  //
+  // The school name in the top bar leads here. The two credentials expire
+  // independently, so somebody eight hours into a session would otherwise be
+  // bounced to a login form while holding a perfectly good one — losing the
+  // school they were in to reach the screen that lists it.
+  console.log("\nSomebody inside a school can get back to the list:");
+  const exchanged = await call("POST", "/auth/account/token", session);
+  check(exchanged.status < 300 && Boolean(exchanged.json?.accountToken),
+    "a session buys an account token for the same person", `${exchanged.status}`);
+  const viaExchange = await call("GET", "/schools", exchanged.json?.accountToken);
+  check(viaExchange.status < 300,
+    "and it opens the school list — the same schools, no new authority",
+    `${(viaExchange.json?.schools ?? []).length} school(s)`);
+
   // ────────────────────────────────────────────────────── 7. UNVERIFIED
   //
   // The rule changed, and the test pins the new BOUNDARY rather than one side

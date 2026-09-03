@@ -234,4 +234,13 @@ export interface MeResponse {
    * re-checks it on every platform request.
    */
   platformAdmin: boolean;
+  /**
+   * Whether this person signs in with a password rather than through the ERP.
+   *
+   * Decides one thing on screen: whether the school name in the top bar leads
+   * to *My Schools*, where a school can be added. An ERP user has no account
+   * and no business creating schools here — theirs come from the ERP (§15.1) —
+   * so for them the name stays a switcher over what the token granted.
+   */
+  isLocalAccount: boolean;
 }

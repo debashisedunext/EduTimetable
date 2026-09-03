@@ -175,12 +175,59 @@ function SchoolPicker({ me }: { me: MeResponse }) {
     }
   };
 
+  /**
+   * Take a self-serve admin to *My Schools* — switch, or add another.
+   *
+   * Only for somebody who signed in with a password. An ERP user has no account
+   * and no business creating schools here; theirs come from the ERP (§15.1), so
+   * for them the name stays a switcher over exactly what the token granted.
+   *
+   * The account token is fetched fresh rather than read from storage. The two
+   * credentials expire independently, and somebody eight hours into a session
+   * would otherwise be bounced to a login form while holding a perfectly good
+   * one — losing the school they were in to reach the screen that lists it.
+   */
+  const toMySchools = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ accountToken: string }>("/auth/account/token", { method: "POST" });
+      localStorage.setItem("edutt.accountToken", r.accountToken);
+      window.location.href = "/schools";
+    } catch {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
       <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", fontWeight: 700, marginBottom: 2 }}>
         {me.trust ? me.trust.name : "School"}
       </span>
-      {many ? (
+      {me.isLocalAccount ? (
+        // One click to the screen that owns schools, rather than a dropdown
+        // that can only choose between the ones that already exist.
+        <button
+          onClick={toMySchools}
+          disabled={busy}
+          title="Switch school, or add another"
+          style={{
+            display: "flex", alignItems: "center", gap: 7, fontWeight: 700, fontSize: 13,
+            color: "var(--brand-deep)", background: "none", border: "none", padding: "5px 0",
+            cursor: busy ? "wait" : "pointer", font: "inherit",
+          }}
+        >
+          {me.school.logoUrl && (
+            <img
+              src={me.school.logoUrl}
+              alt=""
+              style={{ width: 18, height: 18, objectFit: "contain", borderRadius: 4 }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            />
+          )}
+          <span style={{ fontWeight: 700, fontSize: 13 }}>{me.school.name}</span>
+          <span style={{ fontSize: 10, color: "var(--steel)" }}>▾</span>
+        </button>
+      ) : many ? (
         <select
           value={schoolKey(me.school)}
           disabled={busy}

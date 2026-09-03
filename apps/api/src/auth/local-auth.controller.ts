@@ -24,6 +24,7 @@ import type { Request } from "express";
 import { Public } from "./decorators";
 import { AccountService } from "./account.service";
 import { AccountAuthGuard, type AccountRequest } from "./account-auth.guard";
+import { PrismaService } from "../prisma/prisma.service";
 
 /**
  * The source address, for throttling.
@@ -42,7 +43,10 @@ function sourceIp(req: Request): string {
 
 @Controller("auth")
 export class LocalAuthController {
-  constructor(private readonly accounts: AccountService) {}
+  constructor(
+    private readonly accounts: AccountService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   /** Create an account. Always answers the same, whether or not the address is known. */
   @Public()
@@ -135,6 +139,34 @@ export class LocalAuthController {
     const account = await this.accounts.byId(req.account.sub);
     if (!account) throw new UnauthorizedException("This account is no longer active");
     return account;
+  }
+
+  /**
+   * Exchange the session you are holding for an account token (§15.3).
+   *
+   * Session-guarded, not `@Public()`: the caller is already inside a school,
+   * and what they get back reaches only the schools they are already a member
+   * of. Refused for an ERP user, who has no account and never will — their
+   * schools come from the ERP.
+   */
+  @Post("account/token")
+  async accountToken(@Req() req: Request & { user?: { sub: number } }) {
+    // Resolved HERE rather than inside AccountService, which is deliberately
+    // control-plane only: `users` is a tenant table, and the one thing that
+    // file promises is that it never touches one.
+    const user = req.user?.sub
+      ? await this.prisma.user.findUnique({
+          where: { id: req.user.sub },
+          select: { accountId: true },
+        })
+      : null;
+    const token = user?.accountId ? await this.accounts.tokenForAccountId(user.accountId) : null;
+    if (!token) {
+      throw new UnauthorizedException(
+        "This sign-in came from your ERP, which is where your schools are managed.",
+      );
+    }
+    return { accountToken: token };
   }
 
   /**
