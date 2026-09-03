@@ -162,6 +162,19 @@ export function Timetables({ me }: { me: MeResponse }) {
                 {c.status}
               </span>
               <button className="btn btn-primary" onClick={() => { setCurrentId(c.id); navigate("/setup"); }}>Edit</button>
+              {/*
+                §24.5c — the other way back in. "Edit" has always meant the
+                step-by-step Setup Wizard, which is the wrong tool for somebody
+                who built this school through the guided flow and wants to carry
+                on there. Adopting reconstructs the guided setup's answers from
+                what already exists, so it opens at the first thing still
+                missing rather than at question one.
+              */}
+              <button className="btn" style={{ border: "1px solid var(--line)" }}
+                title="Carry on in the guided setup — it fills in what is missing and changes nothing that is already there"
+                onClick={() => { setCurrentId(c.id); void adoptAndResume(setError); }}>
+                ⚡ Guided
+              </button>
               <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={() => { setCurrentId(c.id); navigate("/readiness"); }}>
                 Readiness
               </button>
@@ -288,4 +301,34 @@ function SetupProgress() {
       </div>
     </Card>
   );
+}
+
+/**
+ * Reconstruct a guided draft from the school, then open the wizard on it.
+ *
+ * The reconstruction is the server's job — it reads the wings, the week, the
+ * subjects and the staff and produces the same `answers` a person would have
+ * typed — so nothing here has to know the wizard's shape.
+ *
+ * A wing whose classes are not on the fixed ladder cannot be described as a
+ * range, and is reported rather than guessed at: creating the wrong classes
+ * silently would be far worse than saying which wing to use the Setup Wizard
+ * for.
+ */
+async function adoptAndResume(setError: (m: string | null) => void) {
+  try {
+    const r = await api<{ adopted: boolean; skippedWings: string[] }>(
+      "/onboarding/session/adopt", { method: "POST" },
+    );
+    if (r.skippedWings?.length) {
+      setError(
+        `Carrying on in the guided setup, but ${r.skippedWings.join(" and ")} could not be included — ` +
+          "its classes are not on the standard list, so the guided steps cannot describe it. " +
+          "Use Edit for that one.",
+      );
+    }
+    resumeOnboarding();
+  } catch (e) {
+    setError(e instanceof Error ? e.message : String(e));
+  }
 }

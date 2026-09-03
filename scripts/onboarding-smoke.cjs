@@ -464,6 +464,62 @@ async function newOwnerWithSchool(email, schoolName) {
     "and writing the week twice leaves ten period rows, not twenty");
 
   // ─────────────────────────────────────────────────────────────── cleanup
+  // ──────────────────────── 9. CARRYING ON WITH A SCHOOL THAT EXISTS
+  //
+  // Placed here, after the three-wing school is built: adoption reconstructs
+  // a draft FROM a school, so it needs one with wings, classes and a week —
+  // and run earlier it read a session that did not exist yet.
+  //
+  // The way back into the guided flow for a half-built school. "Edit" has
+  // always meant the step-by-step Setup Wizard, which is the wrong tool for
+  // somebody who built the school through the guided steps.
+  //
+  // The plan put "editing an existing school through the wizard" out of scope,
+  // and its reason still holds — pointing a first-run flow at a published
+  // timetable needs a diff-and-merge story. This is the narrower thing that is
+  // safe: it FILLS GAPS and never edits, because every commit goes through the
+  // §16 importer, which skips rows that already exist and cannot update or
+  // delete them. The assertion below is that claim, tested rather than stated.
+  console.log("\nA school that already exists can be carried on in the guided setup:");
+  await call("DELETE", "/onboarding/session", S);
+
+  const wasThere = {
+    classes: await prisma.schoolClass.count({ where: { schoolId: c.schoolId } }),
+    sections: await prisma.classSection.count({ where: { schoolId: c.schoolId } }),
+    configs: await prisma.timetableConfig.count({ where: { schoolId: c.schoolId } }),
+  };
+
+  const adopted = await call("POST", "/onboarding/session/adopt", S);
+  check(adopted.status < 300 && adopted.json?.adopted === true, "the school is reconstructed as a draft",
+    `${adopted.status}`);
+  const got = adopted.json?.answers ?? {};
+  check((got.wings ?? []).length === 3,
+    "with every wing it already has, as a range on the ladder",
+    (got.wings ?? []).map((w) => w.name).join(", "));
+  check(got.school?.name && got.session?.name,
+    "and its name and session", `${got.school?.name} · ${got.session?.name}`);
+
+  // The claim: re-walking those steps adds nothing and changes nothing.
+  const recommit = await call("POST", "/onboarding/commit/4", S);
+  check(Object.keys(recommit.json?.created ?? {}).length === 0,
+    "re-committing a step it already has creates NOTHING — it fills gaps, it does not edit",
+    JSON.stringify(recommit.json?.created ?? {}));
+  const stillThere = {
+    classes: await prisma.schoolClass.count({ where: { schoolId: c.schoolId } }),
+    sections: await prisma.classSection.count({ where: { schoolId: c.schoolId } }),
+    configs: await prisma.timetableConfig.count({ where: { schoolId: c.schoolId } }),
+  };
+  check(JSON.stringify(wasThere) === JSON.stringify(stillThere),
+    "and the school is byte-for-byte the school it was",
+    `${JSON.stringify(wasThere)} → ${JSON.stringify(stillThere)}`);
+
+  // Somebody's unfinished typing is not ours to throw away.
+  const secondAdopt = await call("POST", "/onboarding/session/adopt", S);
+  check(secondAdopt.json?.adopted === false,
+    "adopting again returns the LIVE draft rather than rebuilding over it");
+  await call("DELETE", "/onboarding/session", S);
+
+
   console.log("\nCleanup:");
   await purge();
   check((await prisma.school.count({ where: { name: { startsWith: "ZZOB " } } })) === 0, "test schools removed");

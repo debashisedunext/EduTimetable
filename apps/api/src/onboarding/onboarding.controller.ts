@@ -77,6 +77,23 @@ export class OnboardingController {
     return this.onboarding.finish(req.user.schoolId, req.user.sub);
   }
 
+  /**
+   * §24.5c — start a guided setup on a school that already has data.
+   *
+   * The way back into the guided flow for a half-built school. It reconstructs
+   * the wizard's answers from what exists and hands back the draft; the wizard
+   * then opens at the first thing still missing, because which step that is has
+   * always been derived from the answers rather than remembered.
+   *
+   * A live draft is returned untouched rather than rebuilt — somebody's
+   * unfinished typing is not ours to throw away.
+   */
+  @Post("onboarding/session/adopt")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  adopt(@Req() req: AuthedRequest) {
+    return this.onboarding.adoptFromSchool(req.user.schoolId, req.user.sub);
+  }
+
   @Delete("onboarding/session")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
   discard(@Req() req: AuthedRequest) {

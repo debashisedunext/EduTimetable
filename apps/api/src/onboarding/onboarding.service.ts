@@ -16,6 +16,7 @@
  */
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import {
+  CLASS_LADDER,
   classSheets, coverageGaps, curriculumSheets, mappingSheets, roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
   withCurriculumPeriods,
@@ -157,6 +158,164 @@ export class OnboardingService {
       chatSince: row.chatSince,
       updatedAt: row.updatedAt.toISOString(),
     };
+  }
+
+  /**
+   * Build a guided-setup draft from what the school ALREADY has.
+   *
+   * The plan put "editing an existing school through the wizard" out of scope,
+   * and the reason it gave still stands: pointing a first-run flow at a
+   * published timetable needs a diff-and-merge story of its own. This is a
+   * deliberately narrower thing, and the narrowing is what makes it safe.
+   *
+   * **It fills gaps; it never edits.** Every wizard commit goes through the §16
+   * importer, which SKIPS rows that already exist by natural key — it does not
+   * update them and cannot delete them. So re-walking the steps over an existing
+   * school adds what is missing and leaves everything else exactly as it is.
+   * Renaming a subject or removing a teacher stays where it belongs, on the
+   * master screens, and the screen says so rather than implying otherwise.
+   *
+   * What comes back is the same `answers` shape a person would have typed, so
+   * every step, every validator and every commit is the one that already exists.
+   * The wizard then opens at the first thing that is missing, because "which
+   * step am I on?" is already derived from the answers rather than remembered.
+   */
+  async adoptFromSchool(schoolId: number, userId: number) {
+    const existing = await this.draftFor(schoolId, userId);
+    // A live draft is somebody's unfinished work. Rebuilding over it would
+    // throw away whatever they had typed but not yet committed.
+    if (existing) return { ...existing, adopted: false, skippedWings: [] as string[] };
+
+    const [configs, years, subjects, teachers, school] = await Promise.all([
+      this.prisma.timetableConfig.findMany({ where: { schoolId }, orderBy: { id: "asc" } }),
+      this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { id: "desc" } }),
+      this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
+      this.prisma.teacher.findMany({ where: { schoolId, isActive: true }, orderBy: { name: "asc" } }),
+      this.prisma.school.findUnique({ where: { id: schoolId }, select: { name: true } }),
+    ]);
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { schoolId },
+      include: { class: true },
+    });
+    // Which subjects each teacher is already mapped to — the input step 10 uses.
+    const mappings = await this.prisma.teacherSubjectClassSection.findMany({
+      where: { schoolId },
+      select: { teacherId: true, subjectId: true },
+    });
+    const subjectName = new Map(subjects.map((s) => [s.id, s.name]));
+    const teacherSubjects = new Map<number, Set<string>>();
+    for (const m of mappings) {
+      const name = subjectName.get(m.subjectId);
+      if (!name) continue;
+      if (!teacherSubjects.has(m.teacherId)) teacherSubjects.set(m.teacherId, new Set());
+      teacherSubjects.get(m.teacherId)!.add(name);
+    }
+
+    const wings: Array<Record<string, unknown>> = [];
+    const weeks: Record<string, unknown> = {};
+    const skippedWings: string[] = [];
+
+    for (const cfg of configs) {
+      const mine = sections.filter((cs) => cs.timetableConfigId === cfg.id);
+      const names = [...new Set(mine.map((cs) => cs.class.name))];
+      const indices = names.map((n) => CLASS_LADDER.indexOf(n as (typeof CLASS_LADDER)[number]));
+      /**
+       * A wing is a RANGE on a fixed ladder, and a school that named its
+       * classes something else cannot be described that way. Rather than
+       * guessing a range that would quietly create the wrong classes, the wing
+       * is left out and named — the master screens still cover it.
+       */
+      if (names.length === 0 || indices.some((i) => i < 0)) {
+        skippedWings.push(cfg.name);
+        continue;
+      }
+      const perClass = names.map((n) => mine.filter((cs) => cs.class.name === n).length);
+      wings.push({
+        name: cfg.name,
+        fromIndex: Math.min(...indices),
+        toIndex: Math.max(...indices),
+        // The commonest, since one number has to stand for the wing; a class
+        // that differs keeps its own count, because step 4 writes nothing over
+        // sections that already exist.
+        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0] ?? 1,
+      });
+
+      const periods = await this.prisma.period.findMany({
+        where: { timetableConfigId: cfg.id }, orderBy: { sortOrder: "asc" },
+      });
+      if (periods.length > 0) {
+        weeks[cfg.name] = {
+          workingDays: Array.isArray(cfg.workingDays) ? cfg.workingDays : [1, 2, 3, 4, 5],
+          periodsPerDay: cfg.periodsPerDay,
+          periodDurationMins: cfg.periodDurationMins,
+          startTime: cfg.startTime,
+          hasZeroPeriod: cfg.hasZeroPeriod,
+          breaks: periods
+            .filter((p) => p.isBreak)
+            .map((p) => ({
+              name: p.breakName ?? "Break",
+              // The teaching period this break follows.
+              afterPeriod: periods.filter((q) => !q.isBreak && q.sortOrder < p.sortOrder).length,
+              durationMins: this.minutesBetween(p.startTime, p.endTime),
+            })),
+        };
+      }
+    }
+
+    const year = years.find((y) => y.isActive) ?? years[0];
+    const answers: Record<string, unknown> = {
+      school: { name: school?.name ?? "" },
+      ...(year
+        ? {
+            session: {
+              name: year.name,
+              startDate: year.startDate.toISOString().slice(0, 10),
+              endDate: year.endDate.toISOString().slice(0, 10),
+            },
+          }
+        : {}),
+      ...(wings.length > 0 ? { wings } : {}),
+      ...(Object.keys(weeks).length > 0 ? { weeks } : {}),
+      ...(subjects.length > 0
+        ? {
+            subjects: subjects.map((s) => ({
+              name: s.name, code: s.code ?? "", isLab: s.isLab,
+              requiresDoublePeriod: s.requiresDoublePeriod,
+            })),
+          }
+        : {}),
+      ...(teachers.length > 0
+        ? {
+            teachers: teachers.map((t) => ({
+              name: t.name,
+              employeeCode: t.employeeCode,
+              subjects: [...(teacherSubjects.get(t.id) ?? [])],
+              maxPeriodsPerDay: t.maxPeriodsPerDay,
+              maxPeriodsPerWeek: t.maxPeriodsPerWeek,
+              canSubstitute: t.canSubstitute,
+              employmentType: t.employmentType,
+            })),
+          }
+        : {}),
+    };
+
+    const saved = await this.save(schoolId, userId, { answers, currentStep: 1, mode: "wizard" });
+    this.logger.log(
+      `Adopted school ${schoolId} into a guided draft: ${wings.length} wing(s), ` +
+        `${subjects.length} subjects, ${teachers.length} teachers` +
+        (skippedWings.length ? `, skipped ${skippedWings.join(", ")}` : ""),
+    );
+    return { ...saved, adopted: true, skippedWings };
+  }
+
+  /** "08:00" → "08:30" is 30. Used only to describe an existing break. */
+  private minutesBetween(from: string, to: string): number {
+    const mins = (t: string) => {
+      const [h, m] = t.split(":").map(Number);
+      return (h || 0) * 60 + (m || 0);
+    };
+    return Math.max(5, Math.min(120, mins(to) - mins(from)));
   }
 
   /**

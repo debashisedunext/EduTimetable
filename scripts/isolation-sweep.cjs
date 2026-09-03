@@ -305,6 +305,11 @@ const NO_ID = {
   "POST /me/onboarding/dismiss": { how: "effect", reason: "stamps the caller's own users row; takes no id — onboarding-smoke.cjs asserts a colleague's is untouched" },
   "PUT /onboarding/session": { how: "effect", reason: "draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
   "DELETE /onboarding/session": { how: "effect", reason: "deletes only the caller's own draft; takes no id" },
+  // §24.5c — rebuilds the caller's own draft from the SESSION's school. Takes
+  // no id, reads and writes only that school, and cannot edit anything: the
+  // draft it produces commits through the §16 importer, which skips rows that
+  // already exist. onboarding-smoke.cjs asserts the school is unchanged after.
+  "POST /onboarding/session/adopt": { how: "effect", reason: "§24.5c reconstructs the caller's own draft from the session's own school; writes no master row" },
   // Phase 25.4g. Writes settings across the session's own school — the
   // `updateMany` carries no id from the request, and the school-scope extension
   // narrows it to the ambient school. guided-setup-smoke.cjs drives it.

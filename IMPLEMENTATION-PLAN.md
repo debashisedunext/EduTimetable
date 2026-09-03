@@ -1803,7 +1803,10 @@ recorded rather than just done.
 - **Split electives in the wizard.** They have their own screen (§4.9); a twelfth step would make the
   common path pay for the rare one.
 - **Editing an existing school through the wizard.** This is a first-run path; pointing it at a
-  published timetable needs a diff-and-merge story of its own.
+  published timetable needs a diff-and-merge story of its own. *Partly revisited in §24.5c: a school
+  can now be ADOPTED into a guided draft and carried on, because every wizard commit goes through the
+  §16 importer, which skips rows that already exist and can neither update nor delete one. That makes
+  "fill in the gaps" safe while leaving "change what is there" exactly as out of scope as it was.*
 - **Changing the Setup Wizard.** Option 1 is the current process, untouched — which is what makes it
   a safe fallback from either of the other two.
 
