@@ -141,16 +141,37 @@ export class OnboardingService {
     userId: number,
     input: { currentStep?: number; answers?: Record<string, unknown>; mode?: "wizard" | "ai" },
   ) {
-    const existing = await this.prisma.onboardingSession.findFirst({
-      where: { schoolId, userId, completedAt: null },
+    /**
+     * Looked up by the table's REAL key — `(school_id, user_id)` — not by
+     * "is there an unfinished one".
+     *
+     * Those two are not the same question, and the difference was a 500 on the
+     * first Next of anybody who had run the guided setup before. `finish` marks
+     * the row `completed_at` rather than deleting it, and every read filters to
+     * `completedAt: null` so a finished setup stops offering to resume — which
+     * is right. But this write then found nothing, tried to INSERT, and hit the
+     * unique key that says one row per person per school, forever.
+     *
+     * A completed setup is history, so starting again SUPERSEDES it rather than
+     * merging into it: the row is reused, `completed_at` cleared, and the
+     * answers begin from what this turn supplied. Merging would be worse than
+     * the crash — last year's wings and teachers would silently reappear inside
+     * a setup somebody believes they are starting fresh.
+     */
+    const existing = await this.prisma.onboardingSession.findUnique({
+      where: { schoolId_userId: { schoolId, userId } },
     });
+    const resuming = existing !== null && existing.completedAt === null;
     const merged = {
-      ...((existing?.answers as Record<string, unknown>) ?? {}),
+      ...(resuming ? ((existing.answers as Record<string, unknown>) ?? {}) : {}),
       ...(input.answers ?? {}),
     };
     const data = {
-      currentStep: Math.max(1, Math.min(11, input.currentStep ?? existing?.currentStep ?? 1)),
+      currentStep: Math.max(1, Math.min(11, input.currentStep ?? (resuming ? existing.currentStep : 1))),
       answers: merged as never,
+      // Clearing it is what makes this row the live draft again. Harmless when
+      // it is already null.
+      completedAt: null,
       ...(input.mode ? { mode: input.mode } : {}),
     };
 

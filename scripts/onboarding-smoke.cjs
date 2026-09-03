@@ -226,6 +226,34 @@ async function newOwnerWithSchool(email, schoolName) {
   check((await prisma.onboardingSession.count({ where: { schoolId: a.schoolId } })) === 0,
     "no half-answered row is left as history — an abandoned draft is not a finished one");
 
+  // ────────────────────────────────────── 7b. RUNNING IT A SECOND TIME
+  //
+  // The regression this exists for. `finish` marks the row `completed_at`
+  // rather than deleting it, and every READ filters to unfinished drafts — so
+  // starting again found nothing, tried to INSERT, and hit the unique key that
+  // says one row per person per school, forever. The first Next of anybody who
+  // had ever completed the guided setup answered "Internal server error".
+  console.log("\nSomebody who has finished the setup can start it again:");
+  await call("PUT", "/onboarding/session", reSession, {
+    currentStep: 3, answers: { school: { name: "ZZOB First Run" } },
+  });
+  const finished = await call("POST", "/onboarding/finish", reSession);
+  check(finished.status < 300, "the first run is finished", `${finished.status}`);
+  check((await call("GET", "/me/onboarding", reSession)).json?.resumeStep === null,
+    "and stops offering to resume");
+
+  const restarted = await call("PUT", "/onboarding/session", reSession, {
+    currentStep: 1, answers: { school: { name: "ZZOB Second Run" } },
+  });
+  check(restarted.status < 300, "starting again does not 500 on the unique key", `${restarted.status}`);
+  check(restarted.json?.answers?.school?.name === "ZZOB Second Run",
+    "and it starts FRESH rather than merging into the finished one — last year's answers must not\n        reappear inside a setup somebody believes they are starting clean",
+    JSON.stringify(restarted.json?.answers));
+  check((await prisma.onboardingSession.count({ where: { schoolId: a.schoolId } })) === 1,
+    "one row per person per school, as the unique key says");
+  // Put the school back as this suite found it.
+  await call("DELETE", "/onboarding/session", reSession);
+
   // ─────────────────────────────────────────────────────── 8. PERMISSION
   console.log("\nA teacher can be told the state, and cannot touch a draft:");
   const teacherRole = await prisma.role.findFirst({ where: { schoolId: a.schoolId, name: "Teacher" } });

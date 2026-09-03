@@ -1361,6 +1361,17 @@ written**. The modal does not appear for a school that already has a timetable.
 > typecheck and build only. Steps 3–11 render an explicit "not built yet" panel rather than a blank
 > frame, and Save & close keeps everything.
 
+> **Fixed after release (reported from Demo School): "Internal server error" on the first Next of
+> anybody who had already completed the guided setup.** `finish` marks the row `completed_at` rather
+> than deleting it — right, and deliberate — and every *read* filters to unfinished drafts so a
+> completed setup stops offering to resume. But `save` looked up the row the same way, found nothing,
+> tried to INSERT, and hit `@@unique([schoolId, userId])`: one row per person per school, forever.
+> The lookup now uses the table's real key, and a completed setup is **superseded** rather than
+> merged into — merging would be worse than the crash, since last year's wings and teachers would
+> silently reappear inside a setup somebody believes they are starting clean. Every suite missed it
+> because each one purges and starts fresh; `onboarding-smoke.cjs` now finishes a run and starts
+> another.
+
 ---
 
 ## Phase 25.3 — Structure: wings, classes, the week
