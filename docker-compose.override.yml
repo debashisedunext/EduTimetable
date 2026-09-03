@@ -29,6 +29,31 @@ services:
       timeout: 5s
       retries: 20
 
+  # §15.3 — a real SMTP server for development.
+  #
+  # Not a convenience. `MAIL_TRANSPORT=log` was the only implementation for a
+  # long time, which meant the code path production would actually use had never
+  # run: four flows (verify, reset, invite, bulk invite) were exercised daily
+  # through a branch that only writes to a log. Dev now speaks SMTP to Mailpit,
+  # so the production path is the one being tested all day, and every message is
+  # readable at http://localhost:8026 instead of buried in `docker compose logs`.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      # 8026, not Mailpit's own 8025: that port is already taken on the primary
+      # dev machine by an unrelated container, exactly as 3000 and 5173 are by
+      # an SSH tunnel. Inside the network it is always mailpit:1025 for SMTP,
+      # which is what the api uses and which is deliberately not published.
+      - "8026:8025"   # the web inbox → http://localhost:8026
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     image: edutimetable/api:dev
     build:
@@ -48,6 +73,11 @@ services:
       NODE_ENV: development
       # bind-mount file events are unreliable on macOS — poll (tsc --watch & chokidar)
       CHOKIDAR_USEPOLLING: "1"
+      # Speak the real protocol in dev too; see the `mailpit` service above.
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-smtp}
+      MAIL_HOST: ${MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      MAIL_FROM: ${MAIL_FROM:-EduTimetable <no-reply@edutimetable.local>}
       TSC_WATCHFILE: DynamicPriorityPolling
       # Where the 9.10 dedicated-mode test provisions its school. Read only by
       # `scripts/dedicated-db-smoke.cjs`; the app never uses it directly — it
@@ -69,6 +99,10 @@ services:
     # migration is not deployed until every school's database has it).
     depends_on:
       mysql-b:
+        condition: service_healthy
+      # Verified at startup, so a mail server that is not up yet turns a boot
+      # log line into a mystery about why registration "does nothing".
+      mailpit:
         condition: service_healthy
     volumes:
       - .:/app

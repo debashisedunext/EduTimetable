@@ -33,6 +33,7 @@
     "exceljs": "^4.4.0",
     "ioredis": "^5.4.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^9.1.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.0"
@@ -43,6 +44,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.1",
     "prisma": "^6.2.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

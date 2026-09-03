@@ -22,6 +22,7 @@
  */
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { AccountService } from "../auth/account.service";
+import { EmailService } from "../auth/email.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ControlPrismaService } from "../control/control-prisma.service";
 
@@ -42,6 +43,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountService,
+    private readonly email: EmailService,
     private readonly control: ControlPrismaService,
   ) {}
 
@@ -177,6 +179,18 @@ export class UsersService {
         isActive: true,
       },
     });
+    // Sent last, with the membership already in place. If the mail fails the
+    // invitation still exists and shows as "invited", so Resend is a button
+    // rather than a support conversation — and the error says which it was.
+    try {
+      await this.email.sendInvite(account.email, account.name, school.name, account.secret);
+    } catch (e) {
+      this.logger.error(`Invitation for ${email} was created but not sent: ${(e as Error).message}`);
+      throw new BadRequestException(
+        `${account.name}'s login was created, but the invitation email could not be sent ` +
+          `(${(e as Error).message}). Use Resend once mail is working — nothing needs re-entering.`,
+      );
+    }
     this.logger.log(`Invited ${email} into school ${schoolId} as ${role.name}`);
     return { id: user.id, email: account.email, name: account.name, isNewAccount: account.isNew, role: role.name };
   }
@@ -331,10 +345,11 @@ export class UsersService {
         data: { usedAt: new Date() },
       });
     }
-    await this.accounts.invite({
+    const fresh = await this.accounts.invite({
       email: user.email, name: user.name, schoolId,
       schoolName: school.name, roleId: user.roleId, teacherId: user.teacherId,
     });
+    await this.email.sendInvite(fresh.email, fresh.name, school.name, fresh.secret);
     return { ok: true, email: user.email };
   }
 

@@ -48,6 +48,9 @@ import { PasswordService } from "./password.service";
     ScopeService,
     AccountService,
     PasswordService,
+    // §24.8 — UsersService sends the invitation itself, after the membership
+    // exists, so the mail service has to leave this module with it.
+    EmailService,
     AccountAuthGuard,
   ],
 })

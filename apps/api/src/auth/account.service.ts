@@ -180,7 +180,7 @@ export class AccountService {
       this.logger.warn(`Registration attempted for an existing account (${email})`);
       if (existing.status !== "suspended") {
         const secret = await this.issueToken(existing.id, "reset", RESET_TTL_HOURS);
-        await this.email.sendReset(existing.email, existing.name, secret);
+        await this.tellThem(() => this.email.sendReset(existing.email, existing.name, secret));
       }
       return { message: CHECK_YOUR_EMAIL };
     }
@@ -203,7 +203,7 @@ export class AccountService {
     });
 
     const secret = await this.issueToken(account.id, "verify", VERIFY_TTL_HOURS);
-    await this.email.sendVerify(account.email, account.name, secret);
+    await this.tellThem(() => this.email.sendVerify(account.email, account.name, secret));
     this.logger.log(`Account ${account.id} registered (${email}) — verification sent`);
     return { message: CHECK_YOUR_EMAIL };
   }
@@ -324,7 +324,7 @@ export class AccountService {
     const account = await this.db().account.findUnique({ where: { email } });
     if (account && account.status !== "suspended") {
       const secret = await this.issueToken(account.id, "reset", RESET_TTL_HOURS);
-      await this.email.sendReset(account.email, account.name, secret);
+      await this.tellThem(() => this.email.sendReset(account.email, account.name, secret));
       this.logger.log(`Password reset requested for account ${account.id}`);
     }
     return { message: CHECK_YOUR_EMAIL };
@@ -361,6 +361,29 @@ export class AccountService {
     });
     this.logger.log(`Password reset completed for account ${row.accountId}`);
     return { message: "Your password has been changed. Sign in with it." };
+  }
+
+  /**
+   * Send, and never let the failure change the answer.
+   *
+   * `register` and `forgot` return the SAME sentence for a known and an unknown
+   * address — that is the whole anti-enumeration property this file is built
+   * around. Letting a mail failure become a 500 would break it in the most
+   * useful direction for an attacker: a known address errors, an unknown one
+   * succeeds, and the difference is a customer list. So it is logged loudly and
+   * swallowed.
+   *
+   * Safe to swallow here in a way it is NOT for an invitation, because these
+   * paths have another way through: since Phase 25.7 registration signs the
+   * person straight in, and a reset can be asked for again. An invitation is
+   * only a link, so `UsersService` deliberately lets that one surface.
+   */
+  private async tellThem(send: () => Promise<void>): Promise<void> {
+    try {
+      await send();
+    } catch (e) {
+      this.logger.error(`Could not send account mail: ${(e as Error).message}`);
+    }
   }
 
   // ───────────────────────────────────────────────────────────── invite
@@ -424,8 +447,11 @@ export class AccountService {
       roleId: input.roleId,
       teacherId: input.teacherId ?? null,
     });
-    await this.email.sendInvite(account.email, account.name, input.schoolName, secret);
-    this.logger.log(`Invited account ${account.id} into school ${input.schoolId}${isNew ? " (new)" : ""}`);
+    // NOT sent here. The caller sends, after the `users` row exists — otherwise
+    // a mail server having a bad minute leaves an account and a live token with
+    // no membership to attach them to: nothing on the Users screen, nothing to
+    // press Resend on, and an administrator who has to guess what happened.
+    this.logger.log(`Prepared an invitation for account ${account.id} into school ${input.schoolId}${isNew ? " (new)" : ""}`);
     return { accountId: account.id, secret, isNew, email: account.email, name: account.name };
   }
 

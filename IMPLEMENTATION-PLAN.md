@@ -1230,6 +1230,10 @@ passes with the new routes classified.
 > an explicit allow-list naming all 13 public routes and why each is safe to serve a stranger, plus
 > the reverse check that no entry is stale.
 >
+> **Since done:** a real `smtp` transport ships (§24.6a), dev speaks it to a Mailpit container, and
+> `scripts/mail-smoke.cjs` asserts against the inbox rather than the capture. The note below records
+> why it was deferred.
+>
 > **Not done in 25.0, deliberately.** `MAIL_TRANSPORT` has only a `log` transport — which provider
 > sends production mail is an operational choice nobody has made, and guessing one means a
 > dependency and credentials nobody asked for. The seam is one function in `email.service.ts`.

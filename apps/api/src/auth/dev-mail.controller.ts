@@ -48,6 +48,12 @@ export class DevMailController {
     const found = (await this.email.captured(to, 20)).find((m) => m.kind === wanted);
     if (!found) return { token: null };
     const url = new URL(found.link);
-    return { token: url.searchParams.get("token"), link: found.link, at: found.at };
+    // Two link shapes, because they are two different routes. Verify and reset
+    // land on query-string screens; an invitation is `/invite/:token`, a PATH,
+    // so that a link pasted into a chat window survives intact. Reading only
+    // the query string made every invitation look unsent.
+    const token = url.searchParams.get("token")
+      ?? (url.pathname.match(/\/invite\/([^/]+)$/)?.[1] ?? null);
+    return { token: token ? decodeURIComponent(token) : null, link: found.link, at: found.at };
   }
 }
