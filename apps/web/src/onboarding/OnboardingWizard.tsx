@@ -29,56 +29,76 @@ export const TOTAL_STEPS = 11;
 /**
  * What to say after a step lands.
  *
- * Built from what was actually CREATED, not from a list of compliments. "Nice
- * work!" after every step is noise somebody learns to read past in about three
- * of them; "14 sections, ready for a timetable" is the same encouragement and
- * also tells them the thing they would otherwise scroll back to check. Where a
- * step has no countable result the line says what it unlocked instead.
+ * Three parts, and each is doing a job:
  *
- * `created` is the §16 importer's own tally, so these numbers cannot drift from
- * what the database got.
+ *  1. **The cheer.** Chosen by step number rather than at random — a message
+ *     that re-renders is a message that would change its adjective mid-read.
+ *  2. **What actually happened**, with the real count. "Wow!" on its own is
+ *     noise by the third step; "8 subjects on the list" is the thing somebody
+ *     would otherwise scroll back to check, and the numbers come from the §16
+ *     importer's own tally so they cannot drift from what the database got.
+ *  3. **How much is left**, because that is the question anybody eleven steps
+ *     into a form is actually asking.
  */
+const CHEERS = [
+  "Wow!", "Superb!", "Fantastic!", "Brilliant!", "Excellent!",
+  "Lovely!", "Terrific!", "Wonderful!", "Great going!", "Marvellous!", "Outstanding!",
+];
+
+/** "5 steps to go" — and something better than "0 steps to go" at the end. */
+function remaining(step: number): string {
+  const left = TOTAL_STEPS - step;
+  if (left <= 0) return "that was the last one";
+  if (left === 1) return "just one step to go";
+  return `only ${left} steps to go`;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 function wellDone(step: number, created: Record<string, number> | undefined): string {
   const n = (k: string) => created?.[k] ?? 0;
-  switch (step) {
-    case 1: return "That's your school named. Everything else hangs off it.";
-    case 2: return "Session created — every class and timetable from here belongs to it.";
-    case 3: {
-      const wings = n("configs");
-      return wings > 1
-        ? `${wings} wings, each with its own week to come.`
-        : "Wing created. It gets its own working days and periods next.";
+
+  /**
+   * Zero created is not a failure — it is the wizard being idempotent.
+   *
+   * Every step can be re-run: pressing Next twice, coming back, or resuming a
+   * draft commits the same rows and the §16 importer skips the ones already
+   * there. So a count of zero means "these already exist", and saying
+   * "0 subjects created" about a school that has eight of them would be both
+   * wrong and deflating.
+   */
+  const did = (count: number, made: string, already: string) => (count > 0 ? made : already);
+
+  /**
+   * A whole clause per case, not a fragment slotted into a fixed frame.
+   *
+   * The first version pushed every case through "You have just ___", which fits
+   * "created 8 subjects" and produces "You have just your wings are ready" for
+   * everything else. Printing all thirty variants — real counts, re-runs, and
+   * the singular of each — was what showed it; reading the code did not.
+   */
+  const clause = (() => {
+    switch (step) {
+      // No em dash of its own: the tail adds one, and two in a row reads badly.
+      case 1: return "Your school has a name";
+      case 2: return "Your academic session is set up";
+      case 3: return did(n("configs"), `You have just created ${plural(n("configs"), "wing")}`, "Your wings are ready");
+      case 4: return did(
+        n("classSections"),
+        `You have just created ${plural(n("classes"), "class", "classes")} and ${plural(n("classSections"), "section")}`,
+        "Your classes and sections are in",
+      );
+      case 5: return "Your weekly structure is in place";
+      case 6: return did(n("subjects"), `You have just created ${plural(n("subjects"), "subject")}`, "Your subjects are in");
+      case 7: return did(n("teachers"), `You have just added ${plural(n("teachers"), "teacher")}`, "Your teachers are in");
+      case 8: return did(n("rooms"), `You have just created ${plural(n("rooms"), "room")}`, "Your rooms are ready");
+      case 9: return did(n("curriculum"), `You have just created ${plural(n("curriculum"), "curriculum row")}`, "Your curriculum is in");
+      case 10: return did(n("mappings"), `You have just made ${plural(n("mappings"), "assignment")}`, "Every subject has a teacher");
+      default: return "Your school is set up";
     }
-    case 4: {
-      const c = n("classes");
-      const s2 = n("classSections");
-      return c || s2
-        ? `${c} class${c === 1 ? "" : "es"} and ${s2} section${s2 === 1 ? "" : "s"} — the shape of the school is in.`
-        : "Classes and sections created.";
-    }
-    case 5: return "The week is set. Every periods-per-week entry from here is checked against it.";
-    case 6: {
-      const c = n("subjects");
-      return c ? `${c} subjects on the list. That is what the curriculum is built from.` : "Subjects saved.";
-    }
-    case 7: {
-      const c = n("teachers");
-      return c ? `${c} teachers in. The hardest typing is behind you.` : "Teachers saved.";
-    }
-    case 8: {
-      const c = n("rooms");
-      return c ? `${c} rooms created and assigned — no lesson will be left without one.` : "Rooms created.";
-    }
-    case 9: {
-      const c = n("curriculum");
-      return c ? `${c} curriculum rows, every class filling its week.` : "Curriculum saved.";
-    }
-    case 10: {
-      const c = n("mappings");
-      return c ? `${c} assignments made. Every subject now has somebody teaching it.` : "Teachers assigned.";
-    }
-    default: return "Setup complete.";
-  }
+  })();
+
+  return `${CHEERS[(step - 1) % CHEERS.length]} ${clause} — ${remaining(step)}.`;
 }
 
 export const STEP_TITLES = [
