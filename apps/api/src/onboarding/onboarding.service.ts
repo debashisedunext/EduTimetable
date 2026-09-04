@@ -33,7 +33,7 @@ export interface OnboardingState {
   hasConfig: boolean;
   hasClasses: boolean;
   hasPublished: boolean;
-  /** When THIS user last said "later"; null if never. */
+  /** When THIS user last said "later"; null if never. Recorded, not enforced. */
   dismissedAt: string | null;
   /** Whether a half-finished guided setup is waiting for them. */
   resumeStep: number | null;
@@ -92,20 +92,26 @@ export class OnboardingService {
       // Two independent reasons to open, and the OR between them matters.
       //
       // A half-finished draft always re-offers itself — "carry on where you
-      // left off" is the entire point of having saved it, and it outranks an
-      // earlier "later".
+      // left off" is the entire point of having saved it.
       //
-      // Otherwise: only a genuinely empty school, and only for somebody who has
-      // not waved it away.
+      // Otherwise: a school with no timetable at all. **Every sign-in**, not
+      // once ever. A school that has not built a timetable has not started
+      // using the product, and the thing standing between it and a timetable is
+      // knowing where to begin; an offer that appears once and never returns
+      // leaves anyone who was busy that morning with an app whose one job is
+      // hidden behind a button they have no reason to look for.
+      //
+      // `dismissedAt` therefore no longer suppresses this (see `dismiss`). What
+      // keeps it from being a nag is the CLIENT: the welcome screen opens once
+      // per sitting, so "I'll do this later" means the rest of today, and the
+      // next sign-in asks again because the school still has no timetable.
       //
       // Written this way rather than `isNew && (…)` deliberately. Step 5 of the
-      // wizard creates the timetable config, so from 25.3 onward a draft past
-      // step 5 means `isNew` is FALSE while the setup is still unfinished — and
-      // an `isNew &&` would stop offering to resume at exactly the point the
-      // person has the most to lose. The steps that would trigger it do not
-      // exist yet, which is precisely why it is worth fixing now: once they do,
-      // this fails as a puzzling one-off nobody connects to this line.
-      shouldPrompt: draft !== null || (isNew && dismissedAt === null),
+      // wizard creates the timetable config, so a draft past step 5 means
+      // `isNew` is FALSE while the setup is still unfinished — and an `isNew &&`
+      // would stop offering to resume at exactly the point the person has the
+      // most to lose.
+      shouldPrompt: draft !== null || isNew,
     };
   }
 
@@ -133,7 +139,16 @@ export class OnboardingService {
       .map((name) => ({ name, weekReady: weeks[name] !== undefined }));
   }
 
-  /** "I'll do this later." Per user, so a colleague still sees it. */
+  /**
+   * "I'll do this later." Per user, so a colleague still sees it.
+   *
+   * Recorded, but no longer a permanent silence: a school with no timetable is
+   * offered the setup on every sign-in (see `shouldPrompt`), and the welcome
+   * screen's once-per-sitting rule is what makes "later" mean anything. The
+   * timestamp stays because "this admin has now been offered the setup four
+   * times and declined" is a real fact about an account that never got started,
+   * and because a colleague's is deliberately independent of it.
+   */
   async dismiss(userId: number): Promise<{ dismissedAt: string }> {
     const at = new Date();
     await this.prisma.user.update({

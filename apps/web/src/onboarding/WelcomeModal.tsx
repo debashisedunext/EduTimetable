@@ -1,11 +1,13 @@
 /**
  * §15.3 Phase 25.2 — the three doors.
  *
- * Opens by itself only while the school has no timetable at all — the real
- * definition of "new" — and afterwards lives behind a permanent button. A modal
- * in front of the app on the three-hundredth sign-in is a thing people learn to
- * dismiss without reading, which would waste the one screen that gets to
- * explain the choice.
+ * Opens by itself while the school has no timetable at all — the real
+ * definition of "new" — once per sitting, and afterwards lives behind a
+ * permanent button. Both halves matter: a school that has not built a timetable
+ * should be met at the door every time it signs in, and a modal in front of the
+ * app on the three-hundredth sign-in of a school that HAS one is a thing people
+ * learn to dismiss without reading, which would waste the one screen that gets
+ * to explain the choice.
  *
  * **Each door says what it is best for and roughly how long it takes.** Three
  * equal options is a decision handed back to somebody with no basis to make it;
@@ -83,8 +85,10 @@ export function WelcomeModal({
 
   const later = async () => {
     setBusy(true);
-    // Remembered on the server, per user — so it stays dismissed across
-    // devices, and a colleague who has never seen it still does.
+    // "Later" means later, not never: it closes this sitting's offer, and the
+    // next sign-in asks again while the school still has no timetable (§24.1a).
+    // The server call records the decline against this user — a colleague who
+    // has never been offered it still is.
     try { await api("/me/onboarding/dismiss", { method: "POST" }); } catch { /* non-fatal */ }
     onClose();
   };

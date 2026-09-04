@@ -151,9 +151,11 @@ export default function App() {
                     not here. */}
                 <AiDock permissions={me.permissions} />
                 {/* §15.3 Phase 25.2 — the welcome screen and the guided setup.
-                    Opens by itself only for a school with no timetable, and
-                    only for somebody who could act on it. The server decides;
-                    a second definition of "new" here would drift from it. */}
+                    Opens by itself for a school with no timetable — every
+                    sign-in, once per sitting (§24.1a) — and only for somebody
+                    who could act on it. The server decides whether there is
+                    anything to offer; a second definition of "new" here would
+                    drift from it. */}
                 <Onboarding
                   userName={me.name}
                   canManage={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE)}

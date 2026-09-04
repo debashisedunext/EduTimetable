@@ -114,14 +114,24 @@ async function newOwnerWithSchool(email, schoolName) {
     `hasConfig ${settled.json?.hasConfig}`);
 
   // ────────────────────────────────────────────────────────── 2. DISMISS
-  console.log("\n'I'll do this later' is remembered, per person:");
+  console.log("\n'I'll do this later' is recorded, per person — and means later, not never:");
   const dismissed = await call("POST", "/me/onboarding/dismiss", a.session);
   check(dismissed.status < 300, "dismissal accepted");
   const after = await call("GET", "/me/onboarding", a.session);
-  check(after.json?.dismissedAt !== null && after.json?.shouldPrompt === false,
-    "it stops opening by itself", after.json?.dismissedAt?.slice(0, 19));
+  check(after.json?.dismissedAt !== null, "and remembered against this user",
+    after.json?.dismissedAt?.slice(0, 19));
+  /**
+   * The rule this asserts is the one that changed: a school with NO TIMETABLE
+   * is offered the setup again at the next sign-in. An offer that appears once
+   * and never returns leaves a school that has not started with the app's one
+   * job behind a button nobody has a reason to look for. What keeps it from
+   * being a nag is the client, which opens it once per sitting — so this is
+   * deliberately the opposite of what it asserted before.
+   */
+  check(after.json?.shouldPrompt === true,
+    "it still offers itself — the school has no timetable, and that is what the offer is FOR");
   check(after.json?.isNew === true,
-    "but the school is still new — dismissing a prompt is not setting anything up");
+    "and the school is still new — dismissing a prompt is not setting anything up");
 
   // A colleague in the SAME school has never seen it, and must still be shown.
   const roleId = (await prisma.role.findFirst({ where: { schoolId: a.schoolId, name: "Super Admin" } })).id;

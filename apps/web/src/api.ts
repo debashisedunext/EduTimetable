@@ -1,7 +1,20 @@
+import { clearOffered } from "./onboarding/offered";
+
 const TOKEN_KEY = "edutimetable.session";
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t);
+/**
+ * Store a session token — the one place a session into a school begins.
+ *
+ * Sign-in, the SSO callback, entering a school, creating one and switching all
+ * arrive here, which is why the welcome screen's "already offered this sitting"
+ * flag is cleared here too (§24.1a) rather than at five call sites, one of which
+ * would eventually be added without it.
+ */
+export const setToken = (t: string) => {
+  localStorage.setItem(TOKEN_KEY, t);
+  clearOffered();
+};
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {

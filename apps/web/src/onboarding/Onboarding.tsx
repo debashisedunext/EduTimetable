@@ -5,13 +5,14 @@
  * this school and this user are in, and renders the welcome screen, the wizard,
  * or nothing.
  *
- * The rule it exists to enforce: **auto-open only for a genuinely empty school
- * that this person has not waved away.** The server decides (`shouldPrompt`),
- * because "new" is a question about data and the client has none of it — and
- * because a second definition here would drift from the first.
+ * The rule it exists to enforce: **auto-open for a school with no timetable, or
+ * an unfinished setup — once per sitting.** The server decides whether there is
+ * anything to offer (`shouldPrompt`), because "new" is a question about data and
+ * the client has none of it; the client decides it has now been asked.
  */
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { markOffered, wasOffered } from "./offered";
 import { WelcomeModal, type OnboardingState } from "./WelcomeModal";
 import { OnboardingWizard, type SchoolIdentity } from "./OnboardingWizard";
 import { OnboardingChat } from "./OnboardingChat";
@@ -27,8 +28,6 @@ import { OnboardingChat } from "./OnboardingChat";
  */
 export const OPEN_ONBOARDING = "edutt:open-onboarding";
 
-/** "This tab has already been offered the welcome screen." */
-const OFFERED_KEY = "edutt.onboardingOffered";
 /**
  * Open the three doors — for somebody choosing how to start.
  */
@@ -82,30 +81,24 @@ export function Onboarding({
   }, [canManage]);
 
   /**
-   * On load: open by itself only when the server says so — and only ONCE.
+   * On load: open by itself when the server says so — once per sitting.
    *
    * `shouldPrompt` is a fact about the school and the draft, and it stays true
-   * until the setup is finished or thrown away. Read literally that means a
-   * modal across the screen on every single page load, which is what an
-   * unfinished setup actually produced: you close it, navigate, and it is back.
-   * A prompt that cannot be got past stops being an offer.
+   * until a timetable exists or the setup is finished. Read literally that means
+   * a modal across the screen on every single page load: you close it, navigate,
+   * and it is back. A prompt that cannot be got past stops being an offer.
    *
-   * So the server still decides WHETHER there is something to offer, and the
-   * browser decides it has now been offered. Per tab rather than remembered
-   * server-side, because "I have seen this" is a fact about this sitting, not
-   * about the person — tomorrow it should say so again. The permanent entry
-   * point on the Timetables screen is how anybody asks for it back.
+   * So the server decides WHETHER there is something to offer, and the browser
+   * decides it has now been offered — for this sitting only (§24.1a). Signing in
+   * again re-offers it, which is the point: a school with no timetable is a
+   * school that has not started, and it should be met at the door every time
+   * until it has. The permanent entry point on the Timetables screen is how
+   * anybody asks for it back sooner.
    */
   useEffect(() => {
     refresh().then((s) => {
-      if (!s?.shouldPrompt) return;
-      try {
-        if (sessionStorage.getItem(OFFERED_KEY)) return;
-        sessionStorage.setItem(OFFERED_KEY, "1");
-      } catch {
-        // A browser refusing storage should still see the welcome screen; it
-        // is the nagging that is the problem, not the offer.
-      }
+      if (!s?.shouldPrompt || wasOffered()) return;
+      markOffered();
       setView("welcome");
     });
   }, [refresh]);
