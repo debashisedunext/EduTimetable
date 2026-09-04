@@ -1,18 +1,23 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Logger, Param, Post, Put, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { CacheKeysService } from "../redis/cache-keys.service";
 import { CloneService } from "./clone.service";
+import { planDeletion, runDeletion } from "./config-deletion";
 import { buildPeriodRows } from "./structure.util";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 @Controller("timetable-configs")
 export class TimetableConfigsController {
+  private readonly logger = new Logger(TimetableConfigsController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
     private readonly clone: CloneService,
+    private readonly keys: CacheKeysService,
   ) {}
 
   /** Landing screen list — visible to anyone who can generate or manage. */
@@ -223,20 +228,44 @@ export class TimetableConfigsController {
     return this.clone.commit(req.user.schoolId, toInt(id, "id"), { ...body, name: String(body.name) });
   }
 
+  /**
+   * §3.13 — what deleting this timetable would remove, counted, before anything
+   * is removed. The screen shows this and nothing else, so a confirmation can
+   * never claim less than the write.
+   */
+  @Get(":id/deletion")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async deletionPlan(@Param("id") id: string) {
+    return planDeletion(this.prisma, toInt(id, "id"));
+  }
+
+  /**
+   * §3.13 — delete a timetable and everything that hangs off it.
+   *
+   * The plan is recomputed here rather than taken from the request: a preview
+   * the client held for five minutes is not what is true now, and it is never
+   * the list of writes. It is also what enforces the refusal — a published
+   * timetable is blocked whether or not the button that led here was greyed out.
+   */
   @Delete(":id")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
     const configId = toInt(id, "id");
-    await this.prisma.classSection.updateMany({
-      where: { timetableConfigId: configId },
-      data: { timetableConfigId: null },
+    const plan = await planDeletion(this.prisma, configId);
+    if (plan.blocked) throw new BadRequestException(plan.blocked);
+
+    // One transaction: a half-deleted timetable is slots with no config, which
+    // is precisely the state this module exists to make impossible.
+    await this.prisma.$transaction(async (tx) => {
+      await runDeletion(tx, configId);
     });
-    await uniq(
-      () => this.prisma.timetableConfig.delete({ where: { id: configId } }),
-      "Timetable config",
-    );
+
+    // The slot cache is keyed by config and swept by PREFIX — the per-draft
+    // suffixes are open-ended, and naming keys would leave copies behind.
+    await this.keys.invalidateTimetable(configId);
     await this.readiness.invalidate(req.user.schoolId);
-    return { ok: true };
+    this.logger.log(`deleted timetable ${configId} (${plan.name}) and everything under it`);
+    return { ok: true, deleted: plan };
   }
 
   /** Readiness Dashboard data (§4) — Feasibility Engine over the live DB. */

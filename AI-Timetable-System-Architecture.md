@@ -314,6 +314,22 @@ The clone always arrives with `status = 'draft'`: it has not been generated, let
 
 **Sessions must be visibly apart afterwards.** Cloning is what makes duplicate-looking rows normal, so the three list screens that would otherwise show two sessions at once take an optional `academicYearId`: `GET /class-subjects` (§3.11), `GET /mappings`, and `GET /elective-blocks`. Each screen supplies it from the timetable already chosen in the top bar. Without this the Teacher Mapping screen shows "Class 5-A · English · Mrs Rao" twice with nothing to tell the rows apart, and the Electives screen shows "Class 5 Third Language" twice — a feature that breaks the screens it feeds is not finished.
 
+### 3.13 Deleting a Timetable
+
+A school that builds the wrong wing needs a way to remove it, and `DELETE /timetable-configs/:id` was one line: detach the class-sections, delete the row. It returned 200 and the card disappeared, which is exactly why it went unnoticed — **`timetable_slots` and `timetable_publications` have no foreign key to `timetable_config`.** Every generated row survived, pointing at a timetable that no longer existed: on no screen, in no count, unreachable forever. MySQL raised nothing, and never would.
+
+So the cascade is hand-written, in `masters/config-deletion.ts`, and each step declares its **count and its delete in one object** — the §23.7 rule, for the same reason: two lists are free to disagree, and the day they do, a confirmation dialog under-reports a destructive write.
+
+**What goes:** every draft's slots (including the §18 `source='extra'` rows, which sit outside every draft and which a per-draft delete misses), the `timetable_drafts` registry, the extra-class rows, the periods and breaks, the auto-resolve history, the publication log, and the config. Slots must go *before* drafts — `draft_id` is the base column of the generated `draft_scope`, so its FK is RESTRICT and MySQL refuses to remove a draft that still has rows. The cascading tables are deleted explicitly rather than left to MySQL, because the confirmation has to be able to say "and its 40 periods"; a silent cascade is a destructive write nobody was shown.
+
+**What stays:** class-sections are *detached*, never deleted, and they keep their strength, home room, class teacher and curriculum — the state a newly created section is in anyway. Classes, subjects, teachers and rooms are untouched. **Deleting a wing must not delete the children in it**, and that line is what a person pressing Delete is expecting.
+
+**A published timetable is refused, by name.** A school may be teaching from it, and `substitution_log` points into its rows with no FK of its own — substitutes are only ever assigned against published slots, so this refusal is also what keeps that table from being orphaned. The refusal names what to do instead rather than greying out a button that explains nothing, and it is enforced when the DELETE arrives: the plan is recomputed server-side, never taken from the request, so a preview held open for five minutes is never the list of writes.
+
+**On the screens.** The Timetables card gains a Delete button that opens the counted plan and asks for the timetable's name to be typed — the list above it is long, the action cannot be undone, and the cards are three lines apart. And the guided setup's wings step (§24.2a) loses "Remove" for a wing that has already been **created**: it only ever removed the wing from the draft, leaving the `timetable_config` standing, so the admin met it again on the Timetables screen wondering what the button had done. A wing that has *not* been created keeps its Remove, and must — otherwise a mistyped name is created on Next, deleted from the Timetables screen, and proposed again by the draft on the next Next.
+
+`scripts/delete-timetable-smoke.cjs` counts rows rather than reading responses, which is the only way this feature can be tested: the bug it exists for returned 200.
+
 ---
 
 ## 4. Phase A — The Feasibility Engine (the "always 100%" guarantee)

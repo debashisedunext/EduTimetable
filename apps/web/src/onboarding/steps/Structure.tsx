@@ -14,7 +14,7 @@
  *
  * Nothing in this file writes a row itself.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CLASS_LADDER,
   CLASS_LADDER_SHORT,
@@ -67,6 +67,23 @@ export function StepWings({ answers, onChange }: {
    * admin has not tapped should reach the server.
    */
   const [suggested, setSuggested] = useState<string[]>(() => WING_SUGGESTIONS.map((s) => s.name));
+  /**
+   * The wings that are already `timetable_config` rows — which is what decides
+   * whether this screen may take one off the list at all (§3.13).
+   *
+   * Read once on mount rather than derived from the draft, because a resumed or
+   * adopted setup has wings in its answers that were created long ago, and a
+   * draft cannot tell you which. Empty on failure: the list then offers no
+   * removals, which is the safe direction to be wrong in.
+   */
+  const [created, setCreated] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let live = true;
+    api<Array<{ name: string }>>("/timetable-configs")
+      .then((cfgs) => { if (live) setCreated(new Set(cfgs.map((c) => c.name.toLowerCase()))); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
 
   const has = (n: string) => wings.some((w) => w.name.toLowerCase() === n.trim().toLowerCase());
   const set = (next: WingAnswer[]) => onChange({ wings: next });
@@ -129,8 +146,33 @@ export function StepWings({ answers, onChange }: {
                 {CLASS_LADDER[w.fromIndex]} – {CLASS_LADDER[w.toIndex]}
               </span>
               <span style={{ flex: 1 }} />
-              <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5, border: "none", background: "none", color: "var(--signal)" }}
-                onClick={() => set(wings.filter((x) => x.name !== w.name))}>Remove</button>
+              {/*
+                §3.13 — "Remove" is gone for a wing that has been CREATED, and
+                the distinction is the whole point.
+
+                It only ever removed the wing from this draft. Once step 3 has
+                run the `timetable_config` exists, and nothing on this screen
+                takes it away — so the button emptied a row from a list, left
+                the timetable standing, and the admin met it again on the
+                Timetables screen wondering what "Remove" had done. Deleting a
+                timetable is a real operation with a cascade behind it, and it
+                belongs on the card where the timetable actually is.
+
+                A wing that has NOT been created yet is a different thing: it is
+                a line the admin typed a minute ago, and it is only in the
+                draft. Taking that away has to stay possible, or a mistyped name
+                is created on Next and comes BACK on the next Next — the draft
+                would keep re-proposing a wing already deleted elsewhere.
+              */}
+              {created.has(w.name.toLowerCase()) ? (
+                <span className="chip" style={{ fontSize: 11 }} title="Already created — delete it from the Timetables screen">
+                  created
+                </span>
+              ) : (
+                <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5, border: "none", background: "none", color: "var(--signal)" }}
+                  title="Take this off the list — it has not been created yet"
+                  onClick={() => set(wings.filter((x) => x.name !== w.name))}>Remove</button>
+              )}
             </div>
           ))}
         </div>
@@ -199,6 +241,9 @@ export function StepWings({ answers, onChange }: {
       <Note>
         A wing <em>is</em> a timetable — the same <code>timetable_config</code> the rest of the app
         works with. Wings generate, publish and are edited entirely independently of one another.
+        {" "}A wing marked <strong>created</strong> already exists as a timetable; to remove one for
+        good, delete it on the Timetables screen — that takes its periods and everything placed in
+        it with it, which is not something this list can do.
       </Note>
     </>
   );

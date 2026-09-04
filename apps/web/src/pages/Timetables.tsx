@@ -6,6 +6,7 @@ import { STEP_TITLES, TOTAL_STEPS } from "../onboarding/OnboardingWizard";
 import { Card, ErrorNote, Field } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { CloneTimetable } from "./CloneTimetable";
+import { DeleteTimetable } from "./DeleteTimetable";
 import type { MeResponse } from "@edutimetable/shared";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -17,6 +18,10 @@ export function Timetables({ me }: { me: MeResponse }) {
   const [creating, setCreating] = useState(false);
   // §3.12: which timetable's clone form is open, if any.
   const [cloningId, setCloningId] = useState<number | null>(null);
+  // §3.13: and which one's delete confirmation. Two states rather than one
+  // "openPanel", because they open different forms and mixing them would make
+  // "which panel is this?" a question the render has to answer.
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const { data: years } = useApi<{ id: number; name: string }[]>("/academic-years");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -122,7 +127,15 @@ export function Timetables({ me }: { me: MeResponse }) {
       )}
 
       {configs.map((c) => (
-        cloningId === c.id ? (
+        deletingId === c.id ? (
+          <div key={c.id}>
+            <DeleteTimetable
+              config={c}
+              onCancel={() => setDeletingId(null)}
+              onDone={() => { setDeletingId(null); refetch(); }}
+            />
+          </div>
+        ) : cloningId === c.id ? (
           <div key={c.id}>
             <CloneTimetable
               config={c}
@@ -183,10 +196,22 @@ export function Timetables({ me }: { me: MeResponse }) {
               <button
                 className="btn"
                 style={{ border: "1px solid var(--line)" }}
-                onClick={() => { setCreating(false); setCloningId(c.id); }}
+                onClick={() => { setCreating(false); setDeletingId(null); setCloningId(c.id); }}
                 title="Copy this timetable's classes, syllabus and staffing into another session"
               >
                 ⧉ Clone
+              </button>
+              {/* §3.13 — the way to undo "I made the wrong wing". Shown for
+                  every timetable, because a greyed-out button explains nothing:
+                  a published one opens the panel and is refused there, by name,
+                  with what to do instead. */}
+              <button
+                className="btn"
+                style={{ border: "1px solid var(--line)", color: "var(--signal)" }}
+                onClick={() => { setCreating(false); setCloningId(null); setDeletingId(c.id); }}
+                title="Delete this timetable and everything placed in it — classes, subjects and teachers are kept"
+              >
+                🗑 Delete
               </button>
             </div>
           </div>
