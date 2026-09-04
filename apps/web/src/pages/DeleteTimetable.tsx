@@ -157,7 +157,7 @@ export function DeleteTimetable({
             {busy ? "Deleting…" : "Delete permanently"}
           </button>
         )}
-        <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={onCancel} disabled={busy}>
+        <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>
           Cancel
         </button>
       </div>

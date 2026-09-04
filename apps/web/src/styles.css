@@ -228,6 +228,28 @@ button { font-family: inherit; cursor: pointer; }
 .wizard-foot { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
 .btn-secondary { border: 1px solid var(--line); background: var(--paper); }
 
+/* Tinted button variants, so a row of actions says what each one DOES.
+   Five identical grey outlines make "Clone" and "Delete" look like the same
+   kind of thing, which is the one pair on the Timetables card that must not.
+   Each variant is a token pair already in the palette — no new colours, and the
+   meaning is the palette's own: brand = get on with the work, accent = check
+   it, neutral = a benign copy, signal = destructive.
+   The borders are mixed from the same hues rather than picked by eye. */
+.btn-brand-soft { background: var(--steel-pale); color: var(--brand); border: 1px solid #cddcf7; }
+.btn-brand-soft:hover { background: #dae6fb; }
+.btn-accent-soft { background: var(--accent-bg); color: var(--accent); border: 1px solid #b9e4ee; }
+.btn-accent-soft:hover { background: #d2eff5; }
+.btn-danger-soft { background: var(--signal-bg); color: var(--signal); border: 1px solid #f0cdca; }
+.btn-danger-soft:hover { background: #f7dedc; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* One row of actions, all the same height and evenly spaced. `.btn` already
+   fixes the padding; what made the Timetables card ragged was a status badge
+   (3px tall padding, pill radius) standing in the middle of the row, and half
+   the buttons carrying an icon while the other half did not. */
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+.actions .btn { flex: 0 0 auto; }
+
 /* ---- Phase 4: Substitute Center (§8.2) ---- */
 .absence-banner { display: flex; align-items: center; gap: 14px; background: var(--brand); color: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
 .absence-banner .avatar { background: var(--accent); width: 42px; height: 42px; font-size: 13px; }

@@ -181,17 +181,32 @@ function Rail({ step, furthest, onJump, disabled }: {
   disabled: boolean;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 8, marginBottom: 14 }}>
+    /*
+      The strip spans the dialog (§24.5d). It used to be eleven dots bunched at
+      the left with 10px connectors between them — packed tight while most of
+      the bar was empty, which reads as a cluster rather than a route. The
+      CONNECTORS are the flexible part now, so the dots space themselves to
+      whatever width the pane has, and every step is named rather than only the
+      current one: with the room to show them, "which step is Rooms?" should not
+      need clicking to find out.
+    */
+    <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 14 }}>
       {STEP_TITLES.map((label, i) => {
         const n = i + 1;
         const state = n < step ? "done" : n === step ? "now" : "todo";
         // Anything already passed, plus anything whose prerequisites are met.
         const open = n <= Math.max(step, furthest);
         return (
-          <div key={label} style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+          <div key={label} style={{
+            display: "flex", alignItems: "flex-start", minWidth: 0,
+            // Every segment after the first may grow, and it is the CONNECTOR
+            // inside it that takes the space — which is what spreads the dots
+            // across the whole strip instead of bunching them at the left.
+            flex: i === 0 ? "0 0 auto" : "1 1 auto",
+          }}>
             {i > 0 && (
               <span style={{
-                width: 10, height: 2, margin: "0 5px", borderRadius: 2,
+                flex: "1 1 auto", minWidth: 6, height: 2, margin: "12px 6px 0", borderRadius: 2,
                 // The line fills in behind you, so the rail reads as a route
                 // travelled rather than eleven dots.
                 background: n <= step ? "var(--accent)" : "var(--line)",
@@ -211,9 +226,8 @@ function Rail({ step, furthest, onJump, disabled }: {
                   : `Finish ${STEP_TITLES[furthest - 1]} first`
               }
               style={{
-                display: "flex", alignItems: "center", gap: 5, fontSize: 11, whiteSpace: "nowrap",
-                color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
-                fontWeight: state === "now" ? 600 : 400,
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                flex: "0 1 auto", minWidth: 0, maxWidth: 104,
                 background: "none", border: "none", padding: 0, font: "inherit",
                 cursor: !open || n === step || disabled ? "default" : "pointer",
                 opacity: open ? 1 : 0.45,
@@ -224,6 +238,7 @@ function Rail({ step, furthest, onJump, disabled }: {
                 className={state === "now" ? "step-now" : undefined}
                 style={{
                   width: state === "now" ? 26 : 20, height: state === "now" ? 26 : 20,
+                  flexShrink: 0,
                   borderRadius: "50%", display: "grid", placeItems: "center",
                   font: `600 ${state === "now" ? 11 : 10}px/1 var(--mono, monospace)`,
                   background: state === "done" ? "var(--accent)" : state === "now" ? "var(--brand)" : "var(--paper)",
@@ -231,8 +246,18 @@ function Rail({ step, furthest, onJump, disabled }: {
                   border: `1.5px solid ${state === "todo" ? "var(--line)" : "transparent"}`,
                   transition: "width 220ms ease, height 220ms ease, background 300ms ease",
                 }}>{state === "done" ? "✓" : n}</span>
-              {/* Only the current step is named, or eleven labels wrap into a wall */}
-              {state === "now" && label}
+              {/*
+                Named under its dot rather than beside it: eleven labels in a row
+                pushed the dots apart unevenly, since "Curriculum" is three times
+                "Wings". Under the dot they cost the strip no width, and truncate
+                rather than collide when the pane is narrow.
+              */}
+              <span style={{
+                fontSize: 10.5, lineHeight: 1.2, maxWidth: "100%",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
+                fontWeight: state === "now" ? 700 : 400,
+              }}>{label}</span>
             </button>
           </div>
         );

@@ -71,13 +71,16 @@ export function Timetables({ me }: { me: MeResponse }) {
   };
 
   return (
-    <div style={{ maxWidth: 880 }}>
+    // Wider than the old 880 because each card now carries five actions: at 880
+    // the row wrapped under the title on every card, which is the other half of
+    // why it looked ragged.
+    <div style={{ maxWidth: 1080 }}>
       <ErrorNote message={error} />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 16 }}>
         <p className="screen-sub" style={{ margin: 0 }}>
           Every wing runs its own timetable — different timings, periods, and breaks — built and published independently (§3.10).
         </p>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div className="actions">
           {/* §16: skip the hand-entry route entirely and load the masters from a spreadsheet */}
           {/* §15.3 Phase 25.2 — the permanent way back to the three doors. The
               welcome screen stops opening by itself once a school has a
@@ -116,7 +119,7 @@ export function Timetables({ me }: { me: MeResponse }) {
             <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
           </Field>
           <button className="btn btn-primary" onClick={create} disabled={!name.trim()}>Create & open wizard</button>{" "}
-          <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={() => setCreating(false)}>Cancel</button>
+          <button className="btn btn-secondary" onClick={() => setCreating(false)}>Cancel</button>
         </Card>
       )}
 
@@ -155,7 +158,19 @@ export function Timetables({ me }: { me: MeResponse }) {
         <Card key={c.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
-              <h2 style={{ fontFamily: "var(--font-display)", fontSize: 17 }}>{c.name}</h2>
+              {/* The status belongs beside the name — it describes the
+                  timetable, not something you can do to it. Standing in the
+                  action row it was also the thing making that row ragged: a
+                  pill 12px shorter than every button next to it. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <h2 style={{ fontFamily: "var(--font-display)", fontSize: 17 }}>{c.name}</h2>
+                <span
+                  className={`badge ${c.status === "active" ? "badge-ok" : "badge-warn"}`}
+                  title={c.status === "active" ? "Published and in use" : "Not published yet"}
+                >
+                  {c.status}
+                </span>
+              </div>
               <p style={{ fontSize: 12.5, color: "var(--ink-soft)", margin: "4px 0 8px" }}>
                 {c.description ?? "—"} · {c.academicYear}
               </p>
@@ -170,32 +185,41 @@ export function Timetables({ me }: { me: MeResponse }) {
                 )}
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span className={`badge ${c.status === "active" ? "badge-ok" : "badge-error"}`} style={c.status === "draft" ? { background: "var(--amber-bg)", color: "var(--amber)" } : {}}>
-                {c.status}
-              </span>
-              <button className="btn btn-primary" onClick={() => { setCurrentId(c.id); navigate("/setup"); }}>Edit</button>
+            {/*
+              Five actions, coloured by what they do rather than all alike:
+              two blues get on with the work, cyan checks it, grey copies it,
+              red destroys it. Every one carries an icon — half of them did and
+              half did not, which is most of why the row read as ragged.
+            */}
+            <div className="actions">
+              <button className="btn btn-primary"
+                title="Open the step-by-step Setup Wizard for this timetable"
+                onClick={() => { setCurrentId(c.id); navigate("/setup"); }}>
+                ✎ Edit
+              </button>
               {/*
                 §24.5c — the other way back in. "Edit" has always meant the
                 step-by-step Setup Wizard, which is the wrong tool for somebody
                 who built this school through the guided flow and wants to carry
                 on there. Adopting reconstructs the guided setup's answers from
                 what already exists, so it opens at the first thing still
-                missing rather than at question one.
+                missing rather than at question one. Tinted brand rather than
+                neutral: it is a sibling of Edit, not of Clone.
               */}
-              <button className="btn" style={{ border: "1px solid var(--line)" }}
+              <button className="btn btn-brand-soft"
                 title="Carry on in the guided setup — it fills in what is missing and changes nothing that is already there"
                 onClick={() => { setCurrentId(c.id); void adoptAndResume(setError); }}>
                 ⚡ Guided
               </button>
-              <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={() => { setCurrentId(c.id); navigate("/readiness"); }}>
-                Readiness
+              <button className="btn btn-accent-soft"
+                title="Can this timetable generate? The Feasibility Engine's score and what to fix"
+                onClick={() => { setCurrentId(c.id); navigate("/readiness"); }}>
+                ◎ Readiness
               </button>
               {/* §3.12 — next session has the same classes and very nearly the
                   same staffing; retyping 600 rows to change 20 is the point. */}
               <button
-                className="btn"
-                style={{ border: "1px solid var(--line)" }}
+                className="btn btn-secondary"
                 onClick={() => { setCreating(false); setDeletingId(null); setCloningId(c.id); }}
                 title="Copy this timetable's classes, syllabus and staffing into another session"
               >
@@ -206,8 +230,7 @@ export function Timetables({ me }: { me: MeResponse }) {
                   a published one opens the panel and is refused there, by name,
                   with what to do instead. */}
               <button
-                className="btn"
-                style={{ border: "1px solid var(--line)", color: "var(--signal)" }}
+                className="btn btn-danger-soft"
                 onClick={() => { setCreating(false); setCloningId(null); setDeletingId(c.id); }}
                 title="Delete this timetable and everything placed in it — classes, subjects and teachers are kept"
               >
