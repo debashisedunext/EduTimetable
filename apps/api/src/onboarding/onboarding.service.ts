@@ -25,6 +25,7 @@ import {
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { stepFrom } from "./interview.answers";
 
 export interface OnboardingState {
   /** No timetable configured yet — the real definition of "new". */
@@ -223,22 +224,32 @@ export class OnboardingService {
       /**
        * A wing is a RANGE on a fixed ladder, and a school that named its
        * classes something else cannot be described that way. Rather than
-       * guessing a range that would quietly create the wrong classes, the wing
+       * guessing a range that would quietly create the wrong classes, THAT wing
        * is left out and named — the master screens still cover it.
        */
-      if (names.length === 0 || indices.some((i) => i < 0)) {
+      if (names.length > 0 && indices.some((i) => i < 0)) {
         skippedWings.push(cfg.name);
         continue;
       }
+      /**
+       * A wing with no classes yet is carried, not dropped.
+       *
+       * It was being skipped, and the effect on screen was a wing list missing
+       * wings the school plainly has — which reads as the setup having lost
+       * them. It exists, it simply has nothing in it yet, so it appears with
+       * the same default range the Add-a-wing button uses and the person
+       * adjusts it. Nothing is created until Next, and step 4 shows exactly
+       * what would be.
+       */
       const perClass = names.map((n) => mine.filter((cs) => cs.class.name === n).length);
       wings.push({
         name: cfg.name,
-        fromIndex: Math.min(...indices),
-        toIndex: Math.max(...indices),
+        fromIndex: names.length > 0 ? Math.min(...indices) : 4,
+        toIndex: names.length > 0 ? Math.max(...indices) : 9,
         // The commonest, since one number has to stand for the wing; a class
         // that differs keeps its own count, because step 4 writes nothing over
         // sections that already exist.
-        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0] ?? 1,
+        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0] ?? 2,
       });
 
       const periods = await this.prisma.period.findMany({
@@ -300,7 +311,23 @@ export class OnboardingService {
         : {}),
     };
 
-    const saved = await this.save(schoolId, userId, { answers, currentStep: 1, mode: "wizard" });
+    /**
+     * Open at the first thing still MISSING, not at question one.
+     *
+     * An adopted draft has no "where I left off" — nobody left off anywhere.
+     * Starting at 1 meant walking back through a school's own name and session
+     * before reaching anything worth doing, and being asked to add wings that
+     * were already listed on the very screen the button was pressed from.
+     *
+     * `stepFrom` is the rule the conversational setup already uses to answer
+     * exactly this question, and it reads the same answers. One rule, so the
+     * two doors cannot disagree about how far along a school is.
+     */
+    const saved = await this.save(schoolId, userId, {
+      answers,
+      currentStep: stepFrom(answers),
+      mode: "wizard",
+    });
     this.logger.log(
       `Adopted school ${schoolId} into a guided draft: ${wings.length} wing(s), ` +
         `${subjects.length} subjects, ${teachers.length} teachers` +

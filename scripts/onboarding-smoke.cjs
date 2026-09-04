@@ -483,6 +483,14 @@ async function newOwnerWithSchool(email, schoolName) {
   console.log("\nA school that already exists can be carried on in the guided setup:");
   await call("DELETE", "/onboarding/session", S);
 
+  // A wing with nothing in it yet — the case that was being dropped.
+  const emptyWing = await call("POST", "/timetable-configs", S, {
+    name: "ZZOB Empty", academicYearId: yearId,
+  });
+  check(emptyWing.status < 300, "a fourth wing with no classes in it");
+
+  // Snapshot AFTER that, so what is being compared is the effect of ADOPTING
+  // rather than the effect of this suite's own setup.
   const wasThere = {
     classes: await prisma.schoolClass.count({ where: { schoolId: c.schoolId } }),
     sections: await prisma.classSection.count({ where: { schoolId: c.schoolId } }),
@@ -493,9 +501,27 @@ async function newOwnerWithSchool(email, schoolName) {
   check(adopted.status < 300 && adopted.json?.adopted === true, "the school is reconstructed as a draft",
     `${adopted.status}`);
   const got = adopted.json?.answers ?? {};
-  check((got.wings ?? []).length === 3,
+  check((got.wings ?? []).length === 4,
     "with every wing it already has, as a range on the ladder",
     (got.wings ?? []).map((w) => w.name).join(", "));
+  /**
+   * An empty wing must be CARRIED, not dropped. It was being skipped for having
+   * no classes to derive a range from, and the effect on screen was a wing list
+   * missing wings the school plainly has — which reads as the setup having lost
+   * them. It appears with the default range and the person adjusts it.
+   */
+  check((got.wings ?? []).some((w) => w.name === "ZZOB Empty"),
+    "including one that has no classes yet — it exists, so it is listed");
+
+  /**
+   * And it opens where there is something to DO. An adopted draft has no
+   * "where I left off", and starting at question one meant walking back through
+   * the school's own name and being asked to add wings that were already
+   * listed on the screen the button was pressed from.
+   */
+  check(adopted.json?.currentStep > 3,
+    "opening past the steps that are already answered, not at question one",
+    `step ${adopted.json?.currentStep}`);
   check(got.school?.name && got.session?.name,
     "and its name and session", `${got.school?.name} · ${got.session?.name}`);
 
