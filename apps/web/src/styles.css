@@ -74,6 +74,67 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-item:hover { background: #12305E; }
 .nav-item.active { background: var(--brand); color: #fff; }
+.nav-item .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- §8.1d: the nav collapses to icons ----------------------------------
+   The width itself lives on the root (`--sidebar-w`), set by nav-collapse.tsx,
+   because the §24.5d guided-setup dialog insets by the same token. Everything
+   below is only what changes SHAPE at 64px. */
+.nav-collapse-btn {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 7px 10px; margin-bottom: 4px; border: none; border-radius: 8px;
+  background: transparent; color: #6b84a8; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.nav-collapse-btn:hover { background: #12305e; color: var(--steel-light); }
+.nav-collapse-chevron {
+  display: inline-grid; place-items: center; width: 17px; font-size: 15px; line-height: 1;
+  transition: transform 240ms ease;
+}
+.logout-btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.logout-icon { display: none; font-size: 13px; line-height: 1; }
+
+.nav-collapsed .sidebar { padding-left: 8px; padding-right: 8px; align-items: center; }
+/* Every label folds away the same way, so one rule covers the nav, the brand,
+   the user's name and the sign-out button. */
+.nav-collapsed .nav-label,
+.nav-collapsed .brand-text { display: none; }
+.nav-collapsed .brand { justify-content: center; padding: 4px 0 18px; }
+.nav-collapsed .nav-item { justify-content: center; padding: 10px 0; gap: 0; }
+.nav-collapsed .nav-collapse-btn { justify-content: center; padding: 7px 0; }
+.nav-collapsed .nav-collapse-chevron { transform: rotate(180deg); }
+.nav-collapsed .who { justify-content: center; }
+.nav-collapsed .sidebar-foot { padding-left: 0; padding-right: 0; }
+.nav-collapsed .logout-btn { padding: 7px 0; }
+.nav-collapsed .logout-icon { display: inline; }
+/* The group name has nowhere to go, so a rule stands in for it — the groups
+   still read as groups rather than one column of twenty icons. */
+.nav-collapsed .nav-group-label {
+  margin: 12px 8px 8px; height: 1px; overflow: hidden; text-indent: -999px;
+  background: #1b3a6b;
+}
+
+/* The label that comes out of the icon, and goes back in.
+   Fixed rather than nested in its row: `.sidebar-nav` scrolls, so a nested
+   flyout is clipped, and CSS cannot be scrollable on one axis and visible on
+   the other. It is always mounted and animates both ways — an element unmounted
+   on mouse-leave has nothing left to slide back in with. */
+.nav-fly {
+  position: fixed; left: calc(var(--sidebar-w) + 6px); z-index: 60;
+  padding: 7px 12px; border-radius: 8px; white-space: nowrap; pointer-events: none;
+  background: var(--brand-deep); color: #fff; font-size: 12.5px; font-weight: 600;
+  box-shadow: 0 8px 22px rgba(11, 31, 68, 0.35);
+  border: 1px solid #1b3a6b;
+  /* The Y half of the transform centres it on its row, so the caller passes the
+     row's middle and needs to know nothing about how tall the label is. */
+  opacity: 0; transform: translate(-10px, -50%);
+  transition: opacity 160ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.nav-fly.on { opacity: 1; transform: translate(0, -50%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-fly, .nav-collapse-chevron { transition: none; }
+}
 .sidebar-foot { flex-shrink: 0; margin-top: 10px; padding: 12px 10px 0; border-top: 1px solid #1b3a6b; background: var(--brand-deep); }
 .who { display: flex; align-items: center; gap: 9px; }
 .avatar {

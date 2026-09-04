@@ -4,8 +4,13 @@ import { io } from "socket.io-client";
 import { PERMISSIONS, type MeResponse, type Permission } from "@edutimetable/shared";
 import { api, clearToken, getToken, switchSchool } from "./api";
 import { useConfigCtx } from "./hooks";
+import { Icon, type IconName } from "./icons";
+import { useNavCollapsed } from "./nav-collapse";
 
 interface NavEntry {
+  /** §8.1d — what the screen IS, and the only thing identifying it when the nav
+   *  is collapsed. Required, so a new entry cannot be added without one. */
+  icon: IconName;
   label: string;
   to: string;
   requires?: Permission;
@@ -26,63 +31,63 @@ const NAV: NavGroup[] = [
   {
     label: "Build",
     items: [
-      { label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
-      { label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
-      { label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "calendar", label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "wand", label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "import", label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
       // §23 — the same pipeline, with the ERP as its source instead of a file.
-      { label: "Sync from ERP", to: "/sync", requires: PERMISSIONS.MASTERS_MANAGE },
-      { label: "Split Electives", to: "/electives", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "sync", label: "Sync from ERP", to: "/sync", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "split", label: "Split Electives", to: "/electives", requires: PERMISSIONS.MASTERS_MANAGE },
       // §4.7a — the rule the solver has always enforced, finally sayable.
-      { label: "Teacher Availability", to: "/availability", requires: PERMISSIONS.MASTERS_MANAGE },
-      { label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
-      { label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
+      { icon: "clock", label: "Teacher Availability", to: "/availability", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "checklist", label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
+      { icon: "bolt", label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
     ],
   },
   {
     label: "Manage",
     items: [
-      { label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
-      { label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
-      { label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
-      { label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
-      { label: "Extra & Guest Classes", to: "/extra-classes", requires: PERMISSIONS.TIMETABLE_EDIT },
+      { icon: "grid", label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
+      { icon: "board", label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
+      { icon: "publish", label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
+      { icon: "swap", label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
+      { icon: "plus", label: "Extra & Guest Classes", to: "/extra-classes", requires: PERMISSIONS.TIMETABLE_EDIT },
     ],
   },
   {
     label: "My Timetable",
     items: [
-      { label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN, requiresTeacher: true },
-      { label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS, requiresTeacher: true },
+      { icon: "user", label: "My Timetable", to: "/my-timetable", requires: PERMISSIONS.TIMETABLE_VIEW_OWN, requiresTeacher: true },
+      { icon: "users", label: "My Classes", to: "/my-classes", requires: PERMISSIONS.TIMETABLE_VIEW_CLASS, requiresTeacher: true },
     ],
   },
   {
     label: "Reference",
     items: [
-      { label: "Reports", to: "/reports", requires: PERMISSIONS.REPORTS_VIEW },
-      { label: "Notifications", to: "/notifications", requires: PERMISSIONS.NOTIFICATIONS_VIEW },
+      { icon: "chart", label: "Reports", to: "/reports", requires: PERMISSIONS.REPORTS_VIEW },
+      { icon: "bell", label: "Notifications", to: "/notifications", requires: PERMISSIONS.NOTIFICATIONS_VIEW },
     ],
   },
   {
     label: "Intelligence",
     items: [
-      { label: "Ask AI", to: "/ask-ai", requires: PERMISSIONS.AI_CHAT },
-      { label: "AI Settings", to: "/ai-settings", requires: PERMISSIONS.AI_CONFIGURE },
+      { icon: "chat", label: "Ask AI", to: "/ask-ai", requires: PERMISSIONS.AI_CHAT },
+      { icon: "sliders", label: "AI Settings", to: "/ai-settings", requires: PERMISSIONS.AI_CONFIGURE },
     ],
   },
   {
     label: "Administration",
     items: [
-      { label: "School Profile", to: "/school", requires: PERMISSIONS.MASTERS_MANAGE },
-      { label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE },
+      { icon: "building", label: "School Profile", to: "/school", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "shield", label: "Roles & Access", to: "/roles", requires: PERMISSIONS.ROLES_MANAGE },
       // §24.8 — the same authority: deciding who signs in is deciding what a role may do.
-      { label: "Users & Access", to: "/users", requires: PERMISSIONS.ROLES_MANAGE },
+      { icon: "userPlus", label: "Users & Access", to: "/users", requires: PERMISSIONS.ROLES_MANAGE },
     ],
   },
   {
     label: "System",
     items: [
-      { label: "Status & Jobs", to: "/system" },
-      { label: "Platform Console", to: "/platform", requiresPlatform: true },
+      { icon: "pulse", label: "Status & Jobs", to: "/system" },
+      { icon: "server", label: "Platform Console", to: "/platform", requiresPlatform: true },
     ],
   },
   // Manage / My Timetable / Intelligence / Reference groups arrive with Phases 2-7.
@@ -291,7 +296,45 @@ function Topbar({ me }: { me: MeResponse }) {
   );
 }
 
+/**
+ * §8.1d — the label that slides out of a collapsed icon.
+ *
+ * One element for the whole nav, positioned with `position: fixed` and a top
+ * measured from the hovered row. A label nested inside its own row would be the
+ * obvious build and does not work: `.sidebar-nav` scrolls, so it clips, and CSS
+ * has no way to be scrollable on one axis and visible on the other.
+ *
+ * It stays mounted and fades rather than being conditionally rendered, because
+ * an element removed on mouse-leave has nothing left to animate — "and then go
+ * inside" needs the thing to still be there on the way back in. So the label
+ * text survives the close and is only replaced when another row is entered.
+ */
+function NavFlyout({ hover }: { hover: { label: string; top: number; on: boolean } }) {
+  return (
+    <div
+      className={`nav-fly${hover.on ? " on" : ""}`}
+      style={{ top: hover.top }}
+      aria-hidden
+    >
+      {hover.label}
+    </div>
+  );
+}
+
 export function Shell({ me }: { me: MeResponse }) {
+  const [collapsed, toggleCollapsed] = useNavCollapsed();
+  // `on` drives the animation; `label` and `top` are deliberately kept after it
+  // goes false so the flyout has something to slide back in with.
+  const [hover, setHover] = useState({ label: "", top: 0, on: false });
+  const enter = (e: React.MouseEvent | React.FocusEvent, label: string) => {
+    if (!collapsed) return;
+    // The row's middle. The flyout centres itself on it with a translate, so
+    // this does not have to know how tall a label is.
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setHover({ label, top: r.top + r.height / 2, on: true });
+  };
+  const leave = () => setHover((h) => ({ ...h, on: false }));
+
   const held = new Set(me.permissions);
   const groups = NAV.map((g) => ({
     ...g,
@@ -322,47 +365,76 @@ export function Shell({ me }: { me: MeResponse }) {
               <span /><span /><span /><span />
             </div>
           )}
-          <div style={{ minWidth: 0 }}>
+          <div className="brand-text" style={{ minWidth: 0 }}>
             <div className="brand-name">Timetable AI</div>
             <div className="brand-sub" title={me.school.name}>
               {me.school.shortName || me.school.name}
             </div>
           </div>
         </div>
+        {/* Sits at the top of the nav rather than floating over the content:
+            it belongs to the nav, and a control that moves with what it
+            controls needs no explaining. */}
+        <button
+          className="nav-collapse-btn"
+          onClick={toggleCollapsed}
+          title={collapsed ? "Expand the menu" : "Collapse the menu to icons"}
+          aria-label={collapsed ? "Expand the menu" : "Collapse the menu to icons"}
+          aria-expanded={!collapsed}
+        >
+          <span className="nav-collapse-chevron" aria-hidden>«</span>
+          <span className="nav-label">Collapse</span>
+        </button>
         <div className="sidebar-nav">
           {groups.map((g) => (
             <div key={g.label}>
+              {/* Collapsed, the group name has nowhere to go — a rule stands in
+                  for it, so the groups still read as groups rather than as one
+                  undifferentiated column of twenty icons. */}
               <div className="nav-group-label">{g.label}</div>
               {g.items.map((i) => (
                 <NavLink
                   key={i.to}
                   to={i.to}
                   className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+                  // The name still reaches a screen reader and a native tooltip
+                  // when the visible label is gone.
+                  title={collapsed ? i.label : undefined}
+                  aria-label={collapsed ? i.label : undefined}
+                  onMouseEnter={(e) => enter(e, i.label)}
+                  onMouseLeave={leave}
+                  onFocus={(e) => enter(e, i.label)}
+                  onBlur={leave}
                 >
-                  {i.label}
+                  <Icon name={i.icon} />
+                  <span className="nav-label">{i.label}</span>
                 </NavLink>
               ))}
             </div>
           ))}
         </div>
+        {collapsed && <NavFlyout hover={hover} />}
         <div className="sidebar-foot">
-          <div className="who">
+          <div className="who" title={collapsed ? `${me.name} · ${me.role}` : undefined}>
             <div className="avatar">
               {me.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}
             </div>
-            <div>
+            <div className="nav-label" style={{ minWidth: 0 }}>
               <div className="who-name">{me.name}</div>
               <div className="who-role">{me.role}</div>
             </div>
           </div>
           <button
             className="logout-btn"
+            title={collapsed ? "Sign out" : undefined}
+            aria-label="Sign out"
             onClick={() => {
               clearToken();
               window.location.href = "/";
             }}
           >
-            Sign out (back to ERP)
+            <span className="logout-icon" aria-hidden>⏻</span>
+            <span className="nav-label">Sign out (back to ERP)</span>
           </button>
         </div>
       </nav>

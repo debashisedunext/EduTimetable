@@ -825,6 +825,18 @@ This is the missing link the earlier draft of this spec left implicit: `teachers
 </div>
 ```
 
+### 8.1d The nav collapses to icons
+
+Twenty-four entries in seven groups is a lot of navy down the left of every screen, and the screens that need width most — the allocation matrix, the draft board, the curriculum grid — are the ones looking at it. So the sidebar collapses from 236px to **64px of icons**, remembered per browser in `localStorage`: which way somebody likes their nav is a preference, not a fact about the school, and it never goes to the server.
+
+**The width is a root token, not a width on the sidebar.** `--sidebar-w` is what the §24.5d guided-setup dialog insets itself by, so collapsing sets it on `document.documentElement`. Setting it locally would shrink the nav while the dialog kept a 236px gap down its left edge — a strip of dead page that would be very hard to trace back to a nav toggle. It is read before the first paint, so the nav does not flash open and snap shut on every page load.
+
+**The icons are inline SVG, not emoji**, and the reasons are all about the collapsed state. They inherit `currentColor`, so an icon goes white on the active row exactly as its label does — twenty multicoloured emoji in a navy panel would be the loudest thing on screen, and the nav is the one part of the app that should never compete with the timetable. They render identically on every platform, which matters when the icon is the *only* thing identifying a screen. And `icon` is a **required** field on a nav entry, so a new screen cannot be added without choosing one.
+
+**The label slides out of the icon and back in.** One flyout element for the whole nav, `position: fixed`, its top measured from the hovered row. Two things about that are load-bearing: a label nested in its own row cannot work, because `.sidebar-nav` scrolls and therefore clips, and CSS has no way to be scrollable on one axis and visible on the other; and the flyout **stays mounted**, fading and sliding in both directions, because an element removed on mouse-leave has nothing left to animate — "and then go inside" needs the thing to still be there on the way back. Keyboard focus opens it too, and `prefers-reduced-motion` turns the movement off.
+
+What is left when the labels go: the group headings become 1px rules, so seven groups still read as seven groups rather than one column of twenty-four icons; the school's name, the user's name and the sign-out text fold away by the same rule; and every row keeps `title` and `aria-label`, so the name reaches a screen reader and a native tooltip whatever the animation is doing.
+
 ### 8.2 Substitute Teacher Center (sample HTML)
 ```html
 <div class="substitute-center">
