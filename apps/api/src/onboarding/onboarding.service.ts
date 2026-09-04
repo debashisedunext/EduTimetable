@@ -24,6 +24,7 @@ import {
   type TeacherAnswer, type WizardAnswers,
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
+import { TermsService } from "../terms/terms.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { stepFrom } from "./interview.answers";
 
@@ -51,6 +52,7 @@ export class OnboardingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly importer: ImportService,
+    private readonly terms: TermsService,
   ) {}
 
   /**
@@ -577,8 +579,32 @@ export class OnboardingService {
     // general-purpose room the solver will put Hindi in. The Rooms sheet has no
     // column for it, so it is done here, right after the rooms exist.
     if (step === 8) await this.attachLabSubjects(schoolId, answers);
+    // §25 — the terms of the session the importer has just created. Not a
+    // sheet, for the same reason the week is not one: §16 is master data, and
+    // the school calendar is not master data. Matched by name so pressing Next
+    // twice re-dates the same terms rather than replacing them.
+    if (step === 2) await this.applyTerms(schoolId, answers);
     this.logger.log(`Onboarding step ${step} committed for school ${schoolId}: ${JSON.stringify(result.created)}`);
     return { ...result, issues };
+  }
+
+  /**
+   * §25 — write the session's terms, if the admin asked for terms at all.
+   *
+   * Silent when the draft says nothing about terms, which is every draft made
+   * before this phase and every school that runs a whole year: the guided setup
+   * must not start writing a calendar nobody asked for.
+   */
+  private async applyTerms(schoolId: number, answers: WizardAnswers & Record<string, any>) {
+    const wanted = Array.isArray(answers.terms) ? answers.terms : [];
+    if (wanted.length === 0) return;
+    const year = await this.prisma.academicYear.findFirst({
+      where: { name: String(answers.session?.name ?? "") },
+      select: { id: true },
+    });
+    if (!year) return;
+    await this.terms.applyByName(year.id, wanted);
+    this.logger.log(`Onboarding: ${wanted.length} terms written for school ${schoolId}`);
   }
 
   /**

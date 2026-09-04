@@ -73,6 +73,7 @@ model School {
   users                       User[]
   erpRoleMappings             ErpRoleMapping[]
   academicYears               AcademicYear[]
+  academicTerms               AcademicTerm[]
   classes                     SchoolClass[]
   sections                    Section[]
   classSections               ClassSection[]
@@ -254,9 +255,47 @@ model AcademicYear {
   timetableConfigs TimetableConfig[]
   classSubjects    ClassSubject[]
   holidays         Holiday[]
+  terms            AcademicTerm[]
 
   @@unique([schoolId, name])
   @@map("academic_years")
+}
+
+/// §25 Phase 26 — a session that runs as terms rather than as one year.
+///
+/// **No flag says which mode a session is in.** A session is term-wise if and
+/// only if it has rows here, which is one source of truth rather than two that
+/// can come to disagree — the same reasoning as "an empty eligibility scope
+/// means *not stated*" (§18).
+///
+/// Terms belong to the SESSION, not to a timetable: they are the school's
+/// calendar, so every wing shares them. What differs per term is where lessons
+/// sit, never what is taught — the curriculum, the mappings and the Readiness
+/// score are shared across all of them (§25.1).
+model AcademicTerm {
+  id             Int                    @id @default(autoincrement())
+  schoolId       Int                    @map("school_id")
+  school         School                 @relation(fields: [schoolId], references: [id])
+  academicYearId Int                    @map("academic_year_id")
+  academicYear   AcademicYear           @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  /// What the school calls it: "Term 1", "Semester 1", "Autumn Term".
+  name           String                 @db.VarChar(30)
+  /// Position in the year. The dates decide what a term MEANS; this decides
+  /// the order dropdowns list them in, and survives a term being re-dated.
+  sortOrder      Int                    @map("sort_order") @db.SmallInt
+  startDate      DateTime               @map("start_date") @db.Date
+  endDate        DateTime               @map("end_date") @db.Date
+  createdAt      DateTime               @default(now()) @map("created_at")
+  slots          TimetableSlot[]
+  drafts         TimetableDraft[]
+  publications   TimetablePublication[]
+  extraClasses   ExtraClass[]
+
+  @@unique([schoolId, academicYearId, sortOrder], map: "uq_term_order")
+  @@unique([schoolId, academicYearId, name], map: "uq_term_name")
+  @@index([schoolId])
+  @@index([academicYearId, startDate, endDate])
+  @@map("academic_terms")
 }
 
 model SchoolClass {
@@ -672,6 +711,11 @@ model ExtraClass {
   school            School          @relation(fields: [schoolId], references: [id])
   timetableConfigId Int             @map("timetable_config_id")
   timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// §25 — an extra class is outside every draft but NOT outside a term: a
+  /// Saturday revision class runs in the term it was arranged for.
+  termId            Int?            @map("term_id")
+  term              AcademicTerm?   @relation(fields: [termId], references: [id])
+  termScope         Int             @default(dbgenerated()) @map("term_scope")
   classSectionId    Int             @map("class_section_id")
   classSection      ClassSection    @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
   subjectId         Int             @map("subject_id")
@@ -689,7 +733,7 @@ model ExtraClass {
   createdBy         Int?            @map("created_by")
   createdAt         DateTime        @default(now()) @map("created_at")
 
-  @@unique([timetableConfigId, classSectionId, dayOfWeek, periodNumber], map: "uq_extra_class_cell")
+  @@unique([timetableConfigId, termScope, classSectionId, dayOfWeek, periodNumber], map: "uq_extra_class_cell")
   @@index([schoolId])
   @@map("extra_classes")
 }
@@ -720,6 +764,14 @@ model TimetableDraft {
   school            School          @relation(fields: [schoolId], references: [id])
   timetableConfigId Int             @map("timetable_config_id")
   timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// §25 — a draft belongs to ONE term. A draft spanning every term would make
+  /// its §22.3 stats ("87% generated, 4 errors") a number about several
+  /// different timetables at once, which is not a number. NULL = year-wise.
+  termId            Int?            @map("term_id")
+  term              AcademicTerm?   @relation(fields: [termId], references: [id])
+  /// Generated: `COALESCE(term_id, 0)`. In `uq_draft_no` so each term counts
+  /// its own drafts from #1, and the five-live limit is per term.
+  termScope         Int             @default(dbgenerated()) @map("term_scope")
   /// per-config sequence — what the school calls it: "Draft #2"
   draftNo           Int             @map("draft_no") @db.SmallInt
   label             String?         @db.VarChar(80)
@@ -741,7 +793,7 @@ model TimetableDraft {
   publishedById     Int?            @map("published_by")
   slots             TimetableSlot[]
 
-  @@unique([schoolId, timetableConfigId, draftNo], map: "uq_draft_no")
+  @@unique([schoolId, timetableConfigId, termScope, draftNo], map: "uq_draft_no")
   @@index([schoolId])
   @@index([timetableConfigId, status])
   @@map("timetable_drafts")
@@ -795,6 +847,16 @@ model TimetableSlot {
   /// outright ("The value specified for generated column 'draft_scope' ... is
   /// not allowed"). This annotation is what tells Prisma the database owns it.
   draftScope          Int             @default(dbgenerated()) @map("draft_scope")
+  /// §25 — which term of the session this row belongs to. NULL means the whole
+  /// year, which is every row a year-wise school has ever written.
+  termId              Int?            @map("term_id")
+  term                AcademicTerm?   @relation(fields: [termId], references: [id])
+  /// §25 — a STORED GENERATED column: `COALESCE(term_id, 0)`. Like
+  /// `draft_scope`, it exists solely to sit inside the three unique keys, where
+  /// a NULL would be treated as distinct and would quietly let two year-wide
+  /// rows share one cell. Never written from code — see `draftScope` above for
+  /// why `dbgenerated()` rather than a default.
+  termScope           Int             @default(dbgenerated()) @map("term_scope")
   /// NULL only on a §4.9 elective *option* row, which belongs to a block
   /// rather than to any one section — there is no enrolment model, so an
   /// option genuinely has no class-section. NULL also takes the row out of
@@ -818,15 +880,16 @@ model TimetableSlot {
   schoolId            Int             @map("school_id")
   school              School          @relation(fields: [schoolId], references: [id])
 
-  @@unique([timetableConfigId, status, draftScope, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
-  @@unique([timetableConfigId, status, draftScope, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
-  @@unique([timetableConfigId, status, draftScope, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
+  @@unique([timetableConfigId, status, draftScope, termScope, classSectionId, dayOfWeek, periodNumber], map: "uq_class_slot")
+  @@unique([timetableConfigId, status, draftScope, termScope, teacherOccupancyKey, dayOfWeek, periodNumber], map: "uq_teacher_slot")
+  @@unique([timetableConfigId, status, draftScope, termScope, roomId, dayOfWeek, periodNumber], map: "uq_room_slot")
   @@index([timetableConfigId, status, teacherId])
   // Scoped reads are always `school_id = ? AND timetable_config_id = ? AND
   // status = ?` — this is the index EXPLAIN must pick for the matrix and board
   // queries, the hottest path in the app (§14).
   @@index([schoolId, timetableConfigId, status])
   @@index([schoolId, timetableConfigId, status, draftId])
+  @@index([schoolId, timetableConfigId, status, termId])
   @@map("timetable_slots")
 }
 
@@ -835,8 +898,13 @@ model TimetableSlot {
 // The slots themselves flip status inside the same transaction that writes
 // this row — the version number is derived from this log, never stored on slots.
 model TimetablePublication {
-  id                Int      @id @default(autoincrement())
-  timetableConfigId Int      @map("timetable_config_id")
+  id                Int           @id @default(autoincrement())
+  timetableConfigId Int           @map("timetable_config_id")
+  /// §25 — each term publishes on its own and keeps its own history, so each
+  /// has a version 1. Publishing Term 3 in November must not renumber Term 1.
+  termId            Int?          @map("term_id")
+  term              AcademicTerm? @relation(fields: [termId], references: [id])
+  termScope         Int           @default(dbgenerated()) @map("term_scope")
   version           Int
   slotCount         Int      @map("slot_count")
   changedCount      Int      @map("changed_count")
@@ -846,7 +914,7 @@ model TimetablePublication {
   schoolId          Int      @map("school_id")
   school            School   @relation(fields: [schoolId], references: [id])
 
-  @@unique([timetableConfigId, version], map: "uq_config_version")
+  @@unique([timetableConfigId, termScope, version], map: "uq_config_version")
   @@index([schoolId])
   @@map("timetable_publications")
 }

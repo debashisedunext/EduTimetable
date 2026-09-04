@@ -33,6 +33,7 @@ import { RouteCensusController } from "./dev/route-census.controller";
 import { ReadinessService } from "./readiness/readiness.service";
 import { AutoFixController } from "./readiness/auto-fix.controller";
 import { DraftsModule } from "./drafts/drafts.module";
+import { TermsModule } from "./terms/terms.module";
 import { AutoFixService } from "./readiness/auto-fix.service";
 
 @Module({
@@ -52,6 +53,7 @@ import { AutoFixService } from "./readiness/auto-fix.service";
     // tenant context, so the context service must already exist (9.1 / §17).
     TenantModule,
     DraftsModule,
+    TermsModule,
     // The tenant registry (§17.3). Optional at runtime — a deployment without
     // CONTROL_DATABASE_URL keeps working as a single school.
     ControlModule,

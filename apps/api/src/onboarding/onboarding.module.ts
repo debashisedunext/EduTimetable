@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AiModule } from "../ai/ai.module";
 import { ImportModule } from "../import/import.module";
+import { TermsModule } from "../terms/terms.module";
 import { DevInterviewController, OnboardingController } from "./onboarding.controller";
 import { OnboardingService } from "./onboarding.service";
 import { InterviewService } from "./interview.service";
@@ -9,7 +10,9 @@ import { InterviewService } from "./interview.service";
 @Module({
   // The wizard commits through the §16 pipeline, never its own writer; the
   // interview borrows the §13.2 provider contract, never a second one.
-  imports: [ImportModule, AiModule],
+  // §25: the session step writes the school's terms right after the importer
+  // creates the year — through the one resolver, never a second writer.
+  imports: [ImportModule, AiModule, TermsModule],
   // DevInterviewController is dev-gated: it exists so the interview's merge step
   // can be asserted without an LLM in the loop (§17.8).
   controllers: [OnboardingController, DevInterviewController],

@@ -6,6 +6,7 @@ import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
 import { StepElectives } from "./Electives";
+import { TermsEditor } from "../terms/TermsEditor";
 
 // Capacity-first order: Timetable Config (periods/week capacity) precedes
 // Curriculum and Teacher Mapping so their periods/week entries validate
@@ -94,6 +95,12 @@ function StepAcademicYear() {
   const [form, setForm] = useState({ name: "", startDate: "", endDate: "" });
   const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * §25 — which session's terms are open below the table. A session at a time,
+   * because a school runs one at a time and four expanded editors would be four
+   * calendars to read at once.
+   */
+  const [termsFor, setTermsFor] = useState<number | null>(null);
 
   const reset = () => { setForm({ name: "", startDate: "", endDate: "" }); setEditId(null); };
   const save = async () => {
@@ -117,11 +124,40 @@ function StepAcademicYear() {
         rows={(data ?? []).map((y) => [
           y.name, y.startDate?.slice(0, 10), y.endDate?.slice(0, 10),
           y.isActive ? <span key="a" className="badge badge-ok">active</span> : "—",
-          <RowActions key="x"
-            onEdit={() => { setEditId(y.id); setForm({ name: y.name, startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }); }}
-            onDelete={() => remove(y)} />,
+          <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+            {/* §25 — a session runs as one year or as terms, and this is where
+                that is decided. Beside Edit rather than inside it: the term
+                calendar is a different question from the session's own dates,
+                and it is the one a school answers once and lives with. */}
+            <button
+              style={{
+                border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11.5,
+                borderRadius: 7, cursor: "pointer",
+                background: termsFor === y.id ? "var(--brand)" : "var(--paper)",
+                color: termsFor === y.id ? "#fff" : "var(--ink)",
+              }}
+              onClick={() => setTermsFor(termsFor === y.id ? null : y.id)}
+            >
+              ⌛ Terms
+            </button>
+            <RowActions
+              onEdit={() => { setEditId(y.id); setForm({ name: y.name, startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }); }}
+              onDelete={() => remove(y)} />
+          </span>,
         ])}
       />
+
+      {termsFor !== null && (() => {
+        const y = (data ?? []).find((row) => row.id === termsFor);
+        if (!y) return null;
+        return (
+          <TermsEditor
+            key={y.id}
+            academicYearId={y.id}
+            session={{ startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }}
+          />
+        );
+      })()}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Name (e.g. 2026-27)"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Start date"><input type="date" style={inputStyle} value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>

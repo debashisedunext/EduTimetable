@@ -2161,3 +2161,66 @@ Verification originally gated sign-in and every school. A new customer therefore
 `scripts/interview-smoke.cjs` does the same for the third door: eight scripted turns, then the assertion that matters — the answers equal the wizard's, the staff list accumulated across two turns rather than being replaced, a hallucinated class and an unknown field were both refused *by name*, and the resulting draft commits through the same endpoints to a school at 100% Readiness.
 
 `scripts/users-smoke.cjs` covers §24.7, and its assertions are deliberately mostly negatives — a teacher who can reach a write endpoint is the whole feature failing quietly. Invite, accept once (and the link is dead the second time), sign in, land in the one school they were invited into, read their own timetable but **not** another teacher's, and be refused by the server with a 403 on every write endpoint and on `POST /schools`. Then: the bulk preview names the guest and the emailless rather than counting them, deactivation shuts the door while keeping the row, the last remaining administrator cannot deactivate themselves, and an ERP school refuses the lot.
+
+---
+
+## 25. Term-wise Timetables (Phase 26)
+
+A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
+
+§25 lets a session run **year-wise** (exactly as before) or **term-wise**: two or more named spans of dates, each with its own timetable, all of them live at once.
+
+Four decisions bound the feature, and the first is what makes the rest cheap:
+
+1. **Placements only.** Every term shares one curriculum, one set of teacher mappings and one Readiness score. Terms differ in *where lessons sit* and *who takes a given cell* — never in what is taught or how much.
+2. **Each term publishes separately**, with its own version history.
+3. **Generate acts on the selected term only**; copying one term over the others is a separate, explicit action.
+4. **Read-only screens open on today's term**, falling back to the first when today is in the holidays.
+
+### 25.1 A term is a scope, not a second timetable
+
+`term_id` on `timetable_slots`, with a stored generated `term_scope = COALESCE(term_id, 0)` inside all three unique keys — the §22 device exactly, for the same reason. `uq_class_slot` already carried `(config, status, draft_scope, section, day, period)`, so Term 1 and Term 2 both placing 5-A on Monday P1 collide and **a second term cannot physically exist**. That is invariant 1 doing its job, which is why this needs a new dimension in the key rather than a new screen.
+
+Two alternatives were rejected on invariants the schema already holds. *One `timetable_config` per term* breaks §3.10 — a class-section belongs to exactly one config, so 5-A cannot be in both terms'. *One named draft per term* breaks §22 — `draft_scope` collapses every published row to `0`, so two terms could never be live at once, which is the whole feature.
+
+`COALESCE` rather than a bare `term_id` for the reason `draft_scope` has it: a NULL inside a unique key is treated as distinct, so year-wide rows would stop guarding each other — silently undoing invariant 1 for every school that never uses terms. The FK is `RESTRICT`, which MySQL would insist on anyway for the base column of a stored generated column, and which is right on the merits: `SET NULL` would push a deleted term's rows to scope 0 to collide with the year-wide set.
+
+What falls out of this is the whole argument for the design:
+
+- **A year-wise school is untouched.** `term_id IS NULL` → `term_scope = 0` → byte-identical behaviour, and the migration rewrites **no existing row** — which is what makes it safe to run on every school's database (§17.3) rather than only where terms were asked for.
+- **The solver and the six feasibility checks do not change at all.** Terms share a curriculum, so `runFeasibility` and `SolverState` see what they already saw; generation solves once and the writer stamps a term.
+- **`BoardEngine` does not change either.** The board loads one term's rows and checks against them, so "no double-booking" is per-term because the row set is.
+
+`term_id` also goes on `timetable_drafts` (a draft spanning every term would make its §22.3 stats a number about several timetables at once, which is not a number — and the five-live limit is per term), on `timetable_publications` (each term has its own version 1; publishing Term 3 in November must not renumber Term 1), and on `extra_classes` (a Saturday revision class runs in the term it was arranged for).
+
+**No column says which mode a session is in.** A session is term-wise **if and only if it has term rows** — one source of truth, which cannot come to disagree with the rows the way a flag can. The same reasoning as "an empty eligibility scope means *not stated*" (§18).
+
+### 25.2 One resolver, and the date decides
+
+The sharpest risk here is not the schema, it is the **missing filter**. `substitutes.service.ts` counts published slots by teacher and day-of-week; `reports.service.ts` filters on `status: 'published'` alone. With three terms, marking a teacher absent once would report 3× the affected periods and every load summary would treble. Nothing would error — the numbers would just be wrong.
+
+So the filter has one owner, `TermsService`, exported like `DraftsService` and for the same reason. It resolves in order: an id the caller asked for, **verified to belong to this config's own session** because a term id is not a capability; otherwise the term containing the date in question, defaulting to today; otherwise the first term, for a date in the holidays, which belong to no term at all; otherwise `null` — a year-wise session.
+
+That date rule is what makes the term selector a default rather than a chore: a teacher opening their timetable in November is shown November's.
+
+`GET /timetable-configs/:id/terms` is **session-only, with no permission** — the §10.5 `/me/colors` argument exactly. Every role needs the list (an admin on the Board, a teacher on My Timetable, Front Office in the Substitute Center), no single permission is common to them (a Principal holds `timetable.view.all`, a Teacher `.own` and `.class`, and the guard is AND), and a role that could not read it would show the wrong term's timetable with no way to tell. Writing the calendar is `masters.manage`: a term boundary decides which timetable a Tuesday in October belongs to.
+
+`GET /academic-years/:id/terms` checks the **session exists** before listing, and that is not ceremony. Scoped by the tenant context, a query for another school's year returns zero rows — and `[]` is indistinguishable from "this session runs as a whole year", so a stranger would be told a fact about a school they cannot see in the same words its owner gets. The §17.8 gate caught exactly this, on a check whose own assertion had been written loosely enough to tolerate it.
+
+### 25.3 Splitting a session, and the screen that asks
+
+`splitSession` in `packages/shared` answers "where would N boundaries fall?" — by **whole months** when that is meaningful (the session starts on the 1st and divides evenly), which is what a school recognises: 1 Apr–30 Sep and 1 Oct–31 Mar, not 1 Apr–1 Oct and 2 Oct–31 Mar. Anything else — a session starting on the 15th, a 40-day summer school, five terms in twelve months — splits by days. That narrowing is deliberate: "six months each" has no obvious meaning for a session running 15 Apr to 14 Apr, and a rule that guessed one would put a boundary somewhere nobody chose. Month ends are asked for as *day 0 of the following month*, so a leap February needs no special case and cannot acquire a wrong one.
+
+There is deliberately **no endpoint** that proposes a split. The guided setup asks the question before the academic year exists, so a server call could not answer it there; the shared function runs unchanged on both sides, as the feasibility and board engines already do.
+
+`validateTerms` is the same function on both sides too, so the message on screen is the message that would come back — not a second and kinder set of rules. It reports per row with a fix, the Feasibility Engine's contract: an overlap names **both** terms and the date to start at, since a day cannot belong to two terms or the timetable for that day is two timetables. Gaps between terms are legal — the holidays are not in a term.
+
+The controls live in one component with two containers. `TermsEditor` loads and saves (the Academic Years screen and the Setup Wizard); `DraftTerms` only collects (the guided setup's session step, where there is no year yet — step 2's commit writes the terms straight after the importer creates the year, matched **by name** so pressing Next twice re-dates the same terms rather than replacing them and orphaning a term's timetable).
+
+The whole set is saved in one PUT: no-overlaps and at-least-two-terms are rules about the *set*, and saving a row at a time would walk through illegal states and could stop in one. Rows carrying an id are updated in place, which matters more than it looks — every slot, draft and publication points at a term id, so re-dating Term 2 must move the term the timetable is filed under. A term with rows in it cannot be removed by a Save button; the refusal names the term and how much is in it.
+
+### 25.4 Verification
+
+`scripts/terms-smoke.cjs` runs the calendar end to end: a year-wise session reports no terms and no current term (which is how the selector knows to hide); a split is proposed, saved, renamed and grown while keeping its ids; overlaps, terms outside the session and a lone term are each refused by name with the saved calendar left exactly as it was; today's term is what a request with no term gets; another school's session is a 404 both ways; a teacher may read the list and not write it; and the guided setup's step 2 writes the terms once and creates nothing on a second press.
+
+`packages/shared/src/terms/terms.spec.ts` covers the arithmetic away from any database — the two-, three- and four-term splits, contiguity and exact coverage, the leap February, the day-split fallbacks, every validation rule, and `termForDate` including a date in a gap.

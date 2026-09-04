@@ -23,6 +23,7 @@ import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepCurriculum, StepMapping, StepRooms, StepSettings } from "./steps/Syllabus";
 import { planClasses, type SubjectAnswer, type TeacherAnswer } from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
+import { DraftTerms, termProblems } from "../terms/TermsEditor";
 
 export const TOTAL_STEPS = 11;
 
@@ -333,6 +334,18 @@ function StepSession({ answers, onChange }: {
         <Field label="Starts" type="date" value={s.startDate} onChange={set("startDate")} />
         <Field label="Ends" type="date" value={s.endDate} onChange={set("endDate")} />
       </div>
+
+      {/* §25 — terms belong to the session, so they are asked for here and
+          nowhere else. Collected into the draft like every other answer; the
+          rows are written when this step commits, right after the importer
+          creates the year they hang off. */}
+      {s.startDate && s.endDate && s.endDate > s.startDate && (
+        <DraftTerms
+          session={{ startDate: s.startDate, endDate: s.endDate }}
+          value={answers.terms ?? []}
+          onChange={(terms) => onChange({ terms })}
+        />
+      )}
     </>
   );
 }
@@ -417,6 +430,10 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
       if (!s.name?.trim()) return "Give the session a name.";
       if (!s.startDate || !s.endDate) return "A session needs a start and an end date.";
       if (s.endDate <= s.startDate) return "The session must end after it starts.";
+      // §25 — a half-built term calendar must not reach the commit. The server
+      // would refuse it, but on the step AFTER the one holding the mistake.
+      const bad = termProblems(answers.terms ?? [], { startDate: s.startDate, endDate: s.endDate })[0];
+      if (bad) return `${bad.message} ${bad.fix}`;
     }
     if (step === 3) {
       if ((answers.wings ?? []).length === 0) return "Add at least one wing — most schools have one to three.";

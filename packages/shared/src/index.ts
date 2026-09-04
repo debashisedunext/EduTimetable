@@ -183,6 +183,7 @@ export * from "./optimize/objective";
 export * from "./optimize/model";
 export * from "./electives/pins";
 export * from "./import/contract";
+export * from "./terms/terms";
 export * from "./onboarding/wizard";
 export * from "./onboarding/suggest";
 export * from "./ai/data-entry";
