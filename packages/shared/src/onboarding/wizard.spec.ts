@@ -8,6 +8,7 @@ import {
   sectionLetters,
   sessionSheets,
   weeklyCapacity,
+  WING_SUGGESTIONS,
 } from "./wizard";
 import { SHEETS } from "../import/contract";
 
@@ -38,6 +39,40 @@ describe("§15.3 the class ladder", () => {
   it("fits the importer's 20-character class name", () => {
     const max = SHEETS.find((s) => s.name === "Classes")!.columns.find((c) => c.key === "name")!.maxLength!;
     for (const c of CLASS_LADDER) expect(c.length, c).toBeLessThanOrEqual(max);
+  });
+});
+
+describe("§15.3 the suggested wings", () => {
+  /**
+   * The suggestions are ladder INDICES, so they are only as correct as the
+   * ladder they were written against. Add "Class 13" at the top and nothing
+   * breaks; insert a rung in the middle and "Primary Wing" quietly starts
+   * meaning Class 2–6 — a wrong school, created by tapping a button that says
+   * the right thing. These assert the meaning, not the numbers.
+   */
+  it("name the classes a reader of the label would expect", () => {
+    const range = (name: string) => {
+      const s = WING_SUGGESTIONS.find((w) => w.name === name)!;
+      return [CLASS_LADDER[s.fromIndex], CLASS_LADDER[s.toIndex]];
+    };
+    expect(range("Primary Wing")).toEqual(["Class 1", "Class 5"]);
+    expect(range("Secondary Wing")).toEqual(["Class 6", "Class 10"]);
+    expect(range("Higher Secondary")).toEqual(["Class 11", "Class 12"]);
+  });
+
+  it("tile Class 1 to Class 12 without overlapping — tapping all three is a whole school, not a conflict", () => {
+    // planClasses reports a class claimed by two wings as an error, so an
+    // overlap here would make the fastest path through the screen the one that
+    // produces an error message.
+    const { classes, issues } = planClasses(WING_SUGGESTIONS.map((s) => ({ ...s, sections: 2 })));
+    expect(issues).toEqual([]);
+    expect(classes.map((c) => c.className)).toEqual(
+      CLASS_LADDER.slice(CLASS_LADDER.indexOf("Class 1")),
+    );
+  });
+
+  it("fit the VarChar(50) a wing's name is stored in as `timetable_configs.name`", () => {
+    for (const s of WING_SUGGESTIONS) expect(s.name.length, s.name).toBeLessThanOrEqual(50);
   });
 });
 

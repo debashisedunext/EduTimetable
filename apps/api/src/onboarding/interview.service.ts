@@ -28,6 +28,7 @@
  * there, with everything already saved.
  */
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { CLASS_LADDER, WING_SUGGESTIONS } from "@edutimetable/shared";
 import { AiSettingsService } from "../ai/settings.service";
 import type { LlmMessage, LlmTool } from "../ai/providers";
 import { PrismaService } from "../prisma/prisma.service";
@@ -114,7 +115,7 @@ function systemPrompt(collected: Record<string, unknown>, step: number, now: Dat
     "WHAT TO COLLECT, in this order:",
     "  1. The school's name.",
     `  2. The academic session — its name and its start and end dates. TODAY IS ${now.toISOString().slice(0, 10)}, and most Indian schools run April to March, so the session being set up is almost certainly "${session.name}" (${session.startDate} to ${session.endDate}). Offer that first. You have no other way to know the date, and a session guessed from memory is a whole year of timetable filed against the wrong one.`,
-    "  3. The wings that are timetabled separately (most schools have one to three; one is normal), and for each: the range of classes it runs and how many sections each class has.",
+    `  3. The wings that are timetabled separately (most schools have one to three; one is normal), and for each: the range of classes it runs and how many sections each class has. Offer the ordinary ones as options — ${WING_SUGGESTIONS.map((w) => `"${w.name}" (${CLASS_LADDER[w.fromIndex]}–${CLASS_LADDER[w.toIndex]})`).join(", ")} — the same three the guided screen offers, so the two ways in do not name the same thing differently.`,
     "  4. Each wing's week: working days, periods per day, when the day starts, how long a period is, and any breaks.",
     "  5. The subjects taught, marking which ones need a laboratory.",
     "  6. The teachers: name, which subjects they teach, and which wing. Employee codes and period limits only if offered.",

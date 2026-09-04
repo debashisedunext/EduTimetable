@@ -21,6 +21,7 @@ import {
   planClasses,
   planSummary,
   weeklyCapacity,
+  WING_SUGGESTIONS,
   type WingAnswer,
 } from "@edutimetable/shared";
 import { api } from "../../api";
@@ -60,17 +61,51 @@ export function StepWings({ answers, onChange }: {
 }) {
   const wings: WingAnswer[] = answers.wings ?? [];
   const [name, setName] = useState("");
+  /**
+   * The suggested names, editable before they are added. Held here rather than
+   * in the draft because an untouched suggestion is not an answer — nothing the
+   * admin has not tapped should reach the server.
+   */
+  const [suggested, setSuggested] = useState<string[]>(() => WING_SUGGESTIONS.map((s) => s.name));
 
+  const has = (n: string) => wings.some((w) => w.name.toLowerCase() === n.trim().toLowerCase());
   const set = (next: WingAnswer[]) => onChange({ wings: next });
-  const add = () => {
-    const n = name.trim();
-    if (!n) return;
-    if (wings.some((w) => w.name.toLowerCase() === n.toLowerCase())) return;
-    // A sensible default range so the slider opens somewhere useful rather than
-    // collapsed on Pre-Nursery.
-    set([...wings, { name: n, fromIndex: 4, toIndex: 9, sections: 2 }]);
+
+  const add = (
+    n: string,
+    // A sensible default range so the slider on the next step opens somewhere
+    // useful rather than collapsed on Pre-Nursery.
+    range: { fromIndex: number; toIndex: number } = { fromIndex: 4, toIndex: 9 },
+    onto: WingAnswer[] = wings,
+  ): WingAnswer[] => {
+    const trimmed = n.trim();
+    if (!trimmed) return onto;
+    if (onto.some((w) => w.name.toLowerCase() === trimmed.toLowerCase())) return onto;
+    return [...onto, { name: trimmed, ...range, sections: 2 }];
+  };
+
+  const addTyped = () => {
+    const next = add(name);
+    if (next === wings) return;
+    set(next);
     setName("");
   };
+
+  /**
+   * Add every suggestion that is not already there, in ONE patch.
+   *
+   * Three separate `set` calls would each read the same stale `wings` from this
+   * render and the last would win, leaving one wing out of three — the classic
+   * shape of a bug that looks like the button "sometimes" working.
+   */
+  const addAll = () =>
+    set(WING_SUGGESTIONS.reduce(
+      (acc, s, i) => add(suggested[i], { fromIndex: s.fromIndex, toIndex: s.toIndex }, acc),
+      wings,
+    ));
+
+  const open = WING_SUGGESTIONS.map((s, i) => ({ ...s, typed: suggested[i], i }))
+    .filter((s) => !has(s.typed));
 
   return (
     <>
@@ -101,14 +136,64 @@ export function StepWings({ answers, onChange }: {
         </div>
       )}
 
+      {open.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 7 }}>
+            <label style={{ ...label, marginBottom: 0 }}>
+              {wings.length === 0 ? "The usual three — tap to add" : "Add another"}
+            </label>
+            <span style={{ flex: 1 }} />
+            {open.length > 1 && (
+              <button className="btn" onClick={addAll}
+                style={{ padding: "4px 10px", fontSize: 11.5, borderColor: "var(--brand)", color: "var(--brand)" }}>
+                Add all {open.length}
+              </button>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))" }}>
+            {open.map((s) => (
+              <div key={s.name} style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "9px 10px",
+                border: "1px dashed var(--steel-light)", borderRadius: 10, background: "var(--offwhite)",
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* Editable, because "Primary Wing" is a suggestion and a school
+                      that calls it "Junior School" should not have to delete ours
+                      and retype from scratch. */}
+                  <input
+                    style={{ ...input, padding: "5px 8px", fontSize: 13, fontWeight: 600 }}
+                    value={s.typed}
+                    aria-label={`Name for the ${s.name} wing`}
+                    onChange={(e) => setSuggested(suggested.map((v, j) => (j === s.i ? e.target.value : v)))}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      set(add(s.typed, { fromIndex: s.fromIndex, toIndex: s.toIndex }));
+                    }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 4, paddingLeft: 2 }}>
+                    {CLASS_LADDER[s.fromIndex]} – {CLASS_LADDER[s.toIndex]}
+                  </div>
+                </div>
+                <button className="btn btn-primary" disabled={!s.typed.trim()}
+                  style={{ padding: "5px 11px", fontSize: 12 }}
+                  onClick={() => set(add(s.typed, { fromIndex: s.fromIndex, toIndex: s.toIndex }))}>
+                  + Add
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
         <div style={{ flex: 1 }}>
-          <label style={label}>Add a wing</label>
-          <input style={input} value={name} placeholder="e.g. Primary Wing"
+          <label style={label}>{open.length > 0 ? "Or name your own" : "Add a wing"}</label>
+          <input style={input} value={name} placeholder="e.g. Pre-Primary"
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTyped(); } }} />
         </div>
-        <button className="btn btn-primary" onClick={add} disabled={!name.trim()}>+ Add wing</button>
+        <button className="btn btn-primary" onClick={addTyped} disabled={!name.trim()}>+ Add wing</button>
       </div>
 
       <Note>

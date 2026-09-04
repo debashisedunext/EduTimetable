@@ -68,6 +68,32 @@ export function sectionLetters(count: number): string[] {
   return out;
 }
 
+/**
+ * The three wings almost every school actually has, ready to be tapped.
+ *
+ * An empty box asking "which wings does the school timetable separately?" is a
+ * question about *our* vocabulary, not theirs: a wing is a concept the admin
+ * meets for the first time on that screen, and typing a name for something you
+ * have just been introduced to is the slowest possible first step. Three named
+ * suggestions turn it into recognition — and the names are the ordinary Indian
+ * ones, so most schools are looking at their own structure already.
+ *
+ * They are *starting points*, not a menu: the name is editable before it is
+ * added and the range is dragged on the next step. This lives here rather than
+ * in the screen because the AI interviewer offers the same three, and two doors
+ * into the same setup naming wings differently would be a small lie about how
+ * the product thinks.
+ */
+export const WING_SUGGESTIONS: ReadonlyArray<{
+  name: string;
+  fromIndex: number;
+  toIndex: number;
+}> = [
+  { name: "Primary Wing", fromIndex: 4, toIndex: 8 },       // Class 1 – Class 5
+  { name: "Secondary Wing", fromIndex: 9, toIndex: 13 },    // Class 6 – Class 10
+  { name: "Higher Secondary", fromIndex: 14, toIndex: 15 }, // Class 11 – Class 12
+];
+
 /** One wing: a name, a class range on the ladder, and how many sections each. */
 export interface WingAnswer {
   name: string;

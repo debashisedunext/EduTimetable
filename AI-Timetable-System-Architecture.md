@@ -1983,6 +1983,14 @@ Two things are deliberately outside it. Period and break structure is not master
 
 `onboarding_sessions` holds one row per person per school: current step, mode, and an `answers` JSON. Answers are **merged** on save, never replaced — a step sends only its own keys, and a client that sent the whole object would blank a step it never rendered, which is exactly how a Back button loses work. An abandoned wizard therefore leaves nothing in `classes`, `rooms` or `teachers`; a completed one is marked `completed_at` rather than deleted, so "did this school come through the guided setup?" stays answerable.
 
+### 24.2a Step 3 opens with the usual three wings
+
+A wing is a word the admin meets for the first time on step 3, and the step used to answer it with an empty text box — asking them to invent a name for something they have just been introduced to, which is the slowest possible first move in the whole setup. It now opens with **Primary Wing (Class 1–5), Secondary Wing (Class 6–10) and Higher Secondary (Class 11–12)**, each one tap to add, with *Add all 3* for the school that has all three.
+
+Three details make them suggestions rather than a menu. The **name is editable before it is added**, because a school that calls it "Junior School" should not have to delete ours and retype; the **range comes with them**, so tapping *Primary Wing* opens the next step's slider on Class 1–5 instead of the generic default; and **nothing is stored until it is tapped** — an untouched suggestion is not an answer, so it lives in screen state and never reaches `answers`.
+
+The list is `WING_SUGGESTIONS` in `packages/shared`, beside `CLASS_LADDER`, for two reasons. The ranges are *ladder indices*, so they are only as correct as the ladder they were written against — inserting a rung in the middle would silently turn "Primary Wing" into Class 2–6, a wrong school created by tapping a button that says the right thing; the unit tests therefore assert the class **names** each suggestion resolves to, and that the three tile Class 1–12 without overlapping (`planClasses` reports a class claimed by two wings as an error, so an overlap would make the fastest path through the screen the one that produces an error message). And the §24.6 interviewer offers the same three by name from the same constant, so the two doors into the setup cannot start naming the same thing differently.
+
 ### 24.3 The suggesters, and what they are not allowed to propose
 
 Steps 8–10 propose rather than ask: rooms from the classes and subjects, a curriculum from a per-band weight table, and mappings from what each teacher said they teach. The rule governing all three is that **a proposal that cannot generate is worse than no proposal, because it looks like an answer.** Every one of the following was a real defect caught by the Feasibility Engine refusing a school the wizard had just built:
