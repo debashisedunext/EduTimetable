@@ -20,9 +20,24 @@ export class TimetableConfigsController {
     private readonly keys: CacheKeysService,
   ) {}
 
-  /** Landing screen list — visible to anyone who can generate or manage. */
+  /**
+   * The list of timetables — which is a VIEW concern, not a build one.
+   *
+   * This asked for `timetable.generate`, and the comment above it said "anyone
+   * who can generate or manage" — but a Principal holds neither, and holds
+   * `timetable.view.all`. So the top-bar selector 403'd for them, which left
+   * every screen that needs to know *which* timetable it is looking at — the
+   * Matrix, Reports, the Substitute Center — with nothing selected and no way
+   * to select. A role that may read every timetable must be able to find out
+   * that they exist.
+   *
+   * `view.all` rather than an OR with `generate`: the permissions guard is AND,
+   * and a role that may generate a timetable it may not look at is not a role
+   * anybody wants. A Teacher (`view.own`) is still refused, correctly — their
+   * way in is My Timetable, not a picker over every wing in the school.
+   */
   @Get()
-  @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
+  @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
   async list(@Req() req: AuthedRequest) {
     const configs = await this.prisma.timetableConfig.findMany({
       where: { schoolId: req.user.schoolId },

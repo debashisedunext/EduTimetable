@@ -726,6 +726,12 @@ const LIST_NO_IDS = {
     "POST /dev/erp-token": "dev-only stub ERP; refused when NODE_ENV=production",
     "GET /dev/mail": "dev-only captured mail; refused when NODE_ENV=production",
     "GET /dev/mail/token": "dev-only captured mail; refused when NODE_ENV=production",
+    // §8.1e — which school the sign-in screen's demo personas should open. It
+    // names one school and one teacher, so it IS school data, and it is exposed
+    // on exactly the same terms as the stub ERP beside it: dev only, 404 in
+    // production and without the dev keypair. In a deployment where this
+    // answers at all, the personas below it are already a way into that school.
+    "GET /dev/demo-target": "dev-only demo target; refused when NODE_ENV=production",
     // §15.3 Phase 25.0 — the local sign-in surface. Public by definition:
     // whoever calls these has no credential yet. Each answers identically for a
     // known and an unknown address, so none of them is an existence oracle.

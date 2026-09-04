@@ -407,7 +407,8 @@ export function SignIn() {
  * buttons that all 404 in front of a real customer.
  */
 const DEMO_ROLES = [
-  { key: "admin", who: "R. Ahuja", role: "Super Admin", does: "everything — masters, generate, publish, roles" },
+  { key: "admin", who: "R. Ahuja", role: "Super Admin", does: "everything — masters, generate, publish, roles, AI" },
+  { key: "timetable", who: "V. Kulkarni", role: "Timetable Admin", does: "builds and publishes; cannot touch roles or AI keys" },
   { key: "principal", who: "S. Iyer", role: "Principal", does: "sees every timetable and report; changes nothing" },
   { key: "teacher", who: "R. Sharma", role: "Teacher", does: "their own grid and their classes only" },
   { key: "frontoffice", who: "K. Mehta", role: "Front Office", does: "substitutions, and every timetable to pick from" },
@@ -415,13 +416,24 @@ const DEMO_ROLES = [
 
 const DEMO_TOKENS: Record<string, Record<string, unknown>> = {
   admin: { erpUserId: "ERP-1", erpRole: "ADMIN", name: "R. Ahuja", email: "admin@school.test" },
+  timetable: { erpUserId: "ERP-5", erpRole: "TIMETABLE_ADMIN", name: "V. Kulkarni", email: "ttadmin@school.test" },
   principal: { erpUserId: "ERP-2", erpRole: "PRINCIPAL", name: "S. Iyer", email: "principal@school.test" },
-  teacher: { erpUserId: "ERP-3", erpRole: "TEACHER", name: "R. Sharma", email: "rsharma@school.test", teacherId: 1 },
+  teacher: { erpUserId: "ERP-3", erpRole: "TEACHER", name: "R. Sharma", email: "rsharma@school.test" },
   frontoffice: { erpUserId: "ERP-4", erpRole: "FRONT_OFFICE", name: "K. Mehta", email: "frontoffice@school.test" },
 };
 
+/** Which school these open, and who the Teacher persona is — see /dev/demo-target. */
+interface DemoTarget {
+  school: { code: string; name: string } | null;
+  teacher: { id: number; name: string; periods: number } | null;
+  published: number;
+  /** The ERP roles this school maps — a persona outside them has no way in. */
+  erpRoles?: string[];
+}
+
 function DemoPersonas() {
   const [available, setAvailable] = useState(false);
+  const [target, setTarget] = useState<DemoTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -430,6 +442,18 @@ function DemoPersonas() {
       .then((r) => r.json())
       .then((m) => setAvailable(Boolean(m?.dev)))
       .catch(() => setAvailable(false));
+    /**
+     * Which school to open, asked of the server (§8.1e).
+     *
+     * These buttons used to name `SCHOOL-1`, which the master seed leaves with
+     * two classes and no timetable — four ways into an empty app. The server
+     * picks the school with the most published lessons instead, so re-seeding
+     * moves the demo without anybody editing this file.
+     */
+    fetch(`${API}/dev/demo-target`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setTarget)
+      .catch(() => setTarget(null));
   }, []);
 
   if (!available) return null;
@@ -439,7 +463,12 @@ function DemoPersonas() {
     try {
       const r = await post<{ token: string }>("/dev/erp-token", {
         ...DEMO_TOKENS[key],
-        school: { code: "SCHOOL-1", name: "School 1" },
+        // The real teacher behind the Teacher persona, so My Timetable and My
+        // Classes have something in them. Falls back to no link rather than to
+        // a guessed id: an unlinked login shows an honest "no teacher record",
+        // where a wrong id shows somebody else's week.
+        ...(key === "teacher" && target?.teacher ? { teacherId: target.teacher.id } : {}),
+        school: target?.school ?? { code: "SCHOOL-1", name: "School 1" },
       });
       // Through the real callback, exactly as the ERP menu would.
       window.location.href = `${API}/sso/callback?token=${encodeURIComponent(r.token)}`;
@@ -459,11 +488,23 @@ function DemoPersonas() {
         color: "var(--steel)", marginBottom: 4,
       }}>Demo sign-in · this environment only</div>
       <p style={{ fontSize: 12.3, color: "var(--ink-soft)", margin: "0 0 12px" }}>
-        Four roles in the sample school, to see what each one is allowed to do. These go through the
-        real ERP hand-off with a stand-in ERP — not a shortcut around it.
+        {target?.school
+          ? <>Five roles in <strong>{target.school.name}</strong>{target.published > 0 && <> — {target.published.toLocaleString()} published lessons</>}, to see what each one is allowed to do. </>
+          : <>Five roles in the sample school, to see what each one is allowed to do. </>}
+        These go through the real ERP hand-off with a stand-in ERP — not a shortcut around it.
       </p>
+      {target && target.published === 0 && (
+        <Note tone="error">
+          No school has a published timetable yet, so these will open an empty app. Generate and
+          publish one first, or run <code>scripts/seed-school2.cjs</code>.
+        </Note>
+      )}
       <div style={{ display: "grid", gap: 7 }}>
-        {DEMO_ROLES.map((r) => (
+        {/* Only the roles this school maps: an unmapped persona dies at the
+            callback, and a door with no room behind it is worse than no door. */}
+        {DEMO_ROLES.filter((r) =>
+          !target?.erpRoles || target.erpRoles.includes(String(DEMO_TOKENS[r.key].erpRole)),
+        ).map((r) => (
           <button key={r.key} onClick={() => go(r.key)} disabled={busy !== null}
             style={{
               textAlign: "left", font: "inherit", cursor: busy ? "wait" : "pointer",
@@ -471,9 +512,15 @@ function DemoPersonas() {
               background: busy === r.key ? "var(--steel-pale)" : "var(--paper)",
             }}>
             <div style={{ fontSize: 13, fontWeight: 600 }}>
-              {r.role} <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>· {r.who}</span>
+              {r.role}{" "}
+              <span style={{ color: "var(--ink-faint)", fontWeight: 400 }}>
+                · {r.key === "teacher" && target?.teacher ? target.teacher.name : r.who}
+              </span>
             </div>
-            <div style={{ fontSize: 11.8, color: "var(--ink-soft)", marginTop: 1 }}>{r.does}</div>
+            <div style={{ fontSize: 11.8, color: "var(--ink-soft)", marginTop: 1 }}>
+              {r.does}
+              {r.key === "teacher" && target?.teacher && ` · ${target.teacher.periods} periods a week`}
+            </div>
           </button>
         ))}
       </div>
