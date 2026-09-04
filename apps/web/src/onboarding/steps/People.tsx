@@ -21,6 +21,7 @@
 import { useMemo } from "react";
 import { proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
 import { Note } from "./Structure";
+import { SubjectPicker } from "./SubjectPicker";
 import { cell, Heading, LinkButton, pasteColumn, Scroll, td, th } from "./ui";
 
 // ────────────────────────────────────────────────────────── step 6: subjects
@@ -257,20 +258,18 @@ export function StepTeachers({ answers, onChange }: {
                   }} />
               </td>
               <td style={td}>
-                <div style={{ display: "flex", gap: 3, flexWrap: "wrap", padding: "3px 2px" }}>
-                  {subjects.map((s) => {
-                    const on = t.subjects.includes(s.name);
-                    return (
-                      <button key={s.name} onClick={() => toggleSubject(i, s.name)}
-                        style={{
-                          font: "500 10.5px/1 Inter", padding: "4px 7px", borderRadius: 20, cursor: "pointer",
-                          border: `1px solid ${on ? "var(--brand)" : "var(--line)"}`,
-                          background: on ? "var(--brand)" : "var(--paper)",
-                          color: on ? "#fff" : "var(--ink-faint)",
-                        }}>{s.name}</button>
-                    );
-                  })}
-                </div>
+                {/*
+                  §26.1 — what this teacher teaches, not what the school does.
+                  Every subject used to be a chip in every row: 22 × 122 at the
+                  reference school, and the one fact the cell exists to show
+                  buried in the middle of it.
+                */}
+                <SubjectPicker
+                  all={subjects}
+                  chosen={t.subjects}
+                  label={t.name?.trim() || `teacher ${i + 1}`}
+                  onToggle={(name) => toggleSubject(i, name)}
+                />
               </td>
               {wings.length > 1 && (
                 <td style={td}>
