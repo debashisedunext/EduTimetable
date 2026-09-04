@@ -2124,6 +2124,20 @@ Moving **backwards is free** — those rows are already written, and going back 
 
 Two refusals worth stating. **A live draft is returned, not rebuilt**: somebody's unfinished typing is not ours to throw away. And **a wing whose classes are not on the fixed ladder is left out and named**, because a wing is expressed as a range and a school that named its classes something else cannot be described that way — guessing a range would quietly create the wrong classes, which is far worse than saying which wing to use the Setup Wizard for.
 
+### 24.5d The guided setup is as wide as the pane
+
+The wizard opened as a centred 840px card. That is a good width for reading a paragraph and a bad one for a class × subject matrix: steps 4, 7, 8, 9 and 10 are the widest content in the app, and all five scrolled sideways inside a dialog with half the screen dimmed and empty beside them. So the dialog is now sized to the **working pane** — everything to the right of the navy nav — via `.pane-overlay` / `.pane-dialog`.
+
+Three details make it behave rather than merely fill:
+
+- **The overlay still covers everything.** Only the panel is inset; the nav is dimmed with the rest, because a modal whose nav still looks live is an invitation to click it.
+- **`--sidebar-w` is a token**, used by `.sidebar` and by the overlay's left padding. Two hard-coded 236s in two files would eventually disagree, and the dialog would either overlap the nav or leave a strip of dead page down its left edge.
+- **The dialog is wide; the content is not always.** `WIDE_STEPS` names the five table-shaped steps, which fill; the six form-shaped ones keep an 880px measure and centre. A 1600px-wide "what is your school called?" box is not more usable than a 700px one, only harder to read across — and stating which steps are which, beside the list they refer to, makes a new step choose rather than inherit.
+
+Below 900px the padding drops and the dialog takes the whole width: sizing to the pane is about using the room there is, and on a narrow screen it would be about giving room away.
+
+The welcome screen keeps its centred card deliberately — three doors spread across 1700px would read as three things lost on a page rather than a choice — and the conversational setup is already full-screen, which is more room than the pane, not less.
+
 ### 24.6a Outgoing mail
 
 Four flows are a one-shot link in an inbox — verification, password reset, teacher invitation, bulk invite — so a deployment that cannot send is a deployment that cannot onboard anybody. There are **two transports**: `smtp`, which is the real one and speaks the protocol every provider offers, so choosing between SES, Postmark, Mailgun or a school's own server is a matter of credentials rather than code; and `log`, the default, which writes the link to the application log so an unconfigured deployment is *obviously* unconfigured rather than quietly failing to deliver.

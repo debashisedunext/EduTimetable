@@ -107,6 +107,18 @@ export const STEP_TITLES = [
   "Teachers", "Rooms", "Curriculum", "Mapping", "Settings",
 ];
 
+/**
+ * The steps whose content is a table or a grid, and so uses the full width of
+ * the pane (§24.5d).
+ *
+ * Classes (the per-class section grid), Teachers, Rooms, Curriculum (class ×
+ * subject) and Mapping are the widest things in the app; the other six are
+ * ordinary forms, which a measure makes easier to read rather than harder.
+ * A set of step numbers rather than a guess inside each screen, so the two
+ * kinds are visible side by side and a new step has to choose.
+ */
+const WIDE_STEPS = new Set([4, 7, 8, 9, 10]);
+
 /** What a §16 commit reports back. */
 interface Committed { created?: Record<string, number> }
 
@@ -654,16 +666,12 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
   };
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Guided setup"
-      style={{
-        position: "fixed", inset: 0, zIndex: 200, background: "rgba(11,31,68,.45)",
-        display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
-      }}>
-      <div style={{
-        background: "var(--paper)", borderRadius: 14, maxWidth: 840, width: "100%",
-        maxHeight: "calc(100vh - 40px)", display: "flex", flexDirection: "column",
-        boxShadow: "0 24px 64px rgba(11,31,68,.3)", border: "1px solid var(--line)",
-      }}>
+    // Sized to the pane beside the nav rather than to a centred card (§24.5d):
+    // the curriculum matrix and the mapping table are the widest things in the
+    // app, and at 840px they scrolled sideways inside a dialog with half the
+    // screen dimmed and empty beside them.
+    <div role="dialog" aria-modal="true" aria-label="Guided setup" className="pane-overlay">
+      <div className="pane-dialog">
         <div style={{ padding: "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
           <Progress step={step} />
           <Rail step={step} furthest={furthest} onJump={(n) => void jumpTo(n)} disabled={busy} />
@@ -685,6 +693,17 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
         </div>
 
         <div style={{ padding: "20px 28px", overflowY: "auto", flex: 1 }}>
+          {/*
+            The dialog is as wide as the pane; the CONTENT is not always.
+            A class × subject matrix wants every pixel; "what is your school
+            called?" does not, and a 1600px-wide text box is not more usable
+            than a 700px one, it is just harder to read across. So the wide
+            steps fill and the form steps hold a measure — declared here, beside
+            the step list it refers to, rather than guessed per screen.
+          */}
+          <div style={WIDE_STEPS.has(step)
+            ? undefined
+            : { maxWidth: 880, marginLeft: "auto", marginRight: "auto" }}>
           {praise && (
             <div
               key={praise}
@@ -722,6 +741,7 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
               color: "var(--ink-soft)", marginTop: 14,
             }}>{error}</div>
           )}
+          </div>
         </div>
 
         <div style={{

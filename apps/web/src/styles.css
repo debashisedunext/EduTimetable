@@ -25,6 +25,11 @@
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "Inter", -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Courier New", monospace;
+  /* The navy nav. A token rather than a number in two files because the guided
+     setup sizes itself to the pane BESIDE it (.pane-dialog): if the two ever
+     disagreed, the dialog would either overlap the nav or leave a strip of dead
+     page down its left edge. */
+  --sidebar-w: 236px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,7 +39,7 @@ button { font-family: inherit; cursor: pointer; }
 .app { display: flex; min-height: 100vh; }
 
 .sidebar {
-  width: 236px; flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
+  width: var(--sidebar-w); flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
   display: flex; flex-direction: column; padding: 22px 14px; position: sticky; top: 0;
   height: 100vh; overflow: hidden;
 }
@@ -87,6 +92,28 @@ button { font-family: inherit; cursor: pointer; }
 .topbar-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; }
 .topbar-eyebrow { font-size: 11px; color: var(--steel); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 2px; }
 .content { padding: 26px 28px 60px; flex: 1; }
+
+/* A modal sized to the working area rather than to a comfortable reading width.
+   The guided setup earned this: eleven steps, two of which are a class × subject
+   matrix and a mapping table, and at a centred 840px both scrolled sideways
+   inside a dialog that left half the screen dimmed and empty. The overlay still
+   covers everything — the nav must not look live while a modal is open — but the
+   panel itself occupies exactly the pane beside the sidebar. */
+.pane-overlay {
+  position: fixed; inset: 0; z-index: 200; background: rgba(11, 31, 68, 0.45);
+  display: flex; padding: 14px 14px 14px calc(var(--sidebar-w) + 14px);
+}
+.pane-dialog {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(11, 31, 68, 0.3);
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+/* Below the point where a 236px sidebar plus a usable panel stop fitting, the
+   dialog takes the whole width instead. Sizing to the pane is about using the
+   room there is; on a narrow screen it would be about giving room away. */
+@media (max-width: 900px) {
+  .pane-overlay { padding: 10px; }
+}
 
 .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
