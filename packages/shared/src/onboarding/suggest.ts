@@ -10,6 +10,7 @@
  * Both functions are pure, so both are checked by unit tests rather than by
  * looking at a screen and nodding.
  */
+import { LUNCH_LABEL } from "../import/contract";
 import type { RawSheet } from "../import/types";
 import { planClasses, type WingAnswer } from "./wizard";
 
@@ -20,6 +21,16 @@ export interface SubjectAnswer {
   code?: string;
   isLab?: boolean;
   requiresDoublePeriod?: boolean;
+  /**
+   * §26.2 placement. All optional, and absent means "not stated" rather than
+   * "neutral": the committer fills a blank from `defaultsFor(name)`, so a
+   * subject somebody never opened still arrives classified, while one they DID
+   * set to priority 3 stays at 3 even if the classifier would have said 5.
+   */
+  category?: SubjectDefaults["category"];
+  priority?: number;
+  lunchRule?: SubjectDefaults["lunchRule"];
+  gapAfterLunch?: boolean;
 }
 
 /**
@@ -175,6 +186,38 @@ export function roomSheets(rooms: SuggestedRoom[]): RawSheet[] {
 // ──────────────────────────────────────────────────────────── curriculum
 
 /**
+ * §26.2 — where a subject belongs in the day.
+ *
+ * Four facts about the SUBJECT, not about one class's version of it: "Games is
+ * not taught straight after lunch" is true of Games. The curriculum row still
+ * owns the per-class facts — how many periods, how many a day, block size.
+ */
+export interface SubjectDefaults {
+  category: "scholastic" | "co_scholastic";
+  /** 1..5, higher is earlier in the day. A preference, never a rule (§26.2). */
+  priority: number;
+  lunchRule: "any" | "before" | "after";
+  gapAfterLunch: boolean;
+}
+
+/**
+ * The neutral answer: what an unrecognised subject gets, and what every row in
+ * the database had before this phase. Priority 3 is the middle of 1..5, so a
+ * name the classifier does not know is neither favoured nor penalised.
+ */
+export const NEUTRAL_SUBJECT: SubjectDefaults = {
+  category: "scholastic",
+  priority: 3,
+  lunchRule: "any",
+  gapAfterLunch: false,
+};
+
+const SCHOLASTIC = (priority: number): SubjectDefaults =>
+  ({ category: "scholastic", priority, lunchRule: "any", gapAfterLunch: false });
+const CO_SCHOLASTIC = (priority: number): SubjectDefaults =>
+  ({ category: "co_scholastic", priority, lunchRule: "any", gapAfterLunch: false });
+
+/**
  * Roughly how much of a week each subject wants, by band.
  *
  * Weights, not periods. The actual numbers are derived by scaling these to the
@@ -188,20 +231,60 @@ export function roomSheets(rooms: SuggestedRoom[]): RawSheet[] {
  * Science" are both silently weighted as laboratory science, which is how a
  * 3-period computing course became a 6-period one. Keep specific before
  * general when adding a row.
+ *
+ * §26.2 — the same table now also carries each family's **placement defaults**.
+ * One classifier rather than a second one beside it: a school's subject names
+ * are matched once, and the guided setup, the Subjects master, the §16 importer
+ * and the ERP sync all read the answer from here. Two tables would eventually
+ * disagree about whether "Games" is co-scholastic, and only a school would find
+ * out.
  */
-const WEIGHTS: Array<{ match: RegExp; lower: number; upper: number; senior: number }> = [
-  { match: /\b(english|language arts)\b/i, lower: 6, upper: 6, senior: 6 },
-  { match: /\b(hindi|sanskrit|french|german|urdu|regional)\b/i, lower: 5, upper: 5, senior: 4 },
-  { match: /\b(math|maths|mathematics)\b/i, lower: 6, upper: 7, senior: 7 },
-  { match: /\b(evs|environmental)\b/i, lower: 4, upper: 0, senior: 0 },
+const WEIGHTS: Array<{ match: RegExp; lower: number; upper: number; senior: number } & SubjectDefaults> = [
+  { match: /\b(english|language arts)\b/i, lower: 6, upper: 6, senior: 6, ...SCHOLASTIC(5) },
+  { match: /\b(hindi|sanskrit|french|german|urdu|regional)\b/i, lower: 5, upper: 5, senior: 4, ...SCHOLASTIC(4) },
+  { match: /\b(math|maths|mathematics)\b/i, lower: 6, upper: 7, senior: 7, ...SCHOLASTIC(5) },
+  { match: /\b(evs|environmental)\b/i, lower: 4, upper: 0, senior: 0, ...SCHOLASTIC(4) },
   // ↓ specific "…Science" families, above the generic science row
-  { match: /\b(computer|computing|information technology|it)\b/i, lower: 2, upper: 3, senior: 3 },
-  { match: /\b(social|history|geography|civics|economics|political)\b/i, lower: 4, upper: 5, senior: 5 },
-  { match: /\b(science|physics|chemistry|biology)\b/i, lower: 4, upper: 5, senior: 6 },
-  { match: /\b(art|craft|music|dance)\b/i, lower: 2, upper: 2, senior: 1 },
-  { match: /\b(physical education|pe|sports|games)\b/i, lower: 3, upper: 3, senior: 2 },
-  { match: /\b(moral|value|general knowledge|gk|library)\b/i, lower: 1, upper: 1, senior: 1 },
+  { match: /\b(computer|computing|information technology|it)\b/i, lower: 2, upper: 3, senior: 3, ...SCHOLASTIC(3) },
+  { match: /\b(social|history|geography|civics|economics|political)\b/i, lower: 4, upper: 5, senior: 5, ...SCHOLASTIC(4) },
+  { match: /\b(science|physics|chemistry|biology)\b/i, lower: 4, upper: 5, senior: 6, ...SCHOLASTIC(4) },
+  // Co-scholastic from here down. Note what is NOT claimed: art and music get a
+  // low priority (they yield the morning) but no lunch rule, because there is
+  // nothing about a painting lesson that a full stomach prevents.
+  { match: /\b(art|craft|music|dance)\b/i, lower: 2, upper: 2, senior: 1, ...CO_SCHOLASTIC(2) },
+  // The one family with a real physical constraint behind it, and the reason
+  // `gapAfterLunch` exists: children cannot run straight after eating. `after`
+  // as well, because a games period before lunch means arriving at lunch filthy.
+  {
+    match: /\b(physical education|pe|sports|games|yoga|swimming|athletics)\b/i,
+    lower: 3, upper: 3, senior: 2,
+    ...CO_SCHOLASTIC(2), lunchRule: "after", gapAfterLunch: true,
+  },
+  { match: /\b(moral|value|general knowledge|gk|library|assembly)\b/i, lower: 1, upper: 1, senior: 1, ...CO_SCHOLASTIC(1) },
 ];
+
+/**
+ * §26.2 — the placement defaults for a subject name.
+ *
+ * The **only** way anything in the product guesses these. Every caller — the
+ * guided setup, the Subjects master's "suggest" action, the §16 importer
+ * filling a blank column, the ERP sync — asks here, so a school cannot end up
+ * with Games co-scholastic on one screen and scholastic on another.
+ *
+ * An unrecognised name gets `NEUTRAL_SUBJECT` rather than a guess. A wrong
+ * guess about where a subject sits in the day is worse than no opinion: it
+ * quietly constrains the solver on behalf of a school that never said so.
+ */
+export function defaultsFor(name: string): SubjectDefaults {
+  const w = WEIGHTS.find((x) => x.match.test(name ?? ""));
+  if (!w) return { ...NEUTRAL_SUBJECT };
+  return {
+    category: w.category,
+    priority: w.priority,
+    lunchRule: w.lunchRule,
+    gapAfterLunch: w.gapAfterLunch,
+  };
+}
 
 /** Where a class sits on the ladder decides which weight column applies. */
 function bandOf(sequence: number): "lower" | "upper" | "senior" {
@@ -464,12 +547,24 @@ const sheet = (name: string, rows: Array<Record<string, unknown>>): RawSheet => 
 
 export function subjectSheets(subjects: SubjectAnswer[]): RawSheet[] {
   if (subjects.length === 0) return [];
-  return [sheet("Subjects", subjects.map((s) => ({
-    "Subject Name": s.name,
-    Code: s.code ?? "",
-    "Is Lab": s.isLab ? "Yes" : "No",
-    "Requires Double Period": s.requiresDoublePeriod ? "Yes" : "No",
-  })))];
+  return [sheet("Subjects", subjects.map((s) => {
+    // §26.2 — a field the admin never touched is filled from the classifier
+    // here, at the point of commit, rather than being written into the draft
+    // when the row was created. The difference matters on a resumed setup:
+    // renaming "Sports" to "Games" then picks up the Games rules, where a value
+    // baked in at creation would keep Sports' and nobody would know why.
+    const d = defaultsFor(s.name);
+    return {
+      "Subject Name": s.name,
+      Code: s.code ?? "",
+      Category: (s.category ?? d.category) === "co_scholastic" ? "Co-scholastic" : "Scholastic",
+      Priority: s.priority ?? d.priority,
+      "Lunch Rule": LUNCH_LABEL[s.lunchRule ?? d.lunchRule],
+      "Gap After Lunch": (s.gapAfterLunch ?? d.gapAfterLunch) ? "Yes" : "No",
+      "Is Lab": s.isLab ? "Yes" : "No",
+      "Requires Double Period": s.requiresDoublePeriod ? "Yes" : "No",
+    };
+  }))];
 }
 
 /**

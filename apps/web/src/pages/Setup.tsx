@@ -7,6 +7,24 @@ import { inputStyle } from "./Timetables";
 import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
 import { StepElectives } from "./Electives";
 import { TermsEditor } from "../terms/TermsEditor";
+import { CategorySelect, LunchRules, lunchSummary, PrioritySelect } from "../subjects/Placement";
+import { defaultsFor } from "@edutimetable/shared";
+
+/**
+ * §26.2 — the placement fields the admin has actually set.
+ *
+ * Layered over `defaultsFor(name)` so the form shows what WOULD be saved: a
+ * field nobody touched is `undefined` here and is filled from the name by the
+ * server, and one they changed overrides it. Stripping the undefined keys is
+ * what makes the spread do that rather than blanking the default.
+ */
+const clean = (form: any) => {
+  const out: Record<string, unknown> = {};
+  for (const k of ["category", "priority", "lunchRule", "gapAfterLunch"]) {
+    if (form[k] !== undefined) out[k] = form[k];
+  }
+  return out;
+};
 
 // Capacity-first order: Timetable Config (periods/week capacity) precedes
 // Curriculum and Teacher Mapping so their periods/week entries validate
@@ -400,11 +418,20 @@ function StepRooms() {
 
 function StepSubjects() {
   const { data, refetch } = useApi<any[]>("/subjects");
-  const [form, setForm] = useState({ name: "", isLab: false });
+  /**
+   * §26.2 — the form carries the four placement fields as well.
+   *
+   * `undefined` until the admin touches one, so a new subject is classified
+   * from its NAME by the server (`defaultsFor`) rather than by whatever this
+   * form happened to be showing. The controls below display that same
+   * derivation, so what is on screen is what will be saved.
+   */
+  const [form, setForm] = useState<any>({ name: "", isLab: false, requiresDoublePeriod: false });
   const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const reset = () => { setForm({ name: "", isLab: false }); setEditId(null); };
+  const shown = { ...defaultsFor(form.name ?? ""), ...clean(form) };
+  const reset = () => { setForm({ name: "", isLab: false, requiresDoublePeriod: false }); setEditId(null); };
   const save = async () => {
     try {
       if (editId) await api(`/subjects/${editId}`, { method: "PUT", body: JSON.stringify(form) });
@@ -422,16 +449,44 @@ function StepSubjects() {
     <Card title="Subjects" sub="Flag lab subjects — they must land in a lab room.">
       <ErrorNote message={error} />
       <DataTable
-        headers={["Subject", "Lab?", ""]}
+        headers={["Subject", "Category", "Priority", "Placement", "Lab?", ""]}
         rows={(data ?? []).map((s) => [
-          s.name, s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—",
+          s.name,
+          s.category === "co_scholastic"
+            ? <span key="c" style={{ color: "var(--steel)" }}>Co-scholastic</span>
+            : "Scholastic",
+          <span key="p" className="mono" style={{ fontVariantNumeric: "tabular-nums" }}>{s.priority}</span>,
+          // Only the rows that actually carry a rule say anything — "any time,
+          // no gap" on every row is noise that hides the two that matter.
+          lunchSummary(s) ?? <span key="q" style={{ color: "var(--ink-faint)" }}>—</span>,
+          s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—",
           <RowActions key="x"
-            onEdit={() => { setEditId(s.id); setForm({ name: s.name, isLab: s.isLab }); }}
+            onEdit={() => {
+              setEditId(s.id);
+              setForm({
+                name: s.name, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod,
+                category: s.category, priority: s.priority,
+                lunchRule: s.lunchRule, gapAfterLunch: s.gapAfterLunch,
+              });
+            }}
             onDelete={() => remove(s)} />,
         ])}
       />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 140px 150px auto auto auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
         <Field label="Subject name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+        <Field label="Category">
+          <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
+            <CategorySelect value={shown.category} onChange={(category) => setForm({ ...form, category })} />
+          </div>
+        </Field>
+        <Field label="Priority — earlier in the day">
+          <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
+            <PrioritySelect value={shown.priority} onChange={(priority) => setForm({ ...form, priority })} />
+          </div>
+        </Field>
+        <div style={{ marginBottom: 18 }}>
+          <LunchRules value={shown} onChange={(patch) => setForm({ ...form, ...patch })} />
+        </div>
         <label style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 24, fontSize: 13 }}>
           <input type="checkbox" checked={form.isLab} onChange={(e) => setForm({ ...form, isLab: e.target.checked })} /> Requires lab
         </label>

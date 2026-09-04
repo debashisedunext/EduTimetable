@@ -17,7 +17,8 @@
  *  - **Priority orders the list** (§26.2), so the subjects a school teaches
  *    most of are the ones already under the cursor.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
+import { useAnchored } from "../../ui/anchored";
 
 export interface PickableSubject {
   name: string;
@@ -38,54 +39,13 @@ export function SubjectPicker({
   label: string;
 }) {
   /**
-   * `null` when closed; the viewport coordinates to open at when not.
-   *
-   * **Fixed, not absolute**, and that is forced rather than chosen: the step's
-   * table lives in a `Scroll` (`overflow: auto`, max-height 340), so an
-   * absolutely-positioned panel is clipped by it — cut off at the container's
-   * edge and scrolled away with the rows. The same trap the §8.1d nav flyout
-   * hit, with the same answer: measure the button and position against the
-   * viewport.
+   * Fixed-positioned, because the step's table lives in a `Scroll`
+   * (`overflow: auto`) that would clip an absolutely-positioned panel and
+   * scroll it away with the rows. `useAnchored` owns that, and the dismissal
+   * rules that come with it.
    */
-  const [at, setAt] = useState<{ left: number; top: number; up: boolean } | null>(null);
-  const open = at !== null;
+  const { open, toggle, close, panelProps } = useAnchored(262);
   const [query, setQuery] = useState("");
-  const box = useRef<HTMLDivElement | null>(null);
-
-  const PANEL_H = 262;
-  const openAt = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (open) { setAt(null); return; }
-    const r = e.currentTarget.getBoundingClientRect();
-    // Flip above the button when there is no room below, so a teacher near the
-    // bottom of the list is not choosing from a panel hanging off the screen.
-    const up = r.bottom + PANEL_H > window.innerHeight && r.top > PANEL_H;
-    setQuery("");
-    setAt({ left: r.left, top: up ? r.top - 4 : r.bottom + 4, up });
-  };
-
-  // Close on an outside click or Escape — a popover dismissable only by the
-  // button that opened it is a trap in a grid of a hundred rows, where the
-  // natural move is to click the next cell. And on scroll, because a panel
-  // positioned against the viewport would otherwise sail away from its row.
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as Node)) setAt(null);
-    };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setAt(null); };
-    const shut = () => setAt(null);
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    // `true` — the table's own scroller does not bubble a scroll event.
-    window.addEventListener("scroll", shut, true);
-    window.addEventListener("resize", shut);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-      window.removeEventListener("scroll", shut, true);
-      window.removeEventListener("resize", shut);
-    };
-  }, [open]);
 
   const ordered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -97,7 +57,7 @@ export function SubjectPicker({
   }, [all, query]);
 
   return (
-    <div ref={box} style={{ position: "relative", display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 2px" }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 2px" }}>
       {chosen.map((name) => (
         <button
           key={name}
@@ -115,7 +75,7 @@ export function SubjectPicker({
       ))}
 
       <button
-        onClick={openAt}
+        onClick={(e) => { setQuery(""); toggle(e); }}
         aria-expanded={open}
         aria-label={chosen.length === 0 ? `Add a subject for ${label}` : `Add another subject for ${label}`}
         style={{
@@ -127,15 +87,10 @@ export function SubjectPicker({
         {chosen.length === 0 ? "＋ Add a subject" : "＋"}
       </button>
 
-      {at && (
+      {panelProps && (
         <div
-          style={{
-            position: "fixed", left: at.left, top: at.top, zIndex: 210,
-            transform: at.up ? "translateY(-100%)" : undefined,
-            width: 236, maxHeight: PANEL_H, display: "flex", flexDirection: "column",
-            background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 10,
-            boxShadow: "0 12px 30px rgba(11,31,68,.18)",
-          }}
+          {...panelProps}
+          style={{ ...panelProps.style, width: 236, display: "flex", flexDirection: "column" }}
         >
           <input
             autoFocus
@@ -147,6 +102,7 @@ export function SubjectPicker({
               // Enter takes the top match, so a two-subject teacher is two
               // keystrokes and a return rather than a hunt down the list.
               if (e.key === "Enter" && ordered[0]) { onToggle(ordered[0].name); setQuery(""); }
+              if (e.key === "Escape") close();
             }}
             style={{
               margin: 7, padding: "6px 9px", border: "1px solid var(--line)", borderRadius: 7,

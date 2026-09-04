@@ -210,6 +210,20 @@ enum RoomType {
   other
 }
 
+/// §26.2 — the two halves of an Indian school's curriculum. Scholastic subjects
+/// are examined; co-scholastic ones (art, music, games, library) are not.
+enum SubjectCategory {
+  scholastic
+  co_scholastic
+}
+
+/// §26.3 — which side of the lunch break a subject may be taught on.
+enum SubjectLunchRule {
+  any
+  before
+  after
+}
+
 enum ClassTeacherPeriodRule {
   none
   always_first_period
@@ -397,6 +411,22 @@ model Subject {
   school               School                       @relation(fields: [schoolId], references: [id])
   name                 String                       @db.VarChar(50)
   code                 String?                      @db.VarChar(10)
+  /// §26.2 — scholastic or co-scholastic. Groups reports, and is what makes
+  /// the intelligent placement defaults defensible: a co-scholastic subject is
+  /// the one that yields the morning periods.
+  category             SubjectCategory              @default(scholastic)
+  /// §26.2 — 1..5, higher is earlier in the day. A PREFERENCE, not a rule:
+  /// "Maths must be in period 1" cannot hold for twenty sections at once. It is
+  /// a term in the §5.6 objective, which the CSP's value ordering and CP-SAT
+  /// both read, so the two engines cannot disagree about what "nicer" means.
+  priority             Int                          @default(3) @db.TinyInt
+  /// §26.3 — which side of lunch this subject may be taught. HARD: pruned out
+  /// of the domain before search, and checked by Feasibility Check 10 first.
+  lunchRule            SubjectLunchRule             @default(any) @map("lunch_rule")
+  /// §26.3 — may not occupy the period IMMEDIATELY after lunch. A different
+  /// rule from `lunchRule = after`, and commonly wanted with it: Games cannot
+  /// be held on a full stomach.
+  gapAfterLunch        Boolean                      @default(false) @map("gap_after_lunch")
   isLab                Boolean                      @default(false) @map("is_lab")
   requiresDoublePeriod Boolean                      @default(false) @map("requires_double_period")
   classSubjects        ClassSubject[]

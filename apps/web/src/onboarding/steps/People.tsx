@@ -19,7 +19,8 @@
  * /onboarding/commit/:step`, which builds the §16 importer's own sheets.
  */
 import { useMemo } from "react";
-import { proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
+import { defaultsFor, proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
+import { CategorySelect, LunchRules, PrioritySelect } from "../../subjects/Placement";
 import { Note } from "./Structure";
 import { SubjectPicker } from "./SubjectPicker";
 import { cell, Heading, LinkButton, pasteColumn, Scroll, td, th } from "./ui";
@@ -42,6 +43,25 @@ const USUAL: SubjectAnswer[] = [
 ];
 
 const blankSubject = (): SubjectAnswer => ({ name: "", code: "", isLab: false, requiresDoublePeriod: false });
+
+/**
+ * §26.2 — what a row's placement controls should show.
+ *
+ * Derived from the name on every render rather than written into the draft when
+ * the row was created, and that is the whole behaviour: type "Games" over
+ * "Sports" and the rules follow the new name, where a value baked in at
+ * creation would keep Sports' and nobody would know why. The moment somebody
+ * changes a control, their choice is in `answers` and wins from then on.
+ */
+function placementOf(s: SubjectAnswer) {
+  const d = defaultsFor(s.name);
+  return {
+    category: s.category ?? d.category,
+    priority: s.priority ?? d.priority,
+    lunchRule: s.lunchRule ?? d.lunchRule,
+    gapAfterLunch: s.gapAfterLunch ?? d.gapAfterLunch,
+  };
+}
 
 export function StepSubjects({ answers, onChange }: {
   answers: Record<string, any>;
@@ -87,10 +107,16 @@ export function StepSubjects({ answers, onChange }: {
 
       <Scroll>
         <thead><tr>
-          <th style={{ ...th, width: "40%" }}>Subject</th>
-          <th style={{ ...th, width: 90 }}>Code</th>
-          <th style={{ ...th, width: 80 }}>Needs a lab</th>
-          <th style={{ ...th, width: 110 }}>Double period</th>
+          <th style={{ ...th, width: "26%" }}>Subject</th>
+          <th style={{ ...th, width: 74 }}>Code</th>
+          {/* §26.2 — set from the subject's name as it is typed, and shown
+              rather than hidden: a default nobody can see is a default nobody
+              corrects. */}
+          <th style={{ ...th, width: 118 }} title="Scholastic subjects are examined; co-scholastic ones are not">Category</th>
+          <th style={{ ...th, width: 108 }} title="Higher is placed earlier in the day — a preference, not a rule">Priority</th>
+          <th style={{ ...th, width: 150 }} title="Which side of lunch this may be taught">Placement</th>
+          <th style={{ ...th, width: 62 }}>Lab</th>
+          <th style={{ ...th, width: 74 }}>Double</th>
           <th style={{ ...th, width: 34 }} />
         </tr></thead>
         <tbody>
@@ -109,6 +135,17 @@ export function StepSubjects({ answers, onChange }: {
                 <input style={{ ...cell, fontFamily: "var(--mono, monospace)", fontSize: 11.5 }}
                   value={s.code ?? ""} placeholder="MAT" aria-label={`Code for ${s.name || `subject ${i + 1}`}`}
                   onChange={(e) => edit(i, { code: e.target.value })} />
+              </td>
+              <td style={td}>
+                <CategorySelect value={placementOf(s).category}
+                  onChange={(category) => edit(i, { category })} />
+              </td>
+              <td style={td}>
+                <PrioritySelect value={placementOf(s).priority}
+                  onChange={(priority) => edit(i, { priority })} />
+              </td>
+              <td style={td}>
+                <LunchRules value={placementOf(s)} onChange={(patch) => edit(i, patch)} />
               </td>
               <td style={{ ...td, textAlign: "center" }}>
                 <input type="checkbox" checked={Boolean(s.isLab)} aria-label={`${s.name} needs a lab`}

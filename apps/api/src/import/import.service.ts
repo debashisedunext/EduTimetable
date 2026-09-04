@@ -9,7 +9,12 @@
  */
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import {
+  categoryFromLabel,
+  categoryToLabel,
   dayNumber,
+  defaultsFor,
+  LUNCH_LABEL,
+  lunchRuleFromLabel,
   formatPins,
   parsePins,
   parsePinText,
@@ -210,7 +215,16 @@ export class ImportService {
           homeFor: r.homeRoomOf[0] ? this.label(r.homeRoomOf[0]) : null,
           subjectNames: r.subjects.map((x) => x.subject.name),
         })),
-        Subjects: subjects.map((s) => ({ name: s.name, code: s.code, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod })),
+        // §26.2 — the placement columns ride the round trip. Without them an
+        // export→import loses every rule the school set, which is exactly the
+        // no-op the export is supposed to be.
+        Subjects: subjects.map((s) => ({
+          name: s.name, code: s.code, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod,
+          category: categoryToLabel(s.category),
+          priority: s.priority,
+          lunchRule: LUNCH_LABEL[s.lunchRule],
+          gapAfterLunch: s.gapAfterLunch,
+        })),
         Teachers: teachers.map((t) => ({
           employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay,
           minPeriodsPerDay: t.minPeriodsPerDay, maxPeriodsPerWeek: t.maxPeriodsPerWeek,
@@ -546,10 +560,22 @@ export class ImportService {
 
         // ---- 4. subjects ----
         for (const r of at("Subjects").filter(isNew)) {
+          // §26.2 — a blank placement column is filled from the subject's NAME
+          // by the same classifier the screens use. A school uploading last
+          // year's sheet has none of these columns, and "Games" arriving
+          // unclassified would be a worse answer than the one its name gives.
+          const d = defaultsFor(r.data.name);
           await tx.subject.create({
             data: {
               schoolId, name: r.data.name, code: r.data.code ?? null,
               isLab: r.data.isLab ?? false, requiresDoublePeriod: r.data.requiresDoublePeriod ?? false,
+              // An enum column validates to its LABEL ("Any time"), not the
+              // stored value — hence the conversion, which also accepts the
+              // raw value so a hand-edited sheet still imports.
+              category: categoryFromLabel(r.data.category) ?? d.category,
+              priority: r.data.priority ?? d.priority,
+              lunchRule: lunchRuleFromLabel(r.data.lunchRule) ?? d.lunchRule,
+              gapAfterLunch: r.data.gapAfterLunch ?? d.gapAfterLunch,
             },
           });
           bump("subjects");

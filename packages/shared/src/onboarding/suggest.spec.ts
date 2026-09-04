@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   curriculumSheets,
+  defaultsFor,
+  NEUTRAL_SUBJECT,
   mappingSheets,
   subjectSheets,
   suggestMappings,
@@ -434,5 +436,90 @@ describe("§15.3 subject and teacher sheets", () => {
         expect(def.columns.some((c) => c.header === header), `${s.name}!${header}`).toBe(true);
       }
     }
+  });
+});
+
+describe("§26.2 subject placement defaults", () => {
+  /**
+   * The classifier is the only thing in the product that guesses these, and
+   * every door reads it — the guided setup, the Subjects master, the §16
+   * importer, the ERP sync. A wrong answer here is a wrong answer everywhere,
+   * and it is silent: it constrains the solver on behalf of a school that never
+   * said so.
+   */
+  it("classifies the families a school recognises", () => {
+    expect(defaultsFor("Mathematics").priority).toBe(5);
+    expect(defaultsFor("English").priority).toBe(5);
+    expect(defaultsFor("Science").category).toBe("scholastic");
+    expect(defaultsFor("Art & Craft").category).toBe("co_scholastic");
+    expect(defaultsFor("Library").category).toBe("co_scholastic");
+    expect(defaultsFor("Library").priority).toBe(1);
+  });
+
+  it("gives games the two rules it exists for, and gives art neither", () => {
+    // The one family with a physical reason behind it: children cannot run
+    // straight after eating, and arriving at lunch filthy is the other half.
+    const games = defaultsFor("Physical Education");
+    expect(games.lunchRule).toBe("after");
+    expect(games.gapAfterLunch).toBe(true);
+    expect(defaultsFor("Games")).toEqual(games);
+    expect(defaultsFor("Yoga")).toEqual(games);
+
+    // Nothing about a painting lesson that a full stomach prevents.
+    const art = defaultsFor("Music");
+    expect(art.category).toBe("co_scholastic");
+    expect(art.lunchRule).toBe("any");
+    expect(art.gapAfterLunch).toBe(false);
+  });
+
+  it("keeps the specific-before-general order the weights depend on", () => {
+    // The §15.3 bug, now with a second way to see it: "Computer Science" and
+    // "Social Science" must not be classified as laboratory science.
+    expect(defaultsFor("Computer Science").priority).toBe(3);
+    expect(defaultsFor("Social Science").priority).toBe(4);
+    expect(defaultsFor("Science").priority).toBe(4);
+  });
+
+  it("says NOTHING about a name it does not know, rather than guessing", () => {
+    // A wrong guess is worse than no opinion: priority 3 is the neutral middle
+    // and `any` restricts nothing, so an unrecognised subject behaves exactly
+    // as every subject did before this phase.
+    expect(defaultsFor("Astrophysics")).toEqual(NEUTRAL_SUBJECT);
+    expect(defaultsFor("")).toEqual(NEUTRAL_SUBJECT);
+    expect(defaultsFor("Zzz Made Up")).toEqual(NEUTRAL_SUBJECT);
+  });
+
+  it("never returns a priority outside 1..5, whatever the family", () => {
+    // The column is a TINYINT with a 1-5 guard on the API; a table entry
+    // outside it would be refused at the point of writing, far from here.
+    for (const name of [
+      "English", "Hindi", "Mathematics", "EVS", "Computer Science", "Social Science",
+      "Science", "Art", "Games", "Library", "Nothing Familiar",
+    ]) {
+      const d = defaultsFor(name);
+      expect(d.priority, name).toBeGreaterThanOrEqual(1);
+      expect(d.priority, name).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it("puts the defaults on the sheet the importer reads", () => {
+    const rows = subjectSheets([{ name: "Games" }, { name: "Mathematics" }])[0].rows;
+    expect(rows[0].cells["Category"]).toBe("Co-scholastic");
+    expect(rows[0].cells["Lunch Rule"]).toBe("After lunch");
+    expect(rows[0].cells["Gap After Lunch"]).toBe("Yes");
+    expect(rows[1].cells["Priority"]).toBe(5);
+    expect(rows[1].cells["Gap After Lunch"]).toBe("No");
+  });
+
+  it("lets a school override the classifier, and keeps the override", () => {
+    // Somebody who deliberately says Games is scholastic and may be taught at
+    // any time gets exactly that — the defaults fill blanks, they do not win.
+    const rows = subjectSheets([
+      { name: "Games", category: "scholastic", priority: 5, lunchRule: "any", gapAfterLunch: false },
+    ])[0].rows;
+    expect(rows[0].cells["Category"]).toBe("Scholastic");
+    expect(rows[0].cells["Priority"]).toBe(5);
+    expect(rows[0].cells["Lunch Rule"]).toBe("Any time");
+    expect(rows[0].cells["Gap After Lunch"]).toBe("No");
   });
 });

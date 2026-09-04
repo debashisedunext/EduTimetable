@@ -53,6 +53,51 @@ const GENDERS = ["male", "female", "other"] as const;
 export const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 export const DAY_VALUES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
+/**
+ * §26.2 — the Subjects sheet's placement columns, in a person's words.
+ *
+ * The labels are what a school reads and types; the enum values are what the
+ * database stores. Both directions live here so a spreadsheet, a screen and the
+ * database cannot come to disagree about what "Any time" means.
+ */
+export const CATEGORY_VALUES = ["Scholastic", "Co-scholastic"] as const;
+export const LUNCH_VALUES = ["Any time", "Before lunch", "After lunch"] as const;
+
+const CATEGORY_BY_LABEL: Record<string, "scholastic" | "co_scholastic"> = {
+  scholastic: "scholastic",
+  "co-scholastic": "co_scholastic",
+  "co scholastic": "co_scholastic",
+  coscholastic: "co_scholastic",
+};
+const LUNCH_BY_LABEL: Record<string, "any" | "before" | "after"> = {
+  "any time": "any",
+  any: "any",
+  "before lunch": "before",
+  before: "before",
+  "after lunch": "after",
+  after: "after",
+};
+export const LUNCH_LABEL: Record<"any" | "before" | "after", string> = {
+  any: "Any time",
+  before: "Before lunch",
+  after: "After lunch",
+};
+
+/**
+ * Workbook text → the stored value, or `null` for blank and unrecognised.
+ *
+ * `null` rather than a default, deliberately: the committer fills a blank from
+ * the subject's NAME (`defaultsFor`), which is a better answer than "any" for a
+ * school that simply did not fill the column in. A guess at a stricter rule is
+ * never made here.
+ */
+export const categoryFromLabel = (v: unknown): "scholastic" | "co_scholastic" | null =>
+  CATEGORY_BY_LABEL[String(v ?? "").trim().toLowerCase()] ?? null;
+export const lunchRuleFromLabel = (v: unknown): "any" | "before" | "after" | null =>
+  LUNCH_BY_LABEL[String(v ?? "").trim().toLowerCase()] ?? null;
+export const categoryToLabel = (v: string): string =>
+  v === "co_scholastic" ? "Co-scholastic" : "Scholastic";
+
 /** §4.9 Phase 15 — the Electives sheet's `When` column, in a person's words. */
 export const PLACEMENT_VALUES = ["Solver chooses", "Same period every day", "Fixed slots"] as const;
 
@@ -141,6 +186,13 @@ export const SHEETS: SheetDef[] = [
     columns: [
       { header: "Subject Name", key: "name", type: "string", required: true, maxLength: 50, width: 20, help: "e.g. Mathematics", sample: ["e.g. Mathematics"] },
       { header: "Code", key: "code", type: "string", maxLength: 10, width: 10, help: "Short code (optional)", sample: ["MATH"] },
+      // §26.2 — all four blank-friendly. A school uploading last year's sheet
+      // has none of these columns filled, and every blank is filled from the
+      // subject's name by the same classifier the screens use.
+      { header: "Category", key: "category", type: "enum", values: CATEGORY_VALUES, width: 15, help: "Scholastic subjects are examined; co-scholastic ones (art, music, games) are not. Left blank, it is worked out from the name", sample: ["Scholastic"] },
+      { header: "Priority", key: "priority", type: "int", min: 1, max: 5, width: 10, help: "1-5, higher is placed earlier in the day. A preference, not a rule — 5 does not guarantee period 1. Blank = worked out from the name", sample: [3] },
+      { header: "Lunch Rule", key: "lunchRule", type: "enum", values: LUNCH_VALUES, width: 16, help: "Which side of lunch this may be taught. HARD — Readiness refuses a school that cannot fit it", sample: ["Any time"] },
+      { header: "Gap After Lunch", key: "gapAfterLunch", type: "enum", values: YES_NO, width: 16, help: "Yes = never in the period immediately after lunch. For games and dance, which cannot be held on a full stomach", sample: ["No"] },
       { header: "Is Lab", key: "isLab", type: "enum", values: YES_NO, width: 10, help: "Needs a lab room?", sample: ["No"] },
       { header: "Requires Double Period", key: "requiresDoublePeriod", type: "enum", values: YES_NO, width: 20, help: "Usually taught as a double period?", sample: ["No"] },
     ],
