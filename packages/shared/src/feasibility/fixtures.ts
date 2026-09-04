@@ -42,6 +42,9 @@ export function cleanSchool(): FeasibilitySnapshot {
       workingDays: [1, 2, 3, 4, 5],
       periodsPerDay: 6,
       daySegments: [3, 3],
+      // §26.3 — P1-P3, lunch, P4-P6. The fixture's own break is the boundary
+      // the placement rules are tested against.
+      lunchAfterPeriod: 3,
     },
     classSections: [
       { id: 11, label: "5-A", classId: 5, classTeacherId: 101 },
@@ -88,6 +91,7 @@ export function cleanSchool(): FeasibilitySnapshot {
     crossConfigTeacherLoad: {},
     labRoomCount: 1,
     labSubjectIds: [],
+    subjectPlacement: {},
     // §19: each section has its own room, so the golden school stays clean
     // under Check 9 and its lessons actually say where they are.
     homeRoomBySection: { 11: 701, 12: 702 },

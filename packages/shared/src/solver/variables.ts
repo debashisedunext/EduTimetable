@@ -74,11 +74,41 @@ export function segmentOfPeriod(daySegments: number[], perDay: number): number[]
   return seg;
 }
 
+/**
+ * §26.3 — may a block of `span` periods starting at `p` satisfy these subjects'
+ * lunch rules?
+ *
+ * Pure, and hoisted out of `domainFor` so the feasibility check can ask exactly
+ * the same question when counting how many cells a subject has left. Two
+ * implementations of "after lunch" would be two different timetables: one the
+ * engine builds and one Readiness promised.
+ */
+export function lunchAllows(
+  placements: Array<{ lunchRule: "any" | "before" | "after"; gapAfterLunch: boolean }>,
+  start: number,
+  span: number,
+  lunchAfterPeriod: number | null,
+): boolean {
+  // No break in the day means no side of lunch to be on, so the rules do not
+  // apply rather than applying to a guessed boundary.
+  if (lunchAfterPeriod === null) return true;
+  for (const pl of placements) {
+    for (let s = 0; s < span; s++) {
+      const period = start + s;
+      if (pl.lunchRule === "before" && period > lunchAfterPeriod) return false;
+      if (pl.lunchRule === "after" && period <= lunchAfterPeriod) return false;
+      if (pl.gapAfterLunch && period === lunchAfterPeriod + 1) return false;
+    }
+  }
+  return true;
+}
+
 export function buildVariables(input: SolverInput, teacherCtx: Map<number, TeacherCtx>): SolverVariable[] {
   const { snapshot } = input;
   const perDay = snapshot.config.periodsPerDay;
   const days = snapshot.config.workingDays;
   const seg = segmentOfPeriod(snapshot.config.daySegments, perDay);
+  const lunchAfterPeriod = snapshot.config.lunchAfterPeriod ?? null;
   const labSubjects = new Set(snapshot.labSubjectIds);
   const sectionById = new Map(snapshot.classSections.map((cs) => [cs.id, cs]));
   const reqByClassSubject = new Map(
@@ -108,13 +138,43 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     teacherIds: number[],
     span: number,
     sectionIds: number[],
+    /**
+     * §26.3 — whose lunch rules apply. A list for the same reason `teacherIds`
+     * is: a split elective runs several subjects at once, so the block may only
+     * sit where EVERY option's rules allow. One Games option therefore drags
+     * the whole block after lunch, which is correct and is exactly why the
+     * feasibility check has to see it before the search starts.
+     */
+    subjectIds: number[],
   ): Array<{ day: number; period: number }> => {
     const ctxs = teacherIds.map((id) => teacherCtx.get(id)).filter((x): x is TeacherCtx => !!x);
+    const placements = subjectIds
+      .map((id) => snapshot.subjectPlacement?.[id])
+      .filter((x): x is NonNullable<typeof x> => !!x);
+    /**
+     * §26.3 — which start periods the lunch rules leave, worked out ONCE.
+     *
+     * The rules are the same on every day, and this runs inside a days ×
+     * periods loop for every variable in the school (§14). Computed per period
+     * it was the same answer recalculated five times over.
+     *
+     * Checked over EVERY period of the block rather than its start: a double
+     * period beginning before lunch would otherwise reach across into the
+     * afternoon while claiming to be a morning slot.
+     */
+    const lunchOk: boolean[] = new Array(perDay + 2).fill(true);
+    if (placements.length > 0) {
+      for (let p = 1; p + span - 1 <= perDay; p++) {
+        lunchOk[p] = lunchAllows(placements, p, span, lunchAfterPeriod);
+      }
+    }
+
     const domain: Array<{ day: number; period: number }> = [];
     for (const day of days) {
       if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
       for (let p = 1; p + span - 1 <= perDay; p++) {
         if (seg[p] !== seg[p + span - 1]) continue; // block cannot straddle a break (§4.8)
+        if (!lunchOk[p]) continue;
         // always_first_period: such a teacher never takes P1 in any OTHER section
         const p1Blocked = ctxs.some(
           (tc) => tc.hasP1Rule && p === 1 && !sectionIds.every((id) => tc.p1OwnSections.has(id)),
@@ -169,10 +229,10 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       maxPerDay,
     };
     for (let i = 0; i < blocks; i++) {
-      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds, [m.subjectId]) });
     }
     for (let i = 0; i < singles; i++) {
-      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]) });
     }
   }
 
@@ -213,7 +273,7 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         preferredRoomId: input.mergedGroupRooms[g.id] ?? null,
         samePeriodKey: null,
         maxPerDay: Math.min(anyReq?.maxPeriodsPerDay ?? 1, perDay),
-        domain: domainFor([g.teacherId], 1, g.memberClassSectionIds),
+        domain: domainFor([g.teacherId], 1, g.memberClassSectionIds, [g.subjectId]),
       });
     }
   }
@@ -229,7 +289,8 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       roomId: o.roomId,
     }));
     const teacherIds = options.map((o) => o.teacherId);
-    const free = domainFor(teacherIds, 1, b.memberClassSectionIds);
+    // Every option's subject: the block may only sit where all of them may.
+    const free = domainFor(teacherIds, 1, b.memberClassSectionIds, b.options.map((o) => o.subjectId));
     // §4.9 Phase 15 — placement is DOMAIN PRUNING, never a preference score
     // (invariant 2). A pinned occurrence is handed exactly the cell the school
     // named, intersected with what its option teachers can actually work: if

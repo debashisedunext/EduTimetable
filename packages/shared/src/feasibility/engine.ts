@@ -3,6 +3,7 @@
  * failure names the exact entity and the fix. This module is the "always 100%"
  * guarantee: Phase B (the solver) only runs when this returns zero blockers.
  */
+import { lunchAllows } from "../solver/variables";
 import type {
   FeasibilityIssue,
   FeasibilityResult,
@@ -1183,6 +1184,88 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           { op: "set", entity: "teacher", id: t.id, field: "classTeacherPeriodRule", from: "always_first_period", to: "none" },
         ]),
       });
+    }
+  }
+
+  // ---------- Check 11 — lunch-side capacity (§26.3) ----------
+  //
+  // The §26.3 rules are HARD: `lunchRule` and `gapAfterLunch` are pruned out of
+  // the solver's domain before search. A hard constraint with no check here is
+  // a generation that fails — which is the one thing the two-phase split exists
+  // to prevent — so this asks, per class-section, whether the periods a rule
+  // confines a subject to can actually hold the periods it needs.
+  //
+  // Counted per section rather than per class because a class's curriculum row
+  // applies to every one of its sections, and each section has its own week to
+  // fit it into.
+  const lunchAfter = snap.config.lunchAfterPeriod;
+  if (lunchAfter !== null) {
+    // How many cells a week each side of lunch offers, once the gap rule has
+    // taken its bite. Computed with the SAME function the solver prunes with,
+    // so Readiness can never promise a cell the search will refuse.
+    const cellsFor = (rule: "any" | "before" | "after", gap: boolean, span: number) => {
+      let n = 0;
+      for (let p = 1; p + span - 1 <= perDay; p++) {
+        if (lunchAllows([{ lunchRule: rule, gapAfterLunch: gap }], p, span, lunchAfter)) n += 1;
+      }
+      return n * days;
+    };
+
+    for (const cs of snap.classSections) {
+      /**
+       * Grouped by the EXACT rule pair, not by side.
+       *
+       * A subject with only the gap rule — `any time, but not straight after
+       * lunch` — has the whole week minus one cell a day, and an earlier draft
+       * of this check filed it under "after lunch" and refused a school that
+       * was perfectly fine. Its own smoke caught it. Keying on the pair keeps
+       * each group's supply exact for its members.
+       *
+       * Groups still overlap in the cells they compete for, so this UNDER-
+       * detects rather than over-detects: two afternoon subjects, one with the
+       * gap and one without, are checked separately. That is the right
+       * direction to be wrong in — a false blocker stops a school that could
+       * have generated, where a missed one leaves the solver to report what it
+       * could not place, which it already does well.
+       */
+      const groups = new Map<string, {
+        rule: "any" | "before" | "after"; gap: boolean; periods: number; names: string[];
+      }>();
+      for (const r of reqsByClass.get(cs.classId) ?? []) {
+        const pl = snap.subjectPlacement?.[r.subjectId];
+        if (!pl || (pl.lunchRule === "any" && !pl.gapAfterLunch)) continue;
+        const key = `${pl.lunchRule}|${pl.gapAfterLunch}`;
+        const cur = groups.get(key) ?? { rule: pl.lunchRule, gap: pl.gapAfterLunch, periods: 0, names: [] };
+        cur.periods += r.periodsPerWeek;
+        cur.names.push(r.subjectName);
+        groups.set(key, cur);
+      }
+
+      for (const want of groups.values()) {
+        const supply = cellsFor(want.rule, want.gap, 1);
+        if (want.periods <= supply) continue;
+        const named = want.names.slice(0, 3).join(", ") + (want.names.length > 3 ? ", …" : "");
+        const where = want.rule === "before" ? "before lunch"
+          : want.rule === "after" ? "after lunch"
+          : "outside the period straight after lunch";
+        issues.push({
+          code: "LUNCH_SIDE_CAPACITY",
+          severity: "blocker",
+          message:
+            `${cs.label} needs ${want.periods} periods a week ${where} (${named}), ` +
+            `but its week has only ${supply}` +
+            (want.gap && want.rule !== "any" ? " once the period straight after lunch is kept free" : "") + ".",
+          entity: { type: "class_section", id: cs.id, label: cs.label },
+          fix:
+            `Set one of those subjects back to "any time" on the Subjects screen, ` +
+            `or lengthen the ${want.rule === "before" ? "morning" : "afternoon"} — the week has ` +
+            `${perDay} periods a day with lunch after period ${lunchAfter}.`,
+          // §21: deliberately no auto-remedy. Every way out of this loosens a
+          // rule somebody set for a physical reason — children cannot run on a
+          // full stomach — and §21 applies `relax` only with explicit consent,
+          // shown as a priced card rather than applied by a standing one.
+        });
+      }
     }
   }
 

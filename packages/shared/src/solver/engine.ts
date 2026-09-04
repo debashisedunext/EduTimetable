@@ -458,11 +458,36 @@ function attemptSolve(
       if (count < min) return -8;
       return count * 0.5;
     };
+    /**
+     * §26.2 — pull a high-priority subject towards the morning.
+     *
+     * The same arithmetic the §5.6 objective scores, applied while choosing:
+     * `(priority − 3)` per period of lateness, so priority 5 costs 2 a period
+     * to sit late and priority 1 is paid 2 a period to. Priority 3 — the
+     * neutral default, and what every subject had before this phase — is
+     * exactly zero, so a school that never touches the field gets precisely the
+     * search it got before.
+     *
+     * Weighted below the day preferences deliberately: a teacher's shape is a
+     * constraint they live with all year, and this is a preference about one
+     * lesson. It breaks ties; it does not overrule.
+     */
+    const priorityOf = (val: { day: number; period: number }) => {
+      const ids = v.options.length > 0 ? v.options.map((o) => o.subjectId)
+        : v.subjectId !== null ? [v.subjectId] : [];
+      let cost = 0;
+      for (const id of ids) {
+        const pl = input.snapshot.subjectPlacement?.[id];
+        if (pl) cost += (pl.priority - 3) * (val.period - 1);
+      }
+      return cost;
+    };
     values.sort((a, b) => {
       const load = (val: { day: number; period: number }) =>
         state.sectionDayLoad(v.classSectionIds[0], v.dayKey, val.day) * 4 +
         varTeachers.reduce((n, t) => n + dayPreference(t, val.day), 0) +
         (ownP1 ? (val.period === 1 ? -8 : 0) : 0) +
+        priorityOf(val) * 1.5 +
         (jitter.get(val) ?? 0);
       return load(a) - load(b);
     });

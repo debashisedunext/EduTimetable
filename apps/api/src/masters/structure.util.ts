@@ -160,3 +160,73 @@ export function daySegmentsFromRows(rows: PeriodRow[]): number[] {
   if (run > 0) segments.push(run);
   return segments;
 }
+
+/**
+ * §26.3 — the last teaching period before lunch, or null if the day has none.
+ *
+ * `daySegments` above collapses every break into a run length, which is all the
+ * §4.8 block rule needs and is not enough for "before lunch": that rule needs to
+ * know *which* break was lunch. Hence a second pass rather than a richer return
+ * from the first — the two questions have different answers on a day with three
+ * breaks, and merging them would make the common one harder to read.
+ *
+ * Three rules, in order, and the order is the point:
+ *
+ *  1. **A break named for lunch**, which is what a school actually types.
+ *  2. Otherwise **the longest break**, since lunch is nearly always the long
+ *     one and a 5-minute changeover is nearly never it.
+ *  3. Otherwise **the break nearest the middle of the day**.
+ *
+ * `null` when there is no break at all, and that is a real answer rather than a
+ * fallback: a day with no break has no side of lunch to be on, so the subject
+ * rules that depend on it switch off instead of attaching to a guess.
+ */
+export function lunchAfterPeriodFromRows(rows: PeriodRow[]): number | null {
+  const day = rows
+    .filter((r) => r.periodNumber !== 0 && !r.isExtra)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const minutes = (hhmm: string): number => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : 0;
+  };
+
+  // Every break, with the last teaching period that precedes it. A break before
+  // any teaching period (a pre-assembly gap) has nothing before it and cannot
+  // be a lunch boundary — there is no "before lunch" to speak of.
+  const breaks: Array<{ after: number; length: number; named: boolean; index: number }> = [];
+  let lastPeriod: number | null = null;
+  let teachingSeen = 0;
+  day.forEach((r) => {
+    if (r.isBreak) {
+      if (lastPeriod !== null) {
+        breaks.push({
+          after: lastPeriod,
+          length: Math.max(0, minutes(r.endTime) - minutes(r.startTime)),
+          named: /lunch|tiffin|recess|midday|mid-day/i.test(r.breakName ?? ""),
+          index: teachingSeen,
+        });
+      }
+    } else if (r.periodNumber !== null) {
+      lastPeriod = r.periodNumber;
+      teachingSeen += 1;
+    }
+  });
+  if (breaks.length === 0) return null;
+
+  const named = breaks.filter((b) => b.named);
+  if (named.length > 0) {
+    // Several named ones (a school with both "Recess" and "Lunch") — the long
+    // one is lunch.
+    return named.reduce((a, b) => (b.length > a.length ? b : a)).after;
+  }
+
+  const longest = breaks.reduce((a, b) => (b.length > a.length ? b : a));
+  if (breaks.some((b) => b.length !== longest.length)) return longest.after;
+
+  // All the same length: take the one closest to the middle of the teaching day.
+  const middle = teachingSeen / 2;
+  return breaks.reduce((a, b) =>
+    Math.abs(b.index - middle) < Math.abs(a.index - middle) ? b : a,
+  ).after;
+}

@@ -30,6 +30,8 @@ export type IssueCode =
   | "LAB_SUBJECT_UNSERVED"
   | "LAB_SUBJECT_OVERFLOW"
   | "HOME_ROOM_SHARED"
+  /** §26.3 — a lunch-side rule confines more periods than that side holds. */
+  | "LUNCH_SIDE_CAPACITY"
   | "HOME_ROOM_UNSET"
   // Check 6 — structural conflicts (§4.6, §8.1b)
   | "CT_P1_DEADLOCK"
@@ -174,6 +176,17 @@ export interface SnapshotConfig {
    * P1-P3, break, P4-P7 → [3,4]. Empty means layout not yet built.
    */
   daySegments: number[];
+  /**
+   * §26.3 — the last teaching period BEFORE lunch, or null when the day has no
+   * break at all.
+   *
+   * `daySegments` collapses the breaks into run lengths and loses which one was
+   * lunch, so this is derived separately and deliberately: the subject rules
+   * "before lunch", "after lunch" and "not straight after lunch" all mean
+   * nothing without it. Null switches those rules off rather than guessing a
+   * boundary — a school with no break has no side of lunch to be on.
+   */
+  lunchAfterPeriod: number | null;
 }
 
 export interface SnapshotClassSection {
@@ -181,6 +194,25 @@ export interface SnapshotClassSection {
   label: string; // "5-A"
   classId: number;
   classTeacherId: number | null;
+}
+
+/**
+ * §26.2/§26.3 — where a subject belongs in the day.
+ *
+ * On the SUBJECT, not the curriculum row: "Games is not taught straight after
+ * lunch" is true of Games, not of Class 5's Games. Keyed by subject id in
+ * `subjectPlacement` so the solver, the objective and Check 10 all read one
+ * definition.
+ */
+export interface SnapshotSubjectPlacement {
+  subjectName: string;
+  category: "scholastic" | "co_scholastic";
+  /** 1..5, higher is earlier in the day. A preference — see §26.2. */
+  priority: number;
+  /** HARD: pruned out of the domain before search. */
+  lunchRule: "any" | "before" | "after";
+  /** HARD: may not occupy the period immediately after lunch. */
+  gapAfterLunch: boolean;
 }
 
 /** One class_subjects row (applies to every section of that class). */
@@ -304,6 +336,8 @@ export interface FeasibilitySnapshot {
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
   labRoomCount: number;
   labSubjectIds: number[];
+  /** §26 — placement rules per subject id. A subject missing from here has none. */
+  subjectPlacement: Record<number, SnapshotSubjectPlacement>;
   /** §19: the fixed room each class-section sits in, when one is recorded. */
   homeRoomBySection: Record<number, number | null>;
   /** §19: which lab rooms serve each lab subject. A lab with no subjects

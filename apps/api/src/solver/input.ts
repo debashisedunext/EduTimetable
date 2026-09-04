@@ -6,7 +6,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { FeasibilitySnapshot, SolverInput } from "@edutimetable/shared";
 import { parsePins } from "@edutimetable/shared";
-import { daySegmentsFromRows } from "../masters/structure.util";
+import { daySegmentsFromRows, lunchAfterPeriodFromRows } from "../masters/structure.util";
 
 export async function buildFeasibilitySnapshot(
   prisma: PrismaClient,
@@ -25,7 +25,7 @@ export async function buildFeasibilitySnapshot(
   const classIds = [...new Set(classSections.map((c) => c.classId))];
   const sectionIds = classSections.map((c) => c.id);
 
-  const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects] =
+  const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects, allSubjects] =
     await Promise.all([
       // Phase 19: the curriculum is year-scoped, and this filter is what keeps
       // it so. `variables.ts` keys requirements by `classId:subjectId` in a
@@ -57,6 +57,16 @@ export async function buildFeasibilitySnapshot(
       }),
       prisma.room.count({ where: { schoolId: config.schoolId, roomType: "lab" } }),
       prisma.subject.findMany({ where: { schoolId: config.schoolId, isLab: true } }),
+      // §26 — every subject's placement rules. The whole school's, not just the
+      // ones on this config's curriculum: an elective option's subject is not a
+      // `class_subjects` row, and its rules apply just the same.
+      prisma.subject.findMany({
+        where: { schoolId: config.schoolId },
+        select: {
+          id: true, name: true, category: true, priority: true,
+          lunchRule: true, gapAfterLunch: true,
+        },
+      }),
     ]);
 
     // §19 rooms. `homeRoomBySection` is what makes a recorded home room
@@ -103,23 +113,28 @@ export async function buildFeasibilitySnapshot(
 
   const label = (cs: (typeof classSections)[number]) => `${cs.class.name}-${cs.section.name}`;
 
+  // Built once: both `daySegments` and the lunch boundary read the same rows,
+  // and mapping them twice is how the two answers come to disagree.
+  const periodRows = config.periods.map((p) => ({
+    sortOrder: p.sortOrder,
+    periodNumber: p.periodNumber,
+    startTime: p.startTime,
+    endTime: p.endTime,
+    isBreak: p.isBreak,
+    isExtra: p.isExtra,
+    breakName: p.breakName,
+  }));
+
   return {
     config: {
       id: config.id,
       name: config.name,
       workingDays: (config.workingDays as number[]) ?? [1, 2, 3, 4, 5],
       periodsPerDay: config.periodsPerDay,
-      daySegments: daySegmentsFromRows(
-        config.periods.map((p) => ({
-          sortOrder: p.sortOrder,
-          periodNumber: p.periodNumber,
-          startTime: p.startTime,
-          endTime: p.endTime,
-          isBreak: p.isBreak,
-          isExtra: p.isExtra,
-          breakName: p.breakName,
-        })),
-      ),
+      daySegments: daySegmentsFromRows(periodRows),
+      // §26.3 — which break was lunch. Null when the day has no break, which
+      // switches the lunch rules off rather than attaching them to a guess.
+      lunchAfterPeriod: lunchAfterPeriodFromRows(periodRows),
     },
     classSections: classSections.map((cs) => ({
       id: cs.id,
@@ -200,6 +215,13 @@ export async function buildFeasibilitySnapshot(
     crossConfigTeacherLoad,
     labRoomCount: labRooms,
     labSubjectIds: labSubjects.map((s) => s.id),
+    subjectPlacement: Object.fromEntries(allSubjects.map((s) => [s.id, {
+      subjectName: s.name,
+      category: s.category,
+      priority: s.priority,
+      lunchRule: s.lunchRule,
+      gapAfterLunch: s.gapAfterLunch,
+    }])),
     homeRoomBySection: Object.fromEntries(classSections.map((cs) => [cs.id, cs.homeRoomId])),
     labRoomsBySubject,
     roomNames: Object.fromEntries(allRooms.map((r) => [r.id, r.name])),

@@ -16,12 +16,21 @@ export interface ObjectiveWeights {
   dailyLoadBalance: number;
   /** lab↔classroom switches between consecutive periods for a class-section */
   roomChanges: number;
+  /**
+   * §26.2 — how late in the day high-priority subjects sit.
+   *
+   * The one term that is about the CHILDREN rather than the staff, which is why
+   * it is weighted above the others: a week with two extra teacher gaps and
+   * Maths in the mornings is the better week.
+   */
+  subjectPriority: number;
 }
 
 export const DEFAULT_WEIGHTS: ObjectiveWeights = {
   teacherGaps: 5,
   dailyLoadBalance: 2,
   roomChanges: 1,
+  subjectPriority: 3,
 };
 
 export interface ObjectiveScore {
@@ -31,6 +40,22 @@ export interface ObjectiveScore {
   peakDailyLoad: number;
   /** lab/classroom switches between consecutive periods, summed over section-days */
   roomChanges: number;
+  /**
+   * §26.2 — Σ over lessons of `(priority − 3) × (period − 1)`.
+   *
+   * Lower is better, like every other term, and the sign falls out of that
+   * directly: a priority-5 subject scores 0 in period 1 and +10 in period 6, so
+   * sitting late costs it; a priority-1 subject scores the mirror image, so
+   * pushing Library late is as much of a gain as pulling Maths early. Priority
+   * 3 — the neutral default, and what every subject had before this phase —
+   * contributes exactly nothing, which is what makes the term invisible to a
+   * school that never sets it.
+   *
+   * An earlier draft negated this, on the reasoning that "high priority early"
+   * ought to be the low number. It already is: negating pushed Maths to last
+   * period and called it an improvement. The unit test is what said so.
+   */
+  subjectPriority: number;
   /** weighted total the optimizer minimizes */
   weighted: number;
   /** per-teacher gap detail, worst first — drives the "what improved" report */
@@ -48,8 +73,16 @@ export function scoreTimetable(
   input: SolverInput,
   placements: Placement[],
   variables: SolverVariable[],
-  weights: ObjectiveWeights = DEFAULT_WEIGHTS,
+  weights: Partial<ObjectiveWeights> = DEFAULT_WEIGHTS,
 ): ObjectiveScore {
+  /**
+   * Merged, not used raw. A caller supplying three of the four weights — which
+   * every caller written before §26.2 added a fourth does — would otherwise
+   * multiply by `undefined` and score the whole timetable `NaN`, and a NaN
+   * score compares false against everything: the optimizer would silently stop
+   * adopting improvements rather than fail. A missing weight means the default.
+   */
+  const w: ObjectiveWeights = { ...DEFAULT_WEIGHTS, ...weights };
   const days = input.snapshot.config.workingDays;
   const perDay = input.snapshot.config.periodsPerDay;
   const labSubjects = new Set(input.snapshot.labSubjectIds);
@@ -116,15 +149,38 @@ export function scoreTimetable(
     }
   }
 
+  // ---- §26.2 subject priority: how late high-priority subjects sit ----
+  //
+  // Deliberately soft. "Maths must be in period 1" cannot hold for twenty
+  // sections at once, so as a hard rule it would make every real school
+  // infeasible; as a score it pulls the whole week in the right direction and
+  // still places everything.
+  let subjectPriority = 0;
+  for (const p of placements) {
+    // An elective block runs several subjects at once — each option's priority
+    // counts, since each is a real lesson for the children taking it.
+    const subjectIds = p.options.length > 0
+      ? p.options.map((o) => o.subjectId)
+      : p.subjectId !== null ? [p.subjectId] : [];
+    for (const id of subjectIds) {
+      const pl = input.snapshot.subjectPlacement?.[id];
+      if (!pl) continue;
+      for (const [, period] of cellsOf(p)) {
+        subjectPriority += (pl.priority - 3) * (period - 1);
+      }
+    }
+  }
   const weighted =
-    weights.teacherGaps * teacherGaps +
-    weights.dailyLoadBalance * peakDailyLoad +
-    weights.roomChanges * roomChanges;
+    w.teacherGaps * teacherGaps +
+    w.dailyLoadBalance * peakDailyLoad +
+    w.roomChanges * roomChanges +
+    w.subjectPriority * subjectPriority;
 
   return {
     teacherGaps,
     peakDailyLoad,
     roomChanges,
+    subjectPriority,
     weighted,
     worstTeachers: perTeacherGaps.sort((a, b) => b.gaps - a.gaps).slice(0, 10),
   };

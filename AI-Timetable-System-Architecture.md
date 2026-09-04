@@ -2252,3 +2252,51 @@ The whole set is saved in one PUT: no-overlaps and at-least-two-terms are rules 
 `scripts/terms-smoke.cjs` runs the calendar end to end: a year-wise session reports no terms and no current term (which is how the selector knows to hide); a split is proposed, saved, renamed and grown while keeping its ids; overlaps, terms outside the session and a lone term are each refused by name with the saved calendar left exactly as it was; today's term is what a request with no term gets; another school's session is a 404 both ways; a teacher may read the list and not write it; and the guided setup's step 2 writes the terms once and creates nothing on a second press.
 
 `packages/shared/src/terms/terms.spec.ts` covers the arithmetic away from any database — the two-, three- and four-term splits, contiguity and exact coverage, the leap February, the day-split fallbacks, every validation rule, and `termForDate` including a date in a gap.
+
+---
+
+## 26. Subject Placement Rules (Phase 27)
+
+A school knows things about its subjects that the app had no way to hear. Maths in the morning while children are fresh; Games after lunch but never *immediately* after it; Art and Library late. Until §26 all of it was expressed by dragging cards on the Board after every generation.
+
+### 26.1 The Teachers step shows what a teacher teaches
+
+The guided setup's Teachers step rendered **every** subject in the school as a toggle chip in **every** teacher row — 22 × 122 at the reference school. A wall of grey, most of it about subjects the teacher does not teach, with the one fact the cell exists to show buried inside it. Past about eight subjects the step stopped being usable, which is most secondary schools.
+
+The cell now shows only the chosen subjects, as removable chips, plus a **＋** that opens a searchable picker ordered by §26.2 priority. The cell's size no longer depends on the school's subject count, and Enter takes the top match.
+
+The panel is `position: fixed`, measured from the button, and that is forced rather than chosen: the step's table lives in a `Scroll` (`overflow: auto`), so an absolutely-positioned panel is clipped by it and scrolls away with the rows — the same trap the §8.1d nav flyout hit, with the same answer. `useAnchored` was extracted the second time it was needed.
+
+### 26.2 What a subject is: category and priority
+
+Four columns on `subjects`, because these are facts about the *subject*: "Games is not taught straight after lunch" is true of Games, not of Class 5's Games. `category` (scholastic / co-scholastic), `priority` (1–5), `lunch_rule` and `gap_after_lunch`. **Every default reproduces the previous behaviour exactly** — priority 3 is the neutral middle, `any` restricts nothing, the gap is off — so a school that upgrades and changes nothing generates precisely what it generated before.
+
+**The intelligent defaults come from the classifier that already existed.** `WEIGHTS` in `suggest.ts` already sorted subject names into families for the curriculum suggester, so it gained a defaults field per family rather than acquiring a second table beside it: two tables would eventually disagree about whether Games is co-scholastic, and only a school would find out. `defaultsFor(name)` is the one way anything in the product guesses — the guided setup, the Subjects master, the §16 importer and the ERP sync all ask it. **An unrecognised name gets the neutral answer rather than a guess**, because a wrong guess quietly constrains the solver on behalf of a school that never said so.
+
+Blanks are filled from the name **at the point of commit**, not when a row is created, so renaming "Sports" to "Games" picks up the Games rules where a value baked in at creation would keep Sports'. An explicit value always wins, and an update changes only the fields it sends.
+
+**Priority is deliberately soft, and that is the correct call.** "Maths must be in period 1" cannot hold for twenty sections at once, so as a hard rule it would make every real school infeasible. It is a fourth term in `optimize/objective.ts` — the module that already is the single definition of "nice" — scored as `Σ (priority − 3) × (period − 1)`. Lower is better, like every other term, and the sign falls out directly: a priority-5 subject scores 0 in period 1 and +10 in period 6, so sitting late costs it, while a priority-1 subject scores the mirror image, so pushing Library late is as much of a gain as pulling Maths early. Priority 3 contributes exactly nothing, which is what makes the term invisible to a school that never sets it.
+
+That one definition buys three things: the CSP's value ordering prefers earlier periods for high-priority subjects, CP-SAT minimises the same term, and `scoreTimetable` keeps "optimised mode is measurably better" provable. An earlier draft negated the term on the reasoning that "high priority early" ought to be the low number — it already is, and negating pushed Maths to last period and called it an improvement. The unit test is what said so.
+
+### 26.3 Where a subject sits: the lunch rules
+
+`lunch_rule` (`any` / `before` / `after`) and `gap_after_lunch` are **hard**, and hard means pruned before search (invariant 2). `domainFor` in `solver/variables.ts` is the single place a domain is built, and they join the alternate-day, blocked-cell, P1 and break-straddling rules already there. `lunchAllows` is checked over **every period of a block**, not just its start: a double period beginning before lunch would otherwise reach into the afternoon while claiming to be a morning slot.
+
+That needs one new fact, `lunchAfterPeriod`. `daySegments` collapses breaks into run lengths and loses which one was lunch, so it is derived separately — a break named for lunch, else the longest, else the one nearest the middle of the day — and is `null` when the day has no break at all, which switches both rules off rather than attaching them to a guess.
+
+A split elective applies **every option's** rules, since the options run at once: one Games option drags the whole block after lunch, which is correct and is precisely why the check below has to see it first.
+
+**Check 11 — lunch-side capacity.** A hard constraint with no feasibility check is a generation that fails, which is the one thing the two-phase split exists to prevent. So per class-section, the periods a rule confines a subject to must fit the cells that rule leaves — counted with **the same `lunchAllows` the solver prunes with**, so Readiness can never promise a cell the search will refuse.
+
+Grouped by the exact `(rule, gap)` pair rather than by side, and the reason is a bug its own smoke caught: a subject with only the gap rule — *any time, but not straight after lunch* — has the whole week minus one cell a day, and an earlier draft filed it under "after lunch" and refused a school that was perfectly fine. Groups still overlap in the cells they compete for, so the check **under-detects rather than over-detects**: that is the right direction to be wrong in, since a false blocker stops a school that could have generated, where a missed one leaves the solver to report what it could not place — which it already does well.
+
+There is deliberately **no auto-remedy** (§21). Every way out of this loosens a rule somebody set for a physical reason, and `relax` is only ever applied with explicit consent.
+
+### 26.4 Verification
+
+`scripts/subject-rules-smoke.cjs` reads the generated slots rather than an API response — a 201 from Generate says nothing about where Games landed. It asserts that a rule which cannot fit is refused *before* generation with both numbers in the message, that widening it clears the blocker, that the generated week puts **no** Games before lunch and **none** in the period straight after it, and that priority-5 subjects sit measurably earlier than priority-1 ones (a mean over the week, since priority is a preference and an assertion about one lesson would be flaky by construction).
+
+Its own setup is loud: a fixture step that fails exits naming the call. The first run built no class-sections and reported "Readiness refuses it — score 0", because a school with no data scores 0 and raises no blockers — six checks failed describing a feature that had never been exercised.
+
+`guided-setup-smoke.cjs` is the regression that matters most: the guided setup now classifies Games as after-lunch-with-a-gap automatically, and the school it builds must still reach 100% readiness and generate with nothing unplaced.
