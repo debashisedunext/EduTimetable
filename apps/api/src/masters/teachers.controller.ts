@@ -3,6 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { InstructionService } from "./instruction.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 const RULES = ["none", "always_first_period", "random"];
@@ -15,6 +16,7 @@ export class TeachersController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly instructions: InstructionService,
   ) {}
 
   /** Teacher Directory (§8.1a): list-first with load vs. capacity. */
@@ -38,6 +40,10 @@ export class TeachersController {
       minPeriodsPerDay: t.minPeriodsPerDay,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
       classTeacherPeriodRule: t.classTeacherPeriodRule,
+      // §26.5 — what the school said about this teacher, and what became of it.
+      specialInstruction: t.specialInstruction,
+      instructionStatus: t.instructionStatus,
+      instructionNote: t.instructionNote,
       periodPattern: t.periodPattern,
       alternateDaySet: t.alternateDaySet,
       employmentType: t.employmentType,
@@ -200,5 +206,40 @@ export class TeachersController {
         throw new BadRequestException("alternateDaySet must be an array of day numbers 1-7");
       }
     }
+  }
+
+  /**
+   * §26.5 — evaluate a teacher's plain-English instruction, and apply it.
+   *
+   * A single endpoint rather than a separate "check" and "apply", because there
+   * is nothing to decide in between: an accepted instruction that had not
+   * written its rows would be a green tick over nothing, which is precisely the
+   * failure the whole design is arranged to avoid. The refusal path writes
+   * nothing but keeps the text.
+   *
+   * `masters.manage`, inherited from the controller — the authority to set a
+   * teacher's availability is the one this borrows, not a new AI permission.
+   */
+  @Put(":id/instruction")
+  async instruction(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const teacherId = toInt(id, "id");
+    // Ownership first, so a stranger is told "no such teacher" rather than
+    // anything about this school's AI configuration (§17).
+    const own = await this.prisma.teacher.findFirst({ where: { id: teacherId }, select: { id: true } });
+    if (!own) throw new NotFoundException("Teacher not found");
+
+    const result = await this.instructions.evaluate(
+      req.user.schoolId, req.user.sub ?? null, teacherId, String(body?.text ?? ""),
+    );
+    // An accepted instruction changes availability and load, both of which
+    // Readiness reports on.
+    await this.readiness.invalidate(req.user.schoolId);
+    return result;
+  }
+
+  /** Whether this school can evaluate instructions at all — decides if the box is shown. */
+  @Get("instruction/available")
+  async instructionAvailable(@Req() req: AuthedRequest) {
+    return { available: await this.instructions.available(req.user.schoolId) };
   }
 }

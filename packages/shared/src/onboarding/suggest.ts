@@ -521,6 +521,15 @@ export interface TeacherAnswer {
   subjects: string[];
   /** Which wing they belong to. Blank means every wing. */
   wing?: string;
+  /**
+   * §26.5 — anything the school wants to say about this teacher, in words.
+   *
+   * The guided setup COLLECTS it and never evaluates it: doing so at commit
+   * would be one model call per teacher, 122 of them for the reference school,
+   * to answer a question nobody has asked yet. It arrives as `pending` and is
+   * checked deliberately from the Teachers screen.
+   */
+  specialInstruction?: string;
   maxPeriodsPerDay?: number;
   /**
    * §20's floor: a day is either free, or carries at least this many periods.
@@ -603,6 +612,7 @@ export function teacherSheets(teachers: TeacherAnswer[], wings: WingAnswer[]): R
     // wing's classes; one left unpinned is left unstated, which means "not
     // decided" rather than "nothing" — the same rule the importer holds to.
     "Teaching Scope": classesOfWing(t.wing).join(", "),
+    "Special Instruction": t.specialInstruction ?? "",
     Active: "Yes",
   })))];
 }

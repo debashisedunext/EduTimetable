@@ -224,6 +224,17 @@ enum SubjectLunchRule {
   after
 }
 
+/// §26.5 — where a teacher's plain-English instruction got to.
+///
+/// `pending` is a freshly typed instruction awaiting evaluation, and the state
+/// one returns to when the text changes: an instruction is re-evaluated when it
+/// is edited, never silently re-run later against a different model.
+enum InstructionStatus {
+  pending
+  accepted
+  denied
+}
+
 enum ClassTeacherPeriodRule {
   none
   always_first_period
@@ -488,6 +499,20 @@ model Teacher {
   /// the grade band the substitute engine used to derive from existing
   /// mappings, this is *declared*, so it can constrain the mappings rather
   /// than merely describe them.
+  /// §26.5 — what the school said about this teacher, in their own words.
+  ///
+  /// Kept verbatim and kept even when refused: it is what a person typed, and
+  /// discarding it to teach them about phrasing is not our call.
+  specialInstruction     String?                      @map("special_instruction") @db.Text
+  instructionStatus      InstructionStatus?           @map("instruction_status")
+  /// §26.5 — what the instruction BECAME: constraints the engine already
+  /// enforces. This is the authority. Remove the school's AI key tomorrow and
+  /// the timetable does not change, because by then these are ordinary rows.
+  instructionCompiled    Json?                        @map("instruction_compiled")
+  /// Why it was refused, or the plain-English read-back of what was understood
+  /// — so the green tick is auditable rather than trusted.
+  instructionNote        String?                      @map("instruction_note") @db.VarChar(400)
+  instructionAt          DateTime?                    @map("instruction_at")
   eligibility            TeacherClassEligibility[]
   extraClasses           ExtraClass[]
   unavailability         TeacherUnavailability[]

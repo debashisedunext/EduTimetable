@@ -605,6 +605,17 @@ export class ImportService {
               email: r.data.email ?? null,
               maxConsecutivePeriodsPerDay: r.data.maxConsecutivePeriodsPerDay ?? null,
               canSubstitute: r.data.canSubstitute ?? true,
+              // §26.5 — stored, never evaluated here. A spreadsheet upload is
+              // not the moment to spend a model call per row, so it arrives as
+              // "not checked yet" and is turned into rules deliberately from
+              // the Teachers screen.
+              ...(r.data.specialInstruction
+                ? {
+                  specialInstruction: String(r.data.specialInstruction),
+                  instructionStatus: "pending" as const,
+                  instructionNote: "Imported — not checked yet. Open the teacher to apply it.",
+                }
+                : {}),
             },
           });
           bump("teachers");

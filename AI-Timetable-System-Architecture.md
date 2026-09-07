@@ -2293,6 +2293,26 @@ Grouped by the exact `(rule, gap)` pair rather than by side, and the reason is a
 
 There is deliberately **no auto-remedy** (§21). Every way out of this loosens a rule somebody set for a physical reason, and `relax` is only ever applied with explicit consent.
 
+### 26.5 A teacher's instruction, in plain English
+
+A school knows things it has no field for: *"Mrs Rao leaves at 1pm on Fridays."* Until now that had to be translated by hand into `teacher_unavailability` rows, by somebody who knew that screen existed. §26.5 lets them type the sentence.
+
+**The whole design is one rule: the model translates, it never schedules.** Invariant 14 is not bent here and is not merely respected by convention — the model's *entire vocabulary* is a closed set, every member of which is a constraint the solver already enforced long before any AI was involved: unavailability, the daily and weekly ceilings, the §20 floor, the back-to-back limit, the first-period rule, the §4.7 pattern, §18 class eligibility, and whether they may be offered as a substitute. There is no term for "put her in period 3 on Tuesday", so there is no way to ask for one.
+
+That is what makes the green tick mean something. It does not mean *the AI understood*; it means **this compiled to constraint X, and constraint X is enforced whether the assistant is switched on or not**. Turn the school's key off tomorrow and its timetables do not change, because by then the instruction is ordinary rows. The compiled result is read back in words on the row — *"not available on Friday"* — so the tick is auditable rather than trusted.
+
+Five refusals worth stating, each of which was a decision:
+
+- **Anything outside the vocabulary is denied, by name.** "Put her with the nicer classes" comes back as a sentence a person can read, not a silent no-op.
+- **A partially understood instruction is refused whole.** Accepting the half that compiled and showing a tick would tell the school the other half is being honoured — the one lie this feature must not tell.
+- **A refused instruction is kept.** It is what somebody typed; discarding it to teach them about phrasing is not our call.
+- **A day the school does not teach on is refused**, because a constraint that never binds reads on screen as a rule being honoured.
+- **A `onlyClasses` list that resolves to nothing is refused**, because §18 reads an empty scope as *not stated* — so an instruction meant to narrow a teacher's classes would silently widen them to every class in the school.
+
+The rows an instruction owns are marked (`AI: …` on the reason) so re-evaluating an edit **replaces** them rather than accumulating a teacher into unavailability nobody asked for, one edit at a time — while never touching a block an admin set by hand on the §4.7a screen.
+
+**The guided setup and the importer collect but do not evaluate.** Neither has teacher rows at the moment the text arrives, and evaluating at commit would be one model call per teacher — 122 for the reference school, to answer a question nobody has asked yet. It arrives as `pending`, and the Teachers screen turns it into rules one deliberate press at a time.
+
 ### 26.4 Verification
 
 `scripts/subject-rules-smoke.cjs` reads the generated slots rather than an API response — a 201 from Generate says nothing about where Games landed. It asserts that a rule which cannot fit is refused *before* generation with both numbers in the message, that widening it clears the blocker, that the generated week puts **no** Games before lunch and **none** in the period straight after it, and that priority-5 subjects sit measurably earlier than priority-1 ones (a mean over the week, since priority is a preference and an assertion about one lesson would be flaky by construction).
@@ -2300,3 +2320,7 @@ There is deliberately **no auto-remedy** (§21). Every way out of this loosens a
 Its own setup is loud: a fixture step that fails exits naming the call. The first run built no class-sections and reported "Readiness refuses it — score 0", because a school with no data scores 0 and raises no blockers — six checks failed describing a feature that had never been exercised.
 
 `guided-setup-smoke.cjs` is the regression that matters most: the guided setup now classifies Games as after-lunch-with-a-gap automatically, and the school it builds must still reach 100% readiness and generate with nothing unplaced.
+
+`scripts/teacher-instructions-smoke.cjs` does the same job for §26.5, and its last section is the only one that proves the feature rather than the UI: it generates a real timetable and asserts the teacher is **never** scheduled on the day her instruction ruled out. It also checks that a refusal writes nothing, that a refused instruction is still stored, and that an edit replaces the previous rows rather than adding to them. Where no key is configured it **skips and says so** — a green tick from a deployment that cannot evaluate would be worth less than no test. Where a school in the same database has one, it borrows the *encrypted* blob (the encryption key is deployment-wide), so the test runs without the secret ever being read or printed.
+
+`instruction.compile.spec.ts` is the boundary itself, tested without a model in the loop — including the case that caught a real defect: an instruction naming a period outside the school day used to collapse to "unavailable all day", silently a far stronger rule than anybody asked for.

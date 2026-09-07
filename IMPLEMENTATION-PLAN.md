@@ -1817,3 +1817,47 @@ optional cuts:** 25.5 loses a door, not a foundation; 25.6 can ship after the fi
 since an admin can run a school alone until staff need logins. 25.4a/b — the teacher columns and
 their solver enforcement — is the only work touching the solver, and can be lifted out and shipped on
 its own if the wizard slips.
+
+---
+
+# Phase 26 — Term-wise Timetables (§25)
+
+**Status: step 1 of 4 landed.** A session runs as a whole year (as before) or as terms; the model,
+the resolver and the Session step are in. `academic_terms`, plus `term_id` and a generated
+`term_scope` inside the three unique keys — the §22 `draft_scope` device again, since without a new
+dimension in the key a second term cannot physically exist. A year-wise school is byte-identical and
+the migration rewrites no existing row.
+
+**Still to do**, in order, each shippable:
+
+2. **Reads** — a term selector in the top bar, `?termId=` through `GET /slots`, the Board and the
+   Matrix, and the term's dates in their headers.
+3. **Writes** — generation into a term, `fanOutToTerms` (the one copy operation behind first
+   generation, "copy this term over the others", and switching a session to term-wise), per-term
+   publish.
+4. **The long tail** — reports, exports, `/me` views, substitutions, AI tools, and the treble-count
+   sweep that proves the tail was actually finished.
+
+**Nothing reads a term yet**, so a school can say "2 terms" and see no terms. That gap is the reason
+step 2 is next rather than optional.
+
+# Phase 27 — Subject placement rules and teacher instructions (§26)
+
+**Status: all four steps landed.**
+
+1. **§26.1 The Teachers cell** — shows what a teacher teaches rather than every subject in the
+   school, with a searchable picker. The step was unusable past about eight subjects.
+2. **§26.2 Subject columns** — category, priority, and the two lunch rules, on the manual screen, the
+   guided step and the §16 sheet, defaulted from the classifier that already existed. Every default
+   reproduces the previous behaviour exactly.
+3. **§26.3 Enforcement** — the lunch rules pruned before search, priority as a fourth term in the
+   §5.6 objective, and Feasibility Check 11 refusing before Generate.
+4. **§26.5 Teacher instructions** — plain English compiled into constraints the engine already
+   enforces, green-ticked or denied by name. The guided setup and the importer collect but do not
+   evaluate: neither has teacher rows at that moment, and evaluating at commit would be one model
+   call per teacher.
+
+**Deliberately not done:** per-term or per-class subject rules (they are facts about the subject);
+an auto-remedy for Check 11 (every way out loosens a rule somebody set for a physical reason, and
+§21 applies `relax` only with explicit consent); and any instruction vocabulary that could place a
+lesson.

@@ -262,6 +262,13 @@ export function StepTeachers({ answers, onChange }: {
           <th style={{ ...th, width: 56 }} title="Most periods in a week">Max/week</th>
           <th style={{ ...th, width: 56 }} title="Longest run of back-to-back periods">In a row</th>
           <th style={{ ...th, width: 46 }} title="Available for substitutions">Sub</th>
+          {/* §26.5 — collected here, checked later. The guided setup has no
+              teacher rows yet, and evaluating at commit would be one model call
+              per teacher — 122 for a real school, to answer a question nobody
+              has asked. It arrives as "not checked yet". */}
+          <th style={{ ...th, width: 180 }} title="Anything about when they can teach, in plain English">
+            Special instruction
+          </th>
           <th style={{ ...th, width: 30 }} />
         </tr></thead>
         <tbody>
@@ -341,6 +348,19 @@ export function StepTeachers({ answers, onChange }: {
                 <input type="checkbox" checked={t.canSubstitute !== false}
                   aria-label={`${t.name} can cover substitutions`}
                   onChange={(e) => edit(i, { canSubstitute: e.target.checked })} />
+              </td>
+              <td style={td}>
+                {/* Collected, not evaluated (§26.5). It reaches the school as
+                    "not checked yet"; the Teachers screen turns it into rules,
+                    one deliberate press at a time. */}
+                <input
+                  style={{ ...cell, fontSize: 11.5 }}
+                  value={t.specialInstruction ?? ""}
+                  maxLength={600}
+                  placeholder="e.g. leaves at 1pm on Fridays"
+                  aria-label={`Special instruction for ${t.name || `teacher ${i + 1}`}`}
+                  onChange={(e) => edit(i, { specialInstruction: e.target.value })}
+                />
               </td>
               <td style={{ ...td, textAlign: "right" }}>
                 {rows.length > 1 && <LinkButton tone="danger" onClick={() => set(rows.filter((_, n) => n !== i))}>✕</LinkButton>}

@@ -209,6 +209,10 @@ export const SHEETS: SheetDef[] = [
       { header: "Max Periods/Day", key: "maxPeriodsPerDay", type: "int", min: 1, max: 12, width: 15, help: "Defaults to 6", sample: [6] },
       { header: "Min Periods/Day", key: "minPeriodsPerDay", type: "int", min: 0, max: 12, width: 15, help: "Defaults to 3. A working day carries at least this many periods — the teacher is either in for a proper day or not in at all. Set 0 or 1 to switch the rule off for this teacher", sample: [3] },
       { header: "Max Periods/Week", key: "maxPeriodsPerWeek", type: "int", min: 1, max: 60, width: 16, help: "Defaults to 30", sample: [30] },
+      // §26.5 — stored, never evaluated on import. It arrives as "not checked
+      // yet" and is turned into rules from the Teachers screen, deliberately:
+      // a spreadsheet upload is not the moment to spend a model call per row.
+      { header: "Special Instruction", key: "specialInstruction", type: "string", maxLength: 600, width: 34, help: "Anything about WHEN they can teach or WHICH classes, in plain English. Checked and turned into rules from the Teachers screen", sample: [""] },
       { header: "Class-Teacher Rule", key: "classTeacherPeriodRule", type: "enum", values: CT_RULES, aliases: { "always first period": "always_first_period" }, width: 20, help: "always_first_period = takes P1 of their own class every day, and never P1 elsewhere", sample: ["none"] },
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
       { header: "Alternate Days", key: "alternateDaySet", type: "list", separator: ",", width: 18, help: "Only for alternate_day, e.g. Mon,Wed,Fri", sample: [""] },

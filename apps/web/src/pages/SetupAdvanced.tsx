@@ -3,6 +3,7 @@ import { api } from "../api";
 import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
+import { TeacherInstruction, useInstructionsAvailable } from "../teachers/Instruction";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -556,6 +557,7 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
 }) {
   const [form, setForm] = useState(initial);
   useEffect(() => setForm(initial), [initial]);
+  const aiOn = useInstructionsAvailable();
   const first = (form.name || "This teacher").split(" ")[0];
   const toggleDay = (d: number) => {
     const set = new Set<number>(form.alternateDaySet);
@@ -666,6 +668,19 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
           </div>
         </div>
       </div>
+
+      {/*
+        §26.5 — the same rules, said in a sentence instead of set field by
+        field. Shown only where the school has an assistant configured: a box
+        that silently never evaluates invites rules that will never apply.
+      */}
+      {aiOn && (
+        <TeacherInstruction
+          teacherId={form.id ?? null}
+          value={form}
+          onSaved={(next) => setForm({ ...form, ...next })}
+        />
+      )}
 
       <div className="wizard-foot">
         <button className="btn btn-secondary" onClick={onBack}>← Back to Teacher List</button>
