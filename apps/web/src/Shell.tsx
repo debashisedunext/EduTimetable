@@ -6,6 +6,7 @@ import { api, clearToken, getToken, switchSchool } from "./api";
 import { useConfigCtx } from "./hooks";
 import { Icon, type IconName } from "./icons";
 import { useNavCollapsed } from "./nav-collapse";
+import { NavScroll } from "./nav-scroll";
 
 interface NavEntry {
   /** §8.1d — what the screen IS, and the only thing identifying it when the nav
@@ -385,7 +386,7 @@ export function Shell({ me }: { me: MeResponse }) {
           <span className="nav-collapse-chevron" aria-hidden>«</span>
           <span className="nav-label">Collapse</span>
         </button>
-        <div className="sidebar-nav">
+        <NavScroll>
           {groups.map((g) => (
             <div key={g.label}>
               {/* Collapsed, the group name has nowhere to go — a rule stands in
@@ -397,9 +398,17 @@ export function Shell({ me }: { me: MeResponse }) {
                   key={i.to}
                   to={i.to}
                   className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-                  // The name still reaches a screen reader and a native tooltip
-                  // when the visible label is gone.
-                  title={collapsed ? i.label : undefined}
+                  /*
+                    `aria-label` but NOT `title`.
+
+                    The name has to keep reaching a screen reader when the
+                    visible label is folded away — that is `aria-label`'s job.
+                    `title` was doing the same job a second time, and now that
+                    the flyout paints above the page rather than under it, the
+                    two arrive together: the label slides out of the rail and a
+                    grey browser tooltip drops on top of it a moment later,
+                    saying the same word.
+                  */
                   aria-label={collapsed ? i.label : undefined}
                   onMouseEnter={(e) => enter(e, i.label)}
                   onMouseLeave={leave}
@@ -412,7 +421,7 @@ export function Shell({ me }: { me: MeResponse }) {
               ))}
             </div>
           ))}
-        </div>
+        </NavScroll>
         {collapsed && <NavFlyout hover={hover} />}
         <div className="sidebar-foot">
           <div className="who" title={collapsed ? `${me.name} · ${me.role}` : undefined}>

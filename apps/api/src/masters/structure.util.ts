@@ -26,6 +26,24 @@ export interface StructureSpec {
   extraPeriodDurationMins?: number | null;
   /** Minutes between the last regular period and the first extra one. */
   extraGapMins?: number;
+  /**
+   * §28.3/28.4 — assembly, attendance, dispersal. Bands at either end of the
+   * day, each with a duration and (elsewhere) a teacher on duty.
+   *
+   * They sit OUTSIDE `1..periodsPerDay`, which is the whole reason the solver
+   * needs no new rule: `domainFor` cannot reach a period with no number, just
+   * as it cannot reach the §18 extra window.
+   */
+  activities?: ActivitySpec[];
+}
+
+export interface ActivitySpec {
+  /** Only needed so the emitted row can point back at the row that made it. */
+  id?: number;
+  name: string;
+  placement: "before_first" | "after_last";
+  durationMins: number;
+  sortOrder?: number;
 }
 
 export interface PeriodRow {
@@ -36,6 +54,9 @@ export interface PeriodRow {
   isBreak: boolean;
   /** §18: part of the extra-class window rather than the teaching day. */
   isExtra: boolean;
+  /** §28.3: an assembly or a dispersal — a staffed band, not a break. */
+  isActivity: boolean;
+  activityId: number | null;
   breakName: string | null;
 }
 
@@ -68,6 +89,49 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
   let clock = toMins(spec.startTime);
   let sortOrder = 0;
 
+  const activities = (spec.activities ?? []).slice().sort(
+    (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name),
+  );
+  for (const a of activities) {
+    if (a.durationMins < 1 || a.durationMins > 120) {
+      throw new Error(`${a.name} must be between 1 and 120 minutes`);
+    }
+  }
+
+  /**
+   * §28.3 — anything that happens before the first period.
+   *
+   * It runs BEFORE `startTime` rather than pushing period 1 later, and that is
+   * the decision in this function.
+   *
+   * `startTime` is the time a school says its day starts, and every screen,
+   * every printed timetable and every parent means "when does teaching begin"
+   * by it. Laying an assembly on top of it would move period 1 to 08:20 the
+   * moment somebody recorded a fact that was already true — the assembly was
+   * always happening, nobody had written it down — and every published time on
+   * the wall would silently be twenty minutes late.
+   *
+   * So the day grows EARLIER at the front. `endTime` is untouched.
+   */
+  const before = activities.filter((a) => a.placement === "before_first");
+  let clockBefore = clock - before.reduce((n, a) => n + a.durationMins, 0);
+  for (const a of before) {
+    rows.push({
+      sortOrder: sortOrder++,
+      // No period number, which is what takes it out of the solver's reach —
+      // the same device breaks and the §18 window already use.
+      periodNumber: null,
+      startTime: toHHMM(clockBefore),
+      endTime: toHHMM(clockBefore + a.durationMins),
+      isBreak: false,
+      isExtra: false,
+      isActivity: true,
+      activityId: a.id ?? null,
+      breakName: a.name,
+    });
+    clockBefore += a.durationMins;
+  }
+
   if (spec.hasZeroPeriod) {
     const dur = spec.zeroPeriodDurationMins ?? spec.periodDurationMins;
     rows.push({
@@ -77,6 +141,8 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
       endTime: toHHMM(clock + dur),
       isBreak: false,
       isExtra: false,
+      isActivity: false,
+      activityId: null,
       breakName: null,
     });
     clock += dur;
@@ -90,6 +156,8 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
       endTime: toHHMM(clock + spec.periodDurationMins),
       isBreak: false,
       isExtra: false,
+      isActivity: false,
+      activityId: null,
       breakName: null,
     });
     clock += spec.periodDurationMins;
@@ -102,6 +170,8 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
         endTime: toHHMM(clock + brk.durationMins),
         isBreak: true,
         isExtra: false,
+        isActivity: false,
+        activityId: null,
         breakName: brk.name,
       });
       clock += brk.durationMins;
@@ -125,16 +195,43 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
         endTime: toHHMM(clock + dur),
         isBreak: false,
         isExtra: true,
+        isActivity: false,
+        activityId: null,
         breakName: null,
       });
       clock += dur;
     }
   }
 
+  const extraEndTime = extraCount > 0 ? toHHMM(clock) : null;
+
+  /**
+   * §28.4 — after the last period.
+   *
+   * After the §18 extra window as well, not just after the teaching day: a
+   * dispersal is the last thing that happens, and a school running revision
+   * classes disperses after those. Putting it before them would print a bus
+   * departure in the middle of a lesson.
+   */
+  for (const a of activities.filter((x) => x.placement === "after_last")) {
+    rows.push({
+      sortOrder: sortOrder++,
+      periodNumber: null,
+      startTime: toHHMM(clock),
+      endTime: toHHMM(clock + a.durationMins),
+      isBreak: false,
+      isExtra: false,
+      isActivity: true,
+      activityId: a.id ?? null,
+      breakName: a.name,
+    });
+    clock += a.durationMins;
+  }
+
   // `endTime` stays the end of the *teaching* day: it is what the school day
-  // is, and what the Setup screen shows. The extra window is opt-in and sits
-  // after it.
-  return { rows, endTime: endOfDay, extraEndTime: extraCount > 0 ? toHHMM(clock) : null };
+  // is, and what the Setup screen shows. The extra window and the §28.4
+  // activities are opt-in and sit after it.
+  return { rows, endTime: endOfDay, extraEndTime };
 }
 
 /**
@@ -149,7 +246,12 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
 export function daySegmentsFromRows(rows: PeriodRow[]): number[] {
   const segments: number[] = [];
   let run = 0;
-  for (const r of rows.filter((x) => x.periodNumber !== 0 && !x.isExtra)) {
+  // `isActivity` matters as much as `isExtra` here, and for a sharper reason:
+  // an activity row is not a break, so without this filter the run counter
+  // would count an assembly as a TEACHING period — telling the solver the day
+  // has a longer unbroken run than it does, and letting a double period be
+  // placed across a boundary that does not exist.
+  for (const r of rows.filter((x) => x.periodNumber !== 0 && !x.isExtra && !x.isActivity)) {
     if (r.isBreak) {
       if (run > 0) segments.push(run);
       run = 0;
@@ -183,7 +285,7 @@ export function daySegmentsFromRows(rows: PeriodRow[]): number[] {
  */
 export function lunchAfterPeriodFromRows(rows: PeriodRow[]): number | null {
   const day = rows
-    .filter((r) => r.periodNumber !== 0 && !r.isExtra)
+    .filter((r) => r.periodNumber !== 0 && !r.isExtra && !r.isActivity)
     .sort((a, b) => a.sortOrder - b.sortOrder);
 
   const minutes = (hhmm: string): number => {

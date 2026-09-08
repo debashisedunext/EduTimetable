@@ -62,7 +62,21 @@ export class ReportsService {
   private async dayShape(configId: number) {
     const config = await this.prisma.timetableConfig.findUnique({
       where: { id: configId },
-      include: { periods: { orderBy: { sortOrder: "asc" } } },
+      include: {
+        periods: {
+          orderBy: { sortOrder: "asc" },
+          // §28.3 — the duty teacher travels with the band, so a printed
+          // timetable can say who takes assembly without a second query.
+          include: {
+            activity: {
+              include: {
+                teacher: { select: { name: true, initials: true } },
+                room: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
     });
     if (!config) throw new NotFoundException("Timetable config not found");
     return {
@@ -74,6 +88,9 @@ export class ReportsService {
         endTime: p.endTime,
         isBreak: p.isBreak,
         breakName: p.breakName,
+        isActivity: p.isActivity,
+        activityTeacher: p.activity?.teacher?.initials ?? p.activity?.teacher?.name ?? null,
+        activityRoom: p.activity?.room?.name ?? null,
       })),
     };
   }
@@ -225,7 +242,14 @@ export class ReportsService {
       const configId = slots[0]?.timetableConfigId ?? dutySlots[0]?.timetableConfigId;
       const shape = configId
         ? await this.dayShape(configId)
-        : { workingDays: [1, 2, 3, 4, 5], periods: [] as { periodNumber: number | null; startTime: string; endTime: string | null; isBreak: boolean; breakName: string | null }[] };
+        : {
+            workingDays: [1, 2, 3, 4, 5],
+            periods: [] as Array<{
+              periodNumber: number | null; startTime: string; endTime: string | null;
+              isBreak: boolean; breakName: string | null;
+              isActivity?: boolean; activityTeacher?: string | null; activityRoom?: string | null;
+            }>,
+          };
 
       const all = [...slots, ...dutySlots];
       const sectionRows = await this.prisma.classSection.findMany({

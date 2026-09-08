@@ -65,7 +65,11 @@ function Masthead({ ctx, title }: { ctx: PrintContext; title: string }) {
 export function PrintSheet({ ctx, grid }: { ctx: PrintContext; grid: GridPayload }) {
   const isTeacher = grid.kind === "teacher";
   const title = isTeacher ? "Teacher Weekly Timetable" : "Class Weekly Timetable";
-  const periods = grid.periods.filter((p) => !p.isBreak && p.periodNumber !== null && p.periodNumber !== 0);
+  // §28.3 — an activity has no period number, so "Periods/day" already
+  // excludes it. Named rather than relied on: an assembly is not a period, and
+  // the day it acquires a number by accident this should still be true.
+  const periods = grid.periods.filter(
+    (p) => !p.isBreak && !p.isActivity && p.periodNumber !== null && p.periodNumber !== 0);
   const filled = Object.keys(grid.grid).length;
 
   return (

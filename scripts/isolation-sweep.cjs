@@ -807,7 +807,20 @@ const LIST_NO_IDS = {
   // refusal that has nothing to do with who is asking, and both sessions then
   // see the same 400. Order it as a person would use it and each route is
   // exercised in the state it exists for.
-  const BOARD_ORDER = ["context", "place", "lock", "move", "swap", "remove", "publish/preview", "publish", "draft-from-published"];
+  //
+  // §3.14's withdrawal goes LAST, after draft-from-published, and both halves
+  // of that matter. A route missing from this list ranks 0 and therefore runs
+  // BEFORE the board is set up at all — so the first run with `unpublish` in
+  // the app took A's published fixture row down before `place` and `lock` had
+  // anything to work with, and those two then refused both sessions. And it
+  // has to come after `draft-from-published`, which needs something published
+  // to copy: withdraw first and that route answers "nothing published yet" to
+  // owner and stranger alike, which is not evidence of anything.
+  const BOARD_ORDER = [
+    "context", "place", "lock", "move", "swap", "remove",
+    "publish/preview", "publish", "draft-from-published",
+    "publish/unpublish-preview", "publish/unpublish",
+  ];
   const rank = (r) => {
     if (r.method === "DELETE") return 1000;
     const step = BOARD_ORDER.findIndex((b) => r.path.endsWith(`/board/${b}`));

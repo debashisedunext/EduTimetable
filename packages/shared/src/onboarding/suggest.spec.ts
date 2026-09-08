@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignInitials,
   curriculumSheets,
   defaultsFor,
   NEUTRAL_SUBJECT,
@@ -9,11 +10,14 @@ import {
   teacherSheets,
   proposeInitials,
   roomSheets,
+  subjectStartsAt,
+  subjectSuitsClass,
   suggestCurriculum,
   suggestRooms,
   withCurriculumPeriods,
 } from "./suggest";
 import { SHEETS } from "../import/contract";
+import type { TeacherAnswer } from "./suggest";
 import type { WingAnswer } from "./wizard";
 
 /**
@@ -151,6 +155,79 @@ describe("§15.3 the curriculum suggester", () => {
     // The heaviest subjects survive the cut; the lightest are the ones named.
     expect(kept.has("Mathematics")).toBe(true);
     expect(kept.has("Library")).toBe(false);
+  });
+
+  /**
+   * §27.15 — a subject belongs to a rung of the ladder, not only to a weight.
+   *
+   * The bug this describes was reported as "Biology in Pre-Nursery": the
+   * classifier knew Biology is a 4-6 period laboratory science and had no
+   * opinion at all about who is old enough to take it, so every subject the
+   * school listed was proposed to every class in it.
+   */
+  describe("§27.15 the ladder", () => {
+    const LIST = [
+      { name: "English" }, { name: "Mathematics" }, { name: "Art & Craft" },
+      { name: "Biology", isLab: true }, { name: "Accountancy" }, { name: "French" },
+    ];
+    const preNursery = suggestCurriculum([wing("Pre-Primary", 0, 3)], LIST, { "Pre-Primary": 30 });
+    const senior = suggestCurriculum([wing("Senior", 14, 15)], LIST, { Senior: 40 });
+    const has = (plan: { cells: Array<{ className: string; subjectName: string }> }, cls: string, subject: string) =>
+      plan.cells.some((c) => c.className === cls && c.subjectName === subject);
+
+    it("does not offer Biology, Accountancy or French to Pre-Nursery", () => {
+      expect(has(preNursery, "Pre-Nursery", "Biology")).toBe(false);
+      expect(has(preNursery, "Pre-Nursery", "Accountancy")).toBe(false);
+      expect(has(preNursery, "Pre-Nursery", "French")).toBe(false);
+    });
+
+    it("still teaches Pre-Nursery the things it does take", () => {
+      expect(has(preNursery, "Pre-Nursery", "English")).toBe(true);
+      expect(has(preNursery, "Pre-Nursery", "Mathematics")).toBe(true);
+      expect(has(preNursery, "Pre-Nursery", "Art & Craft")).toBe(true);
+    });
+
+    it("offers all of them where they belong", () => {
+      expect(has(senior, "Class 11", "Biology")).toBe(true);
+      expect(has(senior, "Class 11", "Accountancy")).toBe(true);
+    });
+
+    it("still fills the week it proposes for", () => {
+      // The narrowing must not leave the class short: the scaling runs over
+      // whatever survives, so four subjects fill 30 periods as nine would.
+      for (const t of preNursery.totals) expect(t.total).toBe(t.capacity);
+    });
+
+    it("stands aside rather than leaving a class with NOTHING", () => {
+      // A pre-primary wing whose school listed only senior subjects: the
+      // school's own list is better evidence than the ladder, and an empty week
+      // is a Readiness score complaining about 40 free slots per class.
+      const odd = suggestCurriculum(
+        [wing("Pre-Primary", 0, 3)], [{ name: "Physics" }, { name: "Accountancy" }], { "Pre-Primary": 30 },
+      );
+      expect(odd.cells.filter((c) => c.className === "Pre-Nursery").length).toBeGreaterThan(0);
+    });
+
+    it("has no opinion about a name it does not recognise", () => {
+      // Invariant 7's shape: not stated is never "no". A missing proposal costs
+      // one click to correct; a wrong one is corrected only if somebody notices.
+      expect(subjectSuitsClass("Rhymes & Storytelling", 1)).toBe(true);
+      expect(subjectSuitsClass("Biology", 1)).toBe(false);
+      expect(subjectSuitsClass("Biology", 13)).toBe(true);
+    });
+
+    it("names the rung, so an empty cell can explain itself", () => {
+      expect(subjectStartsAt("Biology")).toBe("Class 9");
+      expect(subjectStartsAt("French")).toBe("Class 5");
+      expect(subjectStartsAt("English")).toBe(null);
+    });
+
+    it("keeps 'Science' general — it is Physics that separates at Class 9", () => {
+      expect(subjectSuitsClass("Science", 5)).toBe(true);
+      expect(subjectSuitsClass("Physics", 5)).toBe(false);
+      // …and the compound-name rule still holds (the row order test above).
+      expect(subjectSuitsClass("Computer Science", 5)).toBe(true);
+    });
   });
 
   it("drops nothing at all when the week is long enough", () => {
@@ -521,5 +598,95 @@ describe("§26.2 subject placement defaults", () => {
     expect(rows[0].cells["Priority"]).toBe(5);
     expect(rows[0].cells["Lunch Rule"]).toBe("Any time");
     expect(rows[0].cells["Gap After Lunch"]).toBe("No");
+  });
+});
+
+describe("§27 the initials a cell shows", () => {
+  const staff = (...names: string[]) => names.map((name) => ({ name, subjects: [] }));
+
+  it("gives two people with the same initials different ones", () => {
+    // `teachers.initials` is unique per school, so uniqueness is a property of
+    // the LIST. Two Yadavs both propose AY; the second must not get it.
+    expect(assignInitials(staff("Anil Yadav", "Asha Yadav"))).toEqual(["AY", "AY2"]);
+  });
+
+  it("keeps initials somebody already typed, and claims them first", () => {
+    // A school that uses initials has them on cover lists and staff-room doors.
+    // Theirs win, and nobody else may be handed the same.
+    const out = assignInitials([
+      { name: "Anil Yadav", subjects: [], initials: "ANY" },
+      { name: "Asha Yadav", subjects: [] },
+      { name: "Ajay Yadav", subjects: [], initials: "AY" },
+    ]);
+    expect(out).toEqual(["ANY", "AY2", "AY"]);
+  });
+
+  it("is the SAME answer the Teachers sheet writes", () => {
+    // The property this shared function exists for. If the Allocation grid
+    // derived its own, it would show `AY` for somebody the importer then stored
+    // as `AY2` — a lie that only surfaces when a school looks for a teacher by
+    // the initials it was shown.
+    const teachers = staff("Anil Yadav", "Asha Yadav", "Bina Shah");
+    const shown = assignInitials(teachers);
+    const written = teacherSheets(teachers, []) [0].rows.map((r) => r.cells.Initials);
+    expect(written).toEqual(shown);
+  });
+});
+
+describe("§27.9 which classes a teacher takes", () => {
+  const WINGS = [wing("Junior", 4, 6, 1), wing("Senior", 12, 13, 1)];  // Class 1-3, Class 9-10
+  const curriculum = (classes: string[]) => ({
+    cells: classes.map((className) => ({ className, subjectName: "Maths", periodsPerWeek: 4, maxPerDay: 1 })),
+    totals: [], dropped: [],
+  });
+  const teacher = (name: string, extra: Partial<TeacherAnswer> = {}): TeacherAnswer =>
+    ({ name, employeeCode: name, subjects: ["Maths"], maxPeriodsPerWeek: 40, ...extra });
+
+  it("staffs only the classes a teacher was declared for", () => {
+    // The whole point: what somebody ticks on the Teachers step is what the
+    // Allocation grid arrives already filled in with.
+    const plan = suggestMappings(
+      WINGS,
+      curriculum(["Class 1", "Class 2", "Class 3"]),
+      [teacher("Narrow", { classes: ["Class 1", "Class 2"] }), teacher("Wide")],
+    );
+    const forNarrow = plan.mappings.filter((m) => m.employeeCode === "Narrow")
+      .flatMap((m) => m.classSections);
+    expect(forNarrow.every((cs) => cs.startsWith("Class 1") || cs.startsWith("Class 2"))).toBe(true);
+    // And Class 3 still gets taught — by the teacher who did not narrow.
+    expect(plan.mappings.some((m) => m.classSections[0].startsWith("Class 3"))).toBe(true);
+    expect(plan.uncovered).toEqual([]);
+  });
+
+  it("treats an empty list as NOT STATED, never as no classes", () => {
+    // Invariant 7, and the direction that matters: read the other way, every
+    // teacher in every school that predates this field becomes eligible for
+    // nothing and no school generates.
+    const plan = suggestMappings(WINGS, curriculum(["Class 1"]), [teacher("Unstated", { classes: [] })]);
+    expect(plan.uncovered).toEqual([]);
+    expect(plan.mappings).toHaveLength(1);
+  });
+
+  it("lets named classes override the wing, and says so when nobody is scoped", () => {
+    // Both say which classes; the more specific statement is the deliberate one.
+    const plan = suggestMappings(
+      WINGS,
+      curriculum(["Class 3"]),
+      [teacher("Junior only", { wing: "Junior", classes: ["Class 1"] })],
+    );
+    expect(plan.mappings).toEqual([]);
+    // The reason has to name the real problem: being told to hire when the fix
+    // is a tick box wastes a morning.
+    expect(plan.uncovered[0].reason).toBe("Nobody who teaches Maths is scoped to Class 3.");
+  });
+
+  it("writes the declared classes as the Teaching Scope, not the wing's", () => {
+    const rows = teacherSheets([teacher("Narrow", { wing: "Junior", classes: ["Class 1", "Class 2"] })], WINGS);
+    expect(rows[0].rows[0].cells["Teaching Scope"]).toBe("Class 1, Class 2");
+  });
+
+  it("falls back to the wing's classes when none are named", () => {
+    const rows = teacherSheets([teacher("Wing only", { wing: "Junior" })], WINGS);
+    expect(rows[0].rows[0].cells["Teaching Scope"]).toBe("Class 1, Class 2, Class 3");
   });
 });

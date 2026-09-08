@@ -42,13 +42,40 @@ button { font-family: inherit; cursor: pointer; }
   width: var(--sidebar-w); flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
   display: flex; flex-direction: column; padding: 22px 14px; position: sticky; top: 0;
   height: 100vh; overflow: hidden;
+  /* `position: sticky` creates a stacking context UNCONDITIONALLY, so
+     `.nav-fly`'s own z-index only competes with the sidebar's other children —
+     the whole rail then paints at `auto` against the page, and the content
+     covered the hover label as it slid out. Raising the rail is the fix; the
+     flyout's z-index inside it was never the problem.
+
+     50 sits above the sticky topbar (5) and below the §24.5d pane overlay
+     (200), which is meant to dim the nav rather than duck under it. */
+  z-index: 50;
 }
 /* the nav list scrolls; brand and user footer stay pinned, so more nav groups
    can never push the footer outside the navy panel */
-.sidebar-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.sidebar-nav::-webkit-scrollbar { width: 6px; }
-.sidebar-nav::-webkit-scrollbar-thumb { background: #1b3a6b; border-radius: 3px; }
-.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+/* `width: 100%` is not decoration: collapsed, `.sidebar` sets
+   `align-items: center`, which would otherwise size this to its content and
+   leave the chevrons and the rows measuring themselves against each other. */
+.sidebar-scroll { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; }
+/* No scrollbar: at 64px it is a pale bar down the middle of a navy rail beside
+   the icons, and it reads as part of the design rather than as the browser.
+   `nav-scroll.tsx` carries the same information as a chevron at each end —
+   which is a control as well as a sign, and only drawn when there is somewhere
+   to go. The wheel, trackpad and keyboard are untouched. */
+.sidebar-nav {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.sidebar-nav::-webkit-scrollbar { width: 0; height: 0; }
+.nav-arrow {
+  flex-shrink: 0; display: grid; place-items: center; height: 17px; width: 100%;
+  border: none; border-radius: 6px; background: transparent; color: #6b84a8;
+}
+.nav-arrow:hover { color: #fff; background: #12305e; }
+/* At the end of its travel it stays in place and fades — removing it would
+   shift every icon by 17px at the moment somebody was aiming at one. */
+.nav-arrow.spent { opacity: 0.22; cursor: default; background: transparent; }
 .brand { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px; }
 .brand-mark {
   width: 30px; height: 30px; border-radius: 7px; background: var(--accent);

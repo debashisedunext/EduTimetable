@@ -186,6 +186,7 @@ export * from "./import/contract";
 export * from "./terms/terms";
 export * from "./onboarding/wizard";
 export * from "./onboarding/suggest";
+export * from "./onboarding/load";
 export * from "./ai/data-entry";
 export * from "./import/types";
 export * from "./import/validate";

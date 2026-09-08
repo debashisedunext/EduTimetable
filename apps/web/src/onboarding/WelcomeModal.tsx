@@ -18,6 +18,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+// The step count lives with the step list (§28): a hardcoded "of 11" here
+// outlived the eleven steps by exactly one release.
+import { TOTAL_STEPS } from "./OnboardingWizard";
 
 export interface OnboardingState {
   isNew: boolean;
@@ -120,7 +123,7 @@ export function WelcomeModal({
           </h2>
           <p style={{ fontSize: 14, color: "var(--ink-soft)", margin: "8px 0 0" }}>
             {resuming
-              ? `You were on step ${state.resumeStep} of 11 for ${schoolName}. Nothing has been written yet — carry on, or start a different way.`
+              ? `You were on step ${state.resumeStep} of ${TOTAL_STEPS} for ${schoolName}. Nothing has been written yet — carry on, or start a different way.`
               : `${schoolName} has no timetable yet. Choose how you'd like to put the information in — you can switch between these at any point, and nothing is written until you confirm.`}
           </p>
         </div>
@@ -136,7 +139,7 @@ export function WelcomeModal({
               }}
             >
               <div style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 16.5, fontWeight: 600 }}>
-                ↻ Continue guided setup — step {state.resumeStep} of 11
+                ↻ Continue guided setup — step {state.resumeStep} of {TOTAL_STEPS}
               </div>
               <div style={{ fontSize: 12.8, color: "var(--ink-soft)", marginTop: 4 }}>
                 Everything you have already answered is saved.

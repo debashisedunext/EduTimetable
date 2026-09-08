@@ -19,10 +19,10 @@
  * /onboarding/commit/:step`, which builds the §16 importer's own sheets.
  */
 import { useMemo } from "react";
-import { defaultsFor, proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
+import { defaultsFor, planClasses, proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
 import { CategorySelect, LunchRules, PrioritySelect } from "../../subjects/Placement";
 import { Note } from "./Structure";
-import { SubjectPicker } from "./SubjectPicker";
+import { ChipPicker } from "./ChipPicker";
 import { cell, Heading, LinkButton, pasteColumn, Scroll, td, th } from "./ui";
 
 // ────────────────────────────────────────────────────────── step 6: subjects
@@ -199,6 +199,17 @@ export function StepTeachers({ answers, onChange }: {
   const teachers: TeacherAnswer[] = answers.teachers ?? [];
   const subjects: SubjectAnswer[] = (answers.subjects ?? []).filter((s: SubjectAnswer) => s.name?.trim());
   const wings: WingAnswer[] = answers.wings ?? [];
+  /**
+   * The classes on offer for one teacher — their wing's, or every class when
+   * they are not pinned to one.
+   *
+   * In ladder order, which `planClasses` already gives: Pre-Nursery through
+   * Class 12 sorted alphabetically puts "Class 10" before "Class 2", and a
+   * class list in that order is one nobody can use.
+   */
+  const allClasses = useMemo(() => planClasses(wings).classes, [JSON.stringify(wings)]);
+  const classesFor = (wing?: string) =>
+    allClasses.filter((c) => !wing || c.wing === wing).map((c) => ({ name: c.className }));
 
   const set = (next: TeacherAnswer[]) => onChange({ teachers: next });
   const rows = teachers.length > 0 ? teachers : [blankTeacher()];
@@ -239,6 +250,48 @@ export function StepTeachers({ answers, onChange }: {
     edit(i, { subjects: has ? rows[i].subjects.filter((s) => s !== name) : [...rows[i].subjects, name] });
   };
 
+  /**
+   * §27.9 — every class ticked to begin with; removing is the interaction.
+   *
+   * A teacher takes their whole wing until somebody says otherwise, so that is
+   * what the cell shows: all of them, and you take away the ones that do not
+   * apply. Starting empty would have meant the same thing to the importer —
+   * blank is "not stated", which falls back to the wing — but it says nothing
+   * on screen, and "which classes does she take?" would have had a blank box
+   * for an answer.
+   *
+   * The STORED value stays empty while nothing has been removed. That keeps
+   * "not stated" meaning what invariant 7 says it means, keeps a draft from
+   * carrying sixteen strings per teacher for no information, and — the part
+   * that matters — means a teacher whose wing changes later follows the new
+   * wing instead of silently keeping the old one's class list.
+   */
+  const chosenClasses = (t: TeacherAnswer) => {
+    const mine = classesFor(t.wing).map((c) => c.name);
+    const stored = (t.classes ?? []).filter((c) => mine.includes(c));
+    return stored.length > 0 ? stored : mine;
+  };
+
+  const toggleClass = (i: number, name: string) => {
+    const mine = classesFor(rows[i].wing).map((c) => c.name);
+    const current = chosenClasses(rows[i]);
+    const next = current.includes(name)
+      ? current.filter((c) => c !== name)
+      // Ladder order, not click order — a class list in click order is one
+      // nobody can read.
+      : mine.filter((c) => c === name || current.includes(c));
+    /*
+      Removing the last class would store `[]`, which means "all" — so a
+      teacher would go from one class to every class by taking one away. Refused
+      rather than reinterpreted: a cell that does the opposite of what the click
+      said is worse than a click that does nothing.
+    */
+    if (next.length === 0) return;
+    // All of them selected is stored as "not stated", so it keeps tracking the
+    // wing rather than freezing today's class list into the draft.
+    edit(i, { classes: next.length === mine.length ? [] : next });
+  };
+
   const named = rows.filter((t) => t.name?.trim()).length;
   const unassigned = rows.filter((t) => t.name?.trim() && t.subjects.length === 0).length;
 
@@ -257,6 +310,12 @@ export function StepTeachers({ answers, onChange }: {
           <th style={{ ...th, width: 74 }}>Code</th>
           <th style={{ ...th, width: 58 }}>Initials</th>
           <th style={{ ...th }}>Teaches</th>
+          {/* §27.9 — WHICH classes, not just which wing. The Allocation step
+              staffs the curriculum from this, so a blank here is the difference
+              between "give them anything in their wing" and "these four". */}
+          <th style={{ ...th, width: "18%" }} title="Which classes they take — blank means any class in their wing">
+            Classes
+          </th>
           {wings.length > 1 && <th style={{ ...th, width: 110 }}>Wing</th>}
           <th style={{ ...th, width: 52 }} title="Most periods in one day">Max/day</th>
           <th style={{ ...th, width: 56 }} title="Most periods in a week">Max/week</th>
@@ -308,18 +367,46 @@ export function StepTeachers({ answers, onChange }: {
                   reference school, and the one fact the cell exists to show
                   buried in the middle of it.
                 */}
-                <SubjectPicker
+                <ChipPicker
                   all={subjects}
                   chosen={t.subjects}
                   label={t.name?.trim() || `teacher ${i + 1}`}
                   onToggle={(name) => toggleSubject(i, name)}
                 />
               </td>
+              {/*
+                §27.9 — the classes this teacher takes.
+
+                Starts with all of them and you remove what does not apply.
+                Offered from the teacher's OWN wing when they have one, so the
+                two statements cannot contradict each other: a teacher pinned to
+                Primary cannot be given Class 9 here and then have the commit
+                decide which of the two answers it believes.
+              */}
+              <td style={td}>
+                <ChipPicker
+                  all={classesFor(t.wing)}
+                  chosen={chosenClasses(t)}
+                  noun="class"
+                  nounPlural="classes"
+                  keepOrder
+                  collapseAll
+                  label={t.name?.trim() || `teacher ${i + 1}`}
+                  onToggle={(name) => toggleClass(i, name)}
+                />
+              </td>
               {wings.length > 1 && (
                 <td style={td}>
                   <select style={{ ...cell, fontSize: 11.5 }} value={t.wing ?? ""}
                     aria-label={`Wing for ${t.name}`}
-                    onChange={(e) => edit(i, { wing: e.target.value })}>
+                    onChange={(e) => edit(i, {
+                      wing: e.target.value,
+                      // §27.9 — a narrowed class list belongs to the wing it was
+                      // narrowed within. Carrying "Class 1, Class 2" into Senior
+                      // would leave the screen showing every Senior class while
+                      // the commit wrote two Primary ones.
+                      classes: [],
+                    })}>
                     <option value="">Any wing</option>
                     {wings.map((w) => <option key={w.name} value={w.name}>{w.name}</option>)}
                   </select>

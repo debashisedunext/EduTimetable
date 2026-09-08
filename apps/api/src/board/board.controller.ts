@@ -147,4 +147,26 @@ export class BoardController {
   draftFromPublished(@Param("id") id: string) {
     return this.publishSvc.draftFromPublished(toInt(id, "id"));
   }
+
+  /** §3.14 — what withdrawing the live timetable would do, before doing it. */
+  @Get("publish/unpublish-preview")
+  @RequirePermission(PERMISSIONS.TIMETABLE_PUBLISH)
+  unpublishPreview(@Param("id") id: string) {
+    return this.publishSvc.unpublishPreview(toInt(id, "id"));
+  }
+
+  /**
+   * §3.14 — take it off the wall and back into a draft.
+   *
+   * `timetable.publish`, the same authority that put it there: withdrawing is
+   * the same decision as publishing, made the other way round, and it changes
+   * what every teacher and class-section sees. `timetable.edit` — which is what
+   * "draft from published" asks for, since that only ADDS a working copy — is
+   * deliberately not enough.
+   */
+  @Post("publish/unpublish")
+  @RequirePermission(PERMISSIONS.TIMETABLE_PUBLISH)
+  unpublish(@Req() req: AuthedRequest, @Param("id") id: string) {
+    return this.publishSvc.unpublish(toInt(id, "id"), req.user.sub ?? null);
+  }
 }

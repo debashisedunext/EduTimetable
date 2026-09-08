@@ -123,7 +123,22 @@ export class SolverController {
       }),
       this.prisma.timetableConfig.findUnique({
         where: { id: configId },
-        include: { periods: { orderBy: { sortOrder: "asc" } } },
+        include: {
+          periods: {
+            orderBy: { sortOrder: "asc" },
+            // §28.3 — the duty teacher and the room travel with the band, so a
+            // timetable can print "Assembly · 20 min · R.J. · Hall" without a
+            // second round trip per row.
+            include: {
+              activity: {
+                include: {
+                  teacher: { select: { name: true, initials: true } },
+                  room: { select: { name: true } },
+                },
+              },
+            },
+          },
+        },
       }),
     ]);
     if (!config) throw new BadRequestException("Timetable config not found");
@@ -184,6 +199,13 @@ export class SolverController {
         isBreak: p.isBreak, breakName: p.breakName,
         // §18: after the teaching day, rendered as its own band.
         isExtra: p.isExtra,
+        // §28.3/28.4: assembly, dispersal. `breakName` carries the label — the
+        // column is the row's name whether it is a break or an activity — and
+        // these two say who is on duty, which is the whole difference.
+        isActivity: p.isActivity,
+        activityTeacher: p.activity?.teacher?.initials ?? p.activity?.teacher?.name ?? null,
+        activityRoom: p.activity?.room?.name ?? null,
+        activityDays: (p.activity?.days as number[] | undefined) ?? null,
       })),
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),

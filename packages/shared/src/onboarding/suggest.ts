@@ -12,7 +12,7 @@
  */
 import { LUNCH_LABEL } from "../import/contract";
 import type { RawSheet } from "../import/types";
-import { planClasses, type WingAnswer } from "./wizard";
+import { CLASS_LADDER, planClasses, type WingAnswer } from "./wizard";
 
 // ────────────────────────────────────────────────────────────── subjects
 
@@ -239,15 +239,64 @@ const CO_SCHOLASTIC = (priority: number): SubjectDefaults =>
  * disagree about whether "Games" is co-scholastic, and only a school would find
  * out.
  */
-const WEIGHTS: Array<{ match: RegExp; lower: number; upper: number; senior: number } & SubjectDefaults> = [
+/**
+ * §27.15 — where a subject sits on the LADDER, as well as how much it wants.
+ *
+ * Weight alone proposed Biology to Pre-Nursery. The classifier knew Biology is a
+ * 4-6 period laboratory science and had no opinion at all about who is old
+ * enough to take it, so every subject in the list was offered to every class in
+ * the school. A pre-primary class arriving with Chemistry in it is not a small
+ * cosmetic wrong: it is the setup telling a nursery teacher, in its first
+ * proposal, that it does not know what a nursery is.
+ *
+ * `from`/`to` are inclusive positions on `CLASS_LADDER` (Pre-Nursery is 1), and
+ * a subject outside its range is simply not proposed for that class.
+ *
+ * Two things this deliberately is NOT:
+ *
+ *  - **Not a rule.** It shapes the PROPOSAL only. A school that teaches French
+ *    from Nursery clicks the empty cell and types a number, and nothing argues
+ *    with them — the same one click that removes a subject puts it back.
+ *  - **Not a claim about a school's own list.** An unrecognised name has no
+ *    range, so it is offered everywhere, which is the right failure: a missing
+ *    proposal is corrected in one click, a wrong one only if somebody notices.
+ */
+const AT = (className: string): number => CLASS_LADDER.indexOf(className as never) + 1;
+/** Class 1 — where formal subject teaching starts, above the pre-primary four. */
+const PRIMARY = AT("Class 1");
+/** Class 5 — the usual entry point for a third language. */
+const MIDDLE = AT("Class 5");
+/** Class 9 — where one Science becomes Physics, Chemistry and Biology. */
+const SECONDARY = AT("Class 9");
+/** Class 11 — where a stream's own subjects begin. */
+const SENIOR = AT("Class 11");
+
+const WEIGHTS: Array<
+  { match: RegExp; lower: number; upper: number; senior: number; from?: number; to?: number } & SubjectDefaults
+> = [
   { match: /\b(english|language arts)\b/i, lower: 6, upper: 6, senior: 6, ...SCHOLASTIC(5) },
-  { match: /\b(hindi|sanskrit|french|german|urdu|regional)\b/i, lower: 5, upper: 5, senior: 4, ...SCHOLASTIC(4) },
+  // The second language runs the whole ladder; a THIRD language does not — and
+  // it is a §4.9 split block when it arrives, not a subject every child takes.
+  { match: /\b(sanskrit|french|german|spanish|urdu)\b/i, lower: 5, upper: 5, senior: 4, from: MIDDLE, ...SCHOLASTIC(4) },
+  { match: /\b(hindi|regional|second language)\b/i, lower: 5, upper: 5, senior: 4, ...SCHOLASTIC(4) },
   { match: /\b(math|maths|mathematics)\b/i, lower: 6, upper: 7, senior: 7, ...SCHOLASTIC(5) },
   { match: /\b(evs|environmental)\b/i, lower: 4, upper: 0, senior: 0, ...SCHOLASTIC(4) },
   // ↓ specific "…Science" families, above the generic science row
-  { match: /\b(computer|computing|information technology|it)\b/i, lower: 2, upper: 3, senior: 3, ...SCHOLASTIC(3) },
-  { match: /\b(social|history|geography|civics|economics|political)\b/i, lower: 4, upper: 5, senior: 5, ...SCHOLASTIC(4) },
-  { match: /\b(science|physics|chemistry|biology)\b/i, lower: 4, upper: 5, senior: 6, ...SCHOLASTIC(4) },
+  { match: /\b(computer|computing|information technology|it)\b/i, lower: 2, upper: 3, senior: 3, from: PRIMARY, ...SCHOLASTIC(3) },
+  // A stream's own subjects: Class 11 upward. Below that the same ground is
+  // covered inside Social Science, which is the row underneath.
+  {
+    match: /\b(economics|political science|accountancy|accounts|business studies|entrepreneurship|psychology|sociology|informatics)\b/i,
+    lower: 4, upper: 5, senior: 5, from: SENIOR, ...SCHOLASTIC(4),
+  },
+  { match: /\b(social|history|geography|civics|political)\b/i, lower: 4, upper: 5, senior: 5, from: PRIMARY, ...SCHOLASTIC(4) },
+  // The named sciences separate at Class 9; before that a school teaches
+  // "Science", which is the row underneath and starts at Class 1.
+  {
+    match: /\b(physics|chemistry|biology|botany|zoology)\b/i,
+    lower: 4, upper: 5, senior: 6, from: SECONDARY, ...SCHOLASTIC(4),
+  },
+  { match: /\b(science)\b/i, lower: 4, upper: 5, senior: 6, from: PRIMARY, ...SCHOLASTIC(4) },
   // Co-scholastic from here down. Note what is NOT claimed: art and music get a
   // low priority (they yield the morning) but no lunch rule, because there is
   // nothing about a painting lesson that a full stomach prevents.
@@ -284,6 +333,27 @@ export function defaultsFor(name: string): SubjectDefaults {
     lunchRule: w.lunchRule,
     gapAfterLunch: w.gapAfterLunch,
   };
+}
+
+/**
+ * §27.15 — is this subject normally taught to a class at this rung?
+ *
+ * Exported because the answer is worth SAYING, not only acting on: an empty
+ * cell that reads "Biology usually starts at Class 9" is a proposal explaining
+ * itself, where a silently blank one is indistinguishable from a bug. A name
+ * the classifier does not recognise fits everywhere — no opinion is the honest
+ * answer, and the range is a proposal rather than a rule in any case.
+ */
+export function subjectSuitsClass(subjectName: string, sequence: number): boolean {
+  const w = WEIGHTS.find((x) => x.match.test(subjectName ?? ""));
+  if (!w) return true;
+  return sequence >= (w.from ?? 1) && sequence <= (w.to ?? CLASS_LADDER.length);
+}
+
+/** The rung a subject's range starts at, for the sentence that explains it. */
+export function subjectStartsAt(subjectName: string): string | null {
+  const w = WEIGHTS.find((x) => x.match.test(subjectName ?? ""));
+  return w?.from && w.from > 1 ? CLASS_LADDER[w.from - 1] : null;
 }
 
 /** Where a class sits on the ladder decides which weight column applies. */
@@ -356,9 +426,31 @@ export function suggestCurriculum(
     const wanted = subjects
       .map((s) => {
         const w = WEIGHTS.find((x) => x.match.test(s.name));
-        return { subjectName: s.name, weight: w ? w[band] : 2, isLab: Boolean(s.isLab) };
+        // §27.15 — off its rung, a subject is not proposed here at all. Weight 0
+        // rather than a filter of its own, so it joins the "not wanted" case
+        // that EVS above Class 4 already used.
+        const fits = subjectSuitsClass(s.name, c.sequence);
+        return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab) };
       })
       .filter((x) => x.weight > 0);
+
+    /*
+      A rung narrows the choice; it must never leave a class with nothing.
+
+      A wing of Class 11-12 whose subject list is Physics, Chemistry and
+      Accountancy is exactly what the ranges were written for — but a
+      PRE-PRIMARY wing whose school typed only those three names would come out
+      with an empty week and a Readiness score complaining about 40 free slots
+      per class. The school's own list is the better evidence in that case: it
+      plainly does not follow the ladder these ranges describe, so the ranges
+      stand aside rather than argue.
+    */
+    if (wanted.length === 0) {
+      for (const s of subjects) {
+        const w = WEIGHTS.find((x) => x.match.test(s.name));
+        wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab) });
+      }
+    }
 
     const rawTotal = wanted.reduce((n, x) => n + x.weight, 0);
     // Scale to fill the week.
@@ -509,6 +601,32 @@ function addTo(taken: Set<string>, value: string): string {
   return value;
 }
 
+/**
+ * The initials each teacher will be known by — one per row, in list order.
+ *
+ * Uniqueness is a property of the LIST, not of a row: two Yadavs both propose
+ * `AY`, and `teachers.initials` is unique per school. So the set has to be
+ * built across the whole staff list, which is why this cannot be a per-row
+ * helper and why the answer depends on the order it is given.
+ *
+ * Extracted because two places need it and they must agree. `teacherSheets`
+ * mints them at commit; the §27 Allocation grid shows them in every cell. If
+ * the grid derived its own, it would display `AY` for somebody the importer
+ * then stored as `AY2` — a small lie that only shows up when a school looks
+ * for a teacher by the initials it was shown.
+ *
+ * A teacher who already HAS initials keeps them, and theirs are claimed first
+ * so nobody else is handed the same.
+ */
+export function assignInitials(teachers: TeacherAnswer[]): string[] {
+  const taken = new Set(
+    (teachers ?? []).map((t) => t.initials?.trim()).filter((x): x is string => !!x),
+  );
+  return (teachers ?? []).map(
+    (t) => t.initials?.trim() || addTo(taken, proposeInitials(t.name, taken)),
+  );
+}
+
 // ─────────────────────────────────────────────────────────── teachers → sheets
 
 export interface TeacherAnswer {
@@ -521,6 +639,21 @@ export interface TeacherAnswer {
   subjects: string[];
   /** Which wing they belong to. Blank means every wing. */
   wing?: string;
+  /**
+   * §27.9 — the classes this teacher actually takes, by ladder name.
+   *
+   * A narrower statement than `wing`, and where both are present this wins:
+   * "Primary" is a shorthand for "every class in Primary", and somebody who
+   * has gone to the trouble of naming Class 1 and Class 2 has said something
+   * more specific than the shorthand.
+   *
+   * **Absent or empty means NOT STATED, never "no classes"** (invariant 7) —
+   * it falls back to the wing, which is what every school had before this
+   * existed. That direction matters: read the other way, every teacher in every
+   * existing school would become eligible for nothing and no school would
+   * generate.
+   */
+  classes?: string[];
   /**
    * §26.5 — anything the school wants to say about this teacher, in words.
    *
@@ -589,17 +722,15 @@ export function teacherSheets(teachers: TeacherAnswer[], wings: WingAnswer[]): R
   const classesOfWing = (wing?: string) =>
     wing ? classes.filter((c) => c.wing === wing).map((c) => c.className) : [];
 
-  // Initials proposed HERE, against a set built across the whole list, because
-  // uniqueness is a property of the list rather than of a row — proposing them
-  // per row would hand two Yadavs the same AY, and `teachers.initials` is
-  // unique. The screen shows the same proposal (italic, editable); anything
-  // typed there wins, and this fills in the rest rather than leaving the
-  // column blank.
-  const taken = new Set(teachers.map((t) => t.initials?.trim()).filter((x): x is string => !!x));
+  // Initials come from `assignInitials`, which is also what the §27 Allocation
+  // grid renders in every cell — one implementation, so the initials a school
+  // is SHOWN are the initials it GETS. Anything typed on the Teachers step
+  // wins; this fills in the rest rather than leaving the column blank.
+  const initials = assignInitials(teachers);
   return [sheet("Teachers", teachers.map((t, i) => ({
     "Employee Code": t.employeeCode?.trim() || `T-${String(i + 1).padStart(3, "0")}`,
     Name: t.name,
-    Initials: t.initials?.trim() || addTo(taken, proposeInitials(t.name, taken)),
+    Initials: initials[i],
     Gender: t.gender ?? "",
     Email: t.email ?? "",
     "Max Periods/Day": t.maxPeriodsPerDay ?? 6,
@@ -611,7 +742,15 @@ export function teacherSheets(teachers: TeacherAnswer[], wings: WingAnswer[]): R
     // §18 teaching scope. A teacher pinned to one wing may only take that
     // wing's classes; one left unpinned is left unstated, which means "not
     // decided" rather than "nothing" — the same rule the importer holds to.
-    "Teaching Scope": classesOfWing(t.wing).join(", "),
+    // §27.9 — named classes win over the wing. Both say which classes, and
+    // the more specific statement is the one somebody deliberately made;
+    // neither is "not decided" rather than "nothing" (invariant 7).
+    "Teaching Scope": (t.classes?.length ? t.classes : classesOfWing(t.wing)).join(", "),
+    // §27.13 — recorded about the TEACHER, so the next wing's Teachers step
+    // opens with it already filled in. It used to reach the database only as
+    // whatever mappings the suggester happened to propose, which meant a
+    // school setting up its second timetable was asked for it again.
+    Subjects: (t.subjects ?? []).join(", "),
     "Special Instruction": t.specialInstruction ?? "",
     Active: "Yes",
   })))];
@@ -624,6 +763,22 @@ export interface MappingSuggestion {
   subjectName: string;
   classSections: string[];
   periodsPerWeek: number;
+  /**
+   * A fixed room for these periods. The `Room` column on the Subject Mapping
+   * sheet has always existed; nothing WROTE it until the Allocation screen let
+   * somebody choose one, so it stayed blank and §19 fell back to the home room.
+   */
+  room?: string;
+  /**
+   * §4.10 — one lesson taught to every listed section at once.
+   *
+   * Load-bearing for `costOf` in `./load`: a merged group is a SINGLE occupancy
+   * event, so it costs its teacher `periodsPerWeek`, not `periodsPerWeek ×
+   * sections`. That is the whole reason merging relieves a load without taking
+   * a subject away from anybody, and multiplying regardless would make the
+   * advisor's own merge suggestion appear to change nothing.
+   */
+  merged?: boolean;
 }
 
 export interface MappingPlan {
@@ -667,6 +822,8 @@ export function suggestMappings(
     name: t.name,
     subjects: new Set(t.subjects.map((s) => s.toLowerCase())),
     wing: t.wing,
+    /** §27.9 — the classes they were declared for. Empty means "not stated". */
+    classes: new Set((t.classes ?? []).map((c) => c.toLowerCase())),
     cap: t.maxPeriodsPerWeek ?? 30,
     used: 0,
     /**
@@ -704,7 +861,13 @@ export function suggestMappings(
         (s) =>
           !s.guest &&                                    // §18: guests are not curriculum
           s.subjects.has(cell.subjectName.toLowerCase()) &&
-          (!s.wing || s.wing === cls.wing) &&            // §18: scope
+          // §27.9: the classes they were declared for, if any. Checked BEFORE
+          // the wing, and instead of it — naming classes is the more specific
+          // statement, and a teacher scoped to Class 1-2 of a wing must not be
+          // handed Class 5 just because the wing matches.
+          (s.classes.size > 0
+            ? s.classes.has(cell.className.toLowerCase())
+            : (!s.wing || s.wing === cls.wing)) &&      // §18: scope
           s.used + cell.periodsPerWeek <= s.cap &&       // Check 2: weekly capacity
           // Check 3: daily distribution. The most they could teach in a week
           // even with every day full — see `reach` above.
@@ -713,7 +876,10 @@ export function suggestMappings(
       if (eligible.length === 0) {
         const anyTeaches = staff.some((s) => s.subjects.has(cell.subjectName.toLowerCase()));
         const anyInWing = staff.some(
-          (s) => !s.guest && s.subjects.has(cell.subjectName.toLowerCase()) && (!s.wing || s.wing === cls.wing),
+          (s) => !s.guest && s.subjects.has(cell.subjectName.toLowerCase()) &&
+            (s.classes.size > 0
+              ? s.classes.has(cell.className.toLowerCase())
+              : (!s.wing || s.wing === cls.wing)),
         );
         uncovered.push({
           className: label,
@@ -723,7 +889,11 @@ export function suggestMappings(
           reason: !anyTeaches
             ? `Nobody on the staff list teaches ${cell.subjectName}.`
             : !anyInWing
-              ? `Nobody in ${cls.wing} teaches ${cell.subjectName}.`
+              // Named separately from the wing case: "nobody teaches it here"
+              // and "nobody is scoped to THIS CLASS" have different fixes, and
+              // being told to hire when the real answer is a tick box is the
+              // kind of advice that wastes a morning.
+              ? `Nobody who teaches ${cell.subjectName} is scoped to ${cell.className}.`
               : `Everybody who teaches ${cell.subjectName} in ${cls.wing} is at their limit — either their weekly cap, or as much as ${days} days can hold at ${cell.maxPerDay} period(s) a day per class.`,
         });
         continue;
@@ -850,7 +1020,11 @@ export function mappingSheets(plan: MappingPlan): RawSheet[] {
       Subject: m.subjectName,
       "Class-Sections": m.classSections.join(", "),
       "Periods/Week": m.periodsPerWeek,
-      Merged: "No",
+      Room: m.room ?? "",
+      // "Yes" needs two or more sections to mean anything, and the importer
+      // refuses a merged group of one — so the flag is written only where it is
+      // true of the row rather than trusted from whatever set it.
+      Merged: m.merged && m.classSections.length > 1 ? "Yes" : "No",
     }))));
   }
   if (plan.classTeachers.length > 0) {

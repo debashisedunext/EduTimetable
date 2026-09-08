@@ -22,7 +22,12 @@ export interface GridPayload {
   date?: string | null;
   workingDays: number[];
   dayNames: string[];
-  periods: { periodNumber: number | null; startTime: string; endTime: string | null; isBreak: boolean; breakName: string | null }[];
+  periods: {
+    periodNumber: number | null; startTime: string; endTime: string | null;
+    isBreak: boolean; breakName: string | null;
+    /** §28.3/28.4 — a staffed band either side of the teaching day. */
+    isActivity?: boolean; activityTeacher?: string | null; activityRoom?: string | null;
+  }[];
   grid: Record<string, GridCell>;
   classTeacher?: string | null;
   weeklyLoad?: number;
@@ -47,7 +52,26 @@ export function WeekGrid({ data }: { data: GridPayload }) {
       </thead>
       <tbody>
         {rows.map((p, ri) =>
-          p.isBreak ? (
+          /*
+            §28.3/28.4 — a full-width band like a break, but carrying who is on
+            duty and where. That difference is the entire feature: a break is
+            unstaffed by definition, and an assembly with nobody named on it is
+            a school still deciding rather than a school with nobody there.
+          */
+          p.isActivity ? (
+            <tr key={`a${ri}`}>
+              <td colSpan={data.workingDays.length + 1} style={{
+                padding: "5px 10px", textAlign: "center", fontSize: 10.5, letterSpacing: "0.06em",
+                textTransform: "uppercase", color: "var(--accent)", fontWeight: 700,
+                background: "var(--accent-bg)", border: "1px solid var(--line)",
+                borderLeft: "3px solid var(--accent)",
+              }}>
+                {p.breakName ?? "Activity"} · {p.startTime}–{p.endTime}
+                {p.activityTeacher ? ` · ${p.activityTeacher}` : ""}
+                {p.activityRoom ? ` · ${p.activityRoom}` : ""}
+              </td>
+            </tr>
+          ) : p.isBreak ? (
             <tr key={`b${ri}`}>
               <td colSpan={data.workingDays.length + 1} style={{
                 padding: "5px 10px", textAlign: "center", fontSize: 10, letterSpacing: "0.08em",

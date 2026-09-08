@@ -59,6 +59,9 @@ export function Publish() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ version: number; slotCount: number; draftNo: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** §3.14 — the confirmation for taking the live timetable down. */
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawn, setWithdrawn] = useState<Withdrawal | null>(null);
 
   if (!current) return <p className="screen-sub">Select a timetable first.</p>;
   if (!data) return <p className="screen-sub">Computing diff…</p>;
@@ -137,6 +140,26 @@ export function Publish() {
         Review changes before this draft replaces the live timetable for every teacher and class-section.
       </p>
 
+      {/* Says where the week WENT. A screen that simply stops showing a
+          published version leaves somebody wondering whether it worked. */}
+      {withdrawn && (
+        <div className="card" style={{
+          borderColor: "var(--accent)", background: "var(--accent-bg)", padding: "12px 14px",
+          marginBottom: 18, fontSize: 12.6, lineHeight: 1.55,
+        }}>
+          <strong>
+            {withdrawn.version ? `v${withdrawn.version} has been withdrawn` : "The timetable has been withdrawn"}
+          </strong>{" "}
+          — {withdrawn.slotCount} lessons are back in <strong>Draft #{withdrawn.draftNo}</strong>
+          {withdrawn.reused ? ", the draft they were published from" : " (a new draft)"}. Nothing is live for this
+          timetable now. Edit it on the <Link to="/board">Draft Board</Link> and publish again when it is ready
+          {withdrawn.substitutions > 0 && (
+            <>; the {withdrawn.substitutions} recorded substitution{withdrawn.substitutions === 1 ? "" : "s"} are
+            kept and line up again when you do</>
+          )}.
+        </div>
+      )}
+
       {/* §22 — WHICH draft is being published. Without this the screen showed a
           version number and a diff for a draft it never named, and a school
           with five of them had no way to tell which one it was about to make
@@ -183,6 +206,24 @@ export function Publish() {
               ? `Effective since ${fmtDate(data.currentPublishedAt)} · ${data.publishedCount} slots`
               : "This will be the first published version"}
           </div>
+          {/*
+            §3.14 — the way back, and it lives HERE.
+
+            Beside the version it withdraws, rather than among the actions at
+            the bottom: those are all about the draft being published, and a
+            control that takes the live timetable DOWN standing next to the one
+            that puts a new one up is a mis-click with a school-wide audience.
+          */}
+          {data.publishedCount > 0 && (
+            <button
+              onClick={() => setWithdrawing(true)}
+              style={{
+                marginTop: 12, border: "none", background: "none", padding: 0, cursor: "pointer",
+                fontSize: 12, fontWeight: 600, color: "var(--signal)",
+              }}>
+              ↩ Withdraw {data.currentVersion ? `v${data.currentVersion}` : "it"} back to a draft
+            </button>
+          )}
         </div>
         <div className="card" style={{ padding: 20, borderColor: "var(--accent)" }}>
           <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--accent)", marginBottom: 12 }}>
@@ -245,6 +286,14 @@ export function Publish() {
 
       {error && <div className="card" style={{ borderColor: "var(--signal)", background: "var(--signal-bg)", color: "var(--signal)", padding: 12, marginBottom: 16, fontWeight: 600, fontSize: 12.5 }}>{error}</div>}
 
+      {withdrawing && current && (
+        <WithdrawDialog
+          configId={current.id}
+          onClose={() => setWithdrawing(false)}
+          onDone={(r) => { setWithdrawing(false); setWithdrawn(r); refetch(); }}
+        />
+      )}
+
       <div style={{ display: "flex", gap: 10 }}>
         <Link to="/board" className="btn" style={{ textDecoration: "none" }}>Back to Draft Board</Link>
         <button className="btn btn-primary" onClick={publish} disabled={busy || data.draftCount === 0}>
@@ -260,6 +309,162 @@ export function Publish() {
       </div>
     </div>
   );
+}
+
+// ───────────────────────────────────────────── §3.14 withdrawing a version
+
+interface UnpublishPreview {
+  slotCount: number;
+  version: number | null;
+  publishedAt: string | null;
+  into: { kind: "existing" | "new"; draftNo: number | null; label: string | null };
+  substitutions: number;
+  extras: number;
+}
+interface Withdrawal {
+  slotCount: number;
+  version: number | null;
+  draftNo: number;
+  reused: boolean;
+  substitutions: number;
+}
+
+/**
+ * §3.14 — take the published timetable off the wall, back into a draft.
+ *
+ * The lifecycle had no way back: a school could publish, and publish again, and
+ * that was all. Two other screens told them otherwise — §27.11's allocation
+ * reset and §27.15's cell delete both refuse published work with "unpublish it
+ * first", which was advice about a button that did not exist.
+ *
+ * It asks the server what withdrawing would do before offering to do it,
+ * because the three facts a person needs are all things only the server knows:
+ * how many lessons come down, which draft they land in, and what happens to the
+ * substitutions recorded against them. A confirmation that cannot answer those
+ * is just a second OK button.
+ */
+function WithdrawDialog({ configId, onClose, onDone }: {
+  configId: number;
+  onClose: () => void;
+  onDone: (r: Withdrawal) => void;
+}) {
+  const [plan, setPlan] = useState<UnpublishPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api<UnpublishPreview>(`/timetable-configs/${configId}/board/publish/unpublish-preview`)
+      .then((p) => { if (live) setPlan(p); })
+      .catch((e) => { if (live) setError(msgOf(e)); });
+    return () => { live = false; };
+  }, [configId]);
+
+  const run = async () => {
+    setBusy(true); setError(null);
+    try {
+      onDone(await api<Withdrawal>(`/timetable-configs/${configId}/board/publish/unpublish`, { method: "POST" }));
+    } catch (e) {
+      setError(msgOf(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Withdraw the published timetable"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 500, background: "rgba(11,31,68,.45)",
+        display: "grid", placeItems: "center", padding: 18,
+      }}>
+      <div className="card" style={{ width: "min(500px,100%)", maxHeight: "90vh", overflow: "auto", padding: 0 }}>
+        <div style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--line)", display: "flex", gap: 10 }}>
+          <span aria-hidden style={{
+            width: 34, height: 34, borderRadius: 9, display: "grid", placeItems: "center", flexShrink: 0,
+            background: "var(--signal-bg)", color: "var(--signal)", fontSize: 17,
+          }}>⚠</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ font: "700 15px/1.25 Inter" }}>
+              Withdraw {plan?.version ? `v${plan.version}` : "the published timetable"}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 3 }}>
+              {plan ? `${plan.slotCount} lessons are live right now` : "Working out what this would do…"}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "var(--ink-faint)" }}>✕</button>
+        </div>
+
+        <div style={{ padding: "15px 18px", display: "flex", flexDirection: "column", gap: 12, fontSize: 12.7, lineHeight: 1.6 }}>
+          {error && (
+            <div style={{
+              borderLeft: "3px solid var(--signal)", background: "var(--signal-bg)", padding: "9px 12px",
+              borderRadius: "0 8px 8px 0", color: "var(--ink-soft)",
+            }}>{error}</div>
+          )}
+
+          {plan && (
+            <>
+              <p style={{ margin: 0, color: "var(--ink-soft)" }}>
+                <strong style={{ color: "var(--ink)" }}>Every teacher and class-section stops seeing a
+                timetable</strong> until this is published again. My Timetable, My Classes, the Matrix and
+                the printed grids all go empty for this wing.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5, color: "var(--ink-soft)" }}>
+                <li>
+                  The {plan.slotCount} lessons move into{" "}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {plan.into.kind === "existing" ? `Draft #${plan.into.draftNo}` : "a new draft"}
+                  </strong>
+                  {plan.into.kind === "existing"
+                    ? ", the draft they were published from — the same rows, unchanged"
+                    : ", because the draft they came from is no longer empty"}.
+                </li>
+                {/* Named because it is the surprising one, and because it is
+                    what makes this reversible rather than destructive. */}
+                {plan.substitutions > 0 && (
+                  <li>
+                    {plan.substitutions} recorded substitution{plan.substitutions === 1 ? " is" : "s are"} kept.
+                    They disappear from the Substitute Center while this is a draft, and line up again the
+                    moment you publish.
+                  </li>
+                )}
+                {plan.extras > 0 && (
+                  <li>{plan.extras} extra/guest class{plan.extras === 1 ? "" : "es"} stay exactly as they are (§18).</li>
+                )}
+                <li>Your other drafts are untouched.</li>
+              </ul>
+              <p style={{ margin: 0, color: "var(--ink-faint)", fontSize: 12 }}>
+                {/* The reason this is not framed as a deletion: nothing is lost,
+                    and pressing Publish puts the same rows back. */}
+                Nothing is deleted. Publishing this draft again restores exactly what is on the wall today
+                {plan.version ? `, as v${plan.version + 1}` : ""}.
+              </p>
+            </>
+          )}
+        </div>
+
+        <div style={{
+          padding: "12px 18px", borderTop: "1px solid var(--line)", background: "var(--offwhite)",
+          display: "flex", gap: 9, alignItems: "center",
+        }}>
+          <button className="btn" onClick={onClose}>Leave it published</button>
+          <span style={{ flex: 1 }} />
+          <button className="btn" disabled={busy || !plan || plan.slotCount === 0}
+            onClick={() => void run()}
+            style={{ background: "var(--signal)", borderColor: "var(--signal)", color: "#fff" }}>
+            {busy ? "Withdrawing…" : "Withdraw it"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The server's own sentence, not "500: {…}". */
+function msgOf(e: unknown): string {
+  const raw = (e as Error).message.replace(/^\d+: /, "");
+  try { return JSON.parse(raw).message ?? raw; } catch { return raw; }
 }
 
 const th: React.CSSProperties = { textAlign: "left", padding: "9px 14px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-faint)" };

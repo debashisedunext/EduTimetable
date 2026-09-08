@@ -217,6 +217,10 @@ export const SHEETS: SheetDef[] = [
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
       { header: "Alternate Days", key: "alternateDaySet", type: "list", separator: ",", width: 18, help: "Only for alternate_day, e.g. Mon,Wed,Fri", sample: [""] },
       { header: "Teaching Scope", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes this teacher may take, comma separated. Leave blank if you have not decided yet", sample: ["Class 1, Class 2, Class 3"] },
+      // §27.13 — recorded ABOUT the teacher, not inferred from whatever they
+      // happen to have been mapped to. Blank means "not stated": it never
+      // clears what a teacher already teaches.
+      { header: "Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 30, help: "Which subjects this teacher teaches, comma separated. Used to propose who teaches what, and kept for every timetable afterwards", sample: ["Mathematics, Science"] },
       // §15.3 Phase 25.4 — the guided setup's teacher grid writes these, and so
       // does an uploaded workbook: one contract, so the template, the export
       // and the wizard cannot disagree about what a teacher has.

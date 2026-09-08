@@ -1861,3 +1861,173 @@ step 2 is next rather than optional.
 an auto-remedy for Check 11 (every way out loosens a rule somebody set for a physical reason, and
 §21 applies `relax` only with explicit consent); and any instruction vocabulary that could place a
 lesson.
+
+# Phase 28 — One Allocation grid (§27)
+
+**Status: landed.**
+
+Curriculum and Mapping were the same decision seen twice, so they are one step now and the guided
+setup has ten steps rather than eleven.
+
+1. **The grid** — class-sections down, subjects across; periods, teacher and room in every cell;
+   the Load column spanning each class, because periods are a class fact and the table's shape is
+   the honest way to say so. Class-teacher assignment is a ring on a cell, which deletes the second
+   table entirely.
+2. **`packages/shared/src/onboarding/load.ts`** — `computeLoads` and `relieveLoad`, called by the
+   screen *and* the server. This reverses the older rule in `Syllabus.tsx` about not second-guessing
+   the importer: it is not a second opinion once there is only one function.
+3. **The advisor** — the §21 verbs, `relax` last and never automatic, merging offered only for
+   co-scholastic subjects. The convergence test is the claim worth making: `redistribute` +
+   `complete` alone clear an over-loaded school.
+4. **Reading without opening** — five hover cards, and everything that is not the grid collapsed by
+   default (load rail to one row, help behind a button, step rail behind Focus).
+5. **Period length** — shown as minutes a week, changed from the cell dialog, committed through step
+   5's own committer narrowed to the wings that differ.
+
+**The migration to watch:** old step 10 was Mapping, new step 10 is Settings. Drafts stamp
+`__stepScheme` and `migrateStep` shifts the rest; `step-scheme.spec.ts` covers the collision.
+
+**Deliberately not done:** the *manual* Curriculum and Subject Mapping screens are untouched. They
+are a different door with a different shape (list-first, one row at a time, no wing tabs), and the
+value of the grid is the guided setup's "see the whole school at once" case. Worth doing next, not
+in this change.
+
+# Phase 29 — Generation settings (§28)
+
+**Status: 28.1, 28.3 and 28.4 landed. 28.2 (per-class period duration) deliberately not built.**
+
+1. **§28.1 The load alert line** — `timetable_config.load_alert_pct`, default 75, on both doors.
+   Feeds `loadBand`, the §27 Allocation rail and **Feasibility Check 12**. A warning, never a
+   blocker, and **exempt from the readiness score**: a school that asks to be told when a teacher
+   passes 75% has not become less able to generate by asking, and a dashboard that fell to 98% for
+   answering would read as the setting having broken something.
+2. **§28.3/28.4 Daily activities** — assembly, attendance, dispersal. One `daily_activities` table
+   for both ends of the day, producing a third kind of band in `periods` beside break and extra.
+   Editable on the guided week step and the manual Timetable Configuration screen; rendered by the
+   Matrix, WeekGrid, the print sheet and every teacher view.
+
+**The property that makes activities cheap:** they have no period number, so `domainFor` cannot
+reach them — the same device the §18 extra window uses. The solver, the three unique keys and every
+feasibility check are untouched. Never widen the domain to include them.
+
+**The one that nearly broke quietly:** `daySegmentsFromRows` and `lunchAfterPeriodFromRows` must
+exclude activity rows. An activity is not a break, so without the filter the run counter reads an
+assembly as a *teaching* period and tells the solver the day has a longer unbroken run than it has.
+
+**§28.2 — per-class period duration — is not built, and §28.5 of the architecture doc says why.**
+Two period lengths inside one config make a teacher's Class 9 P3 overlap their Class 11 P2 in wall
+clock, and `uq_teacher_slot` compares period NUMBERS, so invariant 1's database-level guard silently
+stops guarding. The real design is tick-based occupancy (`period_grids` + a `slot_occupancy` table
+keyed on 5-minute ticks), which would also close the documented cross-wing hole at §5. Its own
+phase. Until then a different period length is a different wing, which the product already supports.
+
+**Fixed in the same phase — `request entity too large` on Next.** The wizard sent the whole draft
+on every save despite a comment saying it sent one step's keys; at 957 mappings Second Branch
+reached 145kb against Express's 100kb default. Now: the client sends only edited keys (which is
+what the server's merge was always for), and `BODY_LIMIT` is 2mb because one legitimately large key
+can exceed 100kb on its own. `scripts/body-size-smoke.cjs` covers both. It also exposed that
+`finish()` read state it had scheduled in the same tick, so a school that never opened the Settings
+step stored no settings at all.
+
+**§27.9 — which classes a teacher takes.** The Teachers step names them; `teacher_class_eligibility`
+follows; `suggestMappings`, the Allocation dropdown and `relieveLoad` all honour them, so the
+Allocation grid arrives staffed accordingly. Every class is ticked to begin with and removal is the
+interaction, but **empty stays stored** so "not stated" keeps meaning the wing (invariant 7) and a
+teacher who moves wing follows the new one. The last class cannot be removed — that would store
+`[]`, which means *all*, so taking one away would hand them everything.
+
+**§27.10 — the way back to the proposal.** Merging Curriculum and Mapping dropped *both* steps'
+"Start again from the suggestion", so once the Allocation grid held an edit the Teachers step
+stopped mattering. Restored as a quiet ↺ Start again plus a banner that names the disagreement when
+one is real. The reset sends `null` rather than `undefined`, because §28.6's delta save drops
+undefined keys and the stored plan would survive a reset that appeared to work.
+
+**§27.11 — clearing the allocation.** A real deletion (curriculum, mappings, class teachers, and the
+draft rows generated from them), built like §3.13's: count and delete in one object, plan recomputed
+server-side, published timetable refused on the write as well as the preview. Typed confirmation,
+because every count is a row somebody entered. Scoped by academic year (§3.11), and a merged group
+is only this timetable's when every member is.
+
+**§27.12 — a master is entered once and used for ever.** Deleting a timetable never deleted a master
+(now asserted, not assumed); what was wrong is that the guided setup then opened blank, because
+`adoptFromSchool` was reachable only from the deleted timetable's own card. `GET /onboarding/session`
+now falls back to answers rebuilt from the school — flagged `prefilled` and **not saved**, so looking
+does not create a draft — and the client marks them touched so the first Next persists them. The
+rebuild now carries rooms, curriculum, mappings and class teachers too, so the Allocation grid opens
+on the school's own plan instead of re-proposing over the top of it.
+
+# Phase 30 — What a teacher teaches (§27.13)
+
+**Status: landed.**
+
+`teacher_subjects`, declared rather than derived — the same correction §18 made for teaching scope.
+The guided setup asked what a teacher teaches, used it to propose mappings and discarded it, so the
+second wing's Teachers step opened with every "Teaches" cell empty. Now: a `Subjects` column on the
+Teachers sheet, written by the importer, read back by `answersFromSchool` as a **union** with the
+mapping-derived set (existing schools have no declarations and must not lose the column). Backfilled
+from mappings, merged groups and elective options. §23 cascades name it rather than letting the FK
+delete it silently.
+
+**Cannot recover what was already discarded** — a school whose teachers predate this has nothing to
+backfill from.
+
+# Phase 31 — A class does not take a subject (§27.15)
+
+**Status: landed.**
+
+Reported as "Biology in Pre-Nursery", and answered in two halves.
+
+**The ladder.** `WEIGHTS` families gained an optional `from`/`to` on `CLASS_LADDER`: named sciences from
+Class 9 (generic "Science" is its own row, from Class 1), stream subjects from Class 11, a third
+language from Class 5. It shapes the **proposal only** — an unrecognised name is offered everywhere,
+and a range that would leave a class with nothing stands aside. An empty cell now says why it is
+empty (`subjectStartsAt`), because a blank produced on purpose is otherwise indistinguishable from a
+blank the page lost.
+
+**The deletion.** ✕ *Not taught in {class}* in the cell dialog, and Delete on the keyboard cursor,
+both going through one confirmation (`RemoveSubject`). Removes the curriculum row, the mappings in
+every section of the class, the §4.10 merged groups that taught it there and the draft lessons
+already placed — **not** the subject, and not any other class. `allocation-cell.ts` is built like
+§27.11's reset: count and delete in one object, plan recomputed server-side, published work refused —
+but **narrowly**, on whether the wall chart teaches that subject to that class, and with no typed
+word, since putting it back is one click.
+
+This is the one place the otherwise draft-only wizard writes to the server, and it has to be: the
+§16 importer skips by natural key, so a committed row would survive with the cell looking empty.
+
+**Also fixed here:** the Allocation grid's fallback to the proposal is now **per wing**. A school with
+one planned wing that added a second got a grid of dashes for the new one — the stored array was not
+empty, so it won for the whole school. A wing rather than a class, so a class emptied on purpose
+stays empty.
+
+Verified: 8 new unit tests in `suggest.spec.ts`, a §27.15 block in `guided-setup-smoke.cjs` (counts,
+the write, the untouched neighbours, the idempotent second call, and the published refusal on both
+the read and the write), and `pnpm test:isolation`, which swept both new routes.
+
+# Phase 32 — Withdrawing a published timetable (§3.14)
+
+**Status: landed.**
+
+The lifecycle had no way back: publish, or publish again. Two screens told schools otherwise —
+§27.11's allocation reset and §27.15's cell delete both refuse published work with "unpublish it
+first", about a button that did not exist. Both messages now name where it is.
+
+`GET /timetable-configs/:id/board/publish/unpublish-preview` and `POST .../unpublish`, plus a
+**Withdraw** control beside the "Currently Published" card on the Publish screen — beside the version
+it withdraws, not among the actions that publish a new one.
+
+- **Rows are FLIPPED, not copied and deleted.** `substitution_log` refers to slots by id with no FK
+  of its own; copy-and-delete would orphan every cover and a republish would mint ids none of them
+  match. Flipping makes publish → withdraw → publish a genuine round trip, asserted on row ids.
+- **Back into the originating draft when it is empty**, otherwise a new one — `draft_scope` is in all
+  three unique keys, so flipping a week into an occupied draft collides on the first cell.
+- **The version is kept, marked `withdrawn_at`/`withdrawn_by_id`.** Deleting it would renumber the
+  next publish and rewrite the school's own record.
+- Leaves §18 extras and previously-archived drafts alone; counts and names the substitutions rather
+  than touching them; notifies the teachers who were told it went live.
+
+Verified: a §3.14 block in `guided-setup-smoke.cjs` — preview counts, the write, nothing live, same
+row ids, the withdrawn version kept, the §27.15 refusal letting go, republish as v2, and a clean
+refusal for a timetable that was never published. `pnpm test:isolation` swept both routes; it caught
+the preview answering a stranger 200 with an empty plan (now 404), and the sweep's `BOARD_ORDER`
+gained both routes — a route missing from that list runs before the board fixture exists.

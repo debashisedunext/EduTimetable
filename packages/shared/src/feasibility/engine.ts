@@ -109,6 +109,8 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
   const dailyReach = teacherDailyReach(snap);
   /** §20 teachers whose minimum cannot be met as written — reported as one row. */
   const minRelaxed: Array<{ id: number; name: string; declared: number; effective: number; why: string }> = [];
+  /** §28.1 teachers past the school's own alert line — reported as one row. */
+  const nearingLimit: Array<{ name: string; demand: number; capacity: number }> = [];
 
   for (const t of snap.teachers) {
     const localDemand = demandByTeacher.get(t.id) ?? 0;
@@ -117,6 +119,12 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     if (demand === 0) continue;
 
     const capacity = teacherWeeklyCapacity(t, snap.config.workingDays, perDay, issues, snap);
+    // §28.1 — noted whether or not they are over. Somebody exactly at their
+    // limit belongs on this list too: "at or above" is what the school asked
+    // to hear about, and an over-limit teacher is already a blocker below.
+    if (capacity > 0 && demand >= capacity * (snap.config.loadAlertPct / 100)) {
+      nearingLimit.push({ name: t.name, demand, capacity });
+    }
     if (demand > capacity) {
       const biggest = snap.mappings
         .filter((m) => m.teacherId === t.id)
@@ -279,6 +287,42 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
           field: "minPeriodsPerDay", from: r.declared, to: r.effective,
         })),
       ),
+    });
+  }
+
+  // ---------- Check 12 — teacher load alert (§28.1) ----------
+  //
+  // A WARNING, and that is the whole design. A teacher at 80% of their limit is
+  // a normally employed teacher; refusing to generate at a number the school
+  // chose for its own reporting would make most real schools ungenerable, and
+  // the request was for an alert rather than a refusal.
+  //
+  // ONE grouped row, not one per teacher. At 122 staff a per-teacher warning
+  // buries every real blocker under thirty rows of "this is fine, but".
+  //
+  // No remedy, deliberately. Every way to lower the percentage is either a
+  // `redistribute` the Allocation advisor already offers on the screen where
+  // the work is done, or a `relax` that raises the very cap the percentage is
+  // measured against — a fix whose only effect is to move the goalposts.
+  if (nearingLimit.length > 0) {
+    const pct = snap.config.loadAlertPct;
+    const worst = [...nearingLimit].sort(
+      (a, b) => b.demand / b.capacity - a.demand / a.capacity,
+    );
+    const named = worst.slice(0, 3)
+      .map((t) => `${t.name} ${t.demand}/${t.capacity}`)
+      .join(", ");
+    issues.push({
+      code: "TEACHER_LOAD_ALERT",
+      severity: "warning",
+      message:
+        `${worst.length} teacher(s) are at or above ${pct}% of their weekly limit — ` +
+        `${named}${worst.length > 3 ? `, and ${worst.length - 3} more` : ""}.`,
+      entity: { type: "config", id: snap.config.id, label: snap.config.name },
+      fix:
+        `They can still be timetabled. Move a class to somebody with room on the ` +
+        `Allocation screen, or raise the alert level above ${pct}% if this is the ` +
+        `load the school intends.`,
     });
   }
 
@@ -1474,9 +1518,27 @@ function finalize(
   const blockers = issues.filter((i) => i.severity === "blocker");
   const warnings = issues.filter((i) => i.severity === "warning");
   const hasData = snap.classSections.length > 0 && snap.subjectRequirements.length > 0;
+  /**
+   * §28.1 — the load alert is REPORTED but does not move the score.
+   *
+   * Readiness answers one question: can this school generate? A school where
+   * every teacher is inside their limit and every lesson has somebody can
+   * generate, so it reads 100 — and it must keep reading 100 after somebody
+   * asks to be told when a teacher passes 75%. The first school to try this
+   * setting would otherwise watch its own dashboard fall to 98% for saying yes
+   * to a report, and would reasonably conclude the setting had broken
+   * something.
+   *
+   * It is a warning rather than an `info` severity because every consumer —
+   * the dashboard, the AI tools, the auto-fix screen — already knows what to
+   * do with two levels, and a third would need each of them to decide again.
+   * The score is the only place the distinction matters, so it is the only
+   * place that makes it.
+   */
+  const scored = warnings.filter((w) => w.code !== "TEACHER_LOAD_ALERT");
   const score = !hasData
     ? 0
-    : Math.max(0, 100 - blockers.length * 10 - warnings.length * 2);
+    : Math.max(0, 100 - blockers.length * 10 - scored.length * 2);
   return {
     score,
     ready: hasData && blockers.length === 0,

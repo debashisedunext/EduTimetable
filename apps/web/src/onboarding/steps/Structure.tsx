@@ -25,6 +25,7 @@ import {
   type WingAnswer,
 } from "@edutimetable/shared";
 import { api } from "../../api";
+import { DraftActivities, type ActivityRow } from "../../timetable/Activities";
 
 const DAYS = [
   { n: 1, label: "Mon" }, { n: 2, label: "Tue" }, { n: 3, label: "Wed" },
@@ -442,9 +443,18 @@ export interface WeekAnswer {
   startTime: string;
   hasZeroPeriod: boolean;
   breaks: Array<{ afterPeriod: number; name: string; durationMins: number }>;
+  /**
+   * §28.3/28.4 — assembly, attendance, dispersal.
+   *
+   * On the WEEK step rather than the Settings step, because they are the shape
+   * of the day rather than a rule about generation — they sit next to the
+   * breaks they resemble, and they change the times printed beside every
+   * period.
+   */
+  activities?: ActivityRow[];
 }
 
-const defaultWeek = (): WeekAnswer => ({
+export const defaultWeek = (): WeekAnswer => ({
   workingDays: [1, 2, 3, 4, 5],
   periodsPerDay: 8,
   periodDurationMins: 40,
@@ -556,6 +566,26 @@ export function StepWeek({ answers, onChange }: {
         + Add a break
       </button>
 
+      {/*
+        §28.3/28.4 — beside the breaks, because that is what they are next to on
+        a real timetable. An assembly is not a rule about generation; it is part
+        of the shape of the day, and it changes the times printed against every
+        period below it.
+      */}
+      <label style={{ ...label, marginTop: 18 }}>Before and after the day</label>
+      <p style={{ fontSize: 12, color: "var(--ink-faint)", margin: "0 0 9px" }}>
+        Assembly, attendance, bus dispersal — anything that happens outside the teaching periods.
+        Each one shows on the timetable with its duration and whoever is on duty. The solver never
+        places a lesson in them.
+      </p>
+      <DraftActivities
+        rows={week.activities ?? []}
+        onChange={(next: ActivityRow[]) => set({ activities: next })}
+        staff={[]}
+        rooms={[]}
+        workingDays={week.workingDays}
+      />
+
       <Note tone="ok">
         <strong>Weekly capacity: {capacity} periods.</strong> {week.periodsPerDay} periods ×{" "}
         {week.workingDays.length} days
@@ -566,13 +596,38 @@ export function StepWeek({ answers, onChange }: {
   );
 }
 
-/** Write each wing's week through the endpoint that already owns it. */
-export async function commitWeeks(answers: Record<string, any>): Promise<void> {
+/**
+ * Write each wing's week through the endpoint that already owns it.
+ *
+ * `only` narrows it to the wings whose week actually differs from what the
+ * server holds. §28's Allocation grid can change a period's LENGTH, and it
+ * calls this on the way past — but `PUT /:id/structure` rewrites the period
+ * rows wholesale, so re-pushing an unchanged week would rebuild the whole grid
+ * for nothing. Narrow, not unconditional.
+ */
+export async function commitWeeks(
+  answers: Record<string, any>,
+  only?: { changedOnly: true },
+): Promise<void> {
   const wings: WingAnswer[] = answers.wings ?? [];
   const weeks: Record<string, WeekAnswer> = answers.weeks ?? {};
-  const configs = await api<Array<{ id: number; name: string }>>("/timetable-configs");
+  const configs = await api<Array<{
+    id: number; name: string; periodsPerDay: number; periodDurationMins: number;
+    workingDays: unknown; startTime: string;
+  }>>("/timetable-configs");
 
   for (const w of wings) {
+    if (only?.changedOnly) {
+      const c = configs.find((x) => x.name.toLowerCase() === w.name.toLowerCase());
+      const week = { ...defaultWeek(), ...(weeks[w.name] ?? {}) };
+      const days = Array.isArray(c?.workingDays) ? c!.workingDays.length : -1;
+      const same = c
+        && c.periodDurationMins === week.periodDurationMins
+        && c.periodsPerDay === week.periodsPerDay
+        && c.startTime?.slice(0, 5) === week.startTime.slice(0, 5)
+        && days === week.workingDays.length;
+      if (same) continue;
+    }
     const config = configs.find((c) => c.name.toLowerCase() === w.name.toLowerCase());
     if (!config) throw new Error(`${w.name} has no timetable yet — go back to step 3.`);
     const week = { ...defaultWeek(), ...(weeks[w.name] ?? {}) };
@@ -589,6 +644,19 @@ export async function commitWeeks(answers: Record<string, any>): Promise<void> {
         hasZeroPeriod: week.hasZeroPeriod,
         breaks: week.breaks,
       }),
+    });
+    /**
+     * §28.3/28.4, AFTER the structure and not before it.
+     *
+     * `PUT /:id/structure` rebuilds the period rows wholesale from the config
+     * plus whatever activities the table holds, and `PUT /:id/activities`
+     * replaces the table and rebuilds again. Either order ends correct, but
+     * this one ends correct for the right reason: the activities are written
+     * last, so the final rebuild is the one that has seen them.
+     */
+    await api(`/timetable-configs/${config.id}/activities`, {
+      method: "PUT",
+      body: JSON.stringify({ activities: (week.activities ?? []).map((a, i) => ({ ...a, sortOrder: i })) }),
     });
   }
 }

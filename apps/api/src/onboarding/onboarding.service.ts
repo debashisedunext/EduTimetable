@@ -28,6 +28,33 @@ import { TermsService } from "../terms/terms.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { stepFrom } from "./interview.answers";
 
+/**
+ * §28 — the guided setup has TEN steps, not eleven.
+ *
+ * Curriculum and Mapping merged into one Allocation step, and that renumbering
+ * is the only thing here that can hurt somebody: a draft saved mid-setup
+ * remembers a step NUMBER, and old step 10 (Mapping) is new step 10 (Settings).
+ * The number alone cannot say which is meant.
+ *
+ * So a draft records the scheme it was written under. Anything without the
+ * marker predates the merge and is shifted down one from step 10; anything with
+ * it is read as it stands. One line, and the alternative is dropping somebody
+ * onto the wrong screen halfway through their own school's setup — exactly the
+ * kind of thing only a school ever finds.
+ */
+export const TOTAL_STEPS = 10;
+const STEP_SCHEME_KEY = "__stepScheme";
+const STEP_SCHEME = 2;
+
+/** Read a stored step number under whichever numbering wrote it. */
+export function migrateStep(step: number, answers: unknown): number {
+  const scheme = (answers as Record<string, unknown> | null)?.[STEP_SCHEME_KEY];
+  if (scheme === STEP_SCHEME) return Math.min(TOTAL_STEPS, Math.max(1, step));
+  // Pre-merge: 1–9 are unchanged (9 was Curriculum, now Allocation, which is
+  // where that person was anyway); 10 (Mapping) and 11 (Settings) shift down.
+  return Math.min(TOTAL_STEPS, Math.max(1, step >= 10 ? step - 1 : step));
+}
+
 export interface OnboardingState {
   /** No timetable configured yet — the real definition of "new". */
   isNew: boolean;
@@ -88,7 +115,7 @@ export class OnboardingService {
       hasClasses: classes > 0,
       hasPublished: published > 0,
       dismissedAt: dismissedAt ? dismissedAt.toISOString() : null,
-      resumeStep: draft?.currentStep ?? null,
+      resumeStep: draft ? migrateStep(draft.currentStep, draft.answers) : null,
       resumeWings: this.wingsInDraft(draft?.answers),
       resumeMode: (draft?.mode as "wizard" | "ai") ?? null,
       // Two independent reasons to open, and the OR between them matters.
@@ -169,7 +196,7 @@ export class OnboardingService {
     return {
       id: row.id,
       mode: row.mode,
-      currentStep: row.currentStep,
+      currentStep: migrateStep(row.currentStep, row.answers),
       answers: (row.answers as Record<string, unknown>) ?? {},
       // §24.6 — where this run's conversation begins in the audit log. Part of
       // the draft, because that is what it is a property of.
@@ -204,6 +231,65 @@ export class OnboardingService {
     // throw away whatever they had typed but not yet committed.
     if (existing) return { ...existing, adopted: false, skippedWings: [] as string[] };
 
+    const { answers, skippedWings, counts } = await this.answersFromSchool(schoolId);
+    const saved = await this.save(schoolId, userId, {
+      answers,
+      /**
+       * Open at the first thing still MISSING, not at question one.
+       *
+       * An adopted draft has no "where I left off" — nobody left off anywhere.
+       * `stepFrom` is the rule the conversational setup already uses to answer
+       * exactly this question, and it reads the same answers. One rule, so the
+       * two doors cannot disagree about how far along a school is.
+       */
+      currentStep: stepFrom(answers),
+      mode: "wizard",
+    });
+    this.logger.log(
+      `Adopted school ${schoolId} into a guided draft: ${counts.wings} wing(s), ` +
+        `${counts.subjects} subjects, ${counts.teachers} teachers` +
+        (skippedWings.length ? `, skipped ${skippedWings.join(", ")}` : ""),
+    );
+    return { ...saved, adopted: true, skippedWings };
+  }
+
+  /**
+   * What a school with no draft should open the guided setup on.
+   *
+   * Reads, never writes. A brand-new school gets `{ empty: true }` and question
+   * one, which is right — §27.12 is about not asking a school that has already
+   * answered.
+   */
+  async prefillFromSchool(schoolId: number) {
+    const classes = await this.prisma.schoolClass.count({ where: { schoolId } });
+    const subjects = await this.prisma.subject.count({ where: { schoolId } });
+    if (classes === 0 && subjects === 0) return { empty: true };
+    const { answers, skippedWings } = await this.answersFromSchool(schoolId);
+    return {
+      empty: true,
+      /** The answers are real but unsaved — the client must persist them. */
+      prefilled: true,
+      currentStep: stepFrom(answers),
+      answers,
+      skippedWings,
+    };
+  }
+
+  /**
+   * §27.12 — the wizard's answers, rebuilt from what the school already has.
+   *
+   * **A master is entered once and used for ever.** A school that has run a
+   * timetable has its session, classes, subjects, teachers, rooms and
+   * curriculum; asking for them again because it is starting a second timetable
+   * — or because somebody deleted the first — is asking it to retype its own
+   * records. The masters were never deleted; the wizard simply behaved as
+   * though they had been.
+   *
+   * Split out of `adoptFromSchool` so it can be read WITHOUT writing a draft:
+   * opening the guided setup must not, by itself, create one, or a school that
+   * merely looked would be offered a resume for ever afterwards.
+   */
+  private async answersFromSchool(schoolId: number) {
     const [configs, years, subjects, teachers, school] = await Promise.all([
       this.prisma.timetableConfig.findMany({ where: { schoolId }, orderBy: { id: "asc" } }),
       this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { id: "desc" } }),
@@ -214,21 +300,55 @@ export class OnboardingService {
 
     const sections = await this.prisma.classSection.findMany({
       where: { schoolId },
-      include: { class: true },
+      // `section` too: §27.12 needs the "Class 5-A" label to carry the school's
+      // own rooms, curriculum and mappings back into the wizard's answers.
+      include: { class: true, section: true },
     });
-    // Which subjects each teacher is already mapped to — the input step 10 uses.
+    // Which subjects each teacher is already mapped to — the input the
+    // Allocation step staffs from.
     const mappings = await this.prisma.teacherSubjectClassSection.findMany({
       where: { schoolId },
       select: { teacherId: true, subjectId: true },
     });
+    /**
+     * §27.9/§18 — the classes each teacher is DECLARED for.
+     *
+     * Read rather than re-derived, for the same reason as `initials`: a school
+     * that has already said Mrs Rao takes Class 1 and 2 has said it, and an
+     * adopted draft that quietly widened her to the whole wing would re-staff
+     * the school against a scope nobody chose.
+     */
+    const eligibility = await this.prisma.teacherClassEligibility.findMany({
+      where: { schoolId },
+      select: { teacherId: true, class: { select: { name: true } } },
+    });
+    const teacherClasses = new Map<number, string[]>();
+    for (const e of eligibility) {
+      if (!teacherClasses.has(e.teacherId)) teacherClasses.set(e.teacherId, []);
+      teacherClasses.get(e.teacherId)!.push(e.class.name);
+    }
     const subjectName = new Map(subjects.map((s) => [s.id, s.name]));
     const teacherSubjects = new Map<number, Set<string>>();
-    for (const m of mappings) {
-      const name = subjectName.get(m.subjectId);
-      if (!name) continue;
-      if (!teacherSubjects.has(m.teacherId)) teacherSubjects.set(m.teacherId, new Set());
-      teacherSubjects.get(m.teacherId)!.add(name);
+    const addSubject = (teacherId: number, subjectId: number) => {
+      const name = subjectName.get(subjectId);
+      if (!name) return;
+      if (!teacherSubjects.has(teacherId)) teacherSubjects.set(teacherId, new Set());
+      teacherSubjects.get(teacherId)!.add(name);
+    };
+    /**
+     * §27.13 — the DECLARED subjects first, then whatever the mappings imply.
+     *
+     * The union, not one or the other. Declared is the fact — it is what
+     * somebody typed on the Teachers step, and it survives having no mappings
+     * yet, which is exactly the case that was broken: a school starting its
+     * second wing saw every "Teaches" cell empty. The mappings are kept because
+     * every school that predates this table has no declarations, and reading
+     * only the new table would empty that column for all of them.
+     */
+    for (const d of await this.prisma.teacherSubject.findMany({ where: { schoolId } })) {
+      addSubject(d.teacherId, d.subjectId);
     }
+    for (const m of mappings) addSubject(m.teacherId, m.subjectId);
 
     const wings: Array<Record<string, unknown>> = [];
     const weeks: Record<string, unknown> = {};
@@ -292,6 +412,72 @@ export class OnboardingService {
     }
 
     const year = years.find((y) => y.isActive) ?? years[0];
+
+    /**
+     * §27.12 — the rooms, the curriculum and the mappings this school already
+     * has, so the Allocation step opens on the school's OWN plan rather than a
+     * fresh proposal over the top of it.
+     *
+     * Left out until now, and the omission was visible: adopting a school with
+     * 957 mappings produced a grid that re-staffed all of them from scratch and
+     * reported hundreds of "unstaffed" cells for subjects taught through §4.9
+     * elective blocks. A plan somebody has already made is an answer, not a
+     * blank.
+     *
+     * Scoped to the ACTIVE year (§3.11): a class has curriculum rows in every
+     * session it has ever run, and two sessions' rows would collapse into
+     * whichever loaded last.
+     */
+    /** "Class 5-A", the label every wizard answer uses for a class-section. */
+    const label = (cs: { class: { name: string }; section?: { name: string } }) =>
+      `${cs.class.name}-${(cs as { section?: { name: string } }).section?.name ?? ""}`;
+
+    const roomRows = await this.prisma.room.findMany({
+      where: { schoolId }, include: { subjects: { include: { subject: true } } }, orderBy: { name: "asc" },
+    });
+    const homeRoomOf = new Map<number, string>();
+    for (const cs of sections) if (cs.homeRoomId) homeRoomOf.set(cs.homeRoomId, label(cs));
+    const rooms = roomRows.map((r) => ({
+      name: r.name,
+      type: r.roomType,
+      capacity: r.capacity ?? null,
+      isShared: r.isShared,
+      subjects: r.subjects.map((x) => x.subject.name),
+      because: "already in the school",
+      ...(homeRoomOf.has(r.id) ? { homeRoomFor: homeRoomOf.get(r.id) } : {}),
+    }));
+
+    const curriculumRows = year
+      ? await this.prisma.classSubject.findMany({
+          where: { schoolId, academicYearId: year.id },
+          include: { class: true, subject: true },
+        })
+      : [];
+    const curriculum = curriculumRows.map((c) => ({
+      className: c.class.name,
+      subjectName: c.subject.name,
+      periodsPerWeek: c.periodsPerWeek,
+      maxPerDay: c.maxPeriodsPerDay,
+    }));
+
+    const mappingRows = await this.prisma.teacherSubjectClassSection.findMany({
+      where: { schoolId },
+      include: { teacher: true, subject: true, classSection: { include: { class: true, section: true } } },
+    });
+    const mappingAnswers = mappingRows.map((m) => ({
+      employeeCode: m.teacher.employeeCode,
+      subjectName: m.subject.name,
+      classSections: [label(m.classSection)],
+      periodsPerWeek: m.periodsPerWeek,
+    }));
+    const classTeachers = sections
+      .filter((cs) => cs.classTeacherId)
+      .map((cs) => ({
+        classSection: label(cs),
+        employeeCode: teachers.find((t) => t.id === cs.classTeacherId)?.employeeCode ?? "",
+      }))
+      .filter((c) => c.employeeCode);
+
     const answers: Record<string, unknown> = {
       school: { name: school?.name ?? "" },
       ...(year
@@ -305,6 +491,10 @@ export class OnboardingService {
         : {}),
       ...(wings.length > 0 ? { wings } : {}),
       ...(Object.keys(weeks).length > 0 ? { weeks } : {}),
+      ...(rooms.length > 0 ? { rooms } : {}),
+      ...(curriculum.length > 0 ? { curriculum } : {}),
+      ...(mappingAnswers.length > 0 ? { mappings: mappingAnswers } : {}),
+      ...(classTeachers.length > 0 ? { classTeachers } : {}),
       ...(subjects.length > 0
         ? {
             subjects: subjects.map((s) => ({
@@ -318,6 +508,12 @@ export class OnboardingService {
             teachers: teachers.map((t) => ({
               name: t.name,
               employeeCode: t.employeeCode,
+              // Carried, not re-derived. A school that already uses initials
+              // has them printed on cover lists and staff-room doors; deriving
+              // fresh ones would show it somebody else's shorthand for its own
+              // teachers. Null is fine — `assignInitials` fills those in.
+              initials: t.initials,
+              classes: teacherClasses.get(t.id) ?? [],
               subjects: [...(teacherSubjects.get(t.id) ?? [])],
               maxPeriodsPerDay: t.maxPeriodsPerDay,
               maxPeriodsPerWeek: t.maxPeriodsPerWeek,
@@ -340,17 +536,11 @@ export class OnboardingService {
      * exactly this question, and it reads the same answers. One rule, so the
      * two doors cannot disagree about how far along a school is.
      */
-    const saved = await this.save(schoolId, userId, {
+    return {
       answers,
-      currentStep: stepFrom(answers),
-      mode: "wizard",
-    });
-    this.logger.log(
-      `Adopted school ${schoolId} into a guided draft: ${wings.length} wing(s), ` +
-        `${subjects.length} subjects, ${teachers.length} teachers` +
-        (skippedWings.length ? `, skipped ${skippedWings.join(", ")}` : ""),
-    );
-    return { ...saved, adopted: true, skippedWings };
+      skippedWings,
+      counts: { wings: wings.length, subjects: subjects.length, teachers: teachers.length },
+    };
   }
 
   /** "08:00" → "08:30" is 30. Used only to describe an existing break. */
@@ -400,8 +590,12 @@ export class OnboardingService {
       ...(input.answers ?? {}),
     };
     const data = {
-      currentStep: Math.max(1, Math.min(11, input.currentStep ?? (resuming ? existing.currentStep : 1))),
-      answers: merged as never,
+      currentStep: Math.max(1, Math.min(TOTAL_STEPS, input.currentStep ?? (resuming ? existing.currentStep : 1))),
+      // Stamped on every save so a draft can say which numbering it was written
+      // under — see `migrateStep`. Written here rather than by the client
+      // because the server also writes drafts (`adoptFromSchool`), and a marker
+      // only half the writers set is worse than none.
+      answers: { ...merged, [STEP_SCHEME_KEY]: STEP_SCHEME } as never,
       // Clearing it is what makes this row the live draft again. Harmless when
       // it is already null.
       completedAt: null,
@@ -423,7 +617,10 @@ export class OnboardingService {
     return {
       id: row.id,
       mode: row.mode,
-      currentStep: row.currentStep,
+      // Just written under the current scheme, so this is a no-op clamp — but
+      // it goes through the same function so there is exactly one place that
+      // decides what a stored step number means.
+      currentStep: migrateStep(row.currentStep, row.answers),
       answers: (row.answers as Record<string, unknown>) ?? {},
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -485,18 +682,23 @@ export class OnboardingService {
         // proposed lab is a general-purpose room with a misleading name.
         return { sheets: roomSheets(await this.roomsFor(schoolId, answers)), issues };
       }
+      /**
+       * §28 — curriculum AND mapping, in one step.
+       *
+       * They were two, and the split was arbitrary: a curriculum row and the
+       * mapping that teaches it are the same decision seen twice. The proof is
+       * `withCurriculumPeriods`, which exists only to stop step 10 quoting a
+       * number step 9 had since changed. One step, one commit, and the two
+       * sheets go through the importer in the order it needs them.
+       */
       case 9: {
-        const plan = await this.curriculumFor(schoolId, answers);
-        for (const d of plan.dropped) {
+        const cur = await this.curriculumFor(schoolId, answers);
+        for (const d of cur.dropped) {
           issues.push({
             message: `${d.subjectName} was left out of ${d.className}.`,
             fix: d.reason + " Remove a subject, or give this wing a longer week on step 5.",
           });
         }
-        return { sheets: curriculumSheets(plan, year), issues };
-      }
-      case 10: {
-        const cur = await this.curriculumFor(schoolId, answers);
         const proposal = suggestMappings(wings, cur, teachers, await this.daysByWing(schoolId));
         // The two halves fall back INDEPENDENTLY, because they are edited
         // independently: the screen has an assignment table and a class-teacher
@@ -504,9 +706,11 @@ export class OnboardingService {
         // their school has no class teachers. Treating the pair as one edited
         // object drops all fourteen of them on the first change to either.
         const plan = {
-          // Periods/week is quoted from the curriculum, never from what step 10
-          // happened to store — otherwise editing step 9 afterwards leaves a
-          // stale number that Readiness reports as a blocker two screens away.
+          // Periods/week is quoted from the curriculum, never from whatever the
+          // mapping half happened to store — otherwise editing a period count
+          // leaves a stale number that Readiness reports as a blocker. Still
+          // true with one step: the grid edits both halves of a cell, and the
+          // curriculum is where the number is DECIDED.
           mappings: withCurriculumPeriods(
             cur, this.edited<MappingSuggestion>(answers.mappings) ?? proposal.mappings,
           ),
@@ -516,16 +720,21 @@ export class OnboardingService {
           uncovered: [],
           load: [],
         };
-        // Recomputed rather than read off the proposal: the moment step 10's
-        // screen lets somebody reassign or delete a row, the proposal's own
+        // Recomputed rather than read off the proposal: the moment the screen
+        // lets somebody reassign or delete a row, the proposal's own
         // `uncovered` list describes a plan that no longer exists.
         for (const u of coverageGaps(wings, cur, plan.mappings)) {
           issues.push({
             message: `${u.className} has no teacher for ${u.subjectName}.`,
-            fix: "Assign somebody on step 10, add a teacher for it on step 7, or raise a weekly limit.",
+            fix: "Assign somebody on the Allocation step, add a teacher for it on step 7, or raise a weekly limit.",
           });
         }
-        return { sheets: mappingSheets(plan), issues };
+        // Curriculum FIRST. The Subject Mapping sheet references subjects and
+        // class-sections that the Curriculum sheet does not create — but the
+        // importer validates cross-sheet references within one commit, and a
+        // mapping quoting a periods/week the curriculum has not yet stated
+        // reads as a mismatch. Order is cheaper than a second commit.
+        return { sheets: [...curriculumSheets(cur, year), ...mappingSheets(plan)], issues };
       }
       default:
         return { sheets: [], issues };
@@ -736,6 +945,10 @@ export class OnboardingService {
           ? { classTeacherGetsFirstPeriod: Boolean(s.classTeacherFirstPeriod) } : {}),
         ...(s.allowConsecutive !== undefined
           ? { allowConsecutivePeriods: Boolean(s.allowConsecutive) } : {}),
+        // §28.1 — clamped rather than refused: it is a reporting preference,
+        // and a slip is far likelier than an attack.
+        ...(typeof s.loadAlertPct === "number"
+          ? { loadAlertPct: Math.max(50, Math.min(100, Math.round(s.loadAlertPct))) } : {}),
       },
     });
     // Inter-wing teaching is not a flag — it is the ABSENCE of the §18 scope

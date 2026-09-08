@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../api";
+import { ActivitiesEditor } from "../timetable/Activities";
 import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
@@ -977,6 +978,7 @@ export function StepConfig() {
         workingDays: current.workingDays,
         periodsPerDay: current.periodsPerDay,
         periodDurationMins: current.periodDurationMins,
+        loadAlertPct: current.loadAlertPct ?? 75,
         startTime: current.startTime,
         hasZeroPeriod: current.hasZeroPeriod,
         zeroPeriodDurationMins: current.zeroPeriodDurationMins ?? 30,
@@ -1028,6 +1030,13 @@ export function StepConfig() {
         method: "PUT",
         body: JSON.stringify({ classSectionIds: [...form.selected] }),
       });
+      // §28.1 — a plain config field rather than part of the structure, because
+      // it changes no period row. Sent on the same Save so the screen has one
+      // button, as it always did.
+      await api(`/timetable-configs/${current.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ loadAlertPct: Number(form.loadAlertPct) }),
+      });
       setComputedEnd(res.endTime); setExtraEnd(res.extraEndTime ?? null); setError(null); refetchConfigs(); refetchSections();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -1071,6 +1080,24 @@ export function StepConfig() {
           <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setForm({ ...form, breaks: [...form.breaks, { afterPeriod: 3, name: "Break", durationMins: 20 }] })}>＋ Add break</button>
         </Field>
 
+        {/*
+          §28.1 — the line at which the app says a teacher is getting full.
+          A REPORTING preference, not a constraint: nothing refuses to generate
+          because of it, which is why it sits here rather than among the rules.
+        */}
+        <Field label="Warn when a teacher passes">
+          <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="number" min={50} max={100} style={{ ...inputStyle, width: 80 }}
+              value={form.loadAlertPct}
+              onChange={(e) => setForm({ ...form, loadAlertPct: e.target.value })} />
+            <span style={{ fontSize: 12.5 }}>% of their weekly limit</span>
+            <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+              Readiness reports them; it never refuses to generate. A teacher at 80% of their limit
+              is a normally employed teacher.
+            </span>
+          </div>
+        </Field>
+
         <Field label="Extra-class window (§18)">
           <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
             <input type="number" min={0} max={6} style={{ ...inputStyle, width: 70 }}
@@ -1105,6 +1132,19 @@ export function StepConfig() {
             )}
           </span>
         </div>
+      </Card>
+
+      {/*
+        §28.3/28.4 — its own card, and its own Save.
+
+        It is not part of the structure PUT: that endpoint rebuilds the period
+        rows from the config plus whatever activities the table holds, so
+        sending both together would mean one save doing two rebuilds and the
+        second silently deciding the answer.
+      */}
+      <Card title="Before and after the day (§28)"
+        sub="Assembly, attendance, bus dispersal. Each shows on the timetable with its duration and whoever is on duty — the solver never places a lesson in them.">
+        <ActivitiesEditor configId={current.id} workingDays={form.workingDays} />
       </Card>
 
       <Card title="Classes covered by this timetable" sub="A class-section belongs to exactly one timetable — sections claimed by another are locked (§3.10).">

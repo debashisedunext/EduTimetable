@@ -1,5 +1,5 @@
 /**
- * §26.1 — choosing a few subjects out of many, in a table cell.
+ * §26.1 — choosing a few things out of many, in a table cell.
  *
  * The Teachers step used to render EVERY subject in the school as a toggle chip
  * in EVERY teacher row. At the reference school that is 22 chips × 122 rows: a
@@ -20,23 +20,54 @@
 import { useMemo, useState } from "react";
 import { useAnchored } from "../../ui/anchored";
 
-export interface PickableSubject {
+export interface Pickable {
   name: string;
-  /** §26.2 — higher first, so the common subjects are nearest the cursor. */
+  /** §26.2 — higher first, so the common ones are nearest the cursor. */
   priority?: number;
 }
 
-export function SubjectPicker({
+/**
+ * Written for subjects; §27.9 gave it a second caller — which classes a teacher
+ * takes. The two cells have the same shape (a few chosen out of many, in a
+ * table cell, at a school where "many" is twenty subjects or sixteen classes),
+ * so it is one control with a `noun` rather than two that drift apart.
+ */
+export function ChipPicker({
   all,
   chosen,
   onToggle,
   label,
+  noun = "subject",
+  nounPlural,
+  keepOrder = false,
+  collapseAll = false,
 }: {
-  all: PickableSubject[];
+  all: Pickable[];
   chosen: string[];
   onToggle: (name: string) => void;
   /** Names the teacher this cell is about, for the screen reader. */
   label: string;
+  noun?: string;
+  /** Its plural, where adding an "s" is wrong — "class" → "classes". */
+  nounPlural?: string;
+  /**
+   * Show "All N" as one chip while nothing has been removed (§27.9).
+   *
+   * The classes cell starts with every class TICKED — a teacher takes their
+   * whole wing until somebody says otherwise — and rendering that as sixteen
+   * chips in every one of 122 rows would rebuild exactly the wall §26.1 pulled
+   * down for subjects. One chip says the same thing, and the picker behind it
+   * is where the removing happens.
+   */
+  collapseAll?: boolean;
+  /**
+   * Keep the given order instead of sorting by priority.
+   *
+   * Classes have one right order — the ladder — and Pre-Nursery through Class
+   * 12 sorted alphabetically ("Class 10" before "Class 2") is the classic way
+   * to make a class list unreadable.
+   */
+  keepOrder?: boolean;
 }) {
   /**
    * Fixed-positioned, because the step's table lives in a `Scroll`
@@ -49,16 +80,32 @@ export function SubjectPicker({
 
   const ordered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return all
-      .filter((s) => s.name.trim() !== "" && (q === "" || s.name.toLowerCase().includes(q)))
-      // Priority first, then alphabetical — a stable order, so the list does not
-      // reshuffle under the cursor as things are ticked.
-      .sort((a, b) => (b.priority ?? 3) - (a.priority ?? 3) || a.name.localeCompare(b.name));
-  }, [all, query]);
+    const out = all
+      .filter((s) => s.name.trim() !== "" && (q === "" || s.name.toLowerCase().includes(q)));
+    // Priority first, then alphabetical — a stable order, so the list does not
+    // reshuffle under the cursor as things are ticked.
+    return keepOrder
+      ? out
+      : [...out].sort((a, b) => (b.priority ?? 3) - (a.priority ?? 3) || a.name.localeCompare(b.name));
+  }, [all, query, keepOrder]);
+
+  const plural = nounPlural ?? `${noun}s`;
+  const everything = collapseAll && all.length > 3 && chosen.length === all.length;
 
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 2px" }}>
-      {chosen.map((name) => (
+      {everything ? (
+        <span
+          title={`Every ${noun} — open the picker to remove any`}
+          style={{
+            font: "500 10.5px/1 Inter", padding: "4px 8px", borderRadius: 20,
+            border: "1px solid var(--brand)", background: "var(--steel-pale)",
+            color: "var(--brand-dark)",
+          }}
+        >
+          All {all.length} {plural}
+        </span>
+      ) : chosen.map((name) => (
         <button
           key={name}
           onClick={() => onToggle(name)}
@@ -77,14 +124,14 @@ export function SubjectPicker({
       <button
         onClick={(e) => { setQuery(""); toggle(e); }}
         aria-expanded={open}
-        aria-label={chosen.length === 0 ? `Add a subject for ${label}` : `Add another subject for ${label}`}
+        aria-label={chosen.length === 0 ? `Add a ${noun} for ${label}` : `Add another ${noun} for ${label}`}
         style={{
           font: "500 10.5px/1 Inter", padding: "4px 8px", borderRadius: 20, cursor: "pointer",
           border: `1px dashed ${open ? "var(--brand)" : "var(--line)"}`,
           background: "var(--paper)", color: open ? "var(--brand)" : "var(--ink-faint)",
         }}
       >
-        {chosen.length === 0 ? "＋ Add a subject" : "＋"}
+        {chosen.length === 0 ? `＋ Add a ${noun}` : everything ? "✎" : "＋"}
       </button>
 
       {panelProps && (
@@ -95,8 +142,8 @@ export function SubjectPicker({
           <input
             autoFocus
             value={query}
-            placeholder="Search subjects…"
-            aria-label="Search subjects"
+            placeholder={`Search ${plural}…`}
+            aria-label={`Search ${plural}`}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               // Enter takes the top match, so a two-subject teacher is two
@@ -112,7 +159,7 @@ export function SubjectPicker({
           <div style={{ overflowY: "auto", padding: "0 5px 6px" }}>
             {ordered.length === 0 && (
               <div style={{ padding: "8px 8px 10px", fontSize: 11.5, color: "var(--ink-faint)" }}>
-                {all.length === 0 ? "No subjects yet — add them on the previous step." : "No subject matches that."}
+                {all.length === 0 ? `No ${plural} yet — add them on an earlier step.` : `No ${noun} matches that.`}
               </div>
             )}
             {ordered.map((s) => {

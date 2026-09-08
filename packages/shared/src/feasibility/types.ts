@@ -58,6 +58,8 @@ export type IssueCode =
   | "ELECTIVE_SAME_PERIOD_TIGHT"
   // Check 10 — minimum periods per day (§20)
   | "MIN_DAY_IMPOSSIBLE"
+  /** §28.1 — a teacher is past the school's own "getting full" line. */
+  | "TEACHER_LOAD_ALERT"
   | "MIN_DAY_RELAXED"
   // Check 8 — teaching scope and engagement (§18)
   | "TEACHER_NOT_ELIGIBLE"
@@ -187,6 +189,15 @@ export interface SnapshotConfig {
    * boundary — a school with no break has no side of lunch to be on.
    */
   lunchAfterPeriod: number | null;
+  /**
+   * §28.1 — the percentage of a teacher's weekly limit at which the school
+   * wants to be told, 50–100.
+   *
+   * A WARNING line, never a blocker. A teacher at 80% is a normally employed
+   * teacher, and refusing to generate at a number a school chose for its own
+   * reporting would make most real schools ungenerable.
+   */
+  loadAlertPct: number;
 }
 
 export interface SnapshotClassSection {

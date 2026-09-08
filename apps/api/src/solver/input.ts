@@ -122,6 +122,12 @@ export async function buildFeasibilitySnapshot(
     endTime: p.endTime,
     isBreak: p.isBreak,
     isExtra: p.isExtra,
+    // §28.3 — carried so `daySegmentsFromRows` can EXCLUDE it. An activity row
+    // is not a break, so without the flag the run counter would read an
+    // assembly as a teaching period and tell the solver the day has a longer
+    // unbroken run than it has.
+    isActivity: p.isActivity,
+    activityId: p.activityId,
     breakName: p.breakName,
   }));
 
@@ -135,6 +141,8 @@ export async function buildFeasibilitySnapshot(
       // §26.3 — which break was lunch. Null when the day has no break, which
       // switches the lunch rules off rather than attaching them to a guess.
       lunchAfterPeriod: lunchAfterPeriodFromRows(periodRows),
+      // §28.1 — the school's own "getting full" line, for Check 12.
+      loadAlertPct: config.loadAlertPct,
     },
     classSections: classSections.map((cs) => ({
       id: cs.id,

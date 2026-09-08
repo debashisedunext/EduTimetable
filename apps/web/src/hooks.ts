@@ -40,6 +40,8 @@ export interface TimetableConfigSummary {
   /** §18: periods appended after the school day for extra/guest classes. */
   extraPeriodsPerDay?: number;
   extraPeriodDurationMins?: number | null;
+  /** §28.1 — the % of a teacher's weekly limit at which the app says so. */
+  loadAlertPct?: number;
   startTime: string;
   endTime: string | null;
   status: string;
@@ -48,6 +50,8 @@ export interface TimetableConfigSummary {
   /** Every row of the day in order, breaks included — what §4.7a's grid draws. */
   periods?: {
     periodNumber: number | null;
+    /** §28.3 — an assembly or a dispersal: a staffed band, not a break. */
+    isActivity?: boolean;
     startTime: string;
     endTime: string;
     isBreak: boolean;

@@ -18,7 +18,12 @@ interface SlotsPayload {
   /** which draft the server actually served — its answer when we sent none */
   draftId: number | null;
   workingDays: number[];
-  periods: { periodNumber: number | null; startTime: string; isBreak: boolean; breakName: string | null; isExtra?: boolean }[];
+  periods: {
+    periodNumber: number | null; startTime: string; endTime?: string;
+    isBreak: boolean; breakName: string | null; isExtra?: boolean;
+    /** §28.3/28.4 — assembly, dispersal: a staffed band, not a break. */
+    isActivity?: boolean; activityTeacher?: string | null; activityRoom?: string | null;
+  }[];
   sections: { id: number; label: string }[];
   subjects: Record<string, string>;
   teachers: Record<string, string>;
@@ -90,7 +95,10 @@ export function Matrix() {
   // §18: the extra window is teaching, but it is not what the timetable has to
   // fill — counting it would make a full grid look under-allocated.
   const teachingPeriods = data.periods.filter(
-    (p) => !p.isBreak && !p.isExtra && p.periodNumber !== 0 && p.periodNumber !== null,
+    // §28.3 — an activity has no period number, so it is already excluded by
+    // the last clause. Named anyway: the day it gains one by accident, this
+    // reads as the intent rather than as luck.
+    (p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== 0 && p.periodNumber !== null,
   );
   const capacity = data.sections.length * data.workingDays.length * teachingPeriods.length;
   // Numerator and denominator must count the same thing. `capacity` is built
@@ -247,13 +255,21 @@ export function Matrix() {
                 data.periods.filter((p) => p.periodNumber !== 0).map((p, i) => (
                   <th key={`${d}:${i}`} style={{
                     position: "sticky", top: 29, zIndex: 3,
-                    background: p.isBreak ? "var(--offwhite)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--steel-pale)",
-                    color: p.isExtra ? "var(--amber)" : "var(--brand)", padding: "5px 3px", fontSize: 9.5, fontFamily: "var(--font-mono)",
-                    minWidth: p.isBreak ? 30 : 62,
+                    background: p.isActivity ? "var(--accent-bg)" : p.isBreak ? "var(--offwhite)" : p.isExtra ? "var(--amber-bg, #FDF4E3)" : "var(--steel-pale)",
+                    color: p.isActivity ? "var(--accent)" : p.isExtra ? "var(--amber)" : "var(--brand)",
+                    padding: "5px 3px", fontSize: 9.5, fontFamily: "var(--font-mono)",
+                    minWidth: p.isBreak ? 30 : p.isActivity ? 44 : 62,
                     borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                    borderLeft: p.isExtra ? "2px solid var(--amber)" : undefined,
-                  }} title={p.isExtra ? "Extra-class window — after the school day" : undefined}>
-                    {p.isBreak ? "Brk" : p.isExtra ? `X${p.periodNumber}` : `P${p.periodNumber}`}
+                    borderLeft: p.isExtra ? "2px solid var(--amber)" : p.isActivity ? "2px solid var(--accent)" : undefined,
+                  }} title={
+                    p.isActivity
+                      ? `${p.breakName} · ${p.startTime}–${p.endTime ?? ""}` +
+                        (p.activityTeacher ? ` · ${p.activityTeacher}` : "") +
+                        (p.activityRoom ? ` · ${p.activityRoom}` : "")
+                      : p.isExtra ? "Extra-class window — after the school day" : undefined
+                  }>
+                    {p.isActivity ? (p.breakName ?? "Act").slice(0, 4)
+                      : p.isBreak ? "Brk" : p.isExtra ? `X${p.periodNumber}` : `P${p.periodNumber}`}
                   </th>
                 )),
               )}
@@ -272,6 +288,24 @@ export function Matrix() {
                   data.periods.filter((p) => p.periodNumber !== 0).map((p, i) => {
                     if (p.isBreak) {
                       return <td key={`${d}:${i}`} style={{ background: "repeating-linear-gradient(45deg, var(--offwhite), var(--offwhite) 5px, #E9EEF7 5px, #E9EEF7 10px)", borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)", minWidth: 30 }} />;
+                    }
+                    /*
+                      §28.3/28.4 — the same band for every row, because it is.
+                      An assembly is one event the whole wing attends; drawing
+                      it per class-section as if each had its own would invite
+                      somebody to try to change one of them.
+                    */
+                    if (p.isActivity) {
+                      return (
+                        <td key={`${d}:${i}`} style={{
+                          background: "var(--accent-bg)", borderLeft: "2px solid var(--accent)",
+                          borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
+                          minWidth: 44, textAlign: "center", fontSize: 9,
+                          color: "var(--accent)", fontFamily: "var(--font-mono)",
+                        }}>
+                          {p.activityTeacher ?? "·"}
+                        </td>
+                      );
                     }
                     const cell = cellFor(row.key, d, p.periodNumber as number);
                     // Substitution keeps its cyan; a merged group keeps its 🔗

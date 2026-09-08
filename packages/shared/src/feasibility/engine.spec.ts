@@ -571,3 +571,91 @@ describe("Check 10 — minimum periods per day (§20)", () => {
     expect(r.warnings.filter((w) => w.code.startsWith("MIN_DAY"))).toEqual([]);
   });
 });
+
+/**
+ * §28.1 — the school's own "getting full" line.
+ *
+ * The point of every test here is that this must NOT behave like the other
+ * checks. It is the one thing in the engine that reports a school which is
+ * completely fine.
+ */
+describe("Check 12 — teacher load alert (§28.1)", () => {
+  /** cleanSchool's teachers sit at 12 of 30 — 40%, comfortably under any line. */
+  const quiet = () => cleanSchool();
+
+  it("says nothing while everybody is under the line", () => {
+    const r = runFeasibility(quiet());
+    expect(r.warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+  });
+
+  it("warns — never blocks — once somebody crosses it", () => {
+    const snap = quiet();
+    // 12 of 30 is 40%. Drop the cap to 15 and they are at 80%.
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const r = runFeasibility(snap);
+    const w = r.warnings.find((x) => x.code === "TEACHER_LOAD_ALERT");
+    expect(w).toBeDefined();
+    // The load-bearing assertion. A teacher at 80% of their limit is a
+    // normally employed teacher; refusing to generate would make most real
+    // schools ungenerable, and the school asked for an alert, not a refusal.
+    expect(r.blockers.filter((b) => b.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+    expect(w!.message).toMatch(/at or above 75% of their weekly limit/);
+  });
+
+  it("is ONE row naming the worst, not one row per teacher", () => {
+    // At 122 staff, a warning each buries every real blocker under thirty rows
+    // of "this is fine, but".
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const rows = runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].message).toMatch(/teacher\(s\) are at or above/);
+  });
+
+  it("follows the school's own number, not ours", () => {
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;   // everybody at 80%
+    snap.config.loadAlertPct = 90;
+    expect(runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+    snap.config.loadAlertPct = 60;
+    expect(runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toHaveLength(1);
+  });
+
+  it("carries no remedy", () => {
+    // Every way to lower the percentage is either a `redistribute` the
+    // Allocation advisor already offers where the work is done, or a `relax`
+    // that raises the very cap the percentage is measured against — a fix
+    // whose only effect is to move the goalposts.
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const w = runFeasibility(snap).warnings.find((x) => x.code === "TEACHER_LOAD_ALERT");
+    expect(w?.remedy).toBeUndefined();
+  });
+});
+
+describe("Check 12 — the alert does not move the readiness score (§28.1)", () => {
+  it("a generable school still reads 100 after somebody asks to be warned", () => {
+    // The product promise: 100% means it will generate. A school that says
+    // "tell me when a teacher passes 60%" has not become less ready by saying
+    // so, and watching its own dashboard drop for answering a question would
+    // read as the setting having broken something.
+    const snap = cleanSchool();
+    const before = runFeasibility(snap);
+    expect(before.score).toBe(100);
+
+    snap.config.loadAlertPct = 30;               // everybody at 12/30 = 40%
+    const after = runFeasibility(snap);
+    expect(after.warnings.some((w) => w.code === "TEACHER_LOAD_ALERT")).toBe(true);
+    expect(after.score).toBe(100);
+    expect(after.ready).toBe(true);
+  });
+
+  it("but a real warning still costs what it always did", () => {
+    // The exemption is for this code alone, not a general softening.
+    const snap = cleanSchool();
+    snap.teachers[0].minPeriodsPerDay = 9;       // §20: load too small — a warning
+    const r = runFeasibility(snap);
+    expect(r.warnings.length).toBeGreaterThan(0);
+    expect(r.score).toBeLessThan(100);
+  });
+});

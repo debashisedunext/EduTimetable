@@ -42,6 +42,9 @@ export function cleanSchool(): FeasibilitySnapshot {
       workingDays: [1, 2, 3, 4, 5],
       periodsPerDay: 6,
       daySegments: [3, 3],
+      // §28.1 — the app's default. The fixture's teachers sit at 12/30, well
+      // under it, so every existing test's issue list is unchanged.
+      loadAlertPct: 75,
       // §26.3 — P1-P3, lunch, P4-P6. The fixture's own break is the boundary
       // the placement rules are tested against.
       lunchAfterPeriod: 3,

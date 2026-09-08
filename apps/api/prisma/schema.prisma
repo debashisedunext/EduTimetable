@@ -107,6 +107,8 @@ model School {
   erpSyncRuns                 ErpSyncRun[]
   onboardingSessions          OnboardingSession[]
 
+  dailyActivities             DailyActivity[]
+  teacherSubjects             TeacherSubject[]
   @@map("schools")
 }
 
@@ -397,6 +399,7 @@ model Room {
   electiveOptions ElectiveOption[]
   extraClasses    ExtraClass[]
 
+  dailyActivities   DailyActivity[]
   @@unique([schoolId, name])
   @@map("rooms")
 }
@@ -447,6 +450,7 @@ model Subject {
   extraClasses         ExtraClass[]
   rooms                RoomSubject[]
 
+  teacherSubjects   TeacherSubject[]
   @@unique([schoolId, name])
   @@map("subjects")
 }
@@ -522,6 +526,8 @@ model Teacher {
   electiveOptions        ElectiveOption[]
   absences               TeacherAbsence[]
 
+  dailyActivities        DailyActivity[]
+  teacherSubjects        TeacherSubject[]
   @@unique([schoolId, employeeCode])
   @@map("teachers")
 }
@@ -627,12 +633,18 @@ model TimetableConfig {
   /// Days that exist only for extra classes, e.g. [6] for Saturday. Kept apart
   /// from `workingDays` precisely so generation cannot reach them.
   extraDays                   Json?                 @map("extra_days")
+  /// §28.1 — the percentage of a teacher's weekly limit at which the app says
+  /// so. A WARNING threshold, never a blocker: a teacher at 80% is a normally
+  /// employed teacher, and refusing to generate at a number a school chose for
+  /// its own reporting would make most real schools ungenerable.
+  loadAlertPct                Int                   @default(75) @map("load_alert_pct")
   status                      TimetableConfigStatus @default(draft)
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]
   autoFixRuns                 AutoFixRun[]
   drafts                      TimetableDraft[]
+  dailyActivities             DailyActivity[]
 
   @@unique([schoolId, name, academicYearId])
   @@map("timetable_config")
@@ -649,6 +661,12 @@ model Period {
   isBreak           Boolean         @default(false) @map("is_break")
   /// Part of the §18 extra-class window rather than the teaching day.
   isExtra           Boolean         @default(false) @map("is_extra")
+  /// §28.3 — an assembly, attendance call or dispersal. A third band beside
+  /// break and extra, rather than a flavour of break: a break is unstaffed by
+  /// definition, and the whole point of an activity is that somebody is on duty.
+  isActivity        Boolean         @default(false) @map("is_activity")
+  activityId        Int?            @map("activity_id")
+  activity          DailyActivity?  @relation(fields: [activityId], references: [id], onDelete: Cascade)
   breakName         String?         @map("break_name") @db.VarChar(30)
   schoolId          Int             @map("school_id")
   school            School          @relation(fields: [schoolId], references: [id])
@@ -656,6 +674,83 @@ model Period {
   @@unique([timetableConfigId, sortOrder])
   @@index([schoolId])
   @@map("periods")
+}
+
+/// §28.3/28.4 — something that happens every day outside the teaching periods:
+/// assembly, attendance, bus dispersal.
+///
+/// ONE table for both ends of the day, because an assembly and a dispersal
+/// differ only in `placement`. Two tables would duplicate every rule about
+/// duration, days and staffing so that the two could eventually disagree.
+///
+/// The load-bearing property is what is NOT here: an activity produces a period
+/// row with `period_number = NULL`, outside `1..periodsPerDay`, so `domainFor`
+/// cannot reach it — exactly as it cannot reach the §18 extra window. That is
+/// what keeps the solver untouched. Widening the domain to include activities
+/// would put a teacher on assembly duty into a slot `uq_teacher_slot` cannot
+/// check, because that key compares period NUMBERS.
+model DailyActivity {
+  id                Int             @id @default(autoincrement())
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  name              String          @db.VarChar(60)
+  placement         ActivityPlacement
+  durationMins      Int             @map("duration_mins")
+  /// ISO day numbers it runs on. Assembly on Monday only is ordinary.
+  days              Json
+  /// Who is on duty, and where. Both nullable, and null means "not stated"
+  /// rather than "nobody" — the same reading §18 gives an empty scope.
+  teacherId         Int?            @map("teacher_id")
+  teacher           Teacher?        @relation(fields: [teacherId], references: [id], onDelete: SetNull)
+  roomId            Int?            @map("room_id")
+  room              Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  sortOrder         Int             @default(0) @map("sort_order")
+  isActive          Boolean         @default(true) @map("is_active")
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  periods           Period[]
+
+  @@unique([timetableConfigId, name], map: "uq_activity_name")
+  @@index([schoolId])
+  @@index([timetableConfigId])
+  @@map("daily_activities")
+}
+
+enum ActivityPlacement {
+  before_first
+  after_last
+}
+
+/// §27.13 — the subjects a teacher teaches, DECLARED rather than derived.
+///
+/// It was never stored: the guided setup asked, used the answer to propose
+/// mappings, and threw it away, so the only trace was whatever
+/// `teacher_subject_class_section` rows happened to exist. A school setting up
+/// its second wing therefore met an empty "Teaches" column for staff whose
+/// subjects it had entered an hour earlier.
+///
+/// Derived-from-mappings is the mistake §18 already corrected once:
+/// `teacher_class_eligibility` is declared for the same reason — a fact read
+/// back from existing mappings can only describe what somebody has ALREADY been
+/// given, and can never constrain what they are given next.
+///
+/// **Absent means "not stated", never "teaches nothing"** (invariant 7). Every
+/// school predating this has no rows, and readers fall back to what the
+/// mappings imply, so nothing changes until somebody says something.
+model TeacherSubject {
+  teacherId Int     @map("teacher_id")
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subjectId Int     @map("subject_id")
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  schoolId  Int     @map("school_id")
+  school    School  @relation(fields: [schoolId], references: [id])
+
+  @@id([teacherId, subjectId])
+  @@index([schoolId])
+  @@index([subjectId])
+  @@map("teacher_subjects")
 }
 
 model Holiday {
@@ -966,6 +1061,11 @@ model TimetablePublication {
   unallocatedCount  Int      @map("unallocated_count")
   publishedById     Int?     @map("published_by_id")
   publishedAt       DateTime @default(now()) @map("published_at")
+  /// §3.14 — set when this version was withdrawn back into a draft. The row is
+  /// KEPT: deleting it would make v3 disappear and renumber the next publish to
+  /// v3, quietly changing the school's own record of what was on the wall.
+  withdrawnAt       DateTime? @map("withdrawn_at")
+  withdrawnById     Int?      @map("withdrawn_by_id")
   schoolId          Int      @map("school_id")
   school            School   @relation(fields: [schoolId], references: [id])
 

@@ -169,7 +169,10 @@ export class ImportService {
         this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
         this.prisma.teacher.findMany({
           where: { schoolId },
-          include: { eligibility: { include: { class: true }, orderBy: { class: { sequence: "asc" } } } },
+          include: {
+            eligibility: { include: { class: true }, orderBy: { class: { sequence: "asc" } } },
+            teacherSubjects: { include: { subject: true }, orderBy: { subject: { name: "asc" } } },
+          },
           orderBy: { name: "asc" },
         }),
         this.prisma.teacherUnavailability.findMany({ where: { teacher: { schoolId } }, include: { teacher: true } }),
@@ -231,6 +234,8 @@ export class ImportService {
           classTeacherPeriodRule: t.classTeacherPeriodRule, periodPattern: t.periodPattern,
           alternateDaySet: Array.isArray(t.alternateDaySet) ? (t.alternateDaySet as number[]).map((d) => DAYS[d]) : [],
           classNames: t.eligibility.map((e) => e.class.name),
+          // §27.13 — so a downloaded workbook round-trips what it was given.
+          subjectNames: t.teacherSubjects.map((x) => x.subject.name),
           employmentType: t.employmentType,
           isActive: t.isActive,
           initials: t.initials,
@@ -640,6 +645,34 @@ export class ImportService {
             data: classIds.map((classId) => ({ teacherId, classId, schoolId })),
           });
           bump("teachingScope", classIds.length);
+        }
+
+        /**
+         * §27.13 — what each teacher teaches, recorded about the teacher.
+         *
+         * Same shape and the same rule as the teaching scope above: written
+         * only for rows that named subjects, because a blank column means "not
+         * stated", not "teaches nothing". A commit that cleared it would wipe a
+         * teacher's subjects the first time anybody uploaded a sheet with the
+         * column empty — which is every sheet exported before this existed.
+         */
+        const subjectIdByName = new Map(
+          (await tx.subject.findMany({ where: { schoolId } })).map((x) => [lc(x.name), x.id]),
+        );
+        for (const r of at("Teachers")) {
+          const names = (r.data.subjectNames as string[] | undefined) ?? [];
+          if (names.length === 0) continue;
+          const teacherId = teachers.get(lc(r.data.employeeCode));
+          if (!teacherId) continue;
+          const subjectIds = [...new Set(
+            names.map((n) => subjectIdByName.get(lc(n))).filter((x): x is number => !!x),
+          )];
+          if (subjectIds.length === 0) continue;
+          await tx.teacherSubject.deleteMany({ where: { teacherId } });
+          await tx.teacherSubject.createMany({
+            data: subjectIds.map((subjectId) => ({ teacherId, subjectId, schoolId })),
+          });
+          bump("teacherSubjects", subjectIds.length);
         }
 
         // ---- 6. class-sections (creates the Section row too) ----

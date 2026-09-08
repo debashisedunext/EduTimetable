@@ -40,10 +40,26 @@ export class OnboardingController {
     return this.onboarding.dismiss(req.user.sub);
   }
 
+  /**
+   * The half-finished setup — or, failing that, what the school already is.
+   *
+   * §27.12: **a master is entered once and used for ever.** A school that has
+   * run a timetable has its session, classes, subjects, teachers, rooms and
+   * curriculum, and asking for them again because it is starting a second one —
+   * or because somebody deleted the first — is asking it to retype its own
+   * records. The masters were never deleted; the wizard simply opened blank.
+   *
+   * So with no draft this hands back the answers rebuilt from the database,
+   * flagged `prefilled` and **not saved**. Not saved is the point: opening the
+   * guided setup to look at it must not create a draft, or `shouldPrompt` would
+   * offer that school a resume for ever afterwards.
+   */
   @Get("onboarding/session")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
   async draft(@Req() req: AuthedRequest) {
-    return (await this.onboarding.draftFor(req.user.schoolId, req.user.sub)) ?? { empty: true };
+    const draft = await this.onboarding.draftFor(req.user.schoolId, req.user.sub);
+    if (draft) return draft;
+    return this.onboarding.prefillFromSchool(req.user.schoolId);
   }
 
   @Put("onboarding/session")

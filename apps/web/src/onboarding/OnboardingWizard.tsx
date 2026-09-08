@@ -18,14 +18,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { asMessage } from "../components";
-import { commitWeeks, commitWings, StepClasses, StepWeek, StepWings } from "./steps/Structure";
+import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings } from "./steps/Structure";
 import { StepSubjects, StepTeachers } from "./steps/People";
-import { defaultSettings, StepCurriculum, StepMapping, StepRooms, StepSettings } from "./steps/Syllabus";
+import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
+import { StepAllocation } from "./steps/Allocation";
 import { planClasses, type SubjectAnswer, type TeacherAnswer } from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
 import { DraftTerms, termProblems } from "../terms/TermsEditor";
 
-export const TOTAL_STEPS = 11;
+/**
+ * §28 — ten steps, not eleven. Curriculum and Mapping merged into Allocation.
+ *
+ * The server owns the same number and the migration of stored step numbers
+ * (`onboarding.service.ts`), because a resumed draft is read there.
+ */
+export const TOTAL_STEPS = 10;
 
 /**
  * What to say after a step lands.
@@ -93,8 +100,14 @@ function wellDone(step: number, created: Record<string, number> | undefined): st
       case 6: return did(n("subjects"), `You have just created ${plural(n("subjects"), "subject")}`, "Your subjects are in");
       case 7: return did(n("teachers"), `You have just added ${plural(n("teachers"), "teacher")}`, "Your teachers are in");
       case 8: return did(n("rooms"), `You have just created ${plural(n("rooms"), "room")}`, "Your rooms are ready");
-      case 9: return did(n("curriculum"), `You have just created ${plural(n("curriculum"), "curriculum row")}`, "Your curriculum is in");
-      case 10: return did(n("mappings"), `You have just made ${plural(n("mappings"), "assignment")}`, "Every subject has a teacher");
+      // One step now writes both sheets, so the cheer counts both — and leads
+      // with the mappings, because "every subject has a teacher" is the thing
+      // somebody actually wanted to be true.
+      case 9: return did(
+        n("mappings") + n("curriculum"),
+        `You have just made ${plural(n("mappings"), "assignment")} across ${plural(n("curriculum"), "curriculum row")}`,
+        "Every subject has its periods and a teacher",
+      );
       default: return "Your school is set up";
     }
   })();
@@ -104,20 +117,30 @@ function wellDone(step: number, created: Record<string, number> | undefined): st
 
 export const STEP_TITLES = [
   "School", "Session", "Wings", "Classes", "Timetable", "Subjects",
-  "Teachers", "Rooms", "Curriculum", "Mapping", "Settings",
+  "Teachers", "Rooms", "Allocation", "Settings",
 ];
 
 /**
  * The steps whose content is a table or a grid, and so uses the full width of
  * the pane (§24.5d).
  *
- * Classes (the per-class section grid), Teachers, Rooms, Curriculum (class ×
- * subject) and Mapping are the widest things in the app; the other six are
+ * Classes (the per-class section grid), Teachers, Rooms and Allocation
+ * (class-section × subject) are the widest things in the app; the other six are
  * ordinary forms, which a measure makes easier to read rather than harder.
  * A set of step numbers rather than a guess inside each screen, so the two
  * kinds are visible side by side and a new step has to choose.
  */
-const WIDE_STEPS = new Set([4, 7, 8, 9, 10]);
+const WIDE_STEPS = new Set([4, 7, 8, 9]);
+
+/**
+ * The steps that want the pane's HEIGHT, not only its width (§28).
+ *
+ * Allocation is a grid that scrolls inside itself: its load line and its footer
+ * are pinned and only the table moves. That only works if the step is handed a
+ * fixed height rather than growing the dialog's own scroller — otherwise the
+ * page grows a second scrollbar and the thing somebody is pointing at moves.
+ */
+const TALL_STEPS = new Set([9]);
 
 /** What a §16 commit reports back. */
 interface Committed { created?: Record<string, number> }
@@ -409,6 +432,28 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
   /** The line shown after a step lands; cleared when the next one starts. */
   const [praise, setPraise] = useState<string | null>(null);
   const [sound, setSound] = useState(soundEnabled());
+  /**
+   * §28 — the step rail folded away, so a grid gets the whole pane.
+   *
+   * Remembered per browser, not per school: it is a preference about how
+   * somebody likes to work, and asking for it again every session would make
+   * it not worth using.
+   */
+  const [focus, setFocus] = useState(() => {
+    try { return localStorage.getItem("setup.focus") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("setup.focus", focus ? "1" : "0"); } catch { /* private mode */ }
+  }, [focus]);
+  const tall = TALL_STEPS.has(step);
+  /**
+   * The answer keys edited since the last successful save.
+   *
+   * A ref rather than state: it must not cause a render, and it must be read
+   * at save time rather than at the render that scheduled the save — a `useState`
+   * here would send yesterday's set on a fast Next.
+   */
+  const touched = useRef<Set<string>>(new Set());
   /** Where the burst comes from — the button that was pressed. */
   const burstFrom = useRef<{ x: number; y: number } | null>(null);
 
@@ -416,11 +461,27 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
   // be worse than one that never saved at all — the work is gone AND you cannot
   // tell.
   useEffect(() => {
-    api<Draft & { empty?: boolean }>("/onboarding/session")
+    api<Draft & { empty?: boolean; prefilled?: boolean }>("/onboarding/session")
       .then((d) => {
         if (!d.empty) {
           setAnswers(d.answers ?? {});
+          // Loading is not editing. Everything here is already saved, so
+          // nothing is owed to the server until somebody changes it.
+          touched.current.clear();
           setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt ?? d.currentStep)));
+        } else if (d.prefilled && d.answers) {
+          /**
+           * §27.12 — the school's own masters, rebuilt but NOT saved.
+           *
+           * Every key is marked touched, so the first Next writes them. That is
+           * not bookkeeping for its own sake: `sheetsFor` commits from the
+           * STORED draft, so a step whose answers were only ever in the browser
+           * would commit nothing and report "There is nothing to create yet" —
+           * the §28.6 failure, one level up.
+           */
+          setAnswers(d.answers);
+          for (const k of Object.keys(d.answers)) touched.current.add(k);
+          setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt ?? d.currentStep ?? 1)));
         } else if (startAt) {
           setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt)));
         }
@@ -429,16 +490,48 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
       .finally(() => setLoading(false));
   }, []);
 
-  const patch = (p: Record<string, any>) => setAnswers((a) => ({ ...a, ...p }));
+  const patch = (p: Record<string, any>) => {
+    for (const k of Object.keys(p)) touched.current.add(k);
+    setAnswers((a) => ({ ...a, ...p }));
+  };
 
-  /** Only this step's keys go up; the server merges. */
-  const persist = async (nextStep: number) => {
+  /**
+   * Only this step's keys go up; the server merges.
+   *
+   * That comment was here from the start and the code did not honour it — it
+   * sent the whole `answers` object every time. Nobody noticed while drafts
+   * were small; §27 put the curriculum and every mapping into the draft, and
+   * Second Branch (64 sections, 122 teachers, 957 mappings) reached **145kb**
+   * against Express's 100kb default. Pressing Next on the Subjects step failed
+   * with a raw `request entity too large` — on a school that had done nothing
+   * unusual, at a step that had changed three kilobytes.
+   *
+   * So the wizard now tracks which keys were actually edited and sends those.
+   * The server has always merged rather than replaced, so a partial payload is
+   * what it is built for; sending everything also meant a step could overwrite
+   * a key it never showed, which is the bug that comment was written to
+   * prevent.
+   *
+   * The touched set is cleared only after a SUCCESSFUL save. Clearing it on
+   * the way in would lose somebody's typing to one failed request.
+   */
+  const persist = (nextStep: number) => persistWith({}, nextStep);
+
+  /**
+   * @param extra keys to send whose value this caller knows and `answers` does
+   *   not yet — a `setState` scheduled in the same tick is not readable here.
+   */
+  const persistWith = async (extra: Record<string, any>, nextStep: number) => {
     setBusy(true); setError(null);
+    const keys = [...new Set([...touched.current, ...Object.keys(extra)])];
+    const delta: Record<string, any> = {};
+    for (const k of keys) delta[k] = k in extra ? extra[k] : answers[k];
     try {
       await api("/onboarding/session", {
         method: "PUT",
-        body: JSON.stringify({ currentStep: nextStep, answers, mode: "wizard" }),
+        body: JSON.stringify({ currentStep: nextStep, answers: delta, mode: "wizard" }),
       });
+      for (const k of keys) touched.current.delete(k);
       return true;
     } catch (e) {
       setError(asMessage(e));
@@ -553,6 +646,16 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     if (n === 3) return { configs: await commitWings(answers) };
     if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
     if (n === 5) { await commitWeeks(answers); return undefined; }
+    /**
+     * §28 — the Allocation grid can change a period's LENGTH.
+     *
+     * That is a step 5 fact (`timetable_config.period_duration_mins`), not a
+     * master row, so it cannot ride through the §16 importer with the rest of
+     * this step. It goes back through step 5's own committer instead — the one
+     * that already owns period rows — and only for the wings that actually
+     * differ, because that endpoint rewrites the grid wholesale.
+     */
+    if (n === 9) await commitWeeks(answers, { changedOnly: true });
     // Steps 6–10 all go through the §16 importer, which is what makes them
     // idempotent — pressing Next twice, or coming back, creates nothing extra.
     if (n >= 6 && n <= 10) {
@@ -621,8 +724,22 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
    * answers "can this school generate?".
    */
   const finish = async () => {
-    if (!answers.settings) patch({ settings: defaultSettings() });
-    if (!(await persist(TOTAL_STEPS))) return;
+    /**
+     * Saved directly, not through `patch`.
+     *
+     * `patch` schedules a state update; `persist` on the very next line reads
+     * `answers` from THIS render and cannot see it. So a school that pressed
+     * Finish without opening the Settings step stored no settings at all, and
+     * `/onboarding/finish` applied none of them — the first-period rule, the
+     * §20 floor and (since §28.1) the load-alert line all quietly kept their
+     * database defaults instead of the wizard's.
+     *
+     * Sent explicitly so the value that goes up is the one this function
+     * decided, rather than whatever React has got round to yet.
+     */
+    const settings = answers.settings ?? defaultSettings();
+    if (!answers.settings) patch({ settings });
+    if (!(await persistWith({ settings }, TOTAL_STEPS))) return;
     setBusy(true); setError(null);
     try {
       await api("/onboarding/finish", { method: "POST" });
@@ -642,15 +759,44 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     setPraise(null);
     const bad = problemAt(step);
     if (bad) { setError(bad); return; }
-    // Step 1 has no editable field for an ERP school, so record what was shown
-    // — otherwise a resumed draft would have no school name in it at all.
-    if (step === 1 && !answers.school) patch({ school: { name: school.name } });
-    if (step === 2 && !answers.session) patch({ session: defaultSession() });
+    /**
+     * The defaults a step SHOWED but nobody typed into.
+     *
+     * Steps 1 and 2 render a filled-in answer and only write it to the draft
+     * when a field is edited — so somebody who agrees with all three session
+     * defaults leaves `answers.session` undefined. These two lines existed to
+     * catch that, and could not: `patch` schedules a state update and the
+     * `persist` on the next line reads `answers` from THIS render.
+     *
+     * The result was "There is nothing to create yet" on pressing Next — the
+     * draft had no session, so `sheetsFor(2)` had nothing to commit. Accepting
+     * the defaults, which is the commonest thing anybody does on this step, was
+     * the one path that failed.
+     *
+     * Passed explicitly instead, so what goes up is what this function decided
+     * rather than whatever React has got round to.
+     */
+    const shown: Record<string, any> = {};
+    if (step === 1 && !answers.school) shown.school = { name: school.name };
+    if (step === 2 && !answers.session) shown.session = defaultSession();
+    // Step 5 is the same shape one level down: the week is shown per wing and
+    // written only on edit. `commitWeeks` merges the defaults itself, so the
+    // timetable config is correct either way — but the DRAFT ends up with no
+    // week, and a resumed setup then reports the wing's week as still missing.
+    if (step === 5) {
+      const weeks = { ...(answers.weeks ?? {}) };
+      let filled = false;
+      for (const w of answers.wings ?? []) {
+        if (!weeks[w.name]) { weeks[w.name] = defaultWeek(); filled = true; }
+      }
+      if (filled) shown.weeks = weeks;
+    }
+    if (Object.keys(shown).length > 0) patch(shown);
 
     // Save the answers FIRST. The server commits from the stored draft, so an
     // unsaved answer is one the commit would not see — and if the commit then
     // fails, the typing is still safe.
-    if (!(await persist(step))) return;
+    if (!(await persistWith(shown, step))) return;
 
     setBusy(true); setError(null);
     let created: Record<string, number> | undefined;
@@ -697,12 +843,33 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     // screen dimmed and empty beside them.
     <div role="dialog" aria-modal="true" aria-label="Guided setup" className="pane-overlay">
       <div className="pane-dialog">
-        <div style={{ padding: "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
-          <Progress step={step} />
-          <Rail step={step} furthest={furthest} onJump={(n) => void jumpTo(n)} disabled={busy} />
+        <div style={{ padding: focus ? "10px 28px 8px" : "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
+          {/*
+            Focus mode (§28). The progress bar and the ten-step rail matter when
+            you arrive and when you leave; they do not matter while you work,
+            and on the Allocation grid they were costing four rows of school.
+            Collapsed rather than removed, and remembered — so somebody who
+            wants the route back gets it in one click.
+          */}
+          <div style={{
+            overflow: "hidden", maxHeight: focus ? 0 : 120, opacity: focus ? 0 : 1,
+            transition: "max-height 240ms ease, opacity 180ms ease",
+          }}>
+            <Progress step={step} />
+            <Rail step={step} furthest={furthest} onJump={(n) => void jumpTo(n)} disabled={busy} />
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
-            <span>Step {step} of {TOTAL_STEPS} · {school.name}</span>
+            <span>Step {step} of {TOTAL_STEPS} · {STEP_TITLES[step - 1]} · {school.name}</span>
             <span style={{ flex: 1 }} />
+            <button
+              onClick={() => setFocus(!focus)}
+              title={focus ? "Show the step rail again" : "Fold the step rail away and give the room to this screen"}
+              style={{
+                border: "none", background: "none", cursor: "pointer", fontSize: 12, padding: 0,
+                color: focus ? "var(--brand)" : "var(--ink-faint)",
+              }}>
+              {focus ? "⇲ Show steps" : "⇱ Focus"}
+            </button>
             {/* Opt-in, and remembered. A school office is a shared room, and a
                 browser blocks autoplay for good reasons. */}
             <button
@@ -717,7 +884,12 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
           </div>
         </div>
 
-        <div style={{ padding: "20px 28px", overflowY: "auto", flex: 1 }}>
+        <div style={{
+          padding: tall ? "12px 20px" : "20px 28px",
+          // A tall step owns its own scrolling; everything else scrolls here.
+          overflowY: tall ? "hidden" : "auto",
+          flex: 1, minHeight: 0, display: tall ? "flex" : undefined, flexDirection: "column",
+        }}>
           {/*
             The dialog is as wide as the pane; the CONTENT is not always.
             A class × subject matrix wants every pixel; "what is your school
@@ -726,9 +898,10 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
             steps fill and the form steps hold a measure — declared here, beside
             the step list it refers to, rather than guessed per screen.
           */}
-          <div style={WIDE_STEPS.has(step)
-            ? undefined
-            : { maxWidth: 880, marginLeft: "auto", marginRight: "auto" }}>
+          <div style={{
+            ...(WIDE_STEPS.has(step) ? {} : { maxWidth: 880, marginLeft: "auto", marginRight: "auto" }),
+            ...(tall ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" as const } : {}),
+          }}>
           {praise && (
             <div
               key={praise}
@@ -755,8 +928,7 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
             : step === 6 ? <StepSubjects answers={answers} onChange={patch} />
             : step === 7 ? <StepTeachers answers={answers} onChange={patch} />
             : step === 8 ? <StepRooms answers={answers} onChange={patch} />
-            : step === 9 ? <StepCurriculum answers={answers} onChange={patch} />
-            : step === 10 ? <StepMapping answers={answers} onChange={patch} />
+            : step === 9 ? <StepAllocation answers={answers} onChange={patch} onFocusMode={setFocus} />
             : <StepSettings answers={answers} onChange={patch} />
           )}
           {error && (
