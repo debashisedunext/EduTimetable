@@ -5,6 +5,7 @@
  */
 import { effectiveMinByTeacher } from "../feasibility/min-day";
 import type { SolverInput, SolverVariable } from "./types";
+import { blockedCells } from "../feasibility/time-off";
 import { buildTeacherCtx, cellKey, type TeacherCtx } from "./variables";
 
 export interface PlacedRecord {
@@ -73,6 +74,8 @@ export class SolverState {
   private readonly budget: Map<number, number> | null;
   /** §20: teacher -> Σ over started days of (minimum − periods placed). */
   private shortfall = new Map<number, number>();
+  /** §4.7b: room -> the cells it is unavailable in, for the REASON strings. */
+  private readonly roomBlocked: Map<number, Set<string>>;
 
   constructor(
     private readonly input: SolverInput,
@@ -82,6 +85,26 @@ export class SolverState {
     this.labRoomIds = input.labRoomIds;
     this.minPerDay = effectiveMinByTeacher(input.snapshot);
     this.budget = opts.minPerDayBudget ? new Map(opts.minPerDayBudget) : null;
+
+    /*
+      §4.7b — a room that is not available is a room that is already taken.
+
+      Written into the occupancy map at construction, exactly as §7.4's locked
+      cells are, rather than added as a fourth condition to each of the four
+      places that pick a room. Every one of them already asks "is this room
+      free at this cell?" — the home room, the lab pool, §19.1's own-room pool,
+      a mapping's preferred room and each §4.9 option's fixed room — so filling
+      the cell in makes all five correct at once, and no future room-picking
+      branch can forget it.
+
+      The sentinel is 0, the same one locked cells use: `blockers` only collects
+      ids above 0, so a blocked cell contributes no conflict to backjump over —
+      which is right, because nothing can be moved to free it.
+    */
+    this.roomBlocked = blockedCells(input.roomUnavailability ?? [], input.snapshot.config.periodsPerDay);
+    for (const [roomId, cells] of this.roomBlocked) {
+      for (const cell of cells) this.room.set(`${roomId}@${cell}`, 0);
+    }
     // §7.4: locked cells occupy state before search begins (varId 0 = locked)
     for (const l of input.lockedSlots) {
       this.section.set(`${l.classSectionId}@${cellKey(l.dayOfWeek, l.periodNumber)}`, 0);
@@ -263,13 +286,42 @@ export class SolverState {
     let roomId: number | null = null;
     if (v.preferredRoomId !== null) {
       for (let s = 0; s < v.span; s++) {
-        const holder = this.room.get(`${v.preferredRoomId}@${cellKey(day, period + s)}`);
+        const cell = cellKey(day, period + s);
+        const holder = this.room.get(`${v.preferredRoomId}@${cell}`);
         if (holder !== undefined) {
           if (holder > 0) blockers.push(holder);
-          return { ok: false, roomId: null, reason: "preferred room occupied", blockers };
+          // §4.7b — "occupied" and "not available" are different facts, and the
+          // second one names something a person can go and change. A named room
+          // is the only case where the distinction is worth the branch: the
+          // pool branches below already say "none free", which stays true.
+          return {
+            ok: false,
+            roomId: null,
+            reason: this.roomBlocked.get(v.preferredRoomId)?.has(cell)
+              ? "the room is not available then"
+              : "preferred room occupied",
+            blockers,
+          };
         }
       }
       roomId = v.preferredRoomId;
+    } else if (v.ownRoomIds.length > 0) {
+      /*
+        §19.1 — the subject's own room, and ONLY it.
+
+        Above the lab branch on purpose. A subject can be both (a school that
+        ticks "own room" on Biology and names the Bio Lab), and when it is, the
+        narrower answer has to win: the lab branch would fall back to every
+        general lab in the school, which is precisely the "it went somewhere
+        else because that was free" the box was ticked to prevent.
+
+        Below `preferredRoomId`, equally on purpose: that is one class's one
+        subject in one named room (§19), which is more specific still.
+      */
+      roomId = this.findFreeRoom(v.ownRoomIds, day, period, v.span, blockers);
+      if (roomId === null) {
+        return { ok: false, roomId: null, reason: "subject room occupied", blockers };
+      }
     } else if (v.needsLabRoom) {
       // §19: only the labs that serve THIS subject. A free physics lab is not
       // a place to teach biology, however empty it is. `labRoomIds` on the
@@ -286,10 +338,18 @@ export class SolverState {
       // is home to two sections collides here instead of silently double-
       // booking a physical room the school believes is theirs.
       for (let s = 0; s < v.span; s++) {
-        const holder = this.room.get(`${v.homeRoomId}@${cellKey(day, period + s)}`);
+        const cell = cellKey(day, period + s);
+        const holder = this.room.get(`${v.homeRoomId}@${cell}`);
         if (holder !== undefined) {
           if (holder > 0) blockers.push(holder);
-          return { ok: false, roomId: null, reason: "home room occupied", blockers };
+          return {
+            ok: false,
+            roomId: null,
+            reason: this.roomBlocked.get(v.homeRoomId)?.has(cell)
+              ? "the home room is not available then"
+              : "home room occupied",
+            blockers,
+          };
         }
       }
       roomId = v.homeRoomId;

@@ -8,6 +8,8 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { DraftsService } from "../drafts/drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
+import { ValidityService } from "../validity/validity.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { TenantContextService } from "../tenant/tenant-context.service";
 import { EventsGateway } from "../events/events.gateway";
@@ -35,6 +37,8 @@ export class PublishService {
     private readonly keys: CacheKeysService,
     private readonly tenant: TenantContextService,
     private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
+    private readonly validity: ValidityService,
   ) {}
 
   private async computeDiff(configId: number, draftId?: number | null) {
@@ -173,6 +177,20 @@ export class PublishService {
    * per config however many drafts it was chosen from.
    */
   async publish(configId: number, userId: number | null, draftId?: number | null) {
+    // §29.1 — publishing over a frozen week replaces the very thing the freeze
+    // was protecting, and would do it without a single guarded write.
+    await this.freeze.assertConfigs([configId], "the published timetable");
+    /*
+      §30.5 — a class can only be in one LIVE timetable at a time.
+
+      Before the diff, not after: this refuses the whole operation, and
+      computing what would change first would be work thrown away. It fires
+      only when another timetable with a live publication teaches one of this
+      one's classes over overlapping dates — which no school can currently
+      reach, because a class-section belongs to one config and pools are not
+      choosable until stage 4.
+    */
+    await this.validity.assertPublishable(configId);
     const draft = draftId != null ? await this.drafts.assertOwned(configId, draftId) : null;
     const scope = draft?.id ?? (await this.drafts.currentId(configId));
     const diff = await this.computeDiff(configId, scope);
@@ -373,6 +391,9 @@ export class PublishService {
    * resurrect work a school had moved on from), and touch §18 extra classes.
    */
   async unpublish(configId: number, userId: number | null) {
+    // Withdrawal is the largest change of all, so a frozen timetable refuses it
+    // too — and says which button comes first.
+    await this.freeze.assertConfigs([configId], "the published timetable");
     const plan = await this.unpublishPlan(configId);
     if (plan.count === 0) {
       throw new BadRequestException(
@@ -476,6 +497,9 @@ export class PublishService {
    * from the published week silently lost every §4.9 split elective.
    */
   async draftFromPublished(configId: number) {
+    // Only ADDS a working copy, but that copy is the route to publishing a
+    // different week, so it waits for the thaw like every other edit.
+    await this.freeze.assertConfigs([configId], "the timetable");
     const published = await this.prisma.timetableSlot.count({
       where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
     });

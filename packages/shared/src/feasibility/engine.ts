@@ -4,6 +4,7 @@
  * guarantee: Phase B (the solver) only runs when this returns zero blockers.
  */
 import { lunchAllows } from "../solver/variables";
+import { blockedCells, blockedSlotCount, timeOffCell } from "./time-off";
 import type {
   FeasibilityIssue,
   FeasibilityResult,
@@ -40,12 +41,27 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     issues.push({
       code: "NO_DATA",
       severity: "warning",
+      /*
+        §8.2 — these two sentences name SCREENS, so they have to be renamed when
+        the screens are. Both pointed at a "Setup Wizard" that no longer exists,
+        which is a worse failure than saying nothing: somebody who has entered
+        every class and every teacher is told to go and complete a screen they
+        cannot find, on a dashboard reading 0%.
+
+        The distinction is the useful part. Class-sections can exist in the
+        school and belong to no timetable — creating them and assigning them to
+        a wing are separate acts — so the first message says where the assigning
+        happens rather than implying nothing was entered.
+      */
       message:
         snap.classSections.length === 0
-          ? "No class-sections are assigned to this timetable yet — add classes in the Setup Wizard."
-          : "No curriculum is mapped yet — add subjects per class in Curriculum Mapping.",
+          ? "No class-sections are assigned to this timetable yet. Creating a class-section and giving it to a "
+            + "timetable are separate steps — assign them under Timetable Week → The week."
+          : "No curriculum is mapped yet — set what each class is taught on the Allocation page.",
       entity: { type: "config", id: snap.config.id, label: snap.config.name },
-      fix: "Complete the Setup Wizard steps for this timetable.",
+      fix: snap.classSections.length === 0
+        ? "Open Timetable Week and tick the class-sections this timetable covers."
+        : "Open the Allocation page and give each class its subjects and teachers.",
     });
     return finalize(snap, issues, 0, available);
   }
@@ -63,27 +79,105 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  /*
+    §4.7b — time off makes a class's week SMALLER, and Check 1 is where that
+    has to land.
+
+    `available` is `days × periods` for a class in school all week. A class with
+    Friday afternoon off has fewer slots than that, and without subtracting them
+    Readiness reports 100% on a school whose curriculum no longer fits — the
+    solver then fails to place the last lessons and it reads as the solver's
+    fault. This is the difference between time off being a real constraint and
+    being a note somebody typed.
+  */
+  const offRowsBySection = new Map<number, typeof snap.classSectionTimeOff>();
+  for (const row of snap.classSectionTimeOff ?? []) {
+    const list = offRowsBySection.get(row.id) ?? [];
+    list.push(row);
+    offRowsBySection.set(row.id, list);
+  }
+  const blockedPerSection = new Map<number, number>();
+  for (const [id, rows] of offRowsBySection) {
+    // `blockedSlotCount` owns the two rules that are easy to get wrong: a null
+    // period is the whole day, and a day outside the working week costs
+    // nothing — it was never a slot, so a school that blocks Saturday and then
+    // drops Saturday from its week must not lose the periods twice.
+    blockedPerSection.set(id, blockedSlotCount(rows ?? [], perDay, snap.config.workingDays));
+  }
+
   // ---------- Check 1 — slot capacity per class-section (§4.1) ----------
   for (const cs of snap.classSections) {
     const reqs = reqsByClass.get(cs.classId) ?? [];
     const required =
       reqs.reduce((s, r) => s + r.periodsPerWeek, 0) + (blockPeriodsBySection.get(cs.id) ?? 0);
+    const off = Math.min(available, blockedPerSection.get(cs.id) ?? 0);
+    const usable = available - off;
+    const week = off > 0
+      ? `${days} days × ${perDay} periods, less ${off} blocked`
+      : `${days} days × ${perDay} periods`;
     totalRequired += required;
-    if (required > available) {
+    if (required > usable) {
       issues.push({
         code: "SLOT_OVERFLOW",
         severity: "blocker",
-        message: `${cs.label} needs ${required} periods/week but only ${available} slots exist (${days} days × ${perDay} periods).`,
+        message: `${cs.label} needs ${required} periods/week but only ${usable} slots exist (${week}).`,
         entity: { type: "class_section", id: cs.id, label: cs.label },
-        fix: `Reduce subject periods for ${cs.label}'s class by ${required - available}, or increase periods/day.`,
+        // Naming the time off in the fix, because it is the newest of the three
+        // reasons and the one somebody may not remember setting.
+        fix: off > 0
+          ? `Reduce subject periods for ${cs.label}'s class by ${required - usable}, give the class back some of its ${off} blocked periods on the Availability screen, or increase periods/day.`
+          : `Reduce subject periods for ${cs.label}'s class by ${required - usable}, or increase periods/day.`,
       });
-    } else if (required > 0 && required < available) {
+    } else if (required > 0 && required < usable) {
       issues.push({
         code: "SLOT_UNDERFLOW",
         severity: "warning",
-        message: `${cs.label} has ${available - required} free slots/week — mark them as Library/Study or add subject periods.`,
+        message: `${cs.label} has ${usable - required} free slots/week — mark them as Library/Study or add subject periods.`,
         entity: { type: "class_section", id: cs.id, label: cs.label },
       });
+    }
+  }
+
+  /* ---------- Check 1b — a subject blocked out of a class's week (§4.7b) ----
+   *
+   * Check 1 asks whether the class's whole curriculum fits its week. This asks
+   * the narrower question time off makes possible: whether ONE subject still
+   * has room, once the cells it may not be taught in and the cells the class is
+   * not in school are both taken away. "No games in period 1" against a
+   * five-period week is arithmetic, and it is invisible to every other check.
+   *
+   * Only runs for subjects that actually have time off. Everything else is
+   * already covered by Check 1, and a check that repeats another one is a
+   * second row on the dashboard about a single problem.
+   */
+  const subjectOffCells = blockedCells(snap.subjectTimeOff ?? [], perDay);
+  const sectionOffCells = blockedCells(snap.classSectionTimeOff ?? [], perDay);
+  if (subjectOffCells.size > 0) {
+    for (const cs of snap.classSections) {
+      for (const r of reqsByClass.get(cs.classId) ?? []) {
+        const subjOff = subjectOffCells.get(r.subjectId);
+        if (!subjOff || r.periodsPerWeek === 0) continue;
+        const secOff = sectionOffCells.get(cs.id);
+        let usable = 0;
+        for (const day of snap.config.workingDays) {
+          for (let p = 1; p <= perDay; p++) {
+            const cell = timeOffCell(day, p);
+            if (subjOff.has(cell) || secOff?.has(cell)) continue;
+            usable++;
+          }
+        }
+        if (r.periodsPerWeek > usable) {
+          issues.push({
+            code: "SUBJECT_TIME_OFF_TIGHT",
+            severity: "blocker",
+            message: `${r.subjectName} needs ${r.periodsPerWeek} periods/week in ${cs.label}, `
+              + `but its time off leaves only ${usable} slot(s) it can be taught in.`,
+            entity: { type: "class_section", id: cs.id, label: cs.label },
+            fix: `Free some periods for ${r.subjectName} on the Availability screen, `
+              + `or reduce its periods for ${cs.label}'s class.`,
+          });
+        }
+      }
     }
   }
 
@@ -323,6 +417,51 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         `They can still be timetabled. Move a class to somebody with room on the ` +
         `Allocation screen, or raise the alert level above ${pct}% if this is the ` +
         `load the school intends.`,
+    });
+  }
+
+  // ---------- Check 13 — curriculum against a subject's declared classes (§27.16) ----------
+  //
+  // The backstop, exactly as Check 8 is for §18's teaching scope. The Subjects
+  // screen and the Allocation grid stop a NEW contradiction being written; this
+  // names the ones those paths never saw — rows that predate the declaration, a
+  // §16 workbook, an ERP sync — and there is no other way for a school to
+  // discover them, because a curriculum row and a subject's class list are on
+  // two different screens.
+  //
+  // A WARNING, and the reasoning is worth stating because Check 8 is a blocker
+  // and the two look alike. Check 8 blocks because a timetable that puts a
+  // teacher in front of a class they may not take ENACTS the wrong thing. This
+  // one does not: the timetable teaches Biology to Class 8, which somebody
+  // typed on a screen that let them. What is wrong is that two statements
+  // disagree — and refusing to generate the whole school until a bookkeeping
+  // disagreement is settled would turn a convenience into a trap.
+  //
+  // No remedy. The two ways out are deleting teaching the school may genuinely
+  // do, and widening an answer somebody gave on purpose; neither is safe under
+  // the standing consent §21 auto-resolve runs on.
+  const declaredClasses = snap.subjectClasses ?? {};
+  const contradicting = snap.subjectRequirements.filter((r) => {
+    const allowed = declaredClasses[r.subjectId];
+    return allowed !== undefined && allowed.length > 0 && !allowed.includes(r.classId);
+  });
+  if (contradicting.length > 0) {
+    const nameOfClass = (classId: number) =>
+      snap.classSections.find((cs) => cs.classId === classId)?.label.split("-")[0] ?? `class ${classId}`;
+    const named = contradicting
+      .slice(0, 3)
+      .map((r) => `${r.subjectName} in ${nameOfClass(r.classId)}`)
+      .join(", ");
+    issues.push({
+      code: "SUBJECT_CLASS_MISMATCH",
+      severity: "warning",
+      message:
+        `${contradicting.length} curriculum row(s) teach a subject to a class it is not set for — ` +
+        `${named}${contradicting.length > 3 ? `, and ${contradicting.length - 3} more` : ""}.`,
+      entity: { type: "config", id: snap.config.id, label: snap.config.name },
+      fix:
+        `They will still be timetabled. Either add the class on the Subjects screen, or ` +
+        `clear the cell on the Allocation screen — whichever of the two is out of date.`,
     });
   }
 
@@ -1010,6 +1149,81 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         severity: "warning",
         message: `Lab usage will be ${Math.round((labDemand / labSupply) * 100)}% of the ${snap.labRoomCount} lab room(s) — the solver must spread lab periods thin; confirm this is acceptable.`,
         entity: { type: "config", id: snap.config.id, label: snap.config.name },
+      });
+    }
+  }
+
+  /* ---------- Check 5b — a subject taught in its own room (§19.1) ----------
+   *
+   * A hard constraint with no feasibility check is a generation that fails, and
+   * this one fails in a way that looks like the solver's fault: every section
+   * wants Music, Music may only happen in the Music Room, and one room holds 40
+   * periods a week. Ticking the box on a school of 56 sections quietly asks for
+   * something arithmetic forbids.
+   *
+   * Per SUBJECT, unlike the lab aggregate above. Two music rooms and a pottery
+   * room are not interchangeable capacity, so a total would hide exactly the
+   * shortage this exists to name.
+   */
+  const ownRoomIds = new Set(snap.ownRoomSubjectIds ?? []);
+  for (const subjectId of ownRoomIds) {
+    let demand = 0;
+    for (const cs of snap.classSections) {
+      for (const r of reqsByClass.get(cs.classId) ?? []) {
+        if (r.subjectId === subjectId) demand += r.periodsPerWeek;
+      }
+    }
+    if (demand === 0) continue;
+    const rooms = snap.ownRoomsBySubject?.[subjectId] ?? [];
+    const subjectName = snap.subjectPlacement?.[subjectId]?.subjectName ?? `subject #${subjectId}`;
+
+    /*
+      Ticked, but no room named — a warning, never a blocker.
+
+      The school is not asking for anything impossible; it has half-said
+      something, and the lesson goes to the home room exactly as before. A
+      blocker would stop a timetable that generates perfectly well, which is
+      the one thing Phase A must not do (§4). What it must not do EITHER is
+      stay silent, or the screen would show a tick that changes nothing.
+    */
+    if (rooms.length === 0) {
+      issues.push({
+        code: "SUBJECT_ROOM_UNSET",
+        severity: "warning",
+        message: `${subjectName} is marked as taught in its own room, but no room is assigned to it — `
+          + `its ${demand} periods/week will use each class's home room.`,
+        entity: { type: "subject", id: subjectId, label: subjectName },
+        fix: `Assign a room to ${subjectName} on the Subjects screen, or untick "taught in its own room".`,
+      });
+      continue;
+    }
+
+    const supply = rooms.length * available;
+    if (demand > supply) {
+      issues.push({
+        code: "SUBJECT_ROOM_OVERFLOW",
+        severity: "blocker",
+        message: `${subjectName} needs ${demand} periods/week in ${rooms.length} room(s) `
+          + `(${rooms.map((id) => snap.roomNames[id] ?? `#${id}`).join(", ")}), which hold ${supply}.`,
+        entity: { type: "subject", id: subjectId, label: subjectName },
+        fix: `Add another room for ${subjectName}, reduce its periods, or untick `
+          + `"taught in its own room" so classes can take it in their own rooms.`,
+      });
+    } else if (demand >= 0.9 * supply) {
+      /*
+        Tighter than the labs' 80%, on purpose. A lab pool is interchangeable —
+        any free lab will do — so a busy pool still has slack. A subject room is
+        ONE place: at 90% the solver has four spare periods in the week to fit
+        every class's Music around every teacher's other commitments, and that
+        is worth saying before Generate rather than after it.
+      */
+      issues.push({
+        code: "SUBJECT_ROOM_TIGHT",
+        severity: "warning",
+        message: `${subjectName} will use ${Math.round((demand / supply) * 100)}% of its room's week `
+          + `(${demand} of ${supply}) — nearly every period in it is spoken for.`,
+        entity: { type: "subject", id: subjectId, label: subjectName },
+        fix: `Confirm this is acceptable, or give ${subjectName} a second room.`,
       });
     }
   }

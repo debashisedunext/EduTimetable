@@ -172,14 +172,32 @@ button { font-family: inherit; cursor: pointer; }
 .who-role { font-size: 10.5px; color: var(--steel); }
 .logout-btn { margin-top: 10px; width: 100%; font-size: 11px; color: var(--steel-light); background: transparent; border: 1px solid #1b3a6b; border-radius: 7px; padding: 6px; }
 
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* A viewport-tall column: topbar, then a content box that scrolls. Fixing the
+   height here is what gives `.pane-page` something definite to fill (§8.4). */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }
 .topbar {
   display: flex; align-items: center; justify-content: space-between; padding: 16px 28px;
   background: var(--paper); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
 }
 .topbar-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; }
 .topbar-eyebrow { font-size: 11px; color: var(--steel); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 2px; }
-.content { padding: 26px 28px 60px; flex: 1; }
+/* §8.4 — the page's own margin, kept small on purpose.
+   It was 26/28/60, and the 60px of bottom padding was pure dead space: no
+   screen ends at the fold, so it bought nothing and cost four rows of a grid.
+   Enough is left that a card does not touch the chrome; every pixel beyond that
+   belongs to the content.
+
+   `overflow: auto` moves the scrolling from the window into this box, which is
+   what lets a page ask for the height it has been given rather than guessing
+   at `100vh` minus a number somebody measured once. The topbar was already
+   sticky, so nothing about the scrolling LOOKS different. */
+.content { padding: 12px 14px 14px; flex: 1; min-height: 0; overflow: auto; }
+
+/* Pages that are frames in their own right — their own border, their own pinned
+   header and footer, their own scrolling between them. An inset around one of
+   those is a margin inside a margin. */
+.full-bleed { padding: 0; }
+.full-bleed > .pane-page { border-radius: 0; border-left: none; border-right: none; border-top: none; }
 
 /* A modal sized to the working area rather than to a comfortable reading width.
    The guided setup earned this: eleven steps, two of which are a class × subject
@@ -201,6 +219,82 @@ button { font-family: inherit; cursor: pointer; }
    room there is; on a narrow screen it would be about giving room away. */
 @media (max-width: 900px) {
   .pane-overlay { padding: 10px; }
+}
+
+/* §8.3 — the same wizard as an ordinary page.
+   No border, shadow or radius: those say "this is a panel floating above the
+   page", and it no longer is. It still fills the height it is given, because
+   step 9's grid pins its own header and footer and scrolls between them — take
+   the fixed height away and the page grows a second scrollbar under the first,
+   and the row somebody is pointing at moves as they reach it. */
+.pane-page {
+  display: flex; flex-direction: column;
+  /* The room there IS, not the viewport minus a number somebody measured once:
+     `.content` is a flex item of a viewport-tall column, so its height is
+     definite and this resolves against it. Change the padding above and this
+     follows, instead of leaving a gap or a second scrollbar that nobody
+     connects to the edit that caused it. */
+  min-height: 0; height: 100%;
+  background: var(--paper); border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+/*
+  §8.5 — a master is a list you EDIT, so the form belongs beside the list.
+
+  Every master screen was a table with its form stacked underneath it. That is
+  fine for five rows and wrong for the number a real school has: at 32
+  class-sections or 20 rooms, pressing Edit on a row scrolled the form into
+  view and the row out of it, so the one thing you were looking at while typing
+  was the one thing you could no longer see. §8.1c already made this exception
+  for the manual Curriculum step and gave exactly this reason; it simply never
+  reached the other four.
+
+  Two columns, each scrolling inside itself, and the PAGE never scrolls at all.
+  That is what makes the promise keepable: the form is always on screen, the
+  list is always on screen, and reaching either costs nothing.
+*/
+.master-split {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px;
+  /* Fills whatever `.content` has left after the tab bar — a definite height,
+     which is what lets the two panes scroll instead of the page. */
+  flex: 1; min-height: 0;
+}
+.master-col {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+}
+.master-col > header { padding: 10px 14px 9px; border-bottom: 1px solid var(--line); flex: none; }
+.master-col > header h2 { font-family: var(--font-display); font-size: 15.5px; font-weight: 600; }
+.master-col > header p { font-size: 11.5px; color: var(--ink-soft); line-height: 1.45; margin-top: 2px; }
+.master-scroll { overflow: auto; min-height: 0; padding: 10px 14px 14px; }
+
+/*
+  `DataTable` wraps its table in an `overflow-x: auto` div, and that div is what
+  a sticky header would stick to — a container with no height of its own, which
+  never scrolls vertically, so the header would simply never stick. Handing the
+  scrolling to the pane instead makes both axes work in one place: the header
+  sticks to the pane's own scrollport, and a wide table scrolls sideways in the
+  same box rather than in a nested one with its own scrollbar.
+*/
+.master-scroll > div { overflow: visible; }
+.master-scroll table { min-width: 100%; }
+/* The header has to survive the scroll, or a 32-row list is a column of numbers
+   with nothing left to say what they are. `-10px` cancels the pane's own top
+   padding, so the header lands flush with the top of the scrollport rather than
+   after a 10px gap with rows sliding through it. */
+.master-scroll thead th {
+  position: sticky; top: -10px; background: var(--paper); z-index: 1;
+}
+
+/*
+  Below this the two panes stop fitting side by side, and stacking is the honest
+  fallback: a 340px form squeezed next to a six-column table is unreadable in a
+  different way. The page scrolls again there, which is the cost of the width.
+*/
+@media (max-width: 1080px) {
+  .master-split { grid-template-columns: 1fr; overflow: auto; }
+  .master-col { min-height: 220px; }
 }
 
 .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
@@ -500,8 +594,14 @@ button { font-family: inherit; cursor: pointer; }
   }
 
   .app { display: block; }
-  .main { display: block; }
-  .content { padding: 0 !important; }
+  /* §8.4 — undo the viewport-tall scrolling column for paper.
+     On screen `.main` is exactly 100vh and `.content` scrolls inside it, which
+     is what lets a full-height page measure itself. Printed, that would put the
+     whole document inside one viewport-sized box and hand the printer a single
+     clipped page — the rest of a 14-class report simply gone, with nothing on
+     the sheet to say so. */
+  .main { display: block; height: auto; }
+  .content { padding: 0 !important; overflow: visible !important; height: auto !important; }
 
   /* On screen the print sheets are not rendered at all; in print they are the
      only thing rendered. */

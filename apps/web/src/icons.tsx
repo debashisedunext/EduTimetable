@@ -4,7 +4,7 @@
  * Inline SVG rather than emoji, for three reasons that all matter once the
  * sidebar can collapse to icons alone:
  *
- *  - **They inherit `currentColor`**, so an icon goes white on the active row
+ *  | "calendar" | "wand" | "book" | "import" | "sync" | "split" | "clock" | "checklist" | "bolt"- **They inherit `currentColor`**, so an icon goes white on the active row
  *    and pale blue everywhere else, exactly as its label does. Twenty
  *    multicoloured emoji in a navy panel would be the loudest thing on the
  *    screen, and the nav is the one part of the app that should never compete
@@ -22,7 +22,7 @@
 
 /** Every screen in the nav has one, and the name says what the screen IS. */
 export type IconName =
-  | "calendar" | "wand" | "import" | "sync" | "split" | "clock" | "checklist" | "bolt"
+  | "calendar" | "wand" | "book" | "import" | "sync" | "split" | "clock" | "checklist" | "bolt"
   | "grid" | "board" | "publish" | "swap" | "plus"
   | "user" | "users"
   | "chart" | "bell"
@@ -35,6 +35,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // Build
   calendar: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></>,
   wand: <><path d="M4 20 14 10" /><path d="M17 3v4M15 5h4M18 12.5v3M16.5 14h3" /></>,
+  // §8.2 — the masters, which are a set of things rather than a sequence.
+  book: <><path d="M4 4h11a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3z" /><path d="M18 20a2 2 0 0 0 2-2V6" /><path d="M8 8h6M8 12h6" /></>,
   import: <><path d="M12 3v11M8 10l4 4 4-4" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>,
   sync: <><path d="M20 11a8 8 0 0 0-13.7-5.7L3 8" /><path d="M4 13a8 8 0 0 0 13.7 5.7L21 16" /><path d="M3 4v4h4M21 20v-4h-4" /></>,
   split: <><path d="M3 12h5l3-5h5M11 17h5" /><path d="M8 12l3 5" /><path d="M17 4l3 3-3 3M17 14l3 3-3 3" /></>,

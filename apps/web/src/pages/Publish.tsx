@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
+import { asMessage } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 
 interface SectionDiff {
@@ -39,7 +40,7 @@ interface Preview {
 /** Screen 6 (§8) — Publish Confirmation: reviewable diff vs. the live version,
  *  unallocated warnings, then ONE transaction flips draft→published (task 3.7). */
 export function Publish() {
-  const { current } = useConfigCtx();
+  const { current, refetch: refetchConfigs } = useConfigCtx();
   const navigate = useNavigate();
   // §22 — the draft to publish. It can arrive three ways, and they have to
   // agree: deep-linked from the Draft Board's Compare row, chosen in the picker
@@ -62,6 +63,31 @@ export function Publish() {
   /** §3.14 — the confirmation for taking the live timetable down. */
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawn, setWithdrawn] = useState<Withdrawal | null>(null);
+  /** §29.1 — settling the published week, or releasing it. */
+  const [freezing, setFreezing] = useState(false);
+  const frozenAt = current?.frozenAt ?? null;
+  /*
+    Both directions through one helper, because they differ only in the verb.
+    `refetchConfigs` is what makes the banner appear and disappear: the flag
+    lives on the config the whole app shares, not on this page's own state, so
+    every other screen learns about it at the same moment.
+  */
+  const setFrozen = async (on: boolean) => {
+    if (!current) return;
+    setFreezing(true);
+    try {
+      await api(`/timetable-configs/${current.id}/${on ? "freeze" : "unfreeze"}`, { method: "POST" });
+      setError(null);
+      await refetchConfigs?.();
+      refetch();
+    } catch (e) {
+      setError(asMessage(e));
+    } finally {
+      setFreezing(false);
+    }
+  };
+  const freeze = () => setFrozen(true);
+  const unfreeze = () => setFrozen(false);
 
   if (!current) return <p className="screen-sub">Select a timetable first.</p>;
   if (!data) return <p className="screen-sub">Computing diff…</p>;
@@ -140,6 +166,32 @@ export function Publish() {
         Review changes before this draft replaces the live timetable for every teacher and class-section.
       </p>
 
+      {/*
+        §29.1 — a frozen timetable says so before anything else on the page.
+
+        Above the diff, not beside a button, because it changes what every
+        control below it will do. The server refuses regardless (`FreezeService`
+        guards the write, not the button), so this exists to explain rather than
+        to enforce — which is why it names the one action that IS available.
+      */}
+      {frozenAt && (
+        <div className="card" style={{
+          borderColor: "var(--brand)", background: "var(--steel-pale)", padding: "12px 14px",
+          marginBottom: 18, fontSize: 12.6, lineHeight: 1.55, display: "flex",
+          alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap",
+        }}>
+          <span>
+            <strong>This timetable is frozen.</strong> Its published week is settled, so the
+            allocation cannot be changed — no curriculum, mappings, class teachers, board edits,
+            generation or publishing. Frozen {fmtDate(frozenAt)}.
+          </span>
+          <button className="btn" disabled={freezing} onClick={() => unfreeze()}
+            style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
+            {freezing ? "Working…" : "Unfreeze to make changes"}
+          </button>
+        </div>
+      )}
+
       {/* Says where the week WENT. A screen that simply stops showing a
           published version leaves somebody wondering whether it worked. */}
       {withdrawn && (
@@ -214,15 +266,34 @@ export function Publish() {
             control that takes the live timetable DOWN standing next to the one
             that puts a new one up is a mis-click with a school-wide audience.
           */}
-          {data.publishedCount > 0 && (
-            <button
-              onClick={() => setWithdrawing(true)}
-              style={{
-                marginTop: 12, border: "none", background: "none", padding: 0, cursor: "pointer",
-                fontSize: 12, fontWeight: 600, color: "var(--signal)",
-              }}>
-              ↩ Withdraw {data.currentVersion ? `v${data.currentVersion}` : "it"} back to a draft
-            </button>
+          {data.publishedCount > 0 && !frozenAt && (
+            <div style={{ display: "flex", gap: 14, marginTop: 12, flexWrap: "wrap" }}>
+              <button
+                onClick={() => setWithdrawing(true)}
+                style={{
+                  border: "none", background: "none", padding: 0, cursor: "pointer",
+                  fontSize: 12, fontWeight: 600, color: "var(--signal)",
+                }}>
+                ↩ Withdraw {data.currentVersion ? `v${data.currentVersion}` : "it"} back to a draft
+              </button>
+              {/*
+                §29.1 — beside the version it settles, and only once there IS
+                one. Freezing an unpublished timetable protects nothing and
+                would only lock a school out of its own planning; the server
+                refuses it by name, and offering the button anyway would be
+                inviting that refusal.
+              */}
+              <button
+                onClick={() => freeze()}
+                disabled={freezing}
+                title="Settle this published week — no allocation changes until it is unfrozen"
+                style={{
+                  border: "none", background: "none", padding: 0, cursor: "pointer",
+                  fontSize: 12, fontWeight: 600, color: "var(--brand)",
+                }}>
+                {freezing ? "Working…" : "🔒 Freeze this timetable"}
+              </button>
+            </div>
           )}
         </div>
         <div className="card" style={{ padding: 20, borderColor: "var(--accent)" }}>

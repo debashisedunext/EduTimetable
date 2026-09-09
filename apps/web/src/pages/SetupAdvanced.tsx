@@ -48,7 +48,7 @@ export function StepCurriculum() {
   const { data, refetch } = useApi<any[]>(yearId ? `/class-subjects?academicYearId=${yearId}` : "/class-subjects");
   const { data: classes } = useApi<any[]>("/classes");
   const { data: subjects } = useApi<any[]>("/subjects");
-  const { data: sectionRows } = useApi<any[]>("/class-sections");
+  const { data: sectionRows } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
 
   const blank: CurriculumDraft = {
     classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1",
@@ -400,7 +400,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
@@ -414,6 +414,9 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
         // §18: which classes this teacher may take, and how they are engaged.
         employmentType: form.employmentType,
         classIds: form.classIds ?? [],
+        // §27.13 — declared subjects. Always sent, so clearing every chip really
+        // clears them rather than being read as "not mentioned".
+        subjectIds: form.subjectIds ?? [],
       };
       if (form.id) await api(`/teachers/${form.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/teachers", { method: "POST", body: JSON.stringify(body) });
@@ -421,7 +424,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
       return true;
     } catch (e) { setError(asMessage(e)); return false; }
   };
-  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [], classIds: t.classIds ?? [], employmentType: t.employmentType ?? "permanent" }); };
+  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [], classIds: t.classIds ?? [], subjectIds: t.subjectIds ?? [], employmentType: t.employmentType ?? "permanent" }); };
 
   if (editing) {
     return (
@@ -501,6 +504,53 @@ function scopeSummary(names: string[]): string {
  * teacher covers Nursery and Class 12 and a range cannot say that — with
  * presets, so the ordinary case is still two clicks.
  */
+/**
+ * §27.13 — which subjects a teacher teaches, as chips.
+ *
+ * The same shape as `ScopePicker` next to it and deliberately not the same
+ * component: classes have presets that mean something ("Primary 1–5"), and
+ * subjects have no such families — a preset row of one button per subject would
+ * be the list twice over.
+ *
+ * Empty means "not stated", never "teaches nothing" (invariant 7). The Subjects
+ * column falls back to what the teacher has been mapped to, so a school that
+ * never fills this in loses nothing.
+ */
+function SubjectPicker({ value, onChange }: { value: number[]; onChange: (ids: number[]) => void }) {
+  const { data: subjects } = useApi<any[]>("/subjects");
+  const all = subjects ?? [];
+  const selected = new Set(value);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {all.length === 0 && (
+          <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+            No subjects yet — add them on the Subjects tab first.
+          </span>
+        )}
+        {all.map((s) => (
+          <label key={s.id} className={`chip${selected.has(s.id) ? " chip-on" : ""}`}
+            style={{ cursor: "pointer", userSelect: "none",
+              background: selected.has(s.id) ? "var(--brand)" : undefined,
+              color: selected.has(s.id) ? "#fff" : undefined }}>
+            <input type="checkbox" style={{ display: "none" }} checked={selected.has(s.id)}
+              onChange={() => onChange(
+                selected.has(s.id) ? value.filter((x) => x !== s.id) : [...value, s.id],
+              )} />
+            {s.name}
+          </label>
+        ))}
+      </div>
+      {value.length === 0 && all.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 6 }}>
+          Nothing chosen means “not stated” — the Subjects column then shows whatever they have been
+          given on the Allocation page.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScopePicker({ value, onChange }: { value: number[]; onChange: (ids: number[]) => void }) {
   const { data: classes } = useApi<any[]>("/classes");
   const all = classes ?? [];
@@ -604,6 +654,20 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
       <div className="field" style={{ marginBottom: 18 }}>
         <label>Which classes does {first} teach?</label>
         <ScopePicker value={form.classIds ?? []} onChange={(classIds) => setForm({ ...form, classIds })} />
+      </div>
+      {/*
+        §27.13 — WHICH SUBJECTS, declared about the teacher.
+
+        The table has existed since Phase 30 and only the importer and the
+        guided setup could write it, so a school that entered its staff here saw
+        the Subjects column read "—" with nowhere to fix it. Declared rather
+        than derived, for the reason §18 gives about teaching scope: what
+        somebody has already been given can never constrain what they are given
+        next, and it is what the Allocation grid proposes from.
+      */}
+      <div className="field" style={{ marginBottom: 18 }}>
+        <label>Which subjects does {first} teach?</label>
+        <SubjectPicker value={form.subjectIds ?? []} onChange={(subjectIds) => setForm({ ...form, subjectIds })} />
       </div>
       <div className="field" style={{ marginBottom: 22 }}>
         <label>Engagement</label>
@@ -966,7 +1030,7 @@ function MappingForm({
 /** Step 8 — Timetable Configuration (§3.10): grid structure + class scoping. */
 export function StepConfig() {
   const { current, refetch: refetchConfigs } = useConfigCtx();
-  const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
+  const { data: sections, refetch: refetchSections } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
   const [error, setError] = useState<string | null>(null);
   const [computedEnd, setComputedEnd] = useState<string | null>(current?.endTime ?? null);
   const [extraEnd, setExtraEnd] = useState<string | null>(null);

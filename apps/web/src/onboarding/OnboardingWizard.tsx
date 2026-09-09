@@ -412,8 +412,16 @@ function StepSession({ answers, onChange }: {
 
 // ─────────────────────────────────────────────────────────────── the shell
 
-export function OnboardingWizard({ school, startAt = null, onClose }: {
+export function OnboardingWizard({ school, startAt = null, startWing = null, inline = false, onClose }: {
   school: SchoolIdentity;
+  /**
+   * §8.3 — render as an ordinary page instead of a dialog over one.
+   *
+   * The routed way in (`/guided-setup`, `/allocation`) passes this; the
+   * welcome flow does not, because arriving there IS a hand-over from
+   * something else and closing must give that back.
+   */
+  inline?: boolean;
   /**
    * Open here instead of at the saved step — the §24.6 handover's destination.
    *
@@ -422,6 +430,15 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
    * that never saved.
    */
   startAt?: number | null;
+  /**
+   * Which wing step 4 opens on — §3.10a's destination.
+   *
+   * A URL parameter rather than an answer in the draft, and the distinction is
+   * the point: this is where somebody is being *sent*, not something they have
+   * said. Stored in the draft it would keep forcing that tab on every later
+   * visit; in the URL it is spent the moment they navigate.
+   */
+  startWing?: string | null;
   onClose: (reason: "saved" | "discarded") => void;
 }) {
   const [step, setStep] = useState(1);
@@ -836,14 +853,30 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
     onClose("discarded");
   };
 
-  return (
-    // Sized to the pane beside the nav rather than to a centred card (§24.5d):
-    // the curriculum matrix and the mapping table are the widest things in the
-    // app, and at 840px they scrolled sideways inside a dialog with half the
-    // screen dimmed and empty beside them.
-    <div role="dialog" aria-modal="true" aria-label="Guided setup" className="pane-overlay">
-      <div className="pane-dialog">
-        <div style={{ padding: focus ? "10px 28px 8px" : "22px 28px 14px", borderBottom: "1px solid var(--line)" }}>
+  /*
+    §8.3 — a page, or a dialog over the page.
+
+    It was only ever a dialog, and by §24.5d it had already grown to the exact
+    size and position of the pane beside the nav — a "modal" filling the whole
+    content area, dimming a strip of nav nobody was looking at. At that point
+    the overlay is costing something and buying nothing: it traps focus, it
+    cannot be linked to, the browser's Back button does not close it, and two
+    of them (setup and the Allocation grid) are screens somebody works in for
+    an hour rather than a question they answer and dismiss.
+
+    So `inline` renders the same wizard as an ordinary routed page, and the
+    dialog wrapper stays for the one case that is genuinely modal: the welcome
+    flow's own hand-over, which opens over whatever you were looking at.
+  */
+  const shell = (
+    <div className={inline ? "pane-page" : "pane-dialog"}>
+        <div style={{
+          // §8.4 — a tall step in focus mode is down to one line of chrome, and
+          // that line is 24px rather than 28. It is the difference between the
+          // header being a band and being a caption.
+          padding: focus ? (tall ? "5px 10px 4px" : "10px 28px 8px") : "22px 28px 14px",
+          borderBottom: "1px solid var(--line)",
+        }}>
           {/*
             Focus mode (§28). The progress bar and the ten-step rail matter when
             you arrive and when you leave; they do not matter while you work,
@@ -885,10 +918,16 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
         </div>
 
         <div style={{
-          padding: tall ? "12px 20px" : "20px 28px",
+          // §8.4 — a tall step gets the frame's padding down to almost nothing.
+          // 12px of inset around a 50×22 grid is 12px that could have been a
+          // row; the form steps keep their breathing room, which is what makes
+          // them readable.
+          padding: tall ? "6px 8px 8px" : "20px 28px",
           // A tall step owns its own scrolling; everything else scrolls here.
           overflowY: tall ? "hidden" : "auto",
           flex: 1, minHeight: 0, display: tall ? "flex" : undefined, flexDirection: "column",
+          // The floating praise above is positioned against this.
+          position: "relative",
         }}>
           {/*
             The dialog is as wide as the pane; the CONTENT is not always.
@@ -902,15 +941,36 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
             ...(WIDE_STEPS.has(step) ? {} : { maxWidth: 880, marginLeft: "auto", marginRight: "auto" }),
             ...(tall ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" as const } : {}),
           }}>
+          {/*
+            §8.4 — on a TALL step it floats; everywhere else it is a banner.
+
+            "Wonderful! Your rooms are ready" is worth saying and is worth
+            nothing after it has been read. On the Allocation grid it was taking
+            a permanent 60px band at the top of the one screen in the app that
+            is short of vertical room, to hold a sentence about the step before.
+            Floating it over the top-right corner keeps the encouragement and
+            gives the height back; on the ordinary form steps there is room to
+            spare and a banner in the flow reads better than something hovering.
+          */}
           {praise && (
             <div
               key={praise}
               className="praise"
               style={{
-                display: "flex", alignItems: "center", gap: 9, marginBottom: 16,
+                display: "flex", alignItems: "center", gap: 9,
                 borderLeft: "3px solid var(--accent)", background: "var(--accent-bg)",
-                padding: "11px 14px", borderRadius: "0 9px 9px 0",
+                padding: "11px 14px",
                 fontSize: 13, color: "var(--ink-soft)",
+                ...(tall
+                  ? {
+                      position: "absolute" as const, top: 8, right: 14, zIndex: 3,
+                      maxWidth: "min(520px, 60%)",
+                      boxShadow: "0 8px 22px rgba(11,31,68,.18)",
+                      // Rounded on all four corners when it floats: the flat
+                      // left edge only reads as a banner against a page edge.
+                      borderRadius: 9,
+                    }
+                  : { marginBottom: 16, borderRadius: "0 9px 9px 0" }),
               }}>
               <span style={{ fontSize: 15 }} aria-hidden>✨</span>
               {/* Announced, so the encouragement is not only visual. */}
@@ -923,7 +983,7 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
             step === 1 ? <StepSchool school={school} answers={answers} onChange={patch} />
             : step === 2 ? <StepSession answers={answers} onChange={patch} />
             : step === 3 ? <StepWings answers={answers} onChange={patch} />
-            : step === 4 ? <StepClasses answers={answers} onChange={patch} />
+            : step === 4 ? <StepClasses answers={answers} onChange={patch} startWing={startWing} />
             : step === 5 ? <StepWeek answers={answers} onChange={patch} />
             : step === 6 ? <StepSubjects answers={answers} onChange={patch} />
             : step === 7 ? <StepTeachers answers={answers} onChange={patch} />
@@ -942,7 +1002,11 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
         </div>
 
         <div style={{
-          padding: "14px 28px", borderTop: "1px solid var(--line)", background: "var(--offwhite)",
+          // §8.4 — the same buttons, in a thinner band, on the steps that are
+          // short of height. Back / Discard / Next do not get easier to press
+          // for having 14px above and below them rather than 8.
+          padding: tall ? "8px 12px" : "14px 28px",
+          borderTop: "1px solid var(--line)", background: "var(--offwhite)",
           display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
         }}>
           <button className="btn" onClick={back} disabled={busy || step === 1}>← Back</button>
@@ -974,7 +1038,17 @@ export function OnboardingWizard({ school, startAt = null, onClose }: {
             </button>
           )}
         </div>
-      </div>
+    </div>
+  );
+
+  if (inline) return shell;
+  return (
+    // Sized to the pane beside the nav rather than to a centred card (§24.5d):
+    // the curriculum matrix and the mapping table are the widest things in the
+    // app, and at 840px they scrolled sideways inside a dialog with half the
+    // screen dimmed and empty beside them.
+    <div role="dialog" aria-modal="true" aria-label="Guided setup" className="pane-overlay">
+      {shell}
     </div>
   );
 }

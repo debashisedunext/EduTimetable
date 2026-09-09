@@ -1,10 +1,12 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { ResourceGroupService } from "../groups/resource-group.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertCanOwnClass } from "./teacher-scope.util";
+import { FreezeService } from "../freeze/freeze.service";
 
 @Controller("classes")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -12,6 +14,7 @@ export class ClassesController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly groups: ResourceGroupService,
   ) {}
 
   @Get()
@@ -52,6 +55,11 @@ export class ClassesController {
         }),
       `Section '${body.name}'`,
     );
+    // §30 — created unattached, so it belongs to the session's shared pool:
+    // available to that pool, not to the school. Resolved before `uniq`, whose
+    // thunk is synchronous.
+    const yearId = toInt(body.academicYearId, "academicYearId");
+    const resourceGroupId = await this.groups.defaultFor(yearId);
     const classSection = await uniq(
       () =>
         this.prisma.classSection.create({
@@ -59,7 +67,8 @@ export class ClassesController {
             schoolId: req.user.schoolId,
             classId,
             sectionId: section.id,
-            academicYearId: toInt(body.academicYearId, "academicYearId"),
+            academicYearId: yearId,
+            resourceGroupId,
             strength: body.strength != null ? toInt(body.strength, "strength") : null,
             homeRoomId: body.homeRoomId != null ? toInt(body.homeRoomId, "homeRoomId") : null,
           },
@@ -118,12 +127,37 @@ export class ClassSectionsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly freeze: FreezeService,
   ) {}
 
+  /**
+   * §30 — `?timetableConfigId=` narrows the list to that timetable's own
+   * resource pool.
+   *
+   * Optional, and unfiltered means what it always meant: every cohort row in
+   * the school. That is deliberate for a stage that changes no behaviour — with
+   * one pool per session the two answers are identical — and it is the hook the
+   * screens will use once a school can have two pools and "Class 1-A" would
+   * otherwise appear twice in every picker. The top-bar selector already holds
+   * the id to pass (§5.3 of the plan).
+   */
   @Get()
-  async list(@Req() req: AuthedRequest) {
+  async list(@Req() req: AuthedRequest, @Query("timetableConfigId") configIdRaw?: string) {
+    const configId = configIdRaw ? toInt(configIdRaw, "timetableConfigId") : null;
+    const pool = configId
+      ? (await this.prisma.timetableConfig.findUnique({
+          where: { id: configId }, select: { resourceGroupId: true },
+        }))?.resourceGroupId
+      : null;
+    // A config id that names nothing in this school resolves to no pool. Left
+    // unfiltered rather than empty on purpose: the alternative tells a stranger
+    // "that timetable has no classes", which is a fact about a school they
+    // cannot see (§17.8 caught exactly this shape once already).
     const rows = await this.prisma.classSection.findMany({
-      where: { class: { schoolId: req.user.schoolId } },
+      where: {
+        class: { schoolId: req.user.schoolId },
+        ...(pool != null ? { resourceGroupId: pool } : {}),
+      },
       include: {
         class: true,
         section: true,
@@ -146,11 +180,18 @@ export class ClassSectionsController {
       classTeacherName: cs.classTeacher?.name ?? null,
       timetableConfigId: cs.timetableConfigId,
       timetableConfigName: cs.timetableConfig?.name ?? null,
+      resourceGroupId: cs.resourceGroupId,
     }));
   }
 
   @Put(":id")
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    /*
+      §29.1 — the home room lives on this row, and §19 gives every one of a
+      section's non-lab lessons that room. Changing it while the week is on the
+      wall moves every lesson in it without touching a single slot.
+    */
+    await this.freeze.assertSections([toInt(id, "id")], "a class-section");
     const updated = await uniq(
       () =>
         this.prisma.classSection.update({
@@ -190,6 +231,7 @@ export class ClassSectionsController {
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
     const cs = await this.prisma.classSection.findUnique({ where: { id: toInt(id, "id") } });
     if (!cs) throw new BadRequestException("Class-section not found");
+    await this.freeze.assertSections([cs.id], "a class-section");
     const [mappings, mergedMembers, slots] = await Promise.all([
       this.prisma.teacherSubjectClassSection.count({ where: { classSectionId: cs.id } }),
       this.prisma.mergedTeachingGroupMember.count({ where: { classSectionId: cs.id } }),
@@ -223,6 +265,9 @@ export class ClassSectionsController {
   /** §8.1b — Class Teacher Assignment: the pointer that activates a teacher's P1 rule. */
   @Put(":id/class-teacher")
   async assignClassTeacher(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    // §29.1 — a class teacher is one of the four things that carry "who
+    // teaches", and `always_first_period` makes it a placement rule too.
+    await this.freeze.assertSections([toInt(id, "id")], "a class teacher");
     const teacherId = body.teacherId === null ? null : toInt(body.teacherId, "teacherId");
     if (teacherId !== null) {
       const teacher = await this.prisma.teacher.findFirst({

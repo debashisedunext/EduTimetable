@@ -8,6 +8,7 @@
  */
 import type { SolverInput, SolverVariable } from "../solver/types";
 import { SolverState } from "../solver/state";
+import { blockedCells } from "../feasibility/time-off";
 import { cellKey, segmentOfPeriod } from "../solver/variables";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -192,6 +193,9 @@ export class BoardEngine {
   private maxPerDayByClassSubject = new Map<string, number>();
   private classIdBySection = new Map<number, number>();
   private labSubjects: Set<number>;
+  /** §4.7b — blocked cells per class-section and per subject, for `domainCheck`. */
+  private sectionBlocked: Map<number, Set<string>>;
+  private subjectBlocked: Map<number, Set<string>>;
   private subjectNames = new Map<number, string>();
   private teacherNames = new Map<number, string>();
   private sectionLabels = new Map<number, string>();
@@ -214,6 +218,10 @@ export class BoardEngine {
     const snap = input.snapshot;
     this.seg = segmentOfPeriod(snap.config.daySegments, snap.config.periodsPerDay);
     this.labSubjects = new Set(snap.labSubjectIds);
+    // The same helper the solver uses, so "null period = the whole day" cannot
+    // mean one thing during search and another on a drag.
+    this.sectionBlocked = blockedCells(input.classSectionUnavailability ?? [], snap.config.periodsPerDay);
+    this.subjectBlocked = blockedCells(input.subjectUnavailability ?? [], snap.config.periodsPerDay);
     this.samePeriodSubjects = new Set(
       snap.subjectRequirements.filter((r) => r.samePeriodAcrossWeek).map((r) => `${r.classId}:${r.subjectId}`),
     );
@@ -281,8 +289,11 @@ export class BoardEngine {
           roomId: o.roomId,
         })),
         // The options carry their own rooms, so the block never draws on the
-        // lab pool and its member sections' own rooms stay free.
+        // lab pool and its member sections' own rooms stay free. §19.1 does not
+        // reach it either, for the same reason: an option's room is chosen on
+        // the Electives screen and is more specific than a subject-wide rule.
         labRoomIds: [],
+        ownRoomIds: [],
         homeRoomId: null,
         needsLabRoom: false,
         preferredRoomId: null,
@@ -305,6 +316,22 @@ export class BoardEngine {
     // a preferred-room assignment (non-lab) stays hard (§3)
     const labFlexible =
       this.labSubjects.has(subjectId) && (roomId === null || this.input.labRoomIds.includes(roomId));
+    /*
+      §19.1 — the same freedom, for a subject taught in its own room.
+
+      A school with two music rooms should be able to drag a music lesson into
+      a cell where the first is busy and have it take the second, exactly as a
+      lab card re-homes to a free lab. Without this the card would carry its
+      current room as a hard `preferredRoomId` and the drop would be refused
+      with "room occupied" while a music room stood empty.
+
+      `roomId === null || pool.includes(roomId)` is the same guard the lab line
+      uses, and it matters: a card sitting in some OTHER room — dragged there
+      before the flag was ticked, or imported that way — keeps that room as its
+      hard constraint rather than being silently re-homed by a move.
+    */
+    const ownRooms = this.input.snapshot.ownRoomsBySubject?.[subjectId] ?? [];
+    const ownFlexible = ownRooms.length > 0 && (roomId === null || ownRooms.includes(roomId));
     const classId = this.classIdBySection.get(e.classSectionIds[0]);
     const samePeriodKey =
       e.mergedGroupId === null && classId !== undefined && this.samePeriodSubjects.has(`${classId}:${subjectId}`)
@@ -324,12 +351,15 @@ export class BoardEngine {
       electiveBlockId: null,
       options: [],
       labRoomIds: [],
+      ownRoomIds: ownFlexible ? ownRooms : [],
       homeRoomId: null,
       dayKey: `S${subjectId}`,
       mappingId: null,
       span: 1,
       needsLabRoom: labFlexible,
-      preferredRoomId: labFlexible ? null : roomId,
+      // §19.1 joins the same rule: a card free to re-home inside its own pool
+      // must not also carry its current room as a hard constraint.
+      preferredRoomId: labFlexible || ownFlexible ? null : roomId,
       samePeriodKey,
       maxPerDay:
         classId !== undefined
@@ -382,6 +412,34 @@ export class BoardEngine {
       }
       if (tc.hasP1Rule && period === 1 && !e.classSectionIds.every((id) => tc.p1OwnSections.has(id))) {
         return `${name} is a class teacher who must take Period 1 in their own class`;
+      }
+    }
+
+    /*
+      §4.7b — the class and the subject have time off too.
+
+      Re-checked here for the reason the whole method exists: these are pruned
+      out of the solver's domain during search, and a manual drop must never
+      reach a cell the solver itself was forbidden to consider (invariant 12).
+      A card spanning several sections needs EVERY one of them in school, and a
+      §4.9 block needs every option's subject allowed — the same intersection
+      the domain builder applies.
+    */
+    const cell = cellKey(day, period);
+    for (const id of e.classSectionIds) {
+      if (this.sectionBlocked.get(id)?.has(cell)) {
+        const label = this.sectionLabels.get(id) ?? `#${id}`;
+        return e.classSectionIds.length > 1
+          ? `${label} is not in school in this slot, and this lesson is taught to it as well`
+          : `${label} is not in school in this slot`;
+      }
+    }
+    const subjectIds = e.options.length > 0 ? e.options.map((o) => o.subjectId)
+      : e.subjectId !== null ? [e.subjectId] : [];
+    for (const id of subjectIds) {
+      if (this.subjectBlocked.get(id)?.has(cell)) {
+        const label = this.subjectNames.get(id) ?? `subject #${id}`;
+        return `${label} is not taught in this slot`;
       }
     }
     return null;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { MeResponse } from "@edutimetable/shared";
+import { windowLabel, type MeResponse } from "@edutimetable/shared";
 import { api } from "../api";
 import { asMessage, Card, DataTable, ErrorNote, Field } from "../components";
 import { useConfigCtx } from "../hooks";
@@ -8,13 +8,19 @@ import { inputStyle } from "./Timetables";
 import { PrintSheet, type PrintContext } from "./PrintSheet";
 import { WeekGrid, type GridPayload } from "./WeekGrid";
 
-type ReportKind = "class-section" | "teacher" | "rooms" | "load";
+/** The report kinds whose payload is a week grid — as opposed to a table. */
+const GRID_KINDS = new Set(["class-section", "teacher", "room", "subject"]);
+
+type ReportKind = "class-section" | "teacher" | "room" | "subject" | "rooms" | "load";
 
 interface Options {
   scope?: string;
   sections: { id: number; label: string }[];
   teachers: { id: number; name: string }[];
   configs: { id: number; name: string }[];
+  /** §10.6 — offered only to view.all, because only they can open those cards. */
+  rooms: { id: number; name: string; type: string }[];
+  subjects: { id: number; name: string }[];
 }
 
 /** §10 Reports screen — filter bar, on-screen grid ≤1s (Redis-cached compact
@@ -27,6 +33,8 @@ export function Reports({ me }: { me: MeResponse | null }) {
   const [kind, setKind] = useState<ReportKind>((params.get("kind") as ReportKind) || "class-section");
   const [sectionId, setSectionId] = useState(params.get("sectionId") ?? "");
   const [teacherId, setTeacherId] = useState(params.get("teacherId") ?? "");
+  const [roomId, setRoomId] = useState(params.get("roomId") ?? "");
+  const [subjectId, setSubjectId] = useState(params.get("subjectId") ?? "");
   const [date, setDate] = useState("");
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +56,8 @@ export function Reports({ me }: { me: MeResponse | null }) {
         // deep-linked ids win; otherwise fall back to the first visible option
         if (!params.get("sectionId") && o.sections[0]) setSectionId(String(o.sections[0].id));
         if (!params.get("teacherId") && o.teachers[0]) setTeacherId(String(o.teachers[0].id));
+        if (!params.get("roomId") && o.rooms?.[0]) setRoomId(String(o.rooms[0].id));
+        if (!params.get("subjectId") && o.subjects?.[0]) setSubjectId(String(o.subjects[0].id));
       })
       .catch((e) => setError(asMessage(e)));
   }, []);
@@ -59,10 +69,12 @@ export function Reports({ me }: { me: MeResponse | null }) {
       const q = date ? `?date=${date}` : "";
       if (kind === "class-section" && sectionId) setData(await api(`/reports/class-section/${sectionId}${q}`));
       else if (kind === "teacher" && teacherId) setData(await api(`/reports/teacher/${teacherId}${q}`));
+      else if (kind === "room" && roomId) setData(await api(`/reports/room/${roomId}${q}`));
+      else if (kind === "subject" && subjectId) setData(await api(`/reports/subject/${subjectId}${q}`));
       else if (kind === "rooms" && current) setData(await api(`/reports/rooms/${current.id}`));
       else if (kind === "load" && current) setData(await api(`/reports/teacher-load/${current.id}`));
     } catch (e) { setError(asMessage(e)); }
-  }, [kind, sectionId, teacherId, date, current]);
+  }, [kind, sectionId, teacherId, roomId, subjectId, date, current]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -87,7 +99,7 @@ export function Reports({ me }: { me: MeResponse | null }) {
   };
 
   const printOne = () => {
-    if (data && (data.kind === "class-section" || data.kind === "teacher")) printSheets([data as GridPayload]);
+    if (data && GRID_KINDS.has(data.kind)) printSheets([data as GridPayload]);
     else window.print();
   };
 
@@ -124,7 +136,25 @@ export function Reports({ me }: { me: MeResponse | null }) {
     }
   };
 
-  const printCtx: PrintContext = { me, timetableName: current?.name ?? null, printedAt: new Date() };
+  const printCtx: PrintContext = {
+    me,
+    timetableName: current?.name ?? null,
+    // §30.5 — null for an undated timetable, so nothing is printed for the
+    // schools that never use this.
+    timetableWindow: current ? windowLabel(current) : null,
+    printedAt: new Date(),
+  };
+
+  /** The line under a grid card's title — one sentence per kind, all in one place. */
+  const gridSub = (g: any) => {
+    const overlay = g.date ? ` \u00b7 substitutions overlaid for ${g.date}` : "";
+    if (g.kind === "teacher") return `${g.weeklyLoad}/${g.maxPeriodsPerWeek} periods per week${overlay}`;
+    if (g.kind === "room") return `${g.roomType ?? "room"}${overlay}`;
+    if (g.kind === "subject") {
+      return `${g.weeklyLessons} lessons a week across the school \u00b7 each cell counts the sections taught then, busiest is ${g.busiest}${overlay}`;
+    }
+    return `${g.classTeacher ? `Class teacher: ${g.classTeacher}` : "No class teacher assigned"}${overlay}`;
+  };
 
   const exportCsv = () => {
     if (!data) return;
@@ -141,13 +171,19 @@ export function Reports({ me }: { me: MeResponse | null }) {
     } else {
       name = `${data.kind}-${data.label}`;
       const g = data as GridPayload;
-      rows = [["Period", ...g.dayNames]];
+      // §10.6 — the wing column earns its place only on a card that spans more
+      // than one; on every existing report the CSV is byte-for-byte what it was.
+      const manyWings = (g.wings?.length ?? 0) > 1;
+      rows = [[...(manyWings ? ["Wing"] : []), "Period", ...g.dayNames]];
       for (const p of g.periods.filter((x) => !x.isBreak && x.periodNumber !== 0)) {
         rows.push([
+          ...(manyWings ? [p.wing] : []),
           `P${p.periodNumber}`,
           ...g.workingDays.map((d) => {
-            const c = g.grid[`${d}:${p.periodNumber}`];
+            const c = g.grid[`${d}:${p.key}`];
             if (!c) return "Free";
+            // §10.6 — a subject cell is a count, not a lesson.
+            if (c.count !== undefined) return `${c.count}: ${(c.sections ?? []).join(" | ")}`;
             // §4.9: an elective cell is several lessons. Flattening it to the
             // block name would export a timetable that hides which language a
             // child is actually in.
@@ -156,8 +192,11 @@ export function Reports({ me }: { me: MeResponse | null }) {
                 .map((o) => `${o.subject} — ${o.teacher ?? ""}${o.room ? `, ${o.room}` : ""}${o.substituted ? " [SUB]" : ""}`)
                 .join(" | ")}`;
             }
-            const main = g.kind === "teacher" ? c.classSection : c.subject;
-            const sub = g.kind === "teacher" ? c.subject : c.teacher;
+            const headlinesClass = g.kind === "teacher" || g.kind === "room";
+            const main = headlinesClass ? c.classSection : c.subject;
+            const sub = g.kind === "room"
+              ? [c.subject, c.teacher].filter(Boolean).join(" · ")
+              : g.kind === "teacher" ? c.subject : c.teacher;
             return `${main ?? ""} (${sub ?? ""}${c.room ? `, ${c.room}` : ""})${c.substituted ? " [SUB]" : ""}`;
           }),
         ]);
@@ -195,6 +234,8 @@ export function Reports({ me }: { me: MeResponse | null }) {
             <select style={inputStyle} value={kind} onChange={(e) => setKind(e.target.value as ReportKind)}>
               <option value="class-section">Class-Section Weekly Timetable</option>
               <option value="teacher">Teacher Weekly Timetable</option>
+              {options?.scope === "all" && <option value="room">Room Weekly Timetable</option>}
+              {options?.scope === "all" && <option value="subject">Subject Across the Week</option>}
               {options?.scope === "all" && <option value="rooms">Room Utilization</option>}
               {options?.scope === "all" && <option value="load">Teacher Load Summary</option>}
             </select>
@@ -213,10 +254,24 @@ export function Reports({ me }: { me: MeResponse | null }) {
               </select>
             </Field>
           )}
+          {kind === "room" && (
+            <Field label="Room">
+              <select style={inputStyle} value={roomId} onChange={(e) => setRoomId(e.target.value)}>
+                {(options?.rooms ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </Field>
+          )}
+          {kind === "subject" && (
+            <Field label="Subject">
+              <select style={inputStyle} value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+                {(options?.subjects ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
+          )}
           {(kind === "rooms" || kind === "load") && (
             <Field label="Timetable"><input style={inputStyle} disabled value={current?.name ?? ""} /></Field>
           )}
-          {(kind === "class-section" || kind === "teacher") ? (
+          {GRID_KINDS.has(kind) ? (
             <Field label="Date (substitution overlay)">
               <input type="date" style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} />
             </Field>
@@ -242,15 +297,16 @@ export function Reports({ me }: { me: MeResponse | null }) {
         )}
       </Card>
 
-      {data && (data.kind === "class-section" || data.kind === "teacher") && (
-        <Card
-          title={data.kind === "teacher" ? `${data.label} — weekly timetable` : `${data.label} — weekly timetable`}
-          sub={
-            data.kind === "teacher"
-              ? `${data.weeklyLoad}/${data.maxPeriodsPerWeek} periods per week${data.date ? ` · substitutions overlaid for ${data.date}` : ""}`
-              : `${data.classTeacher ? `Class teacher: ${data.classTeacher}` : "No class teacher assigned"}${data.date ? ` · substitutions overlaid for ${data.date}` : ""}`
-          }
-        >
+      {data && GRID_KINDS.has(data.kind) && (
+        <Card title={`${data.label} — weekly timetable`} sub={gridSub(data)}>
+          {/* §10.6 — a card that spans two wings says so, because its rows then
+              interleave by clock and "P3" alone stops being an answer. */}
+          {(data.wings?.length ?? 0) > 1 && (
+            <p style={{ fontSize: 12, color: "var(--ink-soft)", margin: "0 0 10px" }}>
+              Across <b>{data.wings.length} wings</b> ({data.wings.map((w: any) => w.name).join(", ")}) —
+              rows are ordered by clock time, and each names the wing its period number belongs to.
+            </p>
+          )}
           <WeekGrid data={data} />
         </Card>
       )}

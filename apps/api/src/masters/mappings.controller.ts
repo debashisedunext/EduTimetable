@@ -6,6 +6,7 @@ import { ReadinessService } from "../readiness/readiness.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClassSections } from "./capacity.util";
 import { assertCanTeach } from "./teacher-scope.util";
+import { FreezeService } from "../freeze/freeze.service";
 
 /**
  * Subject Mapping — teacher_subject_class_section (§3, §8.1b) plus merged
@@ -19,6 +20,7 @@ export class MappingsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly freeze: FreezeService,
   ) {}
 
   /**
@@ -114,6 +116,9 @@ export class MappingsController {
     }
     const subjectId = toInt(body.subjectId, "subjectId");
     const teacherId = toInt(body.teacherId, "teacherId");
+    // §29.1 — asked before anything is checked or written, so a frozen
+    // timetable refuses for its own reason rather than for a capacity one.
+    await this.freeze.assertSections(ids, "who teaches a subject");
     await assertCanTeach(this.prisma, teacherId, ids, { what: "this subject" });
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     const preferredRoomId =
@@ -153,6 +158,11 @@ export class MappingsController {
 
   @Put(":id")
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const mine = await this.prisma.teacherSubjectClassSection.findUnique({
+      where: { id: toInt(id, "id") },
+      select: { classSectionId: true },
+    });
+    if (mine) await this.freeze.assertSections([mine.classSectionId], "who teaches a subject");
     if (body.periodsPerWeek !== undefined) {
       const row = await this.prisma.teacherSubjectClassSection.findUnique({
         where: { id: toInt(id, "id") },
@@ -185,6 +195,11 @@ export class MappingsController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const row = await this.prisma.teacherSubjectClassSection.findUnique({
+      where: { id: toInt(id, "id") },
+      select: { classSectionId: true },
+    });
+    if (row) await this.freeze.assertSections([row.classSectionId], "who teaches a subject");
     await uniq(
       () => this.prisma.teacherSubjectClassSection.delete({ where: { id: toInt(id, "id") } }),
       "Mapping",
@@ -201,12 +216,14 @@ export class MergedGroupsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly freeze: FreezeService,
   ) {}
 
   @Post()
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["teacherId", "subjectId", "periodsPerWeek", "classSectionIds"]);
     const ids = this.memberIds(body);
+    await this.freeze.assertSections(ids, "a merged teaching group");
     await assertCanTeach(this.prisma, toInt(body.teacherId, "teacherId"), ids, { what: "this merged group" });
     assertWithinWeek(
       toInt(body.periodsPerWeek, "periodsPerWeek"),
@@ -238,6 +255,21 @@ export class MergedGroupsController {
   @Put(":id")
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const groupId = toInt(id, "id");
+    /*
+      §29.1 — both sides of the edit, not just the one being written to.
+
+      A group's members can be replaced, so an edit reaches the sections it is
+      leaving as well as the ones it is joining. Checking only the incoming list
+      would let a frozen wing quietly lose a lesson.
+    */
+    const current = await this.prisma.mergedTeachingGroupMember.findMany({
+      where: { mergedGroupId: groupId },
+      select: { classSectionId: true },
+    });
+    await this.freeze.assertSections(
+      [...current.map((m) => m.classSectionId), ...(Array.isArray(body.classSectionIds) ? this.memberIds(body) : [])],
+      "a merged teaching group",
+    );
     const data: Record<string, unknown> = {};
     if (body.teacherId !== undefined) data.teacherId = toInt(body.teacherId, "teacherId");
     if (body.periodsPerWeek !== undefined) data.periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
@@ -289,6 +321,11 @@ export class MergedGroupsController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const members = await this.prisma.mergedTeachingGroupMember.findMany({
+      where: { mergedGroupId: toInt(id, "id") },
+      select: { classSectionId: true },
+    });
+    await this.freeze.assertSections(members.map((m) => m.classSectionId), "a merged teaching group");
     await uniq(
       () => this.prisma.mergedTeachingGroup.delete({ where: { id: toInt(id, "id") } }),
       "Merged group",

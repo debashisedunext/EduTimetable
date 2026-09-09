@@ -127,7 +127,7 @@ function staff() {
     for (const m of [
       "onboardingSession", "timetableSlot", "timetableDraft", "timetablePublication",
       "teacherSubjectClassSection", "teacherClassEligibility", "roomSubject", "period",
-      "classSubject", "classSection", "section", "subject", "schoolClass", "teacher",
+      "classSubject", "subjectClass", "classSection", "section", "subject", "schoolClass", "teacher",
       "room", "timetableConfig", "academicYear", "auditLog", "user", "rolePermission",
       "erpRoleMapping", "role",
     ]) {
@@ -178,6 +178,55 @@ function staff() {
   check(classes.json?.created?.classes === 7 && classes.json?.created?.classSections === 14,
     "step 4 — 7 classes, 14 sections", JSON.stringify(classes.json?.created));
 
+  // §3.10 — and every one of them belongs to the WING it was defined under.
+  // Defining a class in the guided setup is defining it for that timetable; a
+  // school should never have to go and tick the same list on another screen.
+  const attached = await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: { not: null } },
+  });
+  check(attached === 14, "and each one belongs to the wing it was defined under", `${attached} of 14`);
+
+  /*
+    §16.1 — the repair path, which is what a real school hit.
+
+    The importer skips by natural key, and the key for a class-section is
+    `(class, section, year)` — the timetable is not in it. So a section created
+    before its wing existed was skipped for ever after: the rows were there, the
+    wings were there, and `timetable_config_id` stayed NULL through every
+    re-run. Readiness then reported 0% for a timetable with no classes on a
+    school that had entered every class it has.
+
+    Simulated by detaching two sections and pressing Next again, which is what
+    somebody with that school in front of them would do.
+  */
+  const orphans = (await prisma.classSection.findMany({ where: { schoolId }, take: 2, select: { id: true } }))
+    .map((x) => x.id);
+  await prisma.classSection.updateMany({ where: { id: { in: orphans } }, data: { timetableConfigId: null } });
+  const reattached = await commit(4);
+  const nowAttached = await prisma.classSection.count({
+    where: { id: { in: orphans }, timetableConfigId: { not: null } },
+  });
+  check(nowAttached === 2,
+    "a section that belongs to no timetable is ATTACHED by pressing Next again",
+    `${nowAttached} of 2 · ${JSON.stringify(reattached.json?.created)}`);
+
+  // …and nothing else moved. Filling a NULL is not the same as reassigning a
+  // section somebody has deliberately put in another wing (invariant 11).
+  const seniorCfg = configs.find((c) => c.name === "ZZGS Senior");
+  const moved = await prisma.classSection.findFirst({
+    where: { schoolId, timetableConfigId: seniorCfg.id }, select: { id: true },
+  });
+  await prisma.classSection.update({
+    where: { id: moved.id },
+    data: { timetableConfigId: configs.find((c) => c.name === "ZZGS Primary").id },
+  });
+  await commit(4);
+  const stillMoved = await prisma.classSection.findUnique({ where: { id: moved.id } });
+  check(stillMoved.timetableConfigId !== seniorCfg.id,
+    "while a section already in another wing is left exactly where it was",
+    `still in ${stillMoved.timetableConfigId}`);
+  await prisma.classSection.update({ where: { id: moved.id }, data: { timetableConfigId: seniorCfg.id } });
+
   // 5 the week
   for (const cfg of configs) {
     await call("PUT", `/timetable-configs/${cfg.id}/structure`, S, WEEK);
@@ -205,6 +254,40 @@ function staff() {
   check(Number(declared[0].n) === staff().length,
     "and their subjects declared ABOUT them, before any mapping exists",
     `${declared[0].n} of ${staff().length}`);
+
+  /*
+    …and the Teachers SCREEN shows them, which is a different claim.
+
+    Reported from a real school: every teacher's Subjects column read "—" on a
+    school whose staff had just been entered. The rows were there; `/teachers`
+    was deriving the column from mappings alone, and at this point in a setup
+    there are no mappings — the union of declared and mapped is §27.13's stated
+    reading rule and this endpoint was not following it. Checked HERE, before
+    step 9 creates any mapping, because after that the bug is invisible.
+  */
+  const directory = await call("GET", "/teachers", S);
+  const shownSubjects = (directory.json ?? []).filter((t) => (t.subjects ?? []).length > 0);
+  check(directory.status < 300 && shownSubjects.length === staff().length,
+    "and the Teachers screen SHOWS them with nothing yet mapped",
+    `${shownSubjects.length} of ${staff().length} — e.g. ${directory.json?.[0]?.name}: ${JSON.stringify(directory.json?.[0]?.subjects)}`);
+
+  // The declared list is editable from that screen too — the table existed
+  // since Phase 30 and only the importer could write it.
+  const one = directory.json[0];
+  const anotherSubject = (await call("GET", "/subjects", S)).json.find((s) => !one.subjectIds.includes(s.id));
+  await call("PUT", `/teachers/${one.id}`, S, { subjectIds: [...one.subjectIds, anotherSubject.id] });
+  const reread = (await call("GET", "/teachers", S)).json.find((t) => t.id === one.id);
+  check(reread.subjectIds.length === one.subjectIds.length + 1
+     && reread.subjects.includes(anotherSubject.name),
+    "and a subject added on that screen is stored and shown",
+    `${reread.subjectIds.length} declared`);
+  // A write that does not mention subjects must not clear them (§27.13).
+  await call("PUT", `/teachers/${one.id}`, S, { maxPeriodsPerDay: 6 });
+  const untouched = (await call("GET", "/teachers", S)).json.find((t) => t.id === one.id);
+  check(untouched.subjectIds.length === reread.subjectIds.length,
+    "while a write that never mentions subjects leaves them alone",
+    `${untouched.subjectIds.length} still declared`);
+  await call("PUT", `/teachers/${one.id}`, S, { subjectIds: one.subjectIds });
 
   // §27.9 — the classes a teacher was DECLARED for reach the database as §18
   // teaching scope, and the Allocation step staffs from them.
@@ -498,6 +581,292 @@ function staff() {
 
   const slots = await prisma.timetableSlot.count({ where: { schoolId } });
   check(slots > 0, "and the school has a timetable, built from nothing typed by hand", `${slots} periods placed`);
+
+  // ─────────────────────────── §4.7b TIME OFF, FOR ALL FOUR MASTERS
+  //
+  // A teacher, a class, a subject and a room can each be unavailable. The claim
+  // worth testing is not that the rows save — it is that a real generation
+  // OBEYS them, and that Readiness knew beforehand.
+  //
+  // The class one carries the extra weight: it makes the week SMALLER. Check 1
+  // computes `days × periods`, so without subtracting the blocked cells a class
+  // with an afternoon off reads as having 40 slots, Readiness says 100%, and
+  // the solver then cannot place a curriculum that no longer fits.
+  console.log("\nTime off for a class, a subject and a room (§4.7b):");
+
+  const sec5A = await prisma.$queryRawUnsafe(`
+    SELECT cs.id FROM class_sections cs
+    JOIN classes c ON c.id = cs.class_id JOIN sections s ON s.id = cs.section_id
+    WHERE cs.school_id = ${schoolId} AND cs.timetable_config_id = ${primary.id}
+      AND c.name = 'Class 2' AND s.name = 'A'`);
+  const sectionId = Number(sec5A[0].id);
+
+  // A whole day off, as ONE row with a null period — the form that survives the
+  // timetable later gaining a period, and the one the expansion rule is about.
+  const off = await call("PUT", `/availability/class/${sectionId}`, S, {
+    rows: [{ dayOfWeek: 5, periodNumber: null, reason: "no school on Friday" }],
+  });
+  check(off.status < 300, "a class can be given time off", `${off.json?.count} cells`);
+
+  // Readiness sees a smaller week AT ONCE — the whole point of Check 1 doing
+  // the subtraction rather than the solver discovering it.
+  const tighter = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  const over = (tighter.json?.blockers ?? []).find(
+    (b) => b.code === "SLOT_OVERFLOW" && /Class 2-A/.test(b.message));
+  check(over !== undefined && /less 8 blocked/.test(over.message ?? ""),
+    "Readiness counts the smaller week, and says so in the message",
+    (over?.message ?? "not reported").slice(0, 96));
+
+  // Give the class its afternoon back and the school is whole again.
+  await call("PUT", `/availability/class/${sectionId}`, S, { rows: [] });
+  const restored = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  check(!(restored.json?.blockers ?? []).some((b) => b.code === "SLOT_OVERFLOW"),
+    "and giving it back restores the week", `${restored.json?.score}%`);
+
+  /*
+    Now the version a generation can actually satisfy: block a cell for a
+    SUBJECT and a ROOM, regenerate, and look at where the lessons went. The
+    subject keeps its periods — the week is untouched — so this must not make
+    the school unsolvable.
+  */
+  const hindi = await prisma.subject.findFirst({ where: { schoolId, name: "ZZGS Hindi" } });
+  // A LAB, not the art room: the art room has no lessons in it at this point in
+  // the run, and "0 lessons on Tuesday" out of 0 lessons proves nothing. A lab
+  // is busy all week, and there are others for the solver to use instead.
+  const aRoom = await prisma.room.findFirst({ where: { schoolId, roomType: "lab" }, orderBy: { id: "asc" } });
+  await call("PUT", `/availability/subject/${hindi.id}`, S, {
+    rows: [{ dayOfWeek: 1, periodNumber: 1, reason: "no Hindi first thing on Monday" }],
+  });
+  /*
+    ONE period of the lab, not the whole day.
+
+    The first version blocked Tuesday entirely, and the run that followed left a
+    lesson unplaced — correctly. This school's labs are sized to demand with
+    almost no slack (Check 5 refuses anything less), so removing eight lab
+    periods genuinely takes capacity the curriculum needs, and the solver saying
+    so is the feasibility machinery working. Asserting "nothing unplaced" on top
+    of that would have been asserting that a tighter school is still solvable,
+    which is not what this block is about — the class test above carries the
+    whole-day form, where it costs a read rather than a search.
+  */
+  await call("PUT", `/availability/room/${aRoom.id}`, S, {
+    rows: [{ dayOfWeek: 2, periodNumber: 3, reason: "cleaned on Tuesdays" }],
+  });
+
+  const genOff = await call("POST", `/timetable-configs/${primary.id}/generate`, S, {});
+  let offDone = null;
+  for (let i = 0; i < 90 && !offDone; i++) {
+    await sleep(2000);
+    const r = await call("GET", `/timetable-configs/${primary.id}/generate/latest`, S);
+    if (r.json?.state === "completed" || r.json?.state === "failed") offDone = r.json;
+  }
+  check(genOff.status < 300 && offDone?.state === "completed"
+     && (offDone?.result?.unplaced?.length ?? -1) === 0,
+    "it still generates with nothing unplaced",
+    `${offDone?.state} · ${offDone?.result?.unplaced?.length ?? "?"} unplaced`);
+
+  const offDraft = await prisma.timetableDraft.findFirst({
+    where: { timetableConfigId: primary.id }, orderBy: { draftNo: "desc" }, select: { id: true },
+  });
+  const hindiMonday = await prisma.timetableSlot.count({
+    where: {
+      timetableConfigId: primary.id, draftId: offDraft.id,
+      subjectId: hindi.id, dayOfWeek: 1, periodNumber: 1,
+    },
+  });
+  const hindiTotal = await prisma.timetableSlot.count({
+    where: { timetableConfigId: primary.id, draftId: offDraft.id, subjectId: hindi.id },
+  });
+  check(hindiMonday === 0 && hindiTotal > 0,
+    "NOT ONE Hindi lesson is in the slot it was blocked out of",
+    `0 of ${hindiTotal} in Mon P1`);
+
+  const roomTuesday = await prisma.timetableSlot.count({
+    where: {
+      timetableConfigId: primary.id, draftId: offDraft.id,
+      roomId: aRoom.id, dayOfWeek: 2, periodNumber: 3,
+    },
+  });
+  const roomTotal = await prisma.timetableSlot.count({
+    where: { timetableConfigId: primary.id, draftId: offDraft.id, roomId: aRoom.id },
+  });
+  check(roomTuesday === 0 && roomTotal > 0,
+    "and a room in daily use is empty in the period it was blocked",
+    `0 of ${roomTotal} lessons in ${aRoom.name} fell in Tue P3`);
+
+  // Put the school back as it was, so what follows tests what it means to.
+  await call("PUT", `/availability/subject/${hindi.id}`, S, { rows: [] });
+  await call("PUT", `/availability/room/${aRoom.id}`, S, { rows: [] });
+
+  // ──────────────── §27.16 WHICH CLASSES A SUBJECT IS TAUGHT TO
+  //
+  // The school's own answer, replacing a guess read off the subject's name. Four
+  // claims, and the last two are the ones that separate this from §27.15's
+  // ladder — a declaration may REFUSE, and it must be reversible:
+  //
+  //   1. what is set on the Subjects screen is what comes back,
+  //   2. a curriculum row for an excluded class is refused, naming both halves,
+  //   3. rows that already existed are a WARNING, never a blocker,
+  //   4. clearing it puts the subject back to every class.
+  console.log("\nWhich classes a subject is taught to (§27.16):");
+
+  const pe = await prisma.subject.findFirst({ where: { schoolId, name: "ZZGS Physical Education" } });
+  const ladder = await prisma.schoolClass.findMany({
+    where: { schoolId }, orderBy: { sequence: "asc" }, select: { id: true, name: true },
+  });
+  const class1 = ladder.find((c) => c.name === "Class 1");
+  const class5 = ladder.find((c) => c.name === "Class 5");
+
+  await call("PUT", `/subjects/${pe.id}`, S, { classIds: [class1.id] });
+  const back = (await call("GET", "/subjects", S)).json.find((x) => x.id === pe.id);
+  check((back?.classIds ?? []).length === 1 && back.classIds[0] === class1.id,
+    "what is set on the Subjects screen is what comes back",
+    JSON.stringify(back?.classIds ?? []));
+
+  // The refusal, at the point of the mistake. Note this row does NOT exist yet
+  // for Class 5 in the senior wing's year — a create, not an update.
+  const outOfScope = await call("POST", "/class-subjects", S, {
+    classId: class5.id, academicYearId: yearId, subjectId: pe.id, periodsPerWeek: 2,
+  });
+  check(outOfScope.status === 400
+    && /not taught in Class 5/.test(outOfScope.json?.message ?? "")
+    && /Class 1/.test(outOfScope.json?.message ?? ""),
+    "a curriculum row for an excluded class is refused, naming both halves",
+    (outOfScope.json?.message ?? `${outOfScope.status}`).slice(0, 110));
+
+  /*
+    …and the rows that were already there.
+
+    Class 2-5 have been taking PE since step 9 committed the curriculum, so the
+    declaration now contradicts real teaching. That is a WARNING and not a
+    blocker, and the distinction is the whole reason Check 13 is not Check 8: a
+    teacher outside their scope would be put in front of a class they may not
+    take, whereas this only means two statements disagree — and refusing to
+    generate the school over a disagreement turns a convenience into a trap.
+  */
+  const mixed = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  const mismatch = (mixed.json?.warnings ?? []).find((w) => w.code === "SUBJECT_CLASS_MISMATCH");
+  check(mismatch !== undefined
+    && !(mixed.json?.blockers ?? []).some((b) => b.code === "SUBJECT_CLASS_MISMATCH"),
+    "curriculum that already contradicts it is a WARNING, never a blocker",
+    (mismatch?.message ?? "no warning").slice(0, 110));
+
+  // Reversible, and empty means "every class" rather than "no class"
+  // (invariant 7) — which is what leaves every school built before this
+  // behaving exactly as it did.
+  await call("PUT", `/subjects/${pe.id}`, S, { classIds: [] });
+  const widened = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  check(!(widened.json?.warnings ?? []).some((w) => w.code === "SUBJECT_CLASS_MISMATCH")
+    && widened.json?.score === 100,
+    "clearing it puts the subject back to every class, and Readiness is content",
+    `score ${widened.json?.score}`);
+
+  // ──────────────── §19.1 A SUBJECT TAUGHT IN ITS OWN ROOM
+  //
+  // The ordinary middle case §19 had no words for: Art happens in the Art Room,
+  // for everybody, and it is not a lab. Three claims, and the third is the only
+  // one that proves the feature rather than the screen:
+  //
+  //   1. ticked with no room named WARNS and changes nothing (invariant 7),
+  //   2. Readiness refuses a room that cannot hold the subject's week, by name,
+  //   3. a real generation puts every one of its lessons in that room.
+  console.log("\nA subject taught in its own room (§19.1):");
+
+  const art = await prisma.subject.findFirst({ where: { schoolId, name: "ZZGS Art & Craft" } });
+  const artRoom = await prisma.room.findFirst({ where: { schoolId, name: { contains: "Art" } } });
+  check(artRoom !== null,
+    "the guided setup proposed an Art Room AND attached the subject to it (§19)",
+    artRoom?.name ?? "no art room proposed");
+
+  // Ticked, nothing named: a warning, never a blocker. The school has
+  // half-said something and its timetable still generates.
+  await call("PUT", `/subjects/${art.id}`, S, { taughtInOwnRoom: true, roomIds: [] });
+  const halfSaid = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  const unset = (halfSaid.json?.warnings ?? []).find((w) => w.code === "SUBJECT_ROOM_UNSET");
+  check(unset !== undefined && !(halfSaid.json?.blockers ?? []).some((b) => b.code.startsWith("SUBJECT_ROOM")),
+    "ticked with no room named warns, and blocks nothing",
+    (unset?.message ?? "no warning").slice(0, 80));
+
+  // Now name it. The arithmetic is computed rather than guessed: one room holds
+  // `available` periods a week, and the whole school's demand for this subject
+  // has to fit inside however many rooms it has.
+  const artDemand = Number((await prisma.$queryRawUnsafe(`
+    SELECT COALESCE(SUM(cs.periods_per_week), 0) AS n
+    FROM class_subjects cs
+    JOIN class_sections sec ON sec.class_id = cs.class_id
+    WHERE cs.school_id = ${schoolId} AND cs.subject_id = ${art.id}
+      AND sec.timetable_config_id = ${primary.id}`))[0].n);
+  const roomWeek = 5 * 8; // this school's week, from WEEK above
+  const needed = Math.max(1, Math.ceil(artDemand / roomWeek));
+  await call("PUT", `/subjects/${art.id}`, S, { taughtInOwnRoom: true, roomIds: [artRoom.id] });
+
+  if (needed > 1) {
+    // Deliberately asserted BEFORE adding the rooms: a hard constraint with no
+    // feasibility check is a generation that fails, and this one fails in a way
+    // that looks like the solver's fault.
+    const tight = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+    const over = (tight.json?.blockers ?? []).find((b) => b.code === "SUBJECT_ROOM_OVERFLOW");
+    check(over !== undefined && over.message.includes(artRoom.name),
+      "one room that cannot hold the subject's week is a BLOCKER naming the room",
+      (over?.message ?? "not refused").slice(0, 100));
+  }
+
+  const extra = [];
+  for (let i = 2; i <= needed; i++) {
+    const made = await call("POST", "/rooms", S, { name: `${artRoom.name} ${i}`, roomType: "art", capacity: 40 });
+    extra.push(made.json.id);
+  }
+  const artRooms = [artRoom.id, ...extra];
+  await call("PUT", `/subjects/${art.id}`, S, { taughtInOwnRoom: true, roomIds: artRooms });
+
+  const ready = await call("GET", `/timetable-configs/${primary.id}/readiness`, S);
+  check(!(ready.json?.blockers ?? []).some((b) => b.code.startsWith("SUBJECT_ROOM")),
+    "with enough rooms for its week, Readiness is content",
+    `${artDemand} periods · ${artRooms.length} room(s) × ${roomWeek}`);
+
+  // The claim that matters: a real generation, and where the lessons landed.
+  const regen = await call("POST", `/timetable-configs/${primary.id}/generate`, S, {});
+  check(regen.status < 300, "regenerating with the rule in place", `${regen.status}`);
+  let regenDone = null;
+  for (let i = 0; i < 90 && !regenDone; i++) {
+    await sleep(2000);
+    const r = await call("GET", `/timetable-configs/${primary.id}/generate/latest`, S);
+    if (r.json?.state === "completed" || r.json?.state === "failed") regenDone = r.json;
+  }
+  check(regenDone?.state === "completed" && (regenDone?.result?.unplaced?.length ?? -1) === 0,
+    "and it still generates with nothing unplaced",
+    `${regenDone?.state} · ${regenDone?.result?.unplaced?.length ?? "?"} unplaced`);
+
+  /*
+    Scoped to the draft the regeneration just filled (§22).
+
+    Generate writes a NEW draft and leaves the previous one exactly as it was —
+    which is the point of named drafts, and which made the first version of this
+    check read "26 of 52": half the rows it counted were the older draft's, from
+    before the rule existed, correctly still in their home rooms.
+  */
+  const freshDraft = await prisma.timetableDraft.findFirst({
+    where: { timetableConfigId: primary.id },
+    orderBy: { draftNo: "desc" },
+    select: { id: true },
+  });
+  const artSlots = await prisma.timetableSlot.findMany({
+    where: { timetableConfigId: primary.id, subjectId: art.id, status: "draft", draftId: freshDraft.id },
+    select: { roomId: true },
+  });
+  check(artSlots.length > 0 && artSlots.every((s) => artRooms.includes(s.roomId)),
+    "EVERY lesson of it is in its own room, never a class's home room",
+    `${artSlots.filter((s) => artRooms.includes(s.roomId)).length} of ${artSlots.length}`);
+
+  // …and nothing else moved into it. A room claimed by one subject is not a
+  // spare room for whatever else needed somewhere to go.
+  const intruders = await prisma.timetableSlot.count({
+    where: {
+      timetableConfigId: primary.id, draftId: freshDraft.id,
+      roomId: { in: artRooms }, subjectId: { not: art.id },
+    },
+  });
+  check(intruders === 0, "and nothing else was put in it", `${intruders} intruders`);
 
   // The §15.3 columns are not decoration: check the solver honoured one.
   await prisma.teacher.updateMany({ where: { schoolId }, data: { maxConsecutivePeriodsPerDay: 2 } });

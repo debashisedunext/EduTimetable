@@ -51,13 +51,20 @@ export function ChipPicker({
   /** Its plural, where adding an "s" is wrong — "class" → "classes". */
   nounPlural?: string;
   /**
-   * Show "All N" as one chip while nothing has been removed (§27.9).
+   * Summarise a long selection into one chip (§27.9, §27.16).
    *
    * The classes cell starts with every class TICKED — a teacher takes their
    * whole wing until somebody says otherwise — and rendering that as sixteen
    * chips in every one of 122 rows would rebuild exactly the wall §26.1 pulled
-   * down for subjects. One chip says the same thing, and the picker behind it
-   * is where the removing happens.
+   * down for subjects.
+   *
+   * "All N" was only half of it, and the half that showed up second: remove ONE
+   * class and the cell went straight from a single chip to fifteen, which is
+   * the same wall arriving the moment somebody uses the control. So the summary
+   * covers both — every one of them, or simply a lot of them — and the list
+   * itself lives in the picker, where it is searchable and cannot push the row
+   * off the screen. A short selection still shows its chips, because at two or
+   * three the names ARE the summary.
    */
   collapseAll?: boolean;
   /**
@@ -91,20 +98,34 @@ export function ChipPicker({
 
   const plural = nounPlural ?? `${noun}s`;
   const everything = collapseAll && all.length > 3 && chosen.length === all.length;
+  /**
+   * The threshold. Four is where a row of chips stops reading as a list of
+   * names and starts reading as a block of colour — and it is also the point
+   * where the summary ("11 of 14 classes") carries more than the names do,
+   * since what a person checks at a glance is whether this row was narrowed.
+   */
+  const summarised = collapseAll && !everything && chosen.length > 3;
 
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 2px" }}>
-      {everything ? (
-        <span
-          title={`Every ${noun} — open the picker to remove any`}
+      {everything || summarised ? (
+        <button
+          onClick={(e) => { setQuery(""); toggle(e); }}
+          aria-expanded={open}
+          aria-label={`${chosen.length} of ${all.length} ${plural} for ${label} — open to change`}
+          // The names are still ON the element, so a hover answers "which ones?"
+          // without opening anything — the summary hides the list, it does not
+          // hide the answer.
+          title={everything ? `Every ${noun} — open to remove any` : chosen.join(", ")}
           style={{
-            font: "500 10.5px/1 Inter", padding: "4px 8px", borderRadius: 20,
-            border: "1px solid var(--brand)", background: "var(--steel-pale)",
-            color: "var(--brand-dark)",
+            font: "500 10.5px/1 Inter", padding: "4px 9px", borderRadius: 20, cursor: "pointer",
+            border: "1px solid var(--brand)", whiteSpace: "nowrap",
+            background: "var(--steel-pale)", color: "var(--brand-dark)",
           }}
         >
-          All {all.length} {plural}
-        </span>
+          {everything ? `All ${all.length} ${plural}` : `${chosen.length} of ${all.length} ${plural}`}
+          <span aria-hidden style={{ opacity: 0.6, marginLeft: 5 }}>✎</span>
+        </button>
       ) : chosen.map((name) => (
         <button
           key={name}
@@ -114,6 +135,13 @@ export function ChipPicker({
             display: "inline-flex", alignItems: "center", gap: 5,
             font: "500 10.5px/1 Inter", padding: "4px 6px 4px 8px", borderRadius: 20, cursor: "pointer",
             border: "1px solid var(--brand)", background: "var(--brand)", color: "#fff",
+            /*
+              A name never breaks mid-name. Without this "Computer Science" wrapped
+              INSIDE its own pill — two lines of white text in a rounded blue box,
+              with the ＋ pushed onto a third — and every row in the table grew to
+              match. A chip is a label, and a label that wraps has stopped being one.
+            */
+            whiteSpace: "nowrap",
           }}
         >
           {name}
@@ -121,23 +149,29 @@ export function ChipPicker({
         </button>
       ))}
 
-      <button
-        onClick={(e) => { setQuery(""); toggle(e); }}
-        aria-expanded={open}
-        aria-label={chosen.length === 0 ? `Add a ${noun} for ${label}` : `Add another ${noun} for ${label}`}
-        style={{
-          font: "500 10.5px/1 Inter", padding: "4px 8px", borderRadius: 20, cursor: "pointer",
-          border: `1px dashed ${open ? "var(--brand)" : "var(--line)"}`,
-          background: "var(--paper)", color: open ? "var(--brand)" : "var(--ink-faint)",
-        }}
-      >
-        {chosen.length === 0 ? `＋ Add a ${noun}` : everything ? "✎" : "＋"}
-      </button>
+      {/* The summary chip IS the opener, so a second one beside it would be two
+          controls doing one thing. */}
+      {!(everything || summarised) && (
+        <button
+          onClick={(e) => { setQuery(""); toggle(e); }}
+          aria-expanded={open}
+          aria-label={chosen.length === 0 ? `Add a ${noun} for ${label}` : `Add another ${noun} for ${label}`}
+          style={{
+            font: "500 10.5px/1 Inter", padding: "4px 8px", borderRadius: 20, cursor: "pointer",
+            border: `1px dashed ${open ? "var(--brand)" : "var(--line)"}`,
+            background: "var(--paper)", color: open ? "var(--brand)" : "var(--ink-faint)",
+          }}
+        >
+          {chosen.length === 0 ? `＋ Add a ${noun}` : "＋"}
+        </button>
+      )}
 
       {panelProps && (
         <div
           {...panelProps}
-          style={{ ...panelProps.style, width: 236, display: "flex", flexDirection: "column" }}
+          // `overflow: hidden` so a long list is clipped by the panel's own
+          // rounded border rather than spilling past it.
+          style={{ ...panelProps.style, width: 236, display: "flex", flexDirection: "column", overflow: "hidden" }}
         >
           <input
             autoFocus
@@ -156,7 +190,13 @@ export function ChipPicker({
               fontSize: 12, fontFamily: "inherit", background: "var(--offwhite)",
             }}
           />
-          <div style={{ overflowY: "auto", padding: "0 5px 6px" }}>
+          {/*
+            `minHeight: 0` is load-bearing, not tidiness. A flex item defaults to
+            `min-height: auto`, which refuses to shrink below its content — so
+            without it a fourteen-class list ignores the panel's `maxHeight`
+            entirely and grows down the page instead of scrolling inside it.
+          */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 5px 6px" }}>
             {ordered.length === 0 && (
               <div style={{ padding: "8px 8px 10px", fontSize: 11.5, color: "var(--ink-faint)" }}>
                 {all.length === 0 ? `No ${plural} yet — add them on an earlier step.` : `No ${noun} matches that.`}

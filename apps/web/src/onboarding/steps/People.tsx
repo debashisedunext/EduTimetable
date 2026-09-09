@@ -68,9 +68,34 @@ export function StepSubjects({ answers, onChange }: {
   onChange: (patch: Record<string, any>) => void;
 }) {
   const subjects: SubjectAnswer[] = answers.subjects ?? [];
+  /**
+   * §27.16 — the classes on offer, in ladder order.
+   *
+   * Read from the wings the previous step defined, so the two statements cannot
+   * disagree: a subject cannot be pinned to a class this school is not going to
+   * have. Empty until wings exist, and the picker says so.
+   */
+  const wings: WingAnswer[] = answers.wings ?? [];
+  const ladder = useMemo(() => planClasses(wings).classes.map((c) => ({ name: c.className })), [JSON.stringify(wings)]);
   const set = (next: SubjectAnswer[]) => onChange({ subjects: next });
   const edit = (i: number, patch: Partial<SubjectAnswer>) =>
     set(subjects.map((s, n) => (n === i ? { ...s, ...patch } : s)));
+
+  /** Which classes a row shows — everything until somebody removes one. */
+  const chosenClasses = (s: SubjectAnswer) =>
+    (s.classes ?? []).length === 0 ? ladder.map((c) => c.name) : (s.classes ?? []).filter((c) => ladder.some((x) => x.name === c));
+  /**
+   * §27.16 — removing the LAST class is refused, because `[]` is stored as
+   * "not stated" and read back as every class (invariant 7). Taking one away
+   * and getting all of them back is the one behaviour nobody would predict —
+   * §27.9's teacher scope refuses it for exactly this reason.
+   */
+  const toggleClass = (i: number, name: string) => {
+    const chosen = chosenClasses(rows[i]);
+    const next = chosen.includes(name) ? chosen.filter((c) => c !== name) : [...chosen, name];
+    if (next.length === 0) return;
+    edit(i, { classes: next.length === ladder.length ? [] : ladder.filter((c) => next.includes(c.name)).map((c) => c.name) });
+  };
 
   const rows = subjects.length > 0 ? subjects : [blankSubject()];
   const duplicate = (name: string, at: number) =>
@@ -112,10 +137,20 @@ export function StepSubjects({ answers, onChange }: {
           {/* §26.2 — set from the subject's name as it is typed, and shown
               rather than hidden: a default nobody can see is a default nobody
               corrects. */}
+          {/* §27.16 — which classes take this subject. Immediately after the
+              name because it is the field with the widest reach: it decides
+              where the Allocation step even offers the subject. */}
+          <th style={{ ...th, width: 128 }} title="Which classes take this subject — blank means every class">Taught to</th>
           <th style={{ ...th, width: 118 }} title="Scholastic subjects are examined; co-scholastic ones are not">Category</th>
           <th style={{ ...th, width: 108 }} title="Higher is placed earlier in the day — a preference, not a rule">Priority</th>
           <th style={{ ...th, width: 150 }} title="Which side of lunch this may be taught">Placement</th>
           <th style={{ ...th, width: 62 }}>Lab</th>
+          {/* §19.1 — WHETHER only. WHICH room is a fact about the room, and the
+              Rooms step is where a room says which subjects it serves. */}
+          <th style={{ ...th, width: 78 }}
+            title="Always taught in its own room — a music room, a computer room — rather than the class's own">
+            Own room
+          </th>
           <th style={{ ...th, width: 74 }}>Double</th>
           <th style={{ ...th, width: 34 }} />
         </tr></thead>
@@ -137,6 +172,18 @@ export function StepSubjects({ answers, onChange }: {
                   onChange={(e) => edit(i, { code: e.target.value })} />
               </td>
               <td style={td}>
+                <ChipPicker
+                  all={ladder}
+                  chosen={chosenClasses(s)}
+                  noun="class"
+                  nounPlural="classes"
+                  keepOrder
+                  collapseAll
+                  label={s.name?.trim() || `subject ${i + 1}`}
+                  onToggle={(name) => toggleClass(i, name)}
+                />
+              </td>
+              <td style={td}>
                 <CategorySelect value={placementOf(s).category}
                   onChange={(category) => edit(i, { category })} />
               </td>
@@ -150,6 +197,11 @@ export function StepSubjects({ answers, onChange }: {
               <td style={{ ...td, textAlign: "center" }}>
                 <input type="checkbox" checked={Boolean(s.isLab)} aria-label={`${s.name} needs a lab`}
                   onChange={(e) => edit(i, { isLab: e.target.checked })} />
+              </td>
+              <td style={{ ...td, textAlign: "center" }}>
+                <input type="checkbox" checked={Boolean(s.taughtInOwnRoom)}
+                  aria-label={`${s.name} is taught in its own room`}
+                  onChange={(e) => edit(i, { taughtInOwnRoom: e.target.checked })} />
               </td>
               <td style={{ ...td, textAlign: "center" }}>
                 <input type="checkbox" checked={Boolean(s.requiresDoublePeriod)}
@@ -306,14 +358,25 @@ export function StepTeachers({ answers, onChange }: {
 
       <Scroll max={340}>
         <thead><tr>
-          <th style={{ ...th, width: "24%" }}>Name</th>
+          <th style={{ ...th, width: "20%" }}>Name</th>
           <th style={{ ...th, width: 74 }}>Code</th>
           <th style={{ ...th, width: 58 }}>Initials</th>
-          <th style={{ ...th }}>Teaches</th>
+          {/*
+            Wide enough for the longest subject name a school actually has.
+
+            It was the flexible column, which sounds right and is not: every
+            other column here takes a fixed width, so "flexible" meant "whatever
+            is left", and what was left fitted "Computer" but not "Computer
+            Science". A minimum, not a fixed width — a school of one-word
+            subjects should not be made to look at 190px of white space, and the
+            table still gives the column more when the window allows.
+          */}
+          <th style={{ ...th, width: "16%", minWidth: 190 }}>Teaches</th>
           {/* §27.9 — WHICH classes, not just which wing. The Allocation step
               staffs the curriculum from this, so a blank here is the difference
-              between "give them anything in their wing" and "these four". */}
-          <th style={{ ...th, width: "18%" }} title="Which classes they take — blank means any class in their wing">
+              between "give them anything in their wing" and "these four".
+              Narrower since §27.16 summarised the cell into one chip. */}
+          <th style={{ ...th, width: 128 }} title="Which classes they take — blank means any class in their wing">
             Classes
           </th>
           {wings.length > 1 && <th style={{ ...th, width: 110 }}>Wing</th>}

@@ -33,17 +33,11 @@ export interface OnboardingState {
   shouldPrompt: boolean;
 }
 
+// §8.2 — TWO doors, not three. The manual one led to a nine-step wizard whose
+// five master steps are now the Masters screen and whose curriculum and mapping
+// steps are the Allocation grid; offering it as a third way to set a school up
+// was offering a third writer over the same rows.
 const DOORS = [
-  {
-    key: "manual" as const,
-    icon: "✎",
-    title: "Manual entry",
-    body:
-      "The full Setup Wizard, one master at a time — years, classes, rooms, subjects, teachers, " +
-      "curriculum, mappings. Every field, under your control.",
-    best: "Best when your data is unusual · ~45–90 min",
-    to: "/setup",
-  },
   {
     key: "guided" as const,
     icon: "⚡",

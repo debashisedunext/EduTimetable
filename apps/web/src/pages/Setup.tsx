@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
+import { asMessage, confirmDelete, DataTable, ErrorNote, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
-import { StepCurriculum, StepTeachers, StepTeacherMapping, StepConfig } from "./SetupAdvanced";
+import { StepConfig } from "./SetupAdvanced";
 import { StepElectives } from "./Electives";
 import { TermsEditor } from "../terms/TermsEditor";
 import { CategorySelect, LunchRules, lunchSummary, PrioritySelect } from "../subjects/Placement";
+import { ChipPicker } from "../onboarding/steps/ChipPicker";
 import { defaultsFor } from "@edutimetable/shared";
+import { MasterPane, PaneActions, PaneField } from "../masters/MasterPane";
 
 /**
  * §26.2 — the placement fields the admin has actually set.
@@ -26,29 +28,29 @@ const clean = (form: any) => {
   return out;
 };
 
-// Capacity-first order: Timetable Config (periods/week capacity) precedes
-// Curriculum and Teacher Mapping so their periods/week entries validate
-// against an already-defined week.
-const STEPS = [
-  "Academic Year",
-  "Classes & Sections",
-  "Rooms",
-  "Subjects",
-  "Teachers",
-  "Timetable Config",
-  "Curriculum",
-  "Teacher Mapping",
-  "Electives",
-];
+/**
+ * §8.2 — what is left of the old nine-step wizard: the timetable's own week.
+ *
+ * The five master steps moved to the Masters screen, where they are a set of
+ * things a school edits rather than a sequence it walks. Curriculum and Teacher
+ * Mapping moved to the Allocation page, which was already the better answer to
+ * both — one grid, class-sections down and subjects across, instead of two
+ * lists that had to quote each other's numbers.
+ *
+ * What could not move is here. A period grid, its breaks, its §28 activities
+ * and which class-sections a timetable covers are facts about **one timetable**,
+ * not about the school, so they belong beside the timetable and not among the
+ * masters. Reached from the Timetables screen, which is where a wing is chosen.
+ */
+const STEPS = ["The week", "Split electives"];
 
-/** Setup Wizard (§8.1) — list-first, form-second on every step. */
 export function Setup() {
   const [step, setStep] = useState(0);
   const { current } = useConfigCtx();
 
   return (
     <div>
-      {/* §16: the whole wizard can be skipped by uploading one spreadsheet */}
+      {/* §16: the whole thing can still be skipped by uploading one spreadsheet */}
       <div style={{
         display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", marginBottom: 16,
         background: "var(--steel-pale)", border: "1px solid var(--steel-light)", borderRadius: 10,
@@ -62,53 +64,32 @@ export function Setup() {
         </Link>
       </div>
 
-      {/* stepper spans the full width: connector lines flex-grow so all steps
-          stay visible without horizontal scroll; wraps on narrow screens */}
-      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 10, marginBottom: 22 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
         {STEPS.map((label, i) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", flex: i > 0 ? "1 1 auto" : "0 0 auto", minWidth: 0 }}>
-            {i > 0 && <div style={{ flex: 1, minWidth: 12, height: 1.5, background: "var(--line)", margin: "0 8px" }} />}
-            <button
-              onClick={() => setStep(i)}
-              style={{ display: "flex", alignItems: "center", gap: 7, background: "none", border: "none", padding: 0, flexShrink: 0, cursor: "pointer" }}
-            >
-              <span style={{
-                width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center",
-                fontSize: 11.5, fontWeight: 700,
-                background: i === step ? "var(--brand)" : i < step ? "var(--accent)" : "var(--steel-pale)",
-                color: i <= step ? "#fff" : "var(--steel)",
-              }}>{i + 1}</span>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: i === step ? "var(--ink)" : "var(--ink-faint)", whiteSpace: "nowrap" }}>
-                {label}
-              </span>
-            </button>
-          </div>
+          <button key={label} onClick={() => setStep(i)} className="btn"
+            style={{
+              padding: "5px 13px", fontSize: 12.5,
+              background: i === step ? "var(--brand)" : "var(--paper)",
+              color: i === step ? "#fff" : "var(--ink)",
+              borderColor: i === step ? "var(--brand)" : "var(--line)",
+            }}>{label}</button>
         ))}
+        <span style={{ flex: 1 }} />
+        {/* The masters are no longer steps of this, so say where they went. */}
+        <Link to="/masters" style={{ fontSize: 12.5, color: "var(--brand)", fontWeight: 600 }}>
+          Subjects, classes, rooms and teachers are on Masters →
+        </Link>
       </div>
 
-      {current && step >= 5 && (
-        <p className="screen-sub">Editing timetable: <b>{current.name}</b></p>
-      )}
+      {current && <p className="screen-sub">Editing timetable: <b>{current.name}</b></p>}
 
-      {step === 0 && <StepAcademicYear />}
-      {step === 1 && <StepClasses />}
-      {step === 2 && <StepRooms />}
-      {step === 3 && <StepSubjects />}
-      {step === 4 && <StepTeachers onNext={() => setStep(5)} />}
-      {step === 5 && <StepConfig />}
-      {step === 6 && <StepCurriculum />}
-      {step === 7 && <StepTeacherMapping />}
-      {step === 8 && <StepElectives />}
-
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-        <button className="btn" style={{ border: "1px solid var(--line)" }} disabled={step === 0} onClick={() => setStep(step - 1)}>← Back</button>
-        <button className="btn btn-primary" disabled={step === STEPS.length - 1} onClick={() => setStep(step + 1)}>Next →</button>
-      </div>
+      {step === 0 && <StepConfig />}
+      {step === 1 && <StepElectives />}
     </div>
   );
 }
 
-function StepAcademicYear() {
+export function StepAcademicYear() {
   const { data, refetch } = useApi<any[]>("/academic-years");
   const [form, setForm] = useState({ name: "", startDate: "", endDate: "" });
   const [editId, setEditId] = useState<number | null>(null);
@@ -135,63 +116,95 @@ function StepAcademicYear() {
   };
 
   return (
-    <Card title="Academic Years" sub="Everything downstream is scoped to a year.">
-      <ErrorNote message={error} />
-      <DataTable
-        headers={["Name", "Start", "End", "Active", ""]}
-        rows={(data ?? []).map((y) => [
-          y.name, y.startDate?.slice(0, 10), y.endDate?.slice(0, 10),
-          y.isActive ? <span key="a" className="badge badge-ok">active</span> : "—",
-          <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
-            {/* §25 — a session runs as one year or as terms, and this is where
-                that is decided. Beside Edit rather than inside it: the term
-                calendar is a different question from the session's own dates,
-                and it is the one a school answers once and lives with. */}
-            <button
-              style={{
-                border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11.5,
-                borderRadius: 7, cursor: "pointer",
-                background: termsFor === y.id ? "var(--brand)" : "var(--paper)",
-                color: termsFor === y.id ? "#fff" : "var(--ink)",
-              }}
-              onClick={() => setTermsFor(termsFor === y.id ? null : y.id)}
-            >
-              ⌛ Terms
-            </button>
-            <RowActions
-              onEdit={() => { setEditId(y.id); setForm({ name: y.name, startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }); }}
-              onDelete={() => remove(y)} />
-          </span>,
-        ])}
-      />
+    <MasterPane
+      title="Academic Years"
+      sub="Everything downstream is scoped to a year."
+      formTitle={editId ? `Editing ${data?.find((x) => x.id === editId)?.name ?? "session"}` : "Add a session"}
+      form={
+        <>
+          <ErrorNote message={error} />
+          <PaneField label="Name (e.g. 2026-27)">
+            <input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </PaneField>
+          <PaneField label="Start date">
+            <input type="date" style={inputStyle} value={form.startDate}
+              onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
+          </PaneField>
+          <PaneField label="End date">
+            <input type="date" style={inputStyle} value={form.endDate}
+              onChange={(e) => setForm({ ...form, endDate: e.target.value })} />
+          </PaneField>
+          <PaneActions
+            editing={editId !== null}
+            disabled={!form.name || !form.startDate || !form.endDate}
+            onSave={save} onCancel={reset} />
 
-      {termsFor !== null && (() => {
-        const y = (data ?? []).find((row) => row.id === termsFor);
-        if (!y) return null;
-        return (
-          <TermsEditor
-            key={y.id}
-            academicYearId={y.id}
-            session={{ startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }}
-          />
-        );
-      })()}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
-        <Field label="Name (e.g. 2026-27)"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-        <Field label="Start date"><input type="date" style={inputStyle} value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>
-        <Field label="End date"><input type="date" style={inputStyle} value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name || !form.startDate || !form.endDate}>
-          {editId ? "✓ Save changes" : "＋ Add"}
-        </button>
-        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
-      </div>
-    </Card>
+          {/*
+            §25 — the term calendar, in the form column with the session it
+            belongs to. It used to open BELOW the table, which put a
+            three-term calendar between the list and the form and made the
+            scroll this screen was rebuilt to remove.
+          */}
+          {termsFor !== null && (() => {
+            const y = (data ?? []).find((row) => row.id === termsFor);
+            if (!y) return null;
+            return (
+              <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+                <TermsEditor
+                  key={y.id}
+                  academicYearId={y.id}
+                  session={{ startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }}
+                />
+              </div>
+            );
+          })()}
+        </>
+      }
+      list={
+        <DataTable
+          headers={["Name", "Start", "End", "Active", ""]}
+          rows={(data ?? []).map((y) => [
+            y.name, y.startDate?.slice(0, 10), y.endDate?.slice(0, 10),
+            y.isActive ? <span key="a" className="badge badge-ok">active</span> : "—",
+            <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+              {/* §25 — a session runs as one year or as terms, and this is where
+                  that is decided. Beside Edit rather than inside it: the term
+                  calendar is a different question from the session's own dates. */}
+              <button
+                style={{
+                  border: "1px solid var(--line)", padding: "4px 9px", fontSize: 11.5,
+                  borderRadius: 7, cursor: "pointer",
+                  background: termsFor === y.id ? "var(--brand)" : "var(--paper)",
+                  color: termsFor === y.id ? "#fff" : "var(--ink)",
+                }}
+                onClick={() => setTermsFor(termsFor === y.id ? null : y.id)}
+              >
+                ⌛ Terms
+              </button>
+              <RowActions
+                onEdit={() => { setEditId(y.id); setForm({ name: y.name, startDate: y.startDate?.slice(0, 10) ?? "", endDate: y.endDate?.slice(0, 10) ?? "" }); }}
+                onDelete={() => remove(y)} />
+            </span>,
+          ])}
+        />
+      }
+    />
   );
 }
 
-function StepClasses() {
+export function StepClasses() {
   const { data: classes, refetch } = useApi<any[]>("/classes");
   const { data: years } = useApi<any[]>("/academic-years");
+  /*
+    §30 — deliberately NOT narrowed to the selected timetable's pool, unlike the
+    pickers on Electives, Extra Classes and Subject Mapping.
+
+    This is where cohort rows are MANAGED, including ones attached to no
+    timetable at all; filtering would make those unreachable from the one screen
+    that exists to reach them. It can afford to show every pool because it
+    already distinguishes them — the table has a Timetable column, which is the
+    qualifier decision §30 asks for wherever several are legitimately in view.
+  */
   const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
   const [className, setClassName] = useState("");
   const [editClassId, setEditClassId] = useState<number | null>(null);
@@ -242,76 +255,155 @@ function StepClasses() {
 
   const smallInput: React.CSSProperties = { ...inputStyle, padding: "5px 8px", fontSize: 12 };
 
+  /**
+   * §8.5 — one screen, two entities, no scroll.
+   *
+   * A class and a class-section are different things and used to be two stacked
+   * cards, which put the second below the fold on every school with more than a
+   * handful of classes — and the class-sections table is the one that matters,
+   * because it is where "belongs to no timetable" is visible at all.
+   *
+   * So class-SECTIONS are the list (they are the scheduling unit, §3.10) and
+   * classes live in the form column, where a school touches them once a year.
+   * Class-sections keep editing IN the row, as they already did: three fields
+   * fit, and it means the row you are changing never moves.
+   */
   return (
-    <>
-      <Card title="Classes" sub="Grades I–XII, in display order.">
-        <ErrorNote message={error} />
-        <DataTable
-          headers={["Class", "Sections", ""]}
-          rows={(classes ?? []).map((c) => [
-            c.name, c.sections.map((s: any) => s.name).join(", ") || "—",
-            <RowActions key="x"
-              onEdit={() => { setEditClassId(c.id); setClassName(c.name); }}
-              onDelete={() => removeClass(c)} />,
-          ])}
-        />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
-          <Field label={editClassId ? "Rename class" : "Class name (e.g. Class 7)"}>
+    <MasterPane
+      title="Class-Sections"
+      sub="The scheduling units. A class-section belongs to exactly one timetable (§3.10), and until it does, no timetable can see it."
+      actions={<span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{(sections ?? []).length} section(s)</span>}
+      formTitle="Classes"
+      formSub="A class holds its sections. Add the class first, then its sections."
+      form={
+        <>
+          <ErrorNote message={error} />
+          {/*
+            The class list, compact. Not a second DataTable: at 14 classes a
+            table of two columns is a lot of furniture for a list of names, and
+            this column is 340px wide.
+          */}
+          <div style={{ maxHeight: 210, overflow: "auto", border: "1px solid var(--line)", borderRadius: 8, marginBottom: 11 }}>
+            {(classes ?? []).length === 0 && (
+              <p style={{ fontSize: 11.5, color: "var(--ink-faint)", padding: "9px 10px", margin: 0 }}>
+                No classes yet.
+              </p>
+            )}
+            {(classes ?? []).map((c) => (
+              <div key={c.id} style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "5px 9px",
+                borderBottom: "1px solid var(--line)",
+                background: editClassId === c.id ? "var(--steel-pale)" : undefined,
+              }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5 }}>
+                  <b>{c.name}</b>
+                  <span style={{ color: "var(--ink-faint)" }}>
+                    {" "}{c.sections.map((x: any) => x.name).join(", ") || "no sections"}
+                  </span>
+                </span>
+                <RowActions
+                  onEdit={() => { setEditClassId(c.id); setClassName(c.name); }}
+                  onDelete={() => removeClass(c)} />
+              </div>
+            ))}
+          </div>
+
+          <PaneField label={editClassId ? "Rename class" : "Class name (e.g. Class 7)"}>
             <input style={inputStyle} value={className} onChange={(e) => setClassName(e.target.value)} />
-          </Field>
-          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={saveClass} disabled={!className}>
-            {editClassId ? "✓ Save" : "＋ Add Class"}
-          </button>
-          {editClassId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={() => { setEditClassId(null); setClassName(""); }}>Cancel</button>}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
-          <Field label="Add section to">
-            <select style={inputStyle} value={secForm.classId} onChange={(e) => setSecForm({ ...secForm, classId: e.target.value })}>
-              <option value="">— choose class —</option>
-              {(classes ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Section name (A, B…)"><input style={inputStyle} value={secForm.name} onChange={(e) => setSecForm({ ...secForm, name: e.target.value })} /></Field>
-          <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={addSection} disabled={!secForm.classId || !secForm.name}>＋ Add Section</button>
-        </div>
-      </Card>
-      <Card title="Class-Sections" sub="The scheduling units. Assign them to a timetable in the last step.">
-        <DataTable
-          headers={["Class-Section", "Strength", "Timetable", "Class Teacher", ""]}
-          rows={(sections ?? []).map((cs) => {
-            const edit = csEdit && csEdit.id === cs.id ? csEdit : null;
-            return edit
-              ? [
-                  <span key="a" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <b>{cs.label.split("-").slice(0, -1).join("-")}-</b>
-                    <input style={{ ...smallInput, width: 54 }} value={edit.sectionName}
-                      onChange={(e) => setCsEdit({ ...edit, sectionName: e.target.value })} />
-                  </span>,
-                  <input key="b" type="number" style={{ ...smallInput, width: 70 }} placeholder="—" value={edit.strength}
-                    onChange={(e) => setCsEdit({ ...edit, strength: e.target.value })} />,
-                  cs.timetableConfigName ?? "—",
-                  cs.classTeacherName ?? "—",
-                  <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                    <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11.5 }} onClick={saveCs}>✓ Save</button>
-                    <button className="btn" style={{ padding: "4px 10px", fontSize: 11.5, border: "1px solid var(--line)" }} onClick={() => setCsEdit(null)}>Cancel</button>
-                  </span>,
-                ]
-              : [
-                  <b key="a">{cs.label}</b>, cs.strength ?? "—",
-                  cs.timetableConfigName ?? <span key="b" className="badge badge-error">unassigned</span>,
-                  cs.classTeacherName ?? <span key="c" style={{ color: "var(--ink-faint)" }}>—</span>,
-                  <RowActions key="x"
-                    onEdit={() => setCsEdit({ id: cs.id, sectionName: cs.label.split("-").pop() ?? "", strength: cs.strength == null ? "" : String(cs.strength) })}
-                    onDelete={() => removeCs(cs)} />,
-                ];
-          })}
-        />
-      </Card>
-    </>
+          </PaneField>
+          <PaneActions
+            editing={editClassId !== null}
+            disabled={!className}
+            onSave={saveClass}
+            onCancel={() => { setEditClassId(null); setClassName(""); }}
+            addLabel="＋ Add class"
+          />
+
+          <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+            <PaneField label="Add a section to">
+              <select style={inputStyle} value={secForm.classId}
+                onChange={(e) => setSecForm({ ...secForm, classId: e.target.value })}>
+                <option value="">— choose class —</option>
+                {(classes ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </PaneField>
+            <PaneField label="Section name (A, B…)">
+              <input style={inputStyle} value={secForm.name}
+                onChange={(e) => setSecForm({ ...secForm, name: e.target.value })} />
+            </PaneField>
+            <button className="btn btn-primary" style={{ fontSize: 12.5, width: "100%" }}
+              onClick={addSection} disabled={!secForm.classId || !secForm.name}>
+              ＋ Add section
+            </button>
+          </div>
+        </>
+      }
+      list={
+        <>
+          {/*
+            §8.2 — the gap between "I entered everything" and "Readiness says 0%".
+
+            Creating a class-section and giving it to a timetable are separate
+            acts, and the second happens on another screen. A school that does
+            the first and not the second has every master filled in and a
+            dashboard reading 0% with no obvious cause. So it is said once,
+            loudly, above the table, and it links to the screen that fixes it.
+          */}
+          {(sections ?? []).some((cs) => !cs.timetableConfigName) && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10,
+              borderLeft: "3px solid var(--amber)", background: "var(--amber-bg)",
+              padding: "9px 12px", borderRadius: "0 8px 8px 0", fontSize: 12.5, lineHeight: 1.5,
+            }}>
+              <span style={{ flex: 1, minWidth: 240, color: "var(--ink-soft)" }}>
+                <strong style={{ color: "var(--ink)" }}>
+                  {(sections ?? []).filter((cs) => !cs.timetableConfigName).length} class-section(s) belong to no
+                  timetable yet.
+                </strong>{" "}
+                Readiness reports 0% for a timetable with no classes, however complete the rest of the school is.
+              </span>
+              <Link to="/setup" className="btn btn-primary" style={{ textDecoration: "none", fontSize: 12.5 }}>
+                Assign them →
+              </Link>
+            </div>
+          )}
+          <DataTable
+            headers={["Class-Section", "Strength", "Timetable", "Class Teacher", ""]}
+            rows={(sections ?? []).map((cs) => {
+              const edit = csEdit && csEdit.id === cs.id ? csEdit : null;
+              return edit
+                ? [
+                    <span key="a" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <b>{cs.label.split("-").slice(0, -1).join("-")}-</b>
+                      <input style={{ ...smallInput, width: 54 }} value={edit.sectionName}
+                        onChange={(e) => setCsEdit({ ...edit, sectionName: e.target.value })} />
+                    </span>,
+                    <input key="b" type="number" style={{ ...smallInput, width: 70 }} placeholder="—" value={edit.strength}
+                      onChange={(e) => setCsEdit({ ...edit, strength: e.target.value })} />,
+                    cs.timetableConfigName ?? "—",
+                    cs.classTeacherName ?? "—",
+                    <span key="x" style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11.5 }} onClick={saveCs}>✓ Save</button>
+                      <button className="btn" style={{ padding: "4px 10px", fontSize: 11.5, border: "1px solid var(--line)" }} onClick={() => setCsEdit(null)}>Cancel</button>
+                    </span>,
+                  ]
+                : [
+                    <b key="a">{cs.label}</b>, cs.strength ?? "—",
+                    cs.timetableConfigName ?? <span key="b" className="badge badge-error">unassigned</span>,
+                    cs.classTeacherName ?? <span key="c" style={{ color: "var(--ink-faint)" }}>—</span>,
+                    <RowActions key="x"
+                      onEdit={() => setCsEdit({ id: cs.id, sectionName: cs.label.split("-").pop() ?? "", strength: cs.strength == null ? "" : String(cs.strength) })}
+                      onDelete={() => removeCs(cs)} />,
+                  ];
+            })}
+          />
+        </>
+      }
+    />
   );
 }
 
-function StepRooms() {
+export function StepRooms() {
   const { data, refetch } = useApi<any[]>("/rooms");
   const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
   const { data: subjects } = useApi<any[]>("/subjects");
@@ -343,80 +435,88 @@ function StepRooms() {
   };
 
   return (
-    <Card title="Rooms" sub="Which class sits here, and which subjects it is set up for — the solver puts lessons in the room you name (§19).">
-      <ErrorNote message={error} />
-      <DataTable
-        headers={["Room", "Type", "Home room for", "Set up for", "Capacity", ""]}
-        rows={(data ?? []).map((r) => [
-          r.name,
-          <span key="t" className="chip mono">{r.roomType}</span>,
-          r.homeForLabels?.length ? <b key="h">{r.homeForLabels.join(", ")}</b> : <span key="h" style={{ color: "var(--ink-faint)" }}>—</span>,
-          r.subjectNames?.length
-            ? r.subjectNames.join(", ")
-            : <span key="s" style={{ color: "var(--ink-faint)" }}>{r.roomType === "lab" ? "any lab subject" : "—"}</span>,
-          r.capacity ?? "—",
-          <RowActions key="x"
-            onEdit={() => {
-              setEditId(r.id);
-              setForm({
-                name: r.name, roomType: r.roomType,
-                capacity: r.capacity == null ? "" : String(r.capacity),
-                homeFor: r.homeForIds?.[0] ? String(r.homeForIds[0]) : "",
-                subjectIds: r.subjectIds ?? [],
-              });
-            }}
-            onDelete={() => remove(r)} />,
-        ])}
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.4fr", gap: 10, marginTop: 14, alignItems: "end" }}>
-        <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-        <Field label="Type">
-          <select style={inputStyle} value={form.roomType} onChange={(e) => setForm({ ...form, roomType: e.target.value })}>
-            {["classroom", "lab", "sports", "music", "art", "auditorium", "other"].map((t) => <option key={t}>{t}</option>)}
-          </select>
-        </Field>
-        <Field label="Capacity"><input type="number" style={inputStyle} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></Field>
-        <Field label="Home room for" hint="The class-section that sits here all week">
-          <select style={inputStyle} value={form.homeFor} onChange={(e) => setForm({ ...form, homeFor: e.target.value })}>
-            <option value="">— none —</option>
-            {(sections ?? []).map((cs) => (
-              <option key={cs.id} value={cs.id}>{cs.label ?? `${cs.className}-${cs.sectionName}`}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <Field label="Set up for (labs and special rooms)"
-        hint="Leave empty for a general room. A lab listed for Biology will only ever take Biology periods.">
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {(subjects ?? []).map((sub) => {
-            const on = form.subjectIds.includes(sub.id);
-            return (
-              <label key={sub.id} className="chip" style={{
-                cursor: "pointer", userSelect: "none",
-                background: on ? "var(--brand)" : undefined, color: on ? "#fff" : undefined,
-              }}>
-                <input type="checkbox" style={{ display: "none" }} checked={on}
-                  onChange={() => setForm({
-                    ...form,
-                    subjectIds: on ? form.subjectIds.filter((x) => x !== sub.id) : [...form.subjectIds, sub.id],
-                  })} />
-                {sub.name}
-              </label>
-            );
-          })}
-        </div>
-      </Field>
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button className="btn btn-primary" onClick={save} disabled={!form.name}>
-          {editId ? "✓ Save changes" : "＋ Add"}
-        </button>
-        {editId && <button className="btn" style={{ border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
-      </div>
-    </Card>
+    <MasterPane
+      title="Rooms"
+      sub="Which class sits here, and which subjects it is set up for — the solver puts lessons in the room you name (§19)."
+      actions={<span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{(data ?? []).length} room(s)</span>}
+      formTitle={editId ? `Editing ${data?.find((x) => x.id === editId)?.name ?? "room"}` : "Add a room"}
+      form={
+        <>
+          <ErrorNote message={error} />
+          <PaneField label="Name">
+            <input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </PaneField>
+          <PaneField label="Type">
+            <select style={inputStyle} value={form.roomType} onChange={(e) => setForm({ ...form, roomType: e.target.value })}>
+              {["classroom", "lab", "sports", "music", "art", "auditorium", "other"].map((t) => <option key={t}>{t}</option>)}
+            </select>
+          </PaneField>
+          <PaneField label="Capacity">
+            <input type="number" style={inputStyle} value={form.capacity}
+              onChange={(e) => setForm({ ...form, capacity: e.target.value })} />
+          </PaneField>
+          <PaneField label="Home room for" hint="The class-section that sits here all week.">
+            <select style={inputStyle} value={form.homeFor} onChange={(e) => setForm({ ...form, homeFor: e.target.value })}>
+              <option value="">— none —</option>
+              {(sections ?? []).map((cs) => (
+                <option key={cs.id} value={cs.id}>{cs.label ?? `${cs.className}-${cs.sectionName}`}</option>
+              ))}
+            </select>
+          </PaneField>
+          <PaneField label="Set up for (labs and special rooms)"
+            hint="Leave empty for a general room. A lab listed for Biology will only ever take Biology periods.">
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(subjects ?? []).map((sub) => {
+                const on = form.subjectIds.includes(sub.id);
+                return (
+                  <label key={sub.id} className="chip" style={{
+                    cursor: "pointer", userSelect: "none",
+                    background: on ? "var(--brand)" : undefined, color: on ? "#fff" : undefined,
+                  }}>
+                    <input type="checkbox" style={{ display: "none" }} checked={on}
+                      onChange={() => setForm({
+                        ...form,
+                        subjectIds: on ? form.subjectIds.filter((x) => x !== sub.id) : [...form.subjectIds, sub.id],
+                      })} />
+                    {sub.name}
+                  </label>
+                );
+              })}
+            </div>
+          </PaneField>
+          <PaneActions editing={editId !== null} disabled={!form.name} onSave={save} onCancel={reset} />
+        </>
+      }
+      list={
+        <DataTable
+          headers={["Room", "Type", "Home room for", "Set up for", "Capacity", ""]}
+          rows={(data ?? []).map((r) => [
+            r.name,
+            <span key="t" className="chip mono">{r.roomType}</span>,
+            r.homeForLabels?.length ? <b key="h">{r.homeForLabels.join(", ")}</b> : <span key="h" style={{ color: "var(--ink-faint)" }}>—</span>,
+            r.subjectNames?.length
+              ? r.subjectNames.join(", ")
+              : <span key="s" style={{ color: "var(--ink-faint)" }}>{r.roomType === "lab" ? "any lab subject" : "—"}</span>,
+            r.capacity ?? "—",
+            <RowActions key="x"
+              onEdit={() => {
+                setEditId(r.id);
+                setForm({
+                  name: r.name, roomType: r.roomType,
+                  capacity: r.capacity == null ? "" : String(r.capacity),
+                  homeFor: r.homeForIds?.[0] ? String(r.homeForIds[0]) : "",
+                  subjectIds: r.subjectIds ?? [],
+                });
+              }}
+              onDelete={() => remove(r)} />,
+          ])}
+        />
+      }
+    />
   );
 }
 
-function StepSubjects() {
+export function StepSubjects() {
   const { data, refetch } = useApi<any[]>("/subjects");
   /**
    * §26.2 — the form carries the four placement fields as well.
@@ -429,9 +529,40 @@ function StepSubjects() {
   const [form, setForm] = useState<any>({ name: "", isLab: false, requiresDoublePeriod: false });
   const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** §19.1 — the rooms to choose from when a subject has one of its own. */
+  const { data: rooms } = useApi<any[]>("/rooms");
+  const roomName = (id: number) => (rooms ?? []).find((r) => r.id === id)?.name ?? `room #${id}`;
+  /**
+   * §27.16 — the classes to choose from, in LADDER order.
+   *
+   * `sequence`, not name: sorted alphabetically "Class 10" lands between
+   * "Class 1" and "Class 2", and a class list in that order is unreadable.
+   */
+  const { data: classes } = useApi<any[]>("/classes");
+  const ladder = [...(classes ?? [])].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+  const classId = (name: string) => ladder.find((c) => c.name === name)?.id;
+  const chosenClasses = (ids: number[]) =>
+    ladder.filter((c) => ids.includes(c.id)).map((c) => c.name);
+  /**
+   * Toggling in a picker that starts with EVERYTHING ticked.
+   *
+   * "Not stated" is stored as an empty list and READ as every class (invariant
+   * 7), so the cell shows all of them until one is removed — and removing the
+   * last one would store `[]`, which means "all", handing the subject straight
+   * back to every class. So the last class cannot be removed, exactly as
+   * §27.9's teacher scope cannot.
+   */
+  const toggleClass = (name: string) => {
+    const id = classId(name);
+    if (id === undefined) return;
+    const current = (form.classIds ?? []).length > 0 ? form.classIds : ladder.map((c) => c.id);
+    const next = current.includes(id) ? current.filter((x: number) => x !== id) : [...current, id];
+    if (next.length === 0) return;
+    setForm({ ...form, classIds: next.length === ladder.length ? [] : next });
+  };
 
   const shown = { ...defaultsFor(form.name ?? ""), ...clean(form) };
-  const reset = () => { setForm({ name: "", isLab: false, requiresDoublePeriod: false }); setEditId(null); };
+  const reset = () => { setForm({ name: "", isLab: false, requiresDoublePeriod: false, classIds: [] }); setEditId(null); };
   const save = async () => {
     try {
       if (editId) await api(`/subjects/${editId}`, { method: "PUT", body: JSON.stringify(form) });
@@ -446,55 +577,126 @@ function StepSubjects() {
   };
 
   return (
-    <Card title="Subjects" sub="Flag lab subjects — they must land in a lab room.">
-      <ErrorNote message={error} />
-      <DataTable
-        headers={["Subject", "Category", "Priority", "Placement", "Lab?", ""]}
-        rows={(data ?? []).map((s) => [
-          s.name,
-          s.category === "co_scholastic"
-            ? <span key="c" style={{ color: "var(--steel)" }}>Co-scholastic</span>
-            : "Scholastic",
-          <span key="p" className="mono" style={{ fontVariantNumeric: "tabular-nums" }}>{s.priority}</span>,
-          // Only the rows that actually carry a rule say anything — "any time,
-          // no gap" on every row is noise that hides the two that matter.
-          lunchSummary(s) ?? <span key="q" style={{ color: "var(--ink-faint)" }}>—</span>,
-          s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—",
-          <RowActions key="x"
-            onEdit={() => {
-              setEditId(s.id);
-              setForm({
-                name: s.name, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod,
-                category: s.category, priority: s.priority,
-                lunchRule: s.lunchRule, gapAfterLunch: s.gapAfterLunch,
-              });
-            }}
-            onDelete={() => remove(s)} />,
-        ])}
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 140px 150px auto auto auto auto", gap: 10, marginTop: 14, alignItems: "end" }}>
-        <Field label="Subject name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-        <Field label="Category">
-          <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
-            <CategorySelect value={shown.category} onChange={(category) => setForm({ ...form, category })} />
-          </div>
-        </Field>
-        <Field label="Priority — earlier in the day">
-          <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
-            <PrioritySelect value={shown.priority} onChange={(priority) => setForm({ ...form, priority })} />
-          </div>
-        </Field>
-        <div style={{ marginBottom: 18 }}>
-          <LunchRules value={shown} onChange={(patch) => setForm({ ...form, ...patch })} />
-        </div>
-        <label style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 24, fontSize: 13 }}>
-          <input type="checkbox" checked={form.isLab} onChange={(e) => setForm({ ...form, isLab: e.target.checked })} /> Requires lab
-        </label>
-        <button className="btn btn-primary" style={{ marginBottom: 18 }} onClick={save} disabled={!form.name}>
-          {editId ? "✓ Save changes" : "＋ Add"}
-        </button>
-        {editId && <button className="btn" style={{ marginBottom: 18, border: "1px solid var(--line)" }} onClick={reset}>Cancel</button>}
-      </div>
-    </Card>
+    <MasterPane
+      title="Subjects"
+      sub="Flag lab subjects — they must land in a lab room."
+      actions={<span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{(data ?? []).length} subject(s)</span>}
+      formTitle={editId ? `Editing ${data?.find((x) => x.id === editId)?.name ?? "subject"}` : "Add a subject"}
+      formSub={editId ? undefined : "Everything except the name has a sensible default worked out from it."}
+      form={
+        <>
+          <ErrorNote message={error} />
+          <PaneField label="Subject name">
+            <input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </PaneField>
+          {/*
+            §27.16 — second, as it was when this was a row: it is the field with
+            the widest reach, because it decides where the Allocation page even
+            offers the subject.
+          */}
+          <PaneField label="Taught to" hint="Blank means every class.">
+            <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)", minHeight: 34 }}>
+              <ChipPicker
+                all={ladder}
+                chosen={(form.classIds ?? []).length === 0 ? ladder.map((c) => c.name) : chosenClasses(form.classIds)}
+                noun="class"
+                nounPlural="classes"
+                keepOrder
+                collapseAll
+                label={form.name?.trim() || "this subject"}
+                onToggle={toggleClass}
+              />
+            </div>
+          </PaneField>
+          <PaneField label="Category">
+            <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
+              <CategorySelect value={shown.category} onChange={(category) => setForm({ ...form, category })} />
+            </div>
+          </PaneField>
+          <PaneField label="Priority — earlier in the day">
+            <div style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--paper)" }}>
+              <PrioritySelect value={shown.priority} onChange={(priority) => setForm({ ...form, priority })} />
+            </div>
+          </PaneField>
+          <PaneField label="Placement around lunch">
+            <LunchRules value={shown} onChange={(patch) => setForm({ ...form, ...patch })} />
+          </PaneField>
+
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, marginBottom: 10 }}>
+            <input type="checkbox" checked={form.isLab} onChange={(e) => setForm({ ...form, isLab: e.target.checked })} />
+            Requires a lab
+          </label>
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, marginBottom: 10 }}>
+            <input type="checkbox" checked={!!form.requiresDoublePeriod}
+              onChange={(e) => setForm({ ...form, requiresDoublePeriod: e.target.checked })} />
+            Usually a double period
+          </label>
+
+          {/*
+            §19.1 — the checkbox and the room it needs, together. Ticking the box
+            without naming a room is the half-said state Check 5b has to warn
+            about, and the picker sits directly under it so most people do not
+            reach that state at all.
+          */}
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5 }}>
+            <input type="checkbox" checked={!!form.taughtInOwnRoom}
+              onChange={(e) => setForm({ ...form, taughtInOwnRoom: e.target.checked })} />
+            Taught in its own room
+          </label>
+          <select
+            value={(form.roomIds ?? [])[0] ?? ""}
+            disabled={!form.taughtInOwnRoom}
+            aria-label="The room this subject is taught in"
+            onChange={(e) => setForm({ ...form, roomIds: e.target.value ? [Number(e.target.value)] : [] })}
+            style={{ ...inputStyle, marginTop: 5, width: "100%", opacity: form.taughtInOwnRoom ? 1 : 0.45 }}
+          >
+            <option value="">— class's home room —</option>
+            {(rooms ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          {(form.roomIds ?? []).length > 1 && (
+            <small style={{ display: "block", fontSize: 10.5, color: "var(--ink-faint)", marginTop: 3 }}>
+              {form.roomIds.length} rooms set — choosing here replaces them all
+            </small>
+          )}
+
+          <PaneActions editing={editId !== null} disabled={!form.name} onSave={save} onCancel={reset} />
+        </>
+      }
+      list={
+        <DataTable
+          headers={["Subject", "Classes", "Category", "Priority", "Placement", "Lab?", "Room", ""]}
+          rows={(data ?? []).map((s) => [
+            s.name,
+            (s.classIds ?? []).length === 0
+              ? <span key="k" style={{ color: "var(--ink-faint)" }}>Every class</span>
+              : <span key="k">{chosenClasses(s.classIds).join(", ")}</span>,
+            s.category === "co_scholastic"
+              ? <span key="c" style={{ color: "var(--steel)" }}>Co-scholastic</span>
+              : "Scholastic",
+            <span key="p" className="mono" style={{ fontVariantNumeric: "tabular-nums" }}>{s.priority}</span>,
+            lunchSummary(s) ?? <span key="q" style={{ color: "var(--ink-faint)" }}>—</span>,
+            s.isLab ? <span key="l" className="badge badge-ok">lab</span> : "—",
+            !s.taughtInOwnRoom
+              ? <span key="r" style={{ color: "var(--ink-faint)" }}>Home room</span>
+              : (s.roomIds ?? []).length === 0
+                ? <span key="r" style={{ color: "var(--signal)" }}>own room — none set</span>
+                : <span key="r">{(s.roomIds ?? []).map(roomName).join(", ")}</span>,
+            <RowActions key="x"
+              onEdit={() => {
+                setEditId(s.id);
+                setForm({
+                  name: s.name, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod,
+                  category: s.category, priority: s.priority,
+                  lunchRule: s.lunchRule, gapAfterLunch: s.gapAfterLunch,
+                  taughtInOwnRoom: s.taughtInOwnRoom,
+                  roomIds: s.roomIds ?? [],
+                  classIds: s.classIds ?? [],
+                });
+              }}
+              onDelete={() => remove(s)} />,
+          ])}
+        />
+      }
+    />
   );
 }

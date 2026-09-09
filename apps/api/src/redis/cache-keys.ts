@@ -20,6 +20,15 @@ export const schoolPrefix = (schoolId: number) => `s${schoolId}`;
 export const readinessKey = (schoolId: number, configId: number) =>
   `${schoolPrefix(schoolId)}:readiness:${configId}`;
 
+/**
+ * §30.7 — every readiness answer this school holds.
+ *
+ * Needed because a readiness answer stopped being about one timetable alone:
+ * it now reports clashes with the OTHER timetables that are live, so publishing
+ * B changes what A says. Sweeping by config id would miss exactly that.
+ */
+export const readinessKeyPattern = (schoolId: number) => `${schoolPrefix(schoolId)}:readiness:*`;
+
 /** suffix: "draft" | "published" | "ctx" | "<status>:<date>" */
 export const slotsKey = (schoolId: number, configId: number, suffix: string) =>
   `${schoolPrefix(schoolId)}:slots:${configId}:${suffix}`;

@@ -17,6 +17,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_URL || "http://localhost:3000";
 const P = "ZZFIX";
@@ -64,6 +65,7 @@ async function build(prisma, schoolId) {
   });
   const config = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       schoolId, academicYearId: year.id, name: `${P} Main`,
       workingDays: [1, 2, 3, 4, 5], periodsPerDay: 3,
       periods: {
@@ -86,6 +88,7 @@ async function build(prisma, schoolId) {
     const section = await prisma.section.create({ data: { schoolId, classId: cls.id, name } });
     sections.push(await prisma.classSection.create({
       data: {
+        resourceGroupId: await groupFor(prisma, year.id),
         schoolId, classId: cls.id, sectionId: section.id, academicYearId: year.id,
         timetableConfigId: config.id, homeRoomId: rooms[i].id,
       },

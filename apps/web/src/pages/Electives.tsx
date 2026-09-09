@@ -75,7 +75,7 @@ export function StepElectives() {
   const { data: blocks, refetch } = useApi<Block[]>(
     yearId ? `/elective-blocks?academicYearId=${yearId}` : "/elective-blocks",
   );
-  const { data: sections } = useApi<any[]>("/class-sections");
+  const { data: sections } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
   const { data: subjects } = useApi<any[]>("/subjects");
   const { data: teachers } = useApi<any[]>("/teachers");
   const { data: rooms } = useApi<any[]>("/rooms");

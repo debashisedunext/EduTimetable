@@ -229,6 +229,16 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           (tx, ids) => tx.teacherSubject.count({ where: { subjectId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherSubject.deleteMany({ where: { subjectId: { in: ids } } }); },
         ),
+        // §27.16 — declared "this subject is taught to class X". Named for the
+        // same reason as the row above it: the FK cascades either way, and a
+        // cascade nobody was shown is exactly what §23's confirmation exists to
+        // prevent.
+        step(
+          "subjects' declared classes",
+          "deleted",
+          (tx, ids) => tx.subjectClass.count({ where: { subjectId: { in: ids } } }),
+          async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { subjectId: { in: ids } } }); },
+        ),
         step(
           "merged teaching groups",
           "deleted",
@@ -340,6 +350,14 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           "deleted",
           (tx, ids) => tx.teacherClassEligibility.count({ where: { classId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherClassEligibility.deleteMany({ where: { classId: { in: ids } } }); },
+        ),
+        // §27.16 — the other end of the same table: a class going away takes
+        // its name off every subject that named it.
+        step(
+          "subjects' declared classes",
+          "deleted",
+          (tx, ids) => tx.subjectClass.count({ where: { classId: { in: ids } } }),
+          async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { classId: { in: ids } } }); },
         ),
       ];
 

@@ -3,6 +3,10 @@ import { APP_GUARD, DiscoveryModule } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { BullModule } from "@nestjs/bullmq";
 import { PrismaModule } from "./prisma/prisma.module";
+import { FreezeModule } from "./freeze/freeze.module";
+import { ResourceGroupModule } from "./groups/resource-group.module";
+import { ValidityModule } from "./validity/validity.module";
+import { StaffingModule } from "./staffing/staffing.module";
 import { OnboardingModule } from "./onboarding/onboarding.module";
 import { UsersModule } from "./users/users.module";
 import { TenantModule } from "./tenant/tenant.module";
@@ -58,6 +62,12 @@ import { AutoFixService } from "./readiness/auto-fix.service";
     // CONTROL_DATABASE_URL keeps working as a single school.
     ControlModule,
     PrismaModule,
+    // §29.1 — global, so no allocation-writing module has to remember to wire
+    // it in before it can ask whether its timetable is frozen.
+    FreezeModule,
+    ResourceGroupModule,
+    ValidityModule,
+    StaffingModule,
     RedisModule,
     AuthModule,
     DemoModule,

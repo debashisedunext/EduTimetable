@@ -20,12 +20,14 @@ import { RequirePermission } from "../auth/decorators";
 import { type AuthedRequest } from "../masters/crud.util";
 import { OnboardingService } from "./onboarding.service";
 import { InterviewService } from "./interview.service";
+import { FreezeService } from "../freeze/freeze.service";
 
 @Controller()
 export class OnboardingController {
   constructor(
     private readonly onboarding: OnboardingService,
     private readonly interviewer: InterviewService,
+    private readonly freeze: FreezeService,
   ) {}
 
   /** Is this school new, has this person waved the prompt away, is there a draft? */
@@ -72,6 +74,30 @@ export class OnboardingController {
     });
   }
 
+  /**
+   * §3.10a — a timetable that has just been created, entered as a wing.
+   *
+   * Takes the config's id rather than its name: the draft is keyed by name, but
+   * reading that name off the row is what makes another school's id a 404 (§17)
+   * rather than a wing named after somebody else's timetable.
+   *
+   * The id is in the PATH rather than the body deliberately. §17.8's sweep
+   * addresses a route by its path parameters, so a body field would leave this
+   * one merely *classified* — a sentence in a table asserting it is safe —
+   * where a path parameter makes it a controlled experiment the suite actually
+   * runs. Writes nothing outside the draft: the config itself was created a
+   * moment earlier by the endpoint that owns configs.
+   */
+  @Post("onboarding/session/wing/:id")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  recordWing(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const configId = Number(id);
+    if (!Number.isInteger(configId) || configId <= 0) {
+      throw new BadRequestException("A timetable id is required");
+    }
+    return this.onboarding.recordWing(req.user.schoolId, req.user.sub, configId);
+  }
+
   /** What committing this step would create — same pipeline, dry. */
   @Get("onboarding/preview/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
@@ -82,7 +108,12 @@ export class OnboardingController {
   /** Commit this step's answers, through the §16 importer and nothing else. */
   @Post("onboarding/commit/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
-  commit(@Req() req: AuthedRequest, @Param("step") step: string) {
+  async commit(@Req() req: AuthedRequest, @Param("step") step: string) {
+    // §29.1 — the guided setup commits through the §16 importer, so it is the
+    // same blunt check for the same reason: a step's answers become rows by
+    // name, not by timetable id. Saving answers and previewing are untouched —
+    // nothing is written until Next.
+    await this.freeze.assertNoneFrozen("master data");
     return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step));
   }
 

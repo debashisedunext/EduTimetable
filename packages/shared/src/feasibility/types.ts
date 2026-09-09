@@ -26,6 +26,12 @@ export type IssueCode =
   | "LAB_NONE"
   | "LAB_OVERFLOW"
   | "LAB_TIGHT"
+  // Check 1b — a subject blocked out of a class's week (§4.7b)
+  | "SUBJECT_TIME_OFF_TIGHT"
+  // Check 5b — a subject taught in its own room (§19.1)
+  | "SUBJECT_ROOM_UNSET"
+  | "SUBJECT_ROOM_OVERFLOW"
+  | "SUBJECT_ROOM_TIGHT"
   // Check 9 — fixed room assignment (§19)
   | "LAB_SUBJECT_UNSERVED"
   | "LAB_SUBJECT_OVERFLOW"
@@ -60,6 +66,15 @@ export type IssueCode =
   | "MIN_DAY_IMPOSSIBLE"
   /** §28.1 — a teacher is past the school's own "getting full" line. */
   | "TEACHER_LOAD_ALERT"
+  /** §27.16 — a curriculum row for a class the subject is not declared for. */
+  | "SUBJECT_CLASS_MISMATCH"
+  /**
+   * §30.7 — a teacher or a room engaged by two LIVE timetables at the same
+   * moment. Not produced by the engine: the engine is Phase A and reads a
+   * snapshot of demand, while this compares two weeks that are already placed.
+   * Appended by `ReadinessService` after the score, and always a warning.
+   */
+  | "CROSS_TIMETABLE_CLASH"
   | "MIN_DAY_RELAXED"
   // Check 8 — teaching scope and engagement (§18)
   | "TEACHER_NOT_ELIGIBLE"
@@ -77,7 +92,9 @@ export interface EntityRef {
     | "room"
     | "config"
     | "merged_group"
-    | "elective_block";
+    | "elective_block"
+    /** §19.1 — the Subjects screen, where a subject's own room is set. */
+    | "subject";
   id: number;
   label: string;
 }
@@ -349,11 +366,50 @@ export interface FeasibilitySnapshot {
   labSubjectIds: number[];
   /** §26 — placement rules per subject id. A subject missing from here has none. */
   subjectPlacement: Record<number, SnapshotSubjectPlacement>;
+  /**
+   * §27.16 — the classes each subject is DECLARED for, by class id.
+   *
+   * Optional, and a subject missing from it — or present with an empty list —
+   * is "not stated" rather than "taught to nobody" (invariant 7). Every school
+   * built before the declaration existed reads exactly that way, which is what
+   * keeps Check 13 silent for all of them.
+   */
+  subjectClasses?: Record<number, number[]>;
   /** §19: the fixed room each class-section sits in, when one is recorded. */
   homeRoomBySection: Record<number, number | null>;
+  /**
+   * §4.7b — the cells each class-section is NOT in school, `id` being the
+   * section. Optional: absent means nothing is blocked, which is every school
+   * that has never opened the Availability screen.
+   *
+   * The engine needs only the counts (Check 1 subtracts them from the week);
+   * the solver needs the cells themselves and gets them from `SolverInput`.
+   */
+  classSectionTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /** §4.7b — the same, per subject: the cells it may not be taught in. */
+  subjectTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /** §4.7b — the same, per room: the cells it cannot be used in. */
+  roomTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
   /** §19: which lab rooms serve each lab subject. A lab with no subjects
    *  listed is general and appears under every lab subject. */
   labRoomsBySubject: Record<number, number[]>;
+  /**
+   * §19.1 — subjects marked "always taught in its own room".
+   *
+   * Optional so a snapshot built by an older caller (a fixture, a test) still
+   * type-checks and behaves exactly as before: no subject has the flag, so
+   * every lesson takes the home room.
+   */
+  ownRoomSubjectIds?: number[];
+  /**
+   * §19.1 — the rooms each of those subjects may use, from `room_subjects`.
+   *
+   * An EMPTY list means the flag was ticked and no room was ever named. That is
+   * "unstated", not "anywhere" (invariant 7): the lesson falls back to the home
+   * room and Check 5b says the flag is doing nothing, rather than the solver
+   * scattering Music through whichever classrooms happened to be free.
+   */
+  ownRoomsBySubject?: Record<number, number[]>;
   /** Room names, for messages that have to name one. */
   roomNames: Record<number, string>;
   /**

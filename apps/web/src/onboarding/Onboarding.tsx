@@ -14,7 +14,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { markOffered, wasOffered } from "./offered";
 import { WelcomeModal, type OnboardingState } from "./WelcomeModal";
-import { OnboardingWizard, type SchoolIdentity } from "./OnboardingWizard";
+import { useNavigate } from "react-router-dom";
+import { type SchoolIdentity } from "./OnboardingWizard";
 import { OnboardingChat } from "./OnboardingChat";
 
 /**
@@ -51,6 +52,7 @@ export function Onboarding({
   userName: string;
   canManage: boolean;
 }) {
+  const nav = useNavigate();
   const [state, setState] = useState<OnboardingState | null>(null);
   const [school, setSchool] = useState<SchoolIdentity | null>(null);
   const [view, setView] = useState<"none" | "welcome" | "wizard" | "chat">("none");
@@ -121,17 +123,29 @@ export function Onboarding({
     };
   }, [refresh]);
 
-  if (!canManage || view === "none" || !state || !school) return null;
+  /*
+    §8.3 — the wizard is a PAGE now, so "open it" means navigate.
 
-  if (view === "wizard") {
-    return (
-      <OnboardingWizard
-        school={school}
-        startAt={openAt}
-        onClose={() => { setView("none"); setOpenAt(null); refresh(); }}
-      />
-    );
-  }
+    Kept here rather than pushed out to every caller: the welcome screen, the
+    "carry on" button and the §24.6 chat hand-over all mean the same thing, and
+    each would otherwise have to know the route and its query string. Only the
+    answer changed — a URL instead of a piece of local state — so the address
+    bar says where you are, Back works, and the setup can be linked to.
+
+    In an effect rather than during render: this component decides to navigate
+    as a RESULT of a state change, and setting state while rendering to return a
+    redirect is the shape that makes a render loop somebody has to debug later.
+  */
+  useEffect(() => {
+    if (view !== "wizard") return;
+    const at = openAt;
+    setView("none");
+    setOpenAt(null);
+    nav(at !== null ? `/guided-setup?at=${at}` : "/guided-setup");
+  }, [view, openAt, nav]);
+
+  if (!canManage || view === "none" || view === "wizard" || !state || !school) return null;
+
 
   if (view === "chat") {
     return (

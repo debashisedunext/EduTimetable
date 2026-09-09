@@ -185,6 +185,8 @@ export * from "./electives/pins";
 export * from "./import/contract";
 export * from "./terms/terms";
 export * from "./onboarding/wizard";
+export * from "./timetable/window";
+export * from "./timetable/clash";
 export * from "./onboarding/suggest";
 export * from "./onboarding/load";
 export * from "./ai/data-entry";
@@ -194,6 +196,7 @@ export * from "./colors/palette";
 export * from "./sync/contract";
 export * from "./sync/reconcile";
 export * from "./sync/json-map";
+export * from "./restaff/engine";
 
 /** The school a session belongs to (§17, Phase 9.2). */
 export interface SessionSchool {

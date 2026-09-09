@@ -7,6 +7,10 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "test:isolation": "sh scripts/isolation-suite.sh",
+    "test:freeze": "node scripts/freeze-smoke.cjs",
+    "test:staffing": "node scripts/staffing-smoke.cjs",
+    "test:grids": "node scripts/reports-grid-smoke.cjs",
+    "test:groups": "node scripts/resource-groups-smoke.cjs",
     "lint": "eslint ."
   },
   "devDependencies": {

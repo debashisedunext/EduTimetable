@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { io } from "socket.io-client";
-import { PERMISSIONS, type MeResponse, type Permission } from "@edutimetable/shared";
+import { PERMISSIONS, windowLabel, type MeResponse, type Permission } from "@edutimetable/shared";
 import { api, clearToken, getToken, switchSchool } from "./api";
 import { useConfigCtx } from "./hooks";
 import { Icon, type IconName } from "./icons";
@@ -33,13 +33,15 @@ const NAV: NavGroup[] = [
     label: "Build",
     items: [
       { icon: "calendar", label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
-      { icon: "wand", label: "Setup Wizard", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "book", label: "Masters", to: "/masters", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "grid", label: "Allocation", to: "/allocation", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "wand", label: "Timetable Week", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
       { icon: "import", label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
       // §23 — the same pipeline, with the ERP as its source instead of a file.
       { icon: "sync", label: "Sync from ERP", to: "/sync", requires: PERMISSIONS.MASTERS_MANAGE },
       { icon: "split", label: "Split Electives", to: "/electives", requires: PERMISSIONS.MASTERS_MANAGE },
       // §4.7a — the rule the solver has always enforced, finally sayable.
-      { icon: "clock", label: "Teacher Availability", to: "/availability", requires: PERMISSIONS.MASTERS_MANAGE },
+      { icon: "clock", label: "Availability", to: "/availability", requires: PERMISSIONS.MASTERS_MANAGE },
       { icon: "checklist", label: "Readiness", to: "/readiness", requires: PERMISSIONS.TIMETABLE_GENERATE },
       { icon: "bolt", label: "Generate", to: "/generate", requires: PERMISSIONS.TIMETABLE_GENERATE },
     ],
@@ -51,6 +53,10 @@ const NAV: NavGroup[] = [
       { icon: "board", label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
       { icon: "publish", label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
       { icon: "swap", label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
+      // §29.2 — beside Substitute Center on purpose: both are "somebody is not
+      // taking their classes". A substitution is one day and an overlay; this
+      // is permanent and rewrites who owns the class.
+      { icon: "swap", label: "Staffing Changes", to: "/staffing", requires: PERMISSIONS.TIMETABLE_PUBLISH },
       { icon: "plus", label: "Extra & Guest Classes", to: "/extra-classes", requires: PERMISSIONS.TIMETABLE_EDIT },
     ],
   },
@@ -65,6 +71,9 @@ const NAV: NavGroup[] = [
     label: "Reference",
     items: [
       { icon: "chart", label: "Reports", to: "/reports", requires: PERMISSIONS.REPORTS_VIEW },
+      // §10.6 — beside Reports, because it is the same published week read the
+      // same way; what differs is that it shows several at once.
+      { icon: "grid", label: "Timetable Wall", to: "/wall", requires: PERMISSIONS.REPORTS_VIEW },
       { icon: "bell", label: "Notifications", to: "/notifications", requires: PERMISSIONS.NOTIFICATIONS_VIEW },
     ],
   },
@@ -94,19 +103,31 @@ const NAV: NavGroup[] = [
   // Manage / My Timetable / Intelligence / Reference groups arrive with Phases 2-7.
 ];
 
+/**
+ * §8.4 — the routes that take the pane's full width and height.
+ *
+ * Both are frames in their own right: a border, a pinned header and footer, and
+ * their own scrolling between them. An inset around one of those is a margin
+ * inside a margin, and on the Allocation grid it was costing rows of school.
+ */
+const FULL_BLEED = new Set(["/guided-setup", "/allocation"]);
+
 const TITLES: Record<string, [string, string]> = {
   "/": ["Build", "Timetables"],
-  "/setup": ["Build", "Setup Wizard"],
+  "/masters": ["Build", "Masters"],
+  "/allocation": ["Build", "Allocation"],
+  "/setup": ["Build", "Timetable Week"],
   "/import": ["Build", "Import Master Data"],
   "/sync": ["Build", "Sync Masters from the ERP"],
   "/electives": ["Build", "Split Electives"],
-  "/availability": ["Build", "Teacher Availability"],
+  "/availability": ["Build", "Availability"],
   "/readiness": ["Build", "Readiness Dashboard"],
   "/generate": ["Build", "Generate Timetable"],
   "/matrix": ["Manage", "Full Allocation Matrix"],
   "/board": ["Manage", "Draft Board"],
   "/publish": ["Manage", "Publish Confirmation"],
   "/substitutes": ["Manage", "Substitute Teacher Center"],
+  "/staffing": ["Manage", "Staffing Changes"],
   "/reports": ["Reference", "Reports"],
   "/notifications": ["Reference", "Notification Center"],
   "/my-timetable": ["My Timetable", "My Weekly Timetable"],
@@ -284,10 +305,22 @@ function Topbar({ me }: { me: MeResponse }) {
               onChange={(e) => setCurrentId(Number(e.target.value))}
               style={{ fontWeight: 700, fontSize: 13, color: "var(--brand)", border: "1px solid var(--steel-pale)", background: "var(--steel-pale)", borderRadius: 7, padding: "5px 9px" }}
             >
-              {configs.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
+              {/*
+                §30.5 — the window rides in the option text. Switching timetable
+                now changes which dates you are looking at, and on a school that
+                dates its timetables the name alone stops being enough to tell
+                two of them apart.
+              */}
+              {configs.map((c) => {
+                const when = windowLabel(c);
+                return <option key={c.id} value={c.id}>{when ? `${c.name} · ${when}` : c.name}</option>;
+              })}
             </select>
+            {current && windowLabel(current) && (
+              <span style={{ fontSize: 9.5, color: "var(--ink-faint)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                {windowLabel(current)}
+              </span>
+            )}
           </div>
         )}
         {me.permissions.includes(PERMISSIONS.NOTIFICATIONS_VIEW) && <Bell />}
@@ -323,6 +356,7 @@ function NavFlyout({ hover }: { hover: { label: string; top: number; on: boolean
 }
 
 export function Shell({ me }: { me: MeResponse }) {
+  const { pathname } = useLocation();
   const [collapsed, toggleCollapsed] = useNavCollapsed();
   // `on` drives the animation; `label` and `top` are deliberately kept after it
   // goes false so the flyout has something to slide back in with.
@@ -449,7 +483,17 @@ export function Shell({ me }: { me: MeResponse }) {
       </nav>
       <div className="main">
         <Topbar me={me} />
-        <div className="content">
+        {/*
+          §8.4 — the pages that want the pane's edges get them.
+
+          Everything else keeps a small inset so a card does not touch the
+          chrome; the guided setup and the Allocation grid are frames of their
+          own, with their own border and their own scrolling, and an inset
+          around them is a margin inside a margin. Listed here rather than
+          decided by each page, because it is a fact about the LAYOUT — a page
+          cannot remove padding its parent applied.
+        */}
+        <div className={FULL_BLEED.has(pathname) ? "content full-bleed" : "content"}>
           <Outlet />
         </div>
       </div>

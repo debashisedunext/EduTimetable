@@ -21,6 +21,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZDRF";
@@ -107,6 +108,7 @@ async function call(method, path, token, body) {
   });
   const config = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       schoolId: SCHOOL, name: `${P} Wing`, academicYearId: year.id,
       workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4,
       // §18 extra window, so the "extras belong to no draft" claim is testable
@@ -125,6 +127,7 @@ async function call(method, path, token, body) {
   const home = await prisma.room.create({ data: { schoolId: SCHOOL, name: `${P} Room A`, roomType: "classroom" } });
   const classSection = await prisma.classSection.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL,
       timetableConfigId: config.id, strength: 30, homeRoomId: home.id,
     },

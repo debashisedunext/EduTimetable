@@ -49,7 +49,18 @@ export async function capacityForClassSections(
  *
  *  Phase 19: the year is required. A class has sections in every session it has
  *  ever run, so without it a 2026-27 curriculum row was capped by whichever
- *  year happened to have the shortest week — including sessions long finished. */
+ *  year happened to have the shortest week — including sessions long finished.
+ *
+ *  §30 does NOT narrow this to the resource pool, and the reason is worth
+ *  stating because narrowing it is the obvious change and it is wrong. A
+ *  curriculum row is keyed (class, subject, year) and is deliberately SHARED
+ *  across pools — what Class 1 studies is a fact about the class and the
+ *  session, not about a timetable. A shared row therefore has to fit in every
+ *  pool that teaches that class, so the tightest week across the session is
+ *  exactly the right cap. Scoping it to one pool would let somebody enter 40
+ *  periods against an 8-period individual timetable and hand the 6-period
+ *  grouped wing a Readiness blocker instead of a form error — a worse place to
+ *  find out, and a rule the person who typed it never saw. */
 export async function capacityForClass(
   prisma: PrismaClient,
   classId: number,

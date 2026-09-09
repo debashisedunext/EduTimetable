@@ -7,6 +7,7 @@ import { ReadinessService } from "../readiness/readiness.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClassSections } from "./capacity.util";
 import { assertCanTeach } from "./teacher-scope.util";
+import { FreezeService } from "../freeze/freeze.service";
 
 /**
  * Split electives (§4.9) — the mirror of a merged group.
@@ -27,6 +28,7 @@ export class ElectiveBlocksController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly freeze: FreezeService,
   ) {}
 
   /**
@@ -77,6 +79,7 @@ export class ElectiveBlocksController {
     const memberIds = this.memberIds(body);
     const options = this.options(body);
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
+    await this.freeze.assertSections(memberIds, "a split elective block");
     // Every option teacher takes the block's member classes (§18).
     for (const o of options) {
       await assertCanTeach(this.prisma, o.teacherId, memberIds, { what: "this elective option" });
@@ -113,6 +116,19 @@ export class ElectiveBlocksController {
     const blockId = toInt(id, "id");
     const existing = await this.prisma.electiveBlock.findFirst({ where: { id: blockId } });
     if (!existing) throw new BadRequestException(`Elective block ${blockId} not found`);
+    // Both sides, as with a merged group: an edit may replace the member list,
+    // so it reaches the sections it leaves as well as the ones it joins.
+    const currentMembers = await this.prisma.electiveBlockMember.findMany({
+      where: { electiveBlockId: blockId },
+      select: { classSectionId: true },
+    });
+    await this.freeze.assertSections(
+      [
+        ...currentMembers.map((m) => m.classSectionId),
+        ...(Array.isArray(body.classSectionIds) ? this.memberIds(body) : []),
+      ],
+      "a split elective block",
+    );
 
     const data: Record<string, unknown> = {};
     if (body.name !== undefined) data.name = String(body.name);
@@ -166,6 +182,11 @@ export class ElectiveBlocksController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const members = await this.prisma.electiveBlockMember.findMany({
+      where: { electiveBlockId: toInt(id, "id") },
+      select: { classSectionId: true },
+    });
+    await this.freeze.assertSections(members.map((m) => m.classSectionId), "a split elective block");
     await uniq(() => this.prisma.electiveBlock.delete({ where: { id: toInt(id, "id") } }), "Elective block");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };

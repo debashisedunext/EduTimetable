@@ -10,6 +10,9 @@ import { Dashboard } from "./pages/Dashboard";
 import { DevLogin } from "./pages/DevLogin";
 import { Timetables } from "./pages/Timetables";
 import { Setup } from "./pages/Setup";
+import { Masters } from "./pages/Masters";
+import { AllocationEntry } from "./pages/AllocationEntry";
+import { GuidedSetup } from "./pages/GuidedSetup";
 import { Readiness } from "./pages/Readiness";
 import { Roles } from "./pages/Roles";
 import { Users } from "./pages/Users";
@@ -19,7 +22,9 @@ import { Board } from "./pages/Board";
 import { Publish } from "./pages/Publish";
 import { Substitutes } from "./pages/Substitutes";
 import { ExtraClasses } from "./pages/ExtraClasses";
+import { Staffing } from "./pages/Staffing";
 import { Reports } from "./pages/Reports";
+import { Wall } from "./pages/Wall";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
@@ -169,6 +174,11 @@ export default function App() {
             : me.permissions.includes(PERMISSIONS.TIMETABLE_VIEW_OWN) ? <MyTimetable />
             : <Dashboard me={me} />
           } />
+          <Route path="/masters" element={<Masters />} />
+          <Route path="/allocation" element={<AllocationEntry />} />
+          {/* §8.3 — the guided setup is a page, not a dialog over one. */}
+          <Route path="/guided-setup" element={<GuidedSetup />} />
+          {/* §8.2 — what is left of the wizard: the timetable's own week. */}
           <Route path="/setup" element={<Setup />} />
           <Route path="/import" element={<ImportMasters />} />
           <Route path="/sync" element={<SyncErp />} />
@@ -181,7 +191,9 @@ export default function App() {
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
           <Route path="/extra-classes" element={<ExtraClasses />} />
+          <Route path="/staffing" element={<Staffing />} />
           <Route path="/reports" element={<Reports me={me} />} />
+          <Route path="/wall" element={<Wall />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />

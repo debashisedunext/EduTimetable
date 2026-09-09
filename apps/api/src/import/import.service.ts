@@ -51,6 +51,7 @@ function electivePlacement(data: Record<string, unknown>): {
 }
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { ResourceGroupService } from "../groups/resource-group.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
 import { annotateWorkbook, buildWorkbook, parseWorkbook } from "./workbook";
 
@@ -69,6 +70,7 @@ export class ImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly groups: ResourceGroupService,
   ) {}
 
   // ---------------------------------------------------------------- snapshot
@@ -78,6 +80,12 @@ export class ImportService {
   }
 
   async existingData(schoolId: number): Promise<ExistingData> {
+    // §30 — the shared pool of each session, so a sheet row that names no
+    // timetable can still resolve to one.
+    const pools = new Map(
+      (await this.prisma.timetableGroup.findMany({ where: { schoolId, mode: "grouped" }, orderBy: { id: "asc" } }))
+        .map((g) => [g.academicYearId, g.id] as const),
+    );
     const [years, classes, sections, rooms, subjects, teachers, curriculum, mappings, configs, blocks] =
       await Promise.all([
         this.prisma.academicYear.findMany({ where: { schoolId } }),
@@ -117,7 +125,16 @@ export class ImportService {
     return {
       academicYears: years.map((y) => y.name),
       classes: classes.map((c) => c.name),
+      // Plain labels: this list is also what every other sheet's `Class Section`
+      // column is checked against, and what the template offers as a reference.
       classSections: sections.map((cs) => this.label(cs)),
+      /*
+        §30 — the same rows, qualified by pool, for the one question that needs
+        it: does THIS row already exist? Class 1-A exists once per pool, so the
+        label alone would tell an individual timetable that the main wing's
+        Class 1-A is its own — and it would open with no classes and no error.
+      */
+      classSectionsInPool: sections.map((cs) => `${this.label(cs)}||${cs.resourceGroupId}`),
       rooms: rooms.map((r) => r.name),
       subjects: subjects.map((s) => s.name),
       teacherCodes: teachers.map((t) => t.employeeCode),
@@ -127,6 +144,13 @@ export class ImportService {
       classTeacherAssigned: sections.filter((cs) => cs.classTeacherId !== null).map((cs) => this.label(cs)),
       electiveBlocks: blocks.map((b) => b.name),
       timetables: configs.map((c) => c.name),
+      // §30 — how a sheet row resolves to a pool: its timetable's, or its
+      // session's when it names none. The same rule
+      // `ResourceGroupService.forSection` applies on the write.
+      poolByTimetable: Object.fromEntries(configs.map((c) => [c.name.trim().toLowerCase(), c.resourceGroupId])),
+      poolByYear: Object.fromEntries(
+        years.map((y) => [y.name.trim().toLowerCase(), pools.get(y.id) ?? 0]),
+      ),
       capacityByTimetable,
       capacityByClassSection,
     };
@@ -166,7 +190,14 @@ export class ImportService {
           include: { subjects: { include: { subject: true } }, homeRoomOf: { include: { class: true, section: true } } },
           orderBy: { name: "asc" },
         }),
-        this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
+        this.prisma.subject.findMany({
+          where: { schoolId },
+          // §27.16 — ordered by the ladder, so the exported cell reads
+          // "Class 1, Class 2, Class 10" rather than alphabetically, where
+          // "Class 10" sorts between 1 and 2.
+          include: { classes: { include: { class: true }, orderBy: { class: { sequence: "asc" } } } },
+          orderBy: { name: "asc" },
+        }),
         this.prisma.teacher.findMany({
           where: { schoolId },
           include: {
@@ -223,10 +254,15 @@ export class ImportService {
         // no-op the export is supposed to be.
         Subjects: subjects.map((s) => ({
           name: s.name, code: s.code, isLab: s.isLab, requiresDoublePeriod: s.requiresDoublePeriod,
+          // §19.1 — the flag rides the round trip too. WHERE it is taught is
+          // already on the Rooms sheet, so the pair survives an export/import.
+          taughtInOwnRoom: s.taughtInOwnRoom,
           category: categoryToLabel(s.category),
           priority: s.priority,
           lunchRule: LUNCH_LABEL[s.lunchRule],
           gapAfterLunch: s.gapAfterLunch,
+          // §27.16 — so a downloaded workbook round-trips what it was given.
+          classNames: s.classes.map((x) => x.class.name),
         })),
         Teachers: teachers.map((t) => ({
           employeeCode: t.employeeCode, name: t.name, maxPeriodsPerDay: t.maxPeriodsPerDay,
@@ -498,9 +534,25 @@ export class ImportService {
         `There ${plan.totals.errors === 1 ? "is" : "are"} still ${plan.totals.errors} error(s) — nothing was written. Run the preview to see them.`,
       );
     }
-    if (plan.totals.create === 0) {
-      return { ok: true, created: {}, message: "Everything here already exists — nothing to add.", plan };
-    }
+    /*
+      §16.1 — no longer an early return, and that is the point.
+
+      This used to answer "everything here already exists — nothing to add" the
+      moment `create === 0`, and skip the whole transaction. Creating is not the
+      only thing a commit does: it also links rows that exist to each other — a
+      section to its timetable, a lab to its subjects, a teacher to what they
+      teach — and those links are not part of any natural key, so a row can
+      exist with a link missing and no amount of pressing Next would ever fill
+      it in. That is precisely what a school hit: every class entered, every
+      wing created, `timetable_config_id` NULL on all 32 sections, and Readiness
+      reporting 0% for a timetable with no classes.
+
+      The pass below is safe to run with nothing new: every create loop filters
+      on `isNew` and does nothing, and the linking steps are written to be
+      idempotent because they already ran on every commit that had any create
+      at all. What changes is only that "nothing new" no longer means "do
+      nothing" — it means "nothing new to create", and the message says so.
+    */
 
     const created: Record<string, number> = {};
     const bump = (k: string, n = 1) => { created[k] = (created[k] ?? 0) + n; };
@@ -574,6 +626,10 @@ export class ImportService {
             data: {
               schoolId, name: r.data.name, code: r.data.code ?? null,
               isLab: r.data.isLab ?? false, requiresDoublePeriod: r.data.requiresDoublePeriod ?? false,
+              // §19.1. Blank is false, not `defaultsFor`: the classifier has no
+              // opinion about whether a school HAS a music room, and guessing
+              // Yes would send every music lesson to a room that may not exist.
+              taughtInOwnRoom: r.data.taughtInOwnRoom ?? false,
               // An enum column validates to its LABEL ("Any time"), not the
               // stored value — hence the conversion, which also accepts the
               // raw value so a hand-edited sheet still imports.
@@ -675,6 +731,35 @@ export class ImportService {
           bump("teacherSubjects", subjectIds.length);
         }
 
+        /**
+         * §27.16 — which classes each subject is taught to.
+         *
+         * The third pass with this exact shape, and the third with the same
+         * rule: written only for rows that named classes, because a blank
+         * column is "not decided yet" and clearing on blank would wipe a
+         * school's declarations the first time anybody re-uploaded a sheet
+         * exported before the column existed.
+         *
+         * A name that matches no class is dropped rather than failing the
+         * commit — the workbook's `refSheet` already offers the real list, and
+         * a typo in one cell should not cost the other thirty subjects.
+         */
+        for (const r of at("Subjects")) {
+          const names = (r.data.classNames as string[] | undefined) ?? [];
+          if (names.length === 0) continue;
+          const subjectId = subjects.get(lc(r.data.name));
+          if (!subjectId) continue;
+          const classIds = [...new Set(
+            names.map((n) => classIdByName.get(lc(n))).filter((x): x is number => !!x),
+          )];
+          if (classIds.length === 0) continue;
+          await tx.subjectClass.deleteMany({ where: { subjectId } });
+          await tx.subjectClass.createMany({
+            data: classIds.map((classId) => ({ subjectId, classId, schoolId })),
+          });
+          bump("subjectClasses", classIds.length);
+        }
+
         // ---- 6. class-sections (creates the Section row too) ----
         const configs = new Map((await tx.timetableConfig.findMany({ where: { schoolId } })).map((c) => [lc(c.name), c.id]));
         for (const r of at("Class Sections").filter(isNew)) {
@@ -682,15 +767,23 @@ export class ImportService {
           const section =
             (await tx.section.findFirst({ where: { classId, name: r.data.sectionName } })) ??
             (await tx.section.create({ data: { schoolId, classId, name: r.data.sectionName } }));
+          const yearId = years.get(lc(r.data.academicYear))!;
+          const attachTo = r.data.timetable ? (configs.get(lc(r.data.timetable)) ?? null) : null;
           await tx.classSection.create({
             data: {
               schoolId,
               classId,
               sectionId: section.id,
-              academicYearId: years.get(lc(r.data.academicYear))!,
+              academicYearId: yearId,
+              // §30 — the sheet's own `Timetable` column decides the pool: a row
+              // naming a timetable joins that timetable's pool, one that names
+              // none joins the session's. The natural key this importer skips by
+              // is now (class, section, year, POOL), which is what will let an
+              // individual timetable import its own Class 1-A in stage 4.
+              resourceGroupId: await this.groups.forSection(yearId, attachTo),
               strength: r.data.strength ?? null,
               homeRoomId: r.data.homeRoom ? (rooms.get(lc(r.data.homeRoom)) ?? null) : null,
-              timetableConfigId: r.data.timetable ? (configs.get(lc(r.data.timetable)) ?? null) : null,
+              timetableConfigId: attachTo,
             },
           });
           bump("classSections");
@@ -700,6 +793,52 @@ export class ImportService {
           include: { class: true, section: true },
         });
         const sections = new Map(sectionRows.map((cs) => [lc(`${cs.class.name}-${cs.section.name}`), cs.id]));
+
+        /*
+          §16.1 — an existing section that belongs to NO timetable gets attached.
+
+          The importer skips by natural key, and the key here is
+          `(class, section, year)` — the timetable is not part of it. So a
+          section created before its wing existed was skipped for ever after,
+          and no amount of re-running the guided setup would attach it: the rows
+          were there, the wings were there, and `timetable_config_id` stayed
+          NULL. Readiness then reported 0% for a timetable with no classes on a
+          school that had entered every class it has, which is what this was
+          reported as.
+
+          Deliberately narrow, and it is the §21 `complete` shape rather than an
+          update: **only a NULL is filled in**. A section already assigned to
+          another wing is left alone — a class-section belongs to exactly one
+          timetable (invariant 11) and moving it between wings is a real
+          decision somebody makes on purpose, not something a re-import does on
+          their behalf. Nothing else on the row is touched, so "the importer
+          does not change existing rows" still holds for every field that has an
+          answer.
+        */
+        const byNatural = new Map(
+          sectionRows.map((cs) => [`${cs.classId}:${lc(cs.section.name)}:${cs.academicYearId}`, cs]),
+        );
+        const toAttach = new Map<number, number[]>();
+        for (const r of at("Class Sections")) {
+          if (!r.data.timetable) continue;
+          const configId = configs.get(lc(r.data.timetable));
+          const classId = classes.get(lc(r.data.className));
+          const yearId = years.get(lc(r.data.academicYear));
+          if (!configId || !classId || !yearId) continue;
+          const cs = byNatural.get(`${classId}:${lc(r.data.sectionName)}:${yearId}`);
+          if (!cs || cs.timetableConfigId !== null) continue;
+          toAttach.set(configId, [...(toAttach.get(configId) ?? []), cs.id]);
+        }
+        for (const [configId, ids] of toAttach) {
+          const done = await tx.classSection.updateMany({
+            // `timetableConfigId: null` in the WHERE as well as the check above:
+            // the read happened before this transaction's own writes, and a
+            // filled link must never be overwritten by a race with itself.
+            where: { id: { in: ids }, timetableConfigId: null },
+            data: { timetableConfigId: configId },
+          });
+          bump("classSectionsAttached", done.count);
+        }
 
         // §19 home rooms, written from the Rooms sheet's own column. The Class
         // Sections sheet can also set it; this is the same fact from the other
@@ -871,6 +1010,23 @@ export class ImportService {
 
     await this.readiness.invalidate(schoolId);
     this.logger.log(`import committed for school ${schoolId}: ${JSON.stringify(created)}`);
-    return { ok: true, created, plan, message: "Import complete." };
+    /*
+      The message tells the truth about the three outcomes, which are different
+      things to a person pressing Next: rows were added, nothing was added but
+      something was repaired, or genuinely nothing happened. The old wording
+      ("everything here already exists") covered the last two and was wrong
+      about the middle one.
+    */
+    const total = Object.values(created).reduce((n, x) => n + x, 0);
+    return {
+      ok: true,
+      created,
+      plan,
+      message: total === 0
+        ? "Everything here already exists — nothing to add."
+        : created.classSectionsAttached && Object.keys(created).length === 1
+          ? `Everything already existed; ${created.classSectionsAttached} class-section(s) were added to their timetable.`
+          : "Import complete.",
+    };
   }
 }

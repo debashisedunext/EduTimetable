@@ -10,6 +10,7 @@ import {
   teacherSheets,
   proposeInitials,
   roomSheets,
+  subjectAppliesTo,
   subjectStartsAt,
   subjectSuitsClass,
   suggestCurriculum,
@@ -123,6 +124,31 @@ describe("§15.3 the room suggester", () => {
       expect(rows.find((x) => x.cells["Room Name"] === r.name)!.cells["Home Room For"]).toBe("");
     }
   });
+
+  /**
+   * §19.1 — and it dropped the SUBJECTS on the floor too, one column along.
+   *
+   * `suggestRooms` computes them with some care, and its own note explains why:
+   * a lab proposed without its subjects is not a science lab, it is a second
+   * general-purpose room with a misleading name that the solver will happily
+   * put Hindi in. The sheet never carried them, so every lab the guided setup
+   * has ever proposed arrived general — invisible while only labs used the
+   * table, and load-bearing now that "taught in its own room" reads it.
+   */
+  it("SAYS which subjects each proposed room serves (§19, §19.1)", () => {
+    const rooms = suggestRooms([wing("P", 4, 5, 2)], SUBJECTS);
+    const rows = roomSheets(rooms)[0].rows;
+    const cellFor = (name: string) => rows.find((x) => x.cells["Room Name"] === name)!.cells["Lab For Subjects"];
+
+    for (const r of rooms.filter((x) => x.subjects.length > 0)) {
+      expect(cellFor(r.name), r.name).toBe(r.subjects.join(", "));
+    }
+    // A lab names its own subject…
+    const scienceLab = rooms.find((r) => r.type === "lab" && r.subjects.includes("Science"))!;
+    expect(cellFor(scienceLab.name)).toContain("Science");
+    // …and a home room names none, which is what keeps it general.
+    for (const r of rooms.filter((x) => x.homeRoomFor)) expect(cellFor(r.name)).toBe("");
+  });
 });
 
 describe("§15.3 the curriculum suggester", () => {
@@ -227,6 +253,80 @@ describe("§15.3 the curriculum suggester", () => {
       expect(subjectSuitsClass("Physics", 5)).toBe(false);
       // …and the compound-name rule still holds (the row order test above).
       expect(subjectSuitsClass("Computer Science", 5)).toBe(true);
+    });
+  });
+
+  /**
+   * §27.16 — the school's own answer, and where it outranks the guess above.
+   *
+   * The tests worth having are the three that separate a DECLARATION from the
+   * ladder: it refuses where the ladder only suggests, it survives the fallback
+   * that lets the ladder stand aside, and its absence changes nothing at all.
+   */
+  describe("§27.16 declared classes", () => {
+    it("treats an empty declaration as not stated, never as no classes", () => {
+      expect(subjectAppliesTo({}, "Class 5")).toBe(true);
+      expect(subjectAppliesTo({ classes: [] }, "Class 5")).toBe(true);
+      expect(subjectAppliesTo({ classes: ["Class 9", "Class 10"] }, "Class 5")).toBe(false);
+      expect(subjectAppliesTo({ classes: ["Class 9"] }, "class 9")).toBe(true);
+    });
+
+    it("proposes a declared subject in its classes and nowhere else", () => {
+      const plan = suggestCurriculum(
+        [wing("W", 4, 13)],
+        [
+          { name: "English" }, { name: "Mathematics" },
+          { name: "Music", classes: ["Class 1", "Class 2"] },
+        ],
+        { W: 40 },
+      );
+      const music = plan.cells.filter((c) => c.subjectName === "Music").map((c) => c.className);
+      expect([...new Set(music)].sort()).toEqual(["Class 1", "Class 2"]);
+    });
+
+    it("beats the ladder, in both directions", () => {
+      // Biology is off its rung at Class 1 and declared there anyway: the
+      // school has answered the question the rung was estimating.
+      const early = suggestCurriculum(
+        [wing("W", 4, 5)], [{ name: "English" }, { name: "Biology", classes: ["Class 1"] }], { W: 30 },
+      );
+      expect(early.cells.some((c) => c.subjectName === "Biology" && c.className === "Class 1")).toBe(true);
+
+      // …and on its rung but declared elsewhere, it stays out.
+      const late = suggestCurriculum(
+        [wing("W", 12, 13)], [{ name: "English" }, { name: "Biology", classes: ["Class 10"] }], { W: 30 },
+      );
+      expect(late.cells.some((c) => c.subjectName === "Biology" && c.className === "Class 9")).toBe(false);
+    });
+
+    it("does not hand an excluded subject back through the empty-class fallback", () => {
+      /*
+        The one mistake this design can make. The ladder is allowed to stand
+        aside when it would leave a class with nothing — so a class whose ONLY
+        candidate was excluded by declaration must not be caught by that
+        fallback and handed the subject back. It is empty because the school
+        said so, and Readiness reports the free slots.
+      */
+      const plan = suggestCurriculum(
+        [wing("Pre-Primary", 0, 0)], [{ name: "Physics", classes: ["Class 11"] }], { "Pre-Primary": 30 },
+      );
+      expect(plan.cells.filter((c) => c.className === "Pre-Nursery")).toEqual([]);
+    });
+
+    it("changes nothing for a school that has declared nothing", () => {
+      const before = suggestCurriculum([wing("W", 4, 8)], SUBJECTS, { W: 40 });
+      const after = suggestCurriculum(
+        [wing("W", 4, 8)], SUBJECTS.map((s) => ({ ...s, classes: [] })), { W: 40 },
+      );
+      expect(after.cells).toEqual(before.cells);
+    });
+
+    it("rides the workbook, so a declaration survives an export and re-import", () => {
+      const [sheet] = subjectSheets([{ name: "Music", classes: ["Class 1", "Class 2"] }, { name: "English" }]);
+      expect(sheet.rows[0].cells.Classes).toBe("Class 1, Class 2");
+      // Blank, not "every class" — the importer reads blank as "not stated"
+      // and therefore leaves any existing declaration alone.
+      expect(sheet.rows[1].cells.Classes).toBe("");
     });
   });
 

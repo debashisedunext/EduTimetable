@@ -64,7 +64,9 @@ export async function buildFeasibilitySnapshot(
         where: { schoolId: config.schoolId },
         select: {
           id: true, name: true, category: true, priority: true,
-          lunchRule: true, gapAfterLunch: true,
+          lunchRule: true, gapAfterLunch: true, taughtInOwnRoom: true,
+          // §27.16 — the classes each subject is declared for, for Check 13.
+          classes: { select: { classId: true } },
         },
       }),
     ]);
@@ -85,19 +87,73 @@ export async function buildFeasibilitySnapshot(
       labRoomsBySubject[s.id] = [...dedicated, ...generalLabs];
     }
 
-  // §3.10: a teacher's load in OTHER configs counts toward their capacity here.
-  //
-  // Phase 19: other configs *in the same academic year*. Next year's teaching
-  // does not consume this year's capacity, and without the year filter rolling
-  // a school into a new session double-counted every teacher — Check 2 then
-  // failed across the board and a freshly cloned timetable read as hopelessly
-  // overloaded before anyone had touched it.
+    /*
+      §19.1 — the rooms a subject taught in its OWN room may use.
+
+      The same `room_subjects` table the labs read, and no general fallback:
+      "always in its own room" with no room named is not "anywhere", it is
+      unstated, and the solver takes the home room while Check 5b says the flag
+      is doing nothing. The alternative — treating an empty pool as every room
+      in the school — would scatter Music across whichever classrooms happened
+      to be free, which is the opposite of what ticking the box asked for.
+    */
+    /*
+      §4.7b — the three time-off tables beside the teachers'.
+
+      Read for the whole school rather than for this config's sections: a
+      subject's and a room's time off are school-wide facts, and a section is
+      filtered by the config below anyway. Scoped by the §17 extension, as
+      every query here is.
+    */
+    const [sectionOff, subjectOff, roomOff] = await Promise.all([
+      prisma.classSectionUnavailability.findMany({
+        where: { classSectionId: { in: sectionIds } },
+        select: { classSectionId: true, dayOfWeek: true, periodNumber: true },
+      }),
+      prisma.subjectUnavailability.findMany({
+        where: { schoolId: config.schoolId },
+        select: { subjectId: true, dayOfWeek: true, periodNumber: true },
+      }),
+      prisma.roomUnavailability.findMany({
+        where: { schoolId: config.schoolId },
+        select: { roomId: true, dayOfWeek: true, periodNumber: true },
+      }),
+    ]);
+
+    const ownRoomSubjectIds = allSubjects.filter((s) => s.taughtInOwnRoom).map((s) => s.id);
+    const ownRoomsBySubject: Record<number, number[]> = {};
+    for (const id of ownRoomSubjectIds) {
+      ownRoomsBySubject[id] = allRooms.filter((r) => r.subjects.some((x) => x.subjectId === id)).map((r) => r.id);
+    }
+
+  /*
+    §3.10: a teacher's load in OTHER configs counts toward their capacity here.
+
+    Phase 19 narrowed this to other configs *in the same academic year*: next
+    year's teaching does not consume this year's capacity, and without that
+    filter rolling a school into a new session double-counted every teacher —
+    Check 2 failed across the board and a freshly cloned timetable read as
+    hopelessly overloaded before anyone had touched it.
+
+    §30 narrows it once more, to other configs *in the same resource pool*, and
+    it is the same argument one level in: an individual timetable is a separate
+    plan for the same staff, so counting its periods against the main one would
+    make a school unable to sketch an alternative without its real timetable
+    reporting everybody overloaded. A pool belongs to exactly one session, so
+    this filter subsumes the year filter rather than sitting beside it — two
+    filters that must agree are two filters that can come to disagree.
+
+    **This is the only cross-timetable calculation in the codebase**, which is
+    why §30 stage 2 is one query. §29.3's reassignment engine reads the very
+    same `crossConfigTeacherLoad` field off the very same snapshot, so it is
+    corrected here too rather than anywhere near the restaff code.
+  */
   const crossRows = await prisma.teacherSubjectClassSection.findMany({
     where: {
       teacherId: { in: teachers.map((t) => t.id) },
       classSection: {
         timetableConfigId: { not: configId },
-        academicYearId: config.academicYearId,
+        resourceGroupId: config.resourceGroupId,
       },
     },
     include: { classSection: { include: { timetableConfig: true } } },
@@ -230,8 +286,24 @@ export async function buildFeasibilitySnapshot(
       lunchRule: s.lunchRule,
       gapAfterLunch: s.gapAfterLunch,
     }])),
+    // §27.16 — only the subjects that actually declared something. A subject
+    // with no rows stays out of the map entirely, so "not stated" and "stated
+    // as nothing" cannot be told apart by accident downstream: there is only
+    // one of them.
+    subjectClasses: Object.fromEntries(
+      allSubjects.filter((s) => s.classes.length > 0).map((s) => [s.id, s.classes.map((c) => c.classId)]),
+    ),
     homeRoomBySection: Object.fromEntries(classSections.map((cs) => [cs.id, cs.homeRoomId])),
+    // §4.7b — the engine needs the counts (Check 1 subtracts them from the
+    // week, Check 1b intersects them with a subject's); the solver takes the
+    // cells from `SolverInput`. Same rows, read once here.
+    classSectionTimeOff: sectionOff.map((r) => ({ id: r.classSectionId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
+    subjectTimeOff: subjectOff.map((r) => ({ id: r.subjectId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
+    roomTimeOff: roomOff.map((r) => ({ id: r.roomId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
     labRoomsBySubject,
+    // §19.1 — whether, and where. See the note by their construction above.
+    ownRoomSubjectIds,
+    ownRoomsBySubject,
     roomNames: Object.fromEntries(allRooms.map((r) => [r.id, r.name])),
     // §21: a remedy that hands a class-section a free room has to be able to
     // tell a classroom from a lab, which `roomNames` cannot.
@@ -289,6 +361,17 @@ export async function buildSolverInput(
       dayOfWeek: u.dayOfWeek,
       periodNumber: u.periodNumber,
     })),
+    /*
+      §4.7b — re-read from the snapshot rather than queried again.
+
+      `buildFeasibilitySnapshot` has already fetched exactly these rows, and the
+      solver and Readiness must prune the same cells: two queries would be two
+      chances to filter differently, and the disagreement would show up as a
+      timetable that breaks a rule Readiness had just passed.
+    */
+    classSectionUnavailability: snapshot.classSectionTimeOff ?? [],
+    subjectUnavailability: snapshot.subjectTimeOff ?? [],
+    roomUnavailability: snapshot.roomTimeOff ?? [],
     labRoomIds: labRooms.map((r) => r.id),
     preferredRoomByMapping: Object.fromEntries(
       mappingsWithRooms.map((m) => [m.id, m.preferredRoomId as number]),

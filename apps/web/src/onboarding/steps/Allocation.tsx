@@ -27,7 +27,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   assignInitials, assignSwatches, computeLoads, coverageGaps, defaultsFor, planClasses, relieveLoad,
-  suggestCurriculum, suggestMappings, weeklyCapacity, withCurriculumPeriods,
+  subjectAppliesTo, suggestCurriculum, suggestMappings, weeklyCapacity, withCurriculumPeriods,
   type CurriculumCell, type LoadRemedy, type MappingSuggestion, type SubjectAnswer,
   type Swatch, type TeacherLoad, type TeacherAnswer, type WingAnswer,
 } from "@edutimetable/shared";
@@ -347,6 +347,14 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
   /** §27.15 — the cell whose subject is being taken off a class. */
   const [removing, setRemoving] = useState<{ className: string; subject: string } | null>(null);
   /**
+   * §27.16 — why an edit was refused, when it was.
+   *
+   * A keystroke that does nothing is indistinguishable from a broken grid, and
+   * this grid takes single digits with no Enter — so the one case where it
+   * declines has to say so out loud.
+   */
+  const [refused, setRefused] = useState<string | null>(null);
+  /**
    * §27.11 — the timetable id behind the wing whose tab is open.
    *
    * The wizard works on draft answers and holds no ids; the wings were created
@@ -425,6 +433,25 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
    * verbatim: this is the kind of rule that gets lost in a rewrite.
    */
   const setPeriods = (className: string, subject: string, periods: number) => {
+    /**
+     * §27.16 — the school said this class does not take this subject.
+     *
+     * Refused rather than accepted-then-rejected: the server refuses the same
+     * row (`assertSubjectApplies`), and a grid that writes into the draft what
+     * the commit will throw out is a grid that lies for four steps. It names
+     * the screen that owns the statement, because that IS the way to change it
+     * — the same division §27.15 draws between a guess you may override in
+     * place and an answer you change where it was given.
+     */
+    const declared = m.subjects.find((x) => x.name === subject);
+    if (periods > 0 && declared && !subjectAppliesTo(declared, className)) {
+      setRefused(
+        `${subject} is not taught in ${className} — it is set for ${(declared.classes ?? []).join(", ")} ` +
+        `on the Subjects screen. Add the class there to teach it here.`,
+      );
+      return;
+    }
+    setRefused(null);
     const others = m.cells.filter((c) => !(c.className === className && c.subjectName === subject));
     if (periods <= 0) { onChange({ curriculum: others }); return; }
     const existing = m.cells.find((c) => c.className === className && c.subjectName === subject);
@@ -577,14 +604,19 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
   if (!m.wing) return <Heading title="Add a wing on step 3 first." />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8, height: "100%", minHeight: 0 }}
+    <div style={{ display: "flex", flexDirection: "column", gap: 5, height: "100%", minHeight: 0 }}
          onMouseLeave={() => setHover(null)}>
 
-      {/* one compact line, not a heading block: the grid is the page */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
-        <h2 style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 16, margin: 0, whiteSpace: "nowrap" }}>
-          Who teaches what
-        </h2>
+      {/*
+        §8.4 — one toolbar, not a heading block.
+
+        The title went. Three lines of chrome sat above this grid — the wizard's
+        own step line, a serif heading, and the load rail — and the heading was
+        the one carrying no information: the step line two rows above already
+        says "Allocation", and nobody looking at a class × subject matrix is
+        wondering what it is. The row it occupied is a row of school.
+      */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
         {m.wings.length > 1 && (
           <div style={{ display: "flex", gap: 4 }}>
             {m.wings.map((w, i) => (
@@ -745,11 +777,13 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
         </div>
       )}
 
-      {/* ── the load line: one row, chips on request ──────────────────── */}
-      <section style={{
-        border: "1px solid var(--line)", borderRadius: 10, background: "var(--paper)", flexShrink: 0,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 11px", flexWrap: "wrap" }}>
+      {/* ── the load line: one strip, chips on request ─────────────────
+          §8.4 — a strip rather than a card. The border, the corner radius and
+          the 6/11 padding were drawing a box around one row of chips and
+          costing ~20px of grid to do it; a rule underneath separates it from
+          the table just as well and takes a pixel. */}
+      <section style={{ borderBottom: "1px solid var(--line)", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "2px 2px 5px", flexWrap: "wrap" }}>
           <button onClick={() => setShowChips(!showChips)} aria-expanded={showChips}
             style={{
               border: "none", background: "none", cursor: "pointer", padding: "2px 4px",
@@ -1045,6 +1079,21 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
         away by whichever button is pressed. The keyboard's Delete opens the
         same component with no dialog involved at all.
       */}
+      {refused && (
+        <div
+          role="status"
+          onClick={() => setRefused(null)}
+          style={{
+            position: "fixed", bottom: 18, left: "50%", transform: "translateX(-50%)", zIndex: 210,
+            maxWidth: 520, padding: "10px 14px", borderRadius: 10, cursor: "pointer",
+            border: "1px solid var(--signal)", background: "var(--paper)", color: "var(--ink)",
+            font: "400 12.5px/1.45 Inter", boxShadow: "0 6px 22px rgba(11,31,68,.18)",
+          }}
+        >
+          {refused}
+        </div>
+      )}
+
       {removing && (
         <RemoveSubject
           configId={m.wing ? configIds[m.wing.name.toLowerCase()] : undefined}

@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import { asMessage } from "../../components";
 import {
-  CLASS_LADDER, computeLoads, defaultsFor, subjectStartsAt, subjectSuitsClass,
+  CLASS_LADDER, computeLoads, defaultsFor, subjectAppliesTo, subjectStartsAt, subjectSuitsClass,
   type LoadRemedy, type MappingSuggestion, type SubjectAnswer, type Swatch,
   type TeacherAnswer, type TeacherLoad,
 } from "@edutimetable/shared";
@@ -302,13 +302,25 @@ export function HoverBody({ what, m, periodsOf, mappingIndexOf, classTeacherOf, 
     const rung = LADDER_AT(className) > 0 && !subjectSuitsClass(what.subject, LADDER_AT(className))
       ? subjectStartsAt(what.subject)
       : null;
+    /**
+     * §27.16 — the school's own answer outranks the rung, and reads differently.
+     *
+     * A rung is this file guessing from a name, so its sentence ends "…type a
+     * number to teach it here anyway". A declaration is the school telling us,
+     * so the sentence names where it was said instead: the invitation to
+     * override belongs on the screen that owns the statement, not here, or the
+     * two writers start disagreeing about the same fact.
+     */
+    const declared = s && !subjectAppliesTo(s, className) ? (s.classes ?? []) : null;
     return (
       <>{head}
         <Verdict tone="ok">Not taught in {className}.</Verdict>
         <Foot>
-          {rung
-            ? `${what.subject} usually starts at ${rung} — type a number to teach it here anyway`
-            : "Type a number, or press Enter to add it"}
+          {declared
+            ? `${what.subject} is set for ${declared.join(", ")} on the Subjects screen`
+            : rung
+              ? `${what.subject} usually starts at ${rung} — type a number to teach it here anyway`
+              : "Type a number, or press Enter to add it"}
         </Foot>
       </>
     );

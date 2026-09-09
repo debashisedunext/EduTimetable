@@ -24,6 +24,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from "@nes
 import { runFeasibility } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { ResourceGroupService } from "../groups/resource-group.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
 
 /** One thing the admin should see before pressing the button. */
@@ -77,6 +78,7 @@ export class CloneService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly groups: ResourceGroupService,
   ) {}
 
   // ------------------------------------------------------------------ preview
@@ -233,12 +235,20 @@ export class CloneService {
     const targetYear = await this.resolveTargetYear(schoolId, src.config.academicYearId, req, true);
     const dropped = this.staffingNotes(src);
 
+    // Resolved outside the transaction: it may CREATE the pool for a session
+    // that has none, and doing that inside would roll it back with the clone if
+    // anything later failed — leaving the next attempt to make it again.
+    const targetGroupId = await this.groups.defaultFor(targetYear.id);
     const created = await this.prisma.$transaction(async (tx) => {
       const c = src.config;
       const config = await tx.timetableConfig.create({
         data: {
           schoolId,
           academicYearId: targetYear.id,
+          // §30 — a clone lands in the TARGET session's shared pool, never the
+          // source's: §3.12 already requires a different session, and a pool
+          // belongs to one session.
+          resourceGroupId: targetGroupId,
           name: req.name,
           description: c.description,
           workingDays: c.workingDays as never,
@@ -300,6 +310,7 @@ export class CloneService {
                 classId: s.classId,
                 sectionId: s.sectionId,
                 academicYearId: targetYear.id,
+                resourceGroupId: targetGroupId,
                 timetableConfigId: config.id,
                 strength: s.strength,
                 homeRoomId: s.homeRoomId,

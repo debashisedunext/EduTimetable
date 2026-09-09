@@ -5,6 +5,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClass } from "./capacity.util";
+import { assertSubjectApplies } from "./subject-scope.util";
+import { FreezeService } from "../freeze/freeze.service";
 
 /** Curriculum mapping — class_subjects (§3), with §4.8 block validation at entry. */
 @Controller("class-subjects")
@@ -13,6 +15,7 @@ export class CurriculumController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly freeze: FreezeService,
   ) {}
 
   /**
@@ -59,6 +62,16 @@ export class CurriculumController {
     const classId = toInt(body.classId, "classId");
     const academicYearId = toInt(body.academicYearId, "academicYearId");
     const data = this.normalize(body);
+    // §29.1 — a class's curriculum reaches every timetable its sections sit in,
+    // so this is asked by CLASS and narrowed by year: last year's frozen week
+    // must not refuse this year's planning.
+    await this.freeze.assertClasses([classId], academicYearId, "what a class is taught");
+    // §27.16 — before anything else: a row for a class this subject is not
+    // taught to is a contradiction of what the school said on the Subjects
+    // screen, and the message names both halves so it is obvious which one to
+    // change. Only on CREATE — `normalize` cannot move a row between class or
+    // subject, so an update can never introduce one.
+    await assertSubjectApplies(this.prisma, toInt(body.subjectId, "subjectId"), classId);
     assertWithinWeek(data.periodsPerWeek, await capacityForClass(this.prisma, classId, academicYearId));
     const created = await uniq(
       () => this.prisma.classSubject.create({
@@ -80,6 +93,7 @@ export class CurriculumController {
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const existing = await this.prisma.classSubject.findUnique({ where: { id: toInt(id, "id") } });
     if (!existing) throw new BadRequestException("Curriculum row not found");
+    await this.freeze.assertClasses([existing.classId], existing.academicYearId, "what a class is taught");
     // `normalize` returns only the five shape fields, so a PUT can never move a
     // row between sessions — that would be a re-key, not an edit.
     const data = this.normalize({ ...existing, ...body });
@@ -97,6 +111,10 @@ export class CurriculumController {
 
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const existing = await this.prisma.classSubject.findUnique({ where: { id: toInt(id, "id") } });
+    if (existing) {
+      await this.freeze.assertClasses([existing.classId], existing.academicYearId, "what a class is taught");
+    }
     await del(
       () => this.prisma.classSubject.delete({ where: { id: toInt(id, "id") } }),
       "Curriculum row",

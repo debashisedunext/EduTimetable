@@ -21,6 +21,8 @@ export interface SubjectAnswer {
   code?: string;
   isLab?: boolean;
   requiresDoublePeriod?: boolean;
+  /** §19.1 — always taught in its own room, never the class's home room. */
+  taughtInOwnRoom?: boolean;
   /**
    * §26.2 placement. All optional, and absent means "not stated" rather than
    * "neutral": the committer fills a blank from `defaultsFor(name)`, so a
@@ -31,6 +33,19 @@ export interface SubjectAnswer {
   priority?: number;
   lunchRule?: SubjectDefaults["lunchRule"];
   gapAfterLunch?: boolean;
+  /**
+   * §27.16 — the classes this subject is taught to, by NAME.
+   *
+   * Names rather than ids for the same reason `TeacherAnswer.classes` uses them
+   * (§27.9): the wizard's answers describe a school that may not exist yet.
+   *
+   * Absent or empty is **not stated**, and that is the only reading that leaves
+   * every school built before this behaving as it did — the §27.15 ladder
+   * proposes, and nothing refuses anything. Where it IS stated it beats the
+   * ladder outright: a range read off a subject's name is a guess, and this is
+   * the school telling us the answer.
+   */
+  classes?: string[];
 }
 
 /**
@@ -175,6 +190,20 @@ export function roomSheets(rooms: SuggestedRoom[]): RawSheet[] {
     // there doing nothing. The importer already owns this column; the suggester
     // simply was not filling it in.
     "Home Room For": r.homeRoomFor ?? "",
+    /*
+      …and it was not filling this one in either, which is the same bug one
+      column along.
+
+      `suggestRooms` computes `subjects` with some care — its own note says a
+      lab proposed without its subjects "does not create a science lab, it
+      creates a second general-purpose room with a misleading name, and the
+      solver will happily put Hindi in it" — and then the sheet dropped them on
+      the floor. Every lab the guided setup has ever proposed arrived general.
+      Harmless while it was only labs (a general lab serves everything, §19),
+      and load-bearing now: this column is `room_subjects`, and §19.1's "taught
+      in its own room" has nowhere else to learn WHERE.
+    */
+    "Lab For Subjects": r.subjects.join(", "),
   }));
   return [{
     name: "Rooms",
@@ -350,6 +379,30 @@ export function subjectSuitsClass(subjectName: string, sequence: number): boolea
   return sequence >= (w.from ?? 1) && sequence <= (w.to ?? CLASS_LADDER.length);
 }
 
+/**
+ * §27.16 — is this subject taught to this class?
+ *
+ * The one definition, read by the proposal, the Allocation grid's empty cell,
+ * the server's refusal and the Feasibility Engine's backstop. A second copy of
+ * the "empty means not stated" rule is how one of those four ends up refusing a
+ * school the other three are happily proposing to.
+ *
+ * Only ever consulted with a DECLARATION. The §27.15 ladder is a separate,
+ * softer question (`subjectSuitsClass`) and deliberately not folded in here:
+ * one of them may refuse, the other may only suggest, and a single function
+ * answering both would have to pick one meaning for a caller that needs the
+ * other.
+ */
+export function subjectAppliesTo(
+  subject: { classes?: string[] },
+  className: string,
+): boolean {
+  const declared = subject.classes ?? [];
+  if (declared.length === 0) return true;
+  const want = className.trim().toLowerCase();
+  return declared.some((c) => c.trim().toLowerCase() === want);
+}
+
 /** The rung a subject's range starts at, for the sentence that explains it. */
 export function subjectStartsAt(subjectName: string): string | null {
   const w = WEIGHTS.find((x) => x.match.test(subjectName ?? ""));
@@ -422,14 +475,28 @@ export function suggestCurriculum(
     const days = daysByWing[c.wing] ?? 5;
     const band = bandOf(c.sequence);
 
+    /*
+      §27.16 — what the SCHOOL said, before anything this file guessed.
+
+      Two filters that look alike and are not. A declaration is a statement, so
+      it is applied first and never reconsidered; the ladder is an opinion about
+      a name, so it applies only where nothing was declared and stands aside
+      below if it would empty the class. Collapsing them into one filter is the
+      one mistake worth naming: the fallback would then quietly hand a class
+      back the very subject the school had just said it does not take.
+    */
+    const offered = subjects.filter((s) => subjectAppliesTo(s, c.className));
+
     // The shape, before it is made to fit.
-    const wanted = subjects
+    const wanted = offered
       .map((s) => {
         const w = WEIGHTS.find((x) => x.match.test(s.name));
         // §27.15 — off its rung, a subject is not proposed here at all. Weight 0
         // rather than a filter of its own, so it joins the "not wanted" case
-        // that EVS above Class 4 already used.
-        const fits = subjectSuitsClass(s.name, c.sequence);
+        // that EVS above Class 4 already used. Skipped entirely once the school
+        // has declared this subject's classes: it has answered the question the
+        // rung was estimating.
+        const fits = (s.classes ?? []).length > 0 || subjectSuitsClass(s.name, c.sequence);
         return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab) };
       })
       .filter((x) => x.weight > 0);
@@ -444,9 +511,14 @@ export function suggestCurriculum(
       per class. The school's own list is the better evidence in that case: it
       plainly does not follow the ladder these ranges describe, so the ranges
       stand aside rather than argue.
+
+      It stands aside over `offered`, not over every subject: a class left empty
+      because the school EXCLUDED everything is a class the school has described
+      accurately, and re-proposing there would be arguing with the answer rather
+      than with a guess. Readiness reports the free slots, which is the truth.
     */
     if (wanted.length === 0) {
-      for (const s of subjects) {
+      for (const s of offered) {
         const w = WEIGHTS.find((x) => x.match.test(s.name));
         wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab) });
       }
@@ -704,6 +776,12 @@ export function subjectSheets(subjects: SubjectAnswer[]): RawSheet[] {
       "Lunch Rule": LUNCH_LABEL[s.lunchRule ?? d.lunchRule],
       "Gap After Lunch": (s.gapAfterLunch ?? d.gapAfterLunch) ? "Yes" : "No",
       "Is Lab": s.isLab ? "Yes" : "No",
+      // §19.1 — WHETHER only. WHERE rides the Rooms sheet, which has written
+      // `room_subjects` since §19 and is the one writer for it.
+      "Own Room": s.taughtInOwnRoom ? "Yes" : "No",
+      // §27.16 — blank for a subject nobody narrowed, which the importer reads
+      // as "not stated" and therefore leaves any existing declaration alone.
+      Classes: (s.classes ?? []).join(", "),
       "Requires Double Period": s.requiresDoublePeriod ? "Yes" : "No",
     };
   }))];

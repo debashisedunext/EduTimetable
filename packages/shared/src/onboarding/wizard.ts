@@ -94,6 +94,31 @@ export const WING_SUGGESTIONS: ReadonlyArray<{
   { name: "Higher Secondary", fromIndex: 14, toIndex: 15 }, // Class 11 – Class 12
 ];
 
+/**
+ * What a wing looks like before anybody has touched the ladder.
+ *
+ * Class 1 – Class 6, two sections each: somewhere useful for the slider to open
+ * rather than collapsed on Pre-Nursery. A name that matches one of the
+ * suggestions above takes THAT range instead, so typing "Primary Wing" means
+ * the same wing whichever door it was typed into.
+ *
+ * One definition because there are three doors that create a wing now — step
+ * 3's "+ Add wing", `answersFromSchool` rebuilding a wing that has no classes
+ * yet, and the Timetables screen's New Timetable (§3.10a) — and all three had
+ * their own copy of `4`, `9` and `2`. Two doors defaulting the same thing
+ * differently is a small lie about how the product thinks, and it is only ever
+ * found by a school.
+ */
+export const DEFAULT_WING_SECTIONS = 2;
+
+export function wingRangeFor(name: string): { fromIndex: number; toIndex: number } {
+  const wanted = name.trim().toLowerCase();
+  const match = WING_SUGGESTIONS.find((s) => s.name.toLowerCase() === wanted);
+  return match
+    ? { fromIndex: match.fromIndex, toIndex: match.toIndex }
+    : { fromIndex: 4, toIndex: 9 };
+}
+
 /** One wing: a name, a class range on the ladder, and how many sections each. */
 export interface WingAnswer {
   name: string;

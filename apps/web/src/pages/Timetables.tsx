@@ -7,7 +7,7 @@ import { Card, ErrorNote, Field } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { CloneTimetable } from "./CloneTimetable";
 import { DeleteTimetable } from "./DeleteTimetable";
-import type { MeResponse } from "@edutimetable/shared";
+import { windowLabel, type MeResponse } from "@edutimetable/shared";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -24,6 +24,12 @@ export function Timetables({ me }: { me: MeResponse }) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const { data: years } = useApi<{ id: number; name: string }[]>("/academic-years");
   const [name, setName] = useState("");
+  // §30.5 — when the new timetable applies. Empty means the whole session,
+  // which is what every timetable meant before this existed.
+  const [runsFrom, setRunsFrom] = useState("");
+  const [runsTo, setRunsTo] = useState("");
+  // §30.1 — grouped by default, which is what every timetable was before this.
+  const [mode, setMode] = useState<"grouped" | "individual">("grouped");
   const [error, setError] = useState<string | null>(null);
   // A trust admin may run timetables for several schools, so the school is part
   // of creating one. Defaults to the school the session is already in, which is
@@ -31,12 +37,29 @@ export function Timetables({ me }: { me: MeResponse }) {
   const [target, setTarget] = useState(me.school);
   const manySchools = me.schools.length > 1;
 
+  /**
+   * §3.10a — creating a timetable is creating a WING, and the next question is
+   * which classes it teaches.
+   *
+   * This used to hand the admin the step-by-step Setup Wizard, which then asked
+   * them to build a whole school around the empty timetable, master by master.
+   * But a wing is exactly what the guided setup's step 3 produces, so pressing
+   * this button finishes that step and opens the next one — the class ladder —
+   * rather than starting a second, differently-shaped setup beside it.
+   *
+   * Two things are deliberately not done here. The wing is recorded in the
+   * draft by the SERVER (`POST /onboarding/session/wing`), because with no
+   * draft yet it has to rebuild the school's existing answers first or they are
+   * lost (§27.12); and the step to open at comes back from that call rather
+   * than being typed into the URL, so "which step is Classes?" has one answer.
+   */
   const create = async () => {
+    const crossSchool = target.id !== me.school.id || target.tenantId !== me.school.tenantId;
     try {
       // Creating "for another school" means being in that school: the server
       // takes the school from the session, never from the request body, so
       // there is no way to create a timetable somewhere you are not (§17).
-      if (target.id !== me.school.id || target.tenantId !== me.school.tenantId) {
+      if (crossSchool) {
         await switchSchool(target);
         const moved = await api<{ id: number }[]>("/academic-years");
         if (moved.length === 0) {
@@ -45,27 +68,54 @@ export function Timetables({ me }: { me: MeResponse }) {
           return;
         }
       }
-      const years = await api<{ id: number }[]>("/academic-years");
+      const years = await api<{ id: number; name: string }[]>("/academic-years");
       if (years.length === 0) {
         setError("Create an academic year first (Setup Wizard → Academic Year).");
         return;
       }
+      /*
+        The same year the guided setup's own step 3 picks (`commitWings`), so a
+        wing created here and a wing created there land in the same session. A
+        draft that names no session — or none at all — falls back to the newest
+        year, which is what that step does too.
+      */
+      const draft = await api<{ answers?: { session?: { name?: string } } }>("/onboarding/session")
+        .catch(() => null);
+      const year = years.find((y) => y.name === draft?.answers?.session?.name) ?? years[0];
+
       const created = await api<{ id: number }>("/timetable-configs", {
         method: "POST",
-        body: JSON.stringify({ name, academicYearId: years[0].id }),
+        // Trimmed, because the name is the natural key the guided setup matches
+        // wings by — `commitWings`, the §16 importer and the tab strip all
+        // compare it, and " Senior Wing" would look like a fourth wing.
+        body: JSON.stringify({
+          name: name.trim(), academicYearId: year.id,
+          effectiveFrom: runsFrom || null, effectiveTo: runsTo || null, mode,
+        }),
       });
+      const seeded = await api<{ currentStep: number }>(
+        `/onboarding/session/wing/${created.id}`, { method: "POST" },
+      );
       setCreating(false);
-      setName("");
-      if (target.id !== me.school.id || target.tenantId !== me.school.tenantId) {
+      setName(""); setRunsFrom(""); setRunsTo(""); setMode("grouped");
+      // `wing` so step 4 opens on the ladder for THIS wing: on a school that
+      // already runs three, landing on the first one's would read as the button
+      // having done nothing.
+      const to = `/guided-setup?at=${seeded.currentStep}&wing=${encodeURIComponent(name.trim())}`;
+      if (crossSchool) {
         // The whole page belongs to the previous school; reload into the new one.
         setCurrentId(created.id);
-        window.location.href = "/setup";
+        window.location.href = to;
         return;
       }
       refetch();
       setCurrentId(created.id);
-      navigate("/setup");
+      navigate(to);
     } catch (e) {
+      // The timetable may well exist by now — the draft write is the half that
+      // usually fails — so the list is refreshed either way rather than leaving
+      // somebody looking at a screen that does not show what they just made.
+      if (!crossSchool) refetch();
       setError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -93,7 +143,7 @@ export function Timetables({ me }: { me: MeResponse }) {
       </div>
 
       {creating && (
-        <Card title="New Timetable">
+        <Card title="New wing">
           {manySchools ? (
             <Field label="School">
               <select
@@ -118,7 +168,63 @@ export function Timetables({ me }: { me: MeResponse }) {
           <Field label="Name (e.g. Senior Wing)">
             <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
           </Field>
-          <button className="btn btn-primary" onClick={create} disabled={!name.trim()}>Create & open wizard</button>{" "}
+          {/*
+            §30.1 — the choice. Worded as what it DOES rather than as its name:
+            "individual" and "grouped" are the model's words, and a school
+            reading them cold has no way to know which one shares Class 1-A.
+          */}
+          <Field label="Resources">
+            <div style={{ display: "grid", gap: 7 }}>
+              {([
+                ["grouped", "Shares with the other timetables",
+                 "A class-section belongs to one of them, and teacher loads are added up across all of them. This is how every timetable has always worked."],
+                ["individual", "Stands on its own",
+                 "Its own copy of the classes it covers, and nothing from the other timetables counted against it. One wing only, and only one timetable can be published for a class at a time."],
+              ] as const).map(([v, title, why]) => (
+                <label key={v} style={{
+                  display: "flex", gap: 9, alignItems: "flex-start", cursor: "pointer",
+                  border: `1px solid ${mode === v ? "var(--brand)" : "var(--line)"}`,
+                  background: mode === v ? "var(--steel-pale)" : "var(--paper)",
+                  borderRadius: 9, padding: "9px 11px",
+                }}>
+                  <input type="radio" name="resource-mode" checked={mode === v}
+                    onChange={() => setMode(v)} style={{ marginTop: 3 }} />
+                  <span style={{ minWidth: 0 }}>
+                    <b style={{ fontSize: 13 }}>{title}</b>
+                    <span style={{ display: "block", fontSize: 11.5, color: "var(--ink-soft)", lineHeight: 1.45 }}>{why}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </Field>
+          {/*
+            §30.5 — optional dates. Left empty the timetable runs for the whole
+            session, which is what it would have done before this feature; a
+            school only fills these in when it runs two timetables over the same
+            children at different times of year.
+          */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Runs from (optional)">
+              <input type="date" value={runsFrom} onChange={(e) => setRunsFrom(e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Runs until (optional)">
+              <input type="date" value={runsTo} onChange={(e) => setRunsTo(e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+          <p style={{ fontSize: 11.5, color: "var(--ink-faint)", margin: "-4px 0 12px" }}>
+            Leave both empty for the whole session. A class can only be in one <em>published</em>
+            timetable at a time, so two timetables covering the same classes need different dates.
+          </p>
+          {/* §3.10a — say what the button does before it does it. It creates the
+              wing and then opens the guided setup on the class ladder, which is
+              a different destination from the one it had for the last year. */}
+          <p style={{ fontSize: 12, color: "var(--ink-faint)", margin: "0 0 12px" }}>
+            A timetable <em>is</em> a wing — its own working days, periods and breaks. This creates
+            it and opens the guided setup on <strong>Classes</strong>, to choose which classes it teaches.
+          </p>
+          <button className="btn btn-primary" onClick={create} disabled={!name.trim()}>
+            Create wing & choose classes
+          </button>{" "}
           <button className="btn btn-secondary" onClick={() => setCreating(false)}>Cancel</button>
         </Card>
       )}
@@ -126,7 +232,7 @@ export function Timetables({ me }: { me: MeResponse }) {
       <SetupProgress />
 
       {configs.length === 0 && !creating && (
-        <Card><p style={{ color: "var(--ink-faint)", fontSize: 13 }}>No timetables yet — create one to start the Setup Wizard.</p></Card>
+        <Card><p style={{ color: "var(--ink-faint)", fontSize: 13 }}>No timetables yet — create one and the guided setup picks up from there.</p></Card>
       )}
 
       {configs.map((c) => (
@@ -170,9 +276,38 @@ export function Timetables({ me }: { me: MeResponse }) {
                 >
                   {c.status}
                 </span>
+                {/*
+                  §29.1 — beside the status, not instead of it: frozen and
+                  active are two different facts, and a school needs both
+                  ("published, and settled"). The lock alone would leave
+                  "published?" unanswered.
+                */}
+                {/* §30.1 — only when it is worth saying. A grouped timetable is
+                    the normal case and needs no badge; every school before this
+                    feature reads exactly what it read before. */}
+                {c.resourceMode === "individual" && (
+                  <span className="badge" title="Stands on its own — its own classes, and nothing from the other timetables counted against it"
+                    style={{ background: "var(--offwhite)", color: "var(--steel)", borderColor: "var(--steel-light)" }}>
+                    ⬚ individual
+                  </span>
+                )}
+                {c.frozenAt && (
+                  <span className="badge" title="Frozen — the allocation cannot be changed until it is unfrozen"
+                    style={{ background: "var(--steel-pale)", color: "var(--brand-dark)", borderColor: "var(--brand)" }}>
+                    🔒 frozen
+                  </span>
+                )}
               </div>
+              {/*
+                §30.5 — the window where the session already was. `windowLabel`
+                returns null for an undated timetable, so a school that never
+                uses this reads exactly what it read before.
+              */}
               <p style={{ fontSize: 12.5, color: "var(--ink-soft)", margin: "4px 0 8px" }}>
                 {c.description ?? "—"} · {c.academicYear}
+                {windowLabel(c) && (
+                  <> · <strong style={{ color: "var(--brand-dark)" }}>{windowLabel(c)}</strong></>
+                )}
               </p>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <span className="chip mono">{c.workingDays.map((d) => DAY_NAMES[d]).join(" ")}</span>

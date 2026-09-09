@@ -9,6 +9,7 @@ import { REDIS } from "../redis/redis.module";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { DraftsService } from "../drafts/drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
 
 export const SOLVER_QUEUE = "solver";
@@ -21,6 +22,7 @@ export class SolverController {
     private readonly readiness: ReadinessService,
     private readonly keys: CacheKeysService,
     private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -30,6 +32,9 @@ export class SolverController {
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
   async generate(@Req() _req: AuthedRequest, @Param("id") id: string, @Body() body?: any) {
     const configId = toInt(id, "id");
+    // §29.1 — asked BEFORE readiness, so a frozen timetable is refused for
+    // being frozen rather than for a blocker somebody would then try to fix.
+    await this.freeze.assertConfigs([configId], "the timetable");
     const readiness = await this.readiness.getReadiness(configId);
     if (!readiness.ready) {
       throw new BadRequestException(

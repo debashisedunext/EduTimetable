@@ -3,6 +3,9 @@
  * here as domain pruning — illegal slots never exist for the search to try.
  */
 import type { SnapshotTeacher } from "../feasibility/types";
+// §4.7b — the one definition of "null period means the whole day". It lives in
+// feasibility/ because the engine needs it too and must not import the solver.
+import { blockedCells } from "../feasibility/time-off";
 import type { SolverInput, SolverVariable } from "./types";
 
 export interface TeacherCtx {
@@ -110,6 +113,27 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
   const seg = segmentOfPeriod(snapshot.config.daySegments, perDay);
   const lunchAfterPeriod = snapshot.config.lunchAfterPeriod ?? null;
   const labSubjects = new Set(snapshot.labSubjectIds);
+  /**
+   * §4.7b — the blocked cells of every class-section and every subject.
+   *
+   * Built by the same helper the teachers use, from the same row shape, so
+   * "NULL period means the whole day" is decided once rather than three times.
+   */
+  const sectionBlocked = blockedCells(input.classSectionUnavailability ?? [], perDay);
+  const subjectBlocked = blockedCells(input.subjectUnavailability ?? [], perDay);
+  /**
+   * §19.1 — the rooms a subject is always taught in, or none.
+   *
+   * Both halves have to agree before this constrains anything: the flag says
+   * WHETHER and `room_subjects` says WHERE, so a subject ticked with no room
+   * named returns an empty list and the lesson takes its home room exactly as
+   * before. Check 5b is what tells the school the tick is doing nothing —
+   * silently ignoring it here would be the timetable disagreeing with the
+   * screen.
+   */
+  const ownRoomSubjects = new Set(snapshot.ownRoomSubjectIds ?? []);
+  const ownRoomsOf = (subjectId: number): number[] =>
+    (ownRoomSubjects.has(subjectId) ? snapshot.ownRoomsBySubject?.[subjectId] ?? [] : []);
   const sectionById = new Map(snapshot.classSections.map((cs) => [cs.id, cs]));
   const reqByClassSubject = new Map(
     snapshot.subjectRequirements.map((r) => [`${r.classId}:${r.subjectId}`, r]),
@@ -182,7 +206,24 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         if (p1Blocked) continue;
         let blockedCell = false;
         for (let s = 0; s < span && !blockedCell; s++) {
-          if (ctxs.some((tc) => tc.blocked.has(cellKey(day, p + s)))) blockedCell = true;
+          const cell = cellKey(day, p + s);
+          /*
+            §4.7b — three kinds of time off, checked the same way.
+
+            The teacher cannot teach then; the CLASS is not in school then; the
+            SUBJECT may not be taught then. Any one of them removes the cell,
+            and for a multi-section or multi-subject variable (a merged group, a
+            §4.9 block) EVERY section and EVERY subject has to be free — the
+            same intersection rule the teachers above already follow, and for
+            the same reason: the lesson happens once, in one cell, for all of
+            them.
+
+            Pruned here rather than scored, because these are hard (invariant
+            2): the solver must never be able to consider the cell at all.
+          */
+          if (ctxs.some((tc) => tc.blocked.has(cell))) blockedCell = true;
+          else if (sectionIds.some((id) => sectionBlocked.get(id)?.has(cell))) blockedCell = true;
+          else if (subjectIds.some((id) => subjectBlocked.get(id)?.has(cell))) blockedCell = true;
         }
         if (!blockedCell) domain.push({ day, period: p });
       }
@@ -223,6 +264,7 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       mappingId: m.id,
       needsLabRoom: labSubjects.has(m.subjectId),
       labRoomIds: snapshot.labRoomsBySubject[m.subjectId] ?? [],
+      ownRoomIds: ownRoomsOf(m.subjectId),
       homeRoomId: snapshot.homeRoomBySection[m.classSectionId] ?? null,
       preferredRoomId: input.preferredRoomByMapping[m.id] ?? null,
       samePeriodKey,
@@ -266,6 +308,7 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         span: 1,
         needsLabRoom: labSubjects.has(g.subjectId),
         labRoomIds: snapshot.labRoomsBySubject[g.subjectId] ?? [],
+        ownRoomIds: ownRoomsOf(g.subjectId),
         // A merged lesson happens in one place. With no room of its own it
         // falls back to the first member's room, which is where a school would
         // in practice hold it.
@@ -321,6 +364,9 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         // pool and the member sections' own rooms stay free.
         needsLabRoom: false,
         labRoomIds: [],
+        // §19.1 does not reach an elective: each option already carries its own
+        // room, chosen on the Electives screen, and that is more specific.
+        ownRoomIds: [],
         homeRoomId: null,
         preferredRoomId: null,
         // `same_period` reuses the §4.6 same-period-across-week machinery: the

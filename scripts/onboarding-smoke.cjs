@@ -19,6 +19,7 @@ const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
 const { PrismaClient: ControlClient } = req("/app/apps/api/prisma/generated/control-client");
 const Redis = req("ioredis");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const DOMAIN = "zzob.test";
@@ -182,6 +183,7 @@ async function newOwnerWithSchool(email, schoolName) {
   });
   const cfg = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, cfgYear.id),
       schoolId: a.schoolId, academicYearId: cfgYear.id, name: "ZZOB Wing",
       periodsPerDay: 8, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5],
     },
@@ -553,6 +555,81 @@ async function newOwnerWithSchool(email, schoolName) {
   const secondAdopt = await call("POST", "/onboarding/session/adopt", S);
   check(secondAdopt.json?.adopted === false,
     "adopting again returns the LIVE draft rather than rebuilding over it");
+  await call("DELETE", "/onboarding/session", S);
+
+  // ─────────────── 10. NEW TIMETABLE IS A WING (§3.10a)
+  //
+  // "New Timetable" used to create a config and hand the admin the
+  // step-by-step Setup Wizard, which then asked them to build a school around
+  // it. But the thing they just made is what the guided setup's step 3 makes —
+  // a wing — so the button finishes that step and opens step 4, the class
+  // ladder. What is asserted here is the three ways that can go wrong.
+  console.log("\nCreating a timetable enters it as a wing and opens the class step:");
+
+  const madeWing = await call("POST", "/timetable-configs", S, {
+    name: "ZZOB Annexe", academicYearId: yearId,
+  });
+  check(madeWing.status < 300, "a new timetable is created", `${madeWing.status}`);
+
+  const seeded = await call("POST", `/onboarding/session/wing/${madeWing.json.id}`, S);
+  check(seeded.status < 300, "and entered into the guided draft", `${seeded.status}`);
+  check(seeded.json?.currentStep === 4,
+    "which opens on Classes — the next question either flow asks",
+    `step ${seeded.json?.currentStep}`);
+  const annexe = (seeded.json?.answers?.wings ?? []).find((w) => w.name === "ZZOB Annexe");
+  check(!!annexe, "the wing is in the draft by name",
+    (seeded.json?.answers?.wings ?? []).map((w) => w.name).join(", "));
+  check(annexe && annexe.fromIndex === 4 && annexe.toIndex === 9 && annexe.sections === 2,
+    "with the SAME default range the Add-a-wing button uses — one definition, not two",
+    annexe ? `${annexe.fromIndex}–${annexe.toIndex} × ${annexe.sections}` : "missing");
+
+  /**
+   * §27.12 — the school's own answers must survive this write.
+   *
+   * There was no draft a moment ago, so `prefillFromSchool` was the only thing
+   * holding this school's subjects, teachers and rooms — and it deliberately
+   * does not save. A seed that wrote a draft holding only the new wing would
+   * be the FIRST row for this person, and everything rebuilt from the school
+   * would be gone from the guided setup for good.
+   */
+  check((seeded.json?.answers?.wings ?? []).length === 5,
+    "and the four wings that were already there come with it, not just the new one",
+    `${(seeded.json?.answers?.wings ?? []).length} wings`);
+  check((seeded.json?.answers?.subjects ?? []).length > 0,
+    "along with the school's own subjects — the prefill is persisted, never discarded",
+    `${(seeded.json?.answers?.subjects ?? []).length} subjects`);
+
+  /**
+   * The session must name the year the config actually belongs to. Step 4
+   * writes class-sections through the §16 importer with an `Academic Year`
+   * column taken from here; naming a different year files them against the
+   * wrong session, and the wing looks empty afterwards.
+   */
+  const annexeCfg = await prisma.timetableConfig.findUnique({
+    where: { id: madeWing.json.id }, include: { academicYear: true },
+  });
+  check(seeded.json?.answers?.session?.name === annexeCfg.academicYear.name,
+    "and the draft's session is the year the timetable was created in",
+    `${seeded.json?.answers?.session?.name} vs ${annexeCfg.academicYear.name}`);
+
+  // Names are the natural key everywhere in this flow — `commitWings` skips by
+  // name, the importer skips by name — so a second row would be ignored later
+  // while showing twice on screen now.
+  const again2 = await call("POST", `/onboarding/session/wing/${madeWing.json.id}`, S);
+  check((again2.json?.answers?.wings ?? []).filter((w) => w.name === "ZZOB Annexe").length === 1,
+    "pressing it twice does not list the wing twice");
+
+  // §17 — another school's timetable id is a 404, never a wing named after
+  // somebody else's. (The §17.8 sweep drives this route too; it is here as
+  // well because this is the call site that made it reachable.)
+  const stranger = await call("POST", `/onboarding/session/wing/${madeWing.json.id}`, b.session);
+  check(stranger.status === 404,
+    "and another school's timetable id is refused, not quietly adopted",
+    `${stranger.status}`);
+  check(!((await call("GET", "/onboarding/session", b.session)).json?.answers?.wings ?? [])
+    .some((w) => w.name === "ZZOB Annexe"),
+    "with nothing of ours in their draft");
+
   await call("DELETE", "/onboarding/session", S);
 
 

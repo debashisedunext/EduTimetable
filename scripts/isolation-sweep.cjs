@@ -40,6 +40,7 @@ const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
 const Redis = req("ioredis");
+const { groupFor } = require("./resource-groups.cjs");
 const ExcelJS = req("exceljs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -139,12 +140,31 @@ const PARAM_RESOURCE = [
   ["/mappings/:id", "mapping"],
   ["/merged-groups/:id", "mergedGroup"],
   ["/notifications/:id", "notification"],
+  // §3.10a — "New Timetable" entering the config it just made into the caller's
+  // guided draft. Swept rather than classified: the id names a timetable, and a
+  // route that reads a name off another school's row and writes it into this
+  // school's setup is exactly the shape the sweep exists to catch.
+  ["/onboarding/session/wing/:id", "config"],
   ["/reports/class-section/:id", "classSection"],
   ["/reports/teacher/:id", "teacher"],
+  // §10.6 — the two new week cards. Distinct from `/reports/rooms/:configId`
+  // below, which takes a CONFIG id and reports utilisation; longest-pattern-wins
+  // keeps them apart.
+  ["/reports/room/:id", "room"],
+  ["/reports/subject/:id", "subject"],
   ["/reports/rooms/:configId", "config"],
   ["/reports/teacher-load/:configId", "config"],
   ["/rooms/:id", "room"],
   ["/subjects/:id", "subject"],
+  // §29.2 — a staffing change is addressed by its own id, deliberately not
+  // under its timetable: `/timetable-configs/:id/...` would make `:id` mean the
+  // config on one route and the change on the next.
+  ["/staffing-changes/:changeId", "staffingChange"],
+  // §4.7b — the four routes `/availability/:kind/:id` expands into.
+  ["/availability/teacher/:id", "teacher"],
+  ["/availability/class/:id", "classSection"],
+  ["/availability/subject/:id", "subject"],
+  ["/availability/room/:id", "room"],
   ["/teachers/:id", "teacher"],
   ["/timetable-configs/:id", "config"],
 ];
@@ -163,6 +183,17 @@ const BODY_FOR = (key, n, A) => ({
   "PUT /class-sections/:id": { strength: 31 },
   "PUT /class-sections/:id/class-teacher": { teacherId: null },
   "PUT /class-subjects/:id": { periodsPerWeek: 4 },
+  // §29.2 — a real edit, so the owner gets a 200 and the stranger a 404. An
+  // empty body would 200 for the owner too, but on a route that had decided
+  // nothing, which is a weaker control.
+  "PUT /staffing-changes/:changeId": { note: `${P} renamed ${n}` },
+  // §29.4/§29.5 — both write to a published week, so the stranger must be
+  // stopped at the change id before any of that is reached. A's own 400 ("name
+  // the teacher taking over") is the control: it proves A got as far as its own
+  // validation, which B never does.
+  "POST /staffing-changes/:changeId/apply": { mode: "replace" },
+  "POST /staffing-changes/:changeId/revert": {},
+  "POST /timetable-configs/:id/staffing-changes": { reason: "adjustment", releasing: [A.rows.teacher.id] },
   "PUT /classes/:id": { name: `${P} C${n}`, sequence: 2 },
   "POST /classes/:id/sections": { name: `S${n}`, academicYearId: A.rows.year.id },
   "PUT /mappings/:id": { periodsPerWeek: 3 },
@@ -253,6 +284,25 @@ const NEEDS_FRESH = new Set([
  * Recorded here rather than given a fake resource mapping, which would have the
  * sweep call it with a class-section id and prove nothing.
  */
+/**
+ * §4.7b — a path segment that names a KIND, not a row.
+ *
+ * `/availability/:kind/:id` is one controller over four tables, so the sweep
+ * cannot map `/availability/` to a single resource — and an unmapped
+ * parameterised route is (correctly) reported as unclassified. The answer is
+ * NOT a waiver: `:id` really is another school's row id, and it really must
+ * 404. So the discriminator is expanded into the four routes it actually
+ * serves, each of which then classifies and sweeps exactly like any other.
+ *
+ * Still driven by the app's own route table, which is the rule that matters
+ * here: a fifth kind added to `KINDS` and left out of this list appears as a
+ * new unclassified route and fails the build, rather than passing unswept.
+ */
+const ENUM_PARAMS = {
+  "/availability/:kind": ["teacher", "class", "subject", "room"],
+  "/availability/:kind/:id": ["teacher", "class", "subject", "room"],
+};
+
 const PARAM_NOT_AN_ID = {
   "POST /onboarding/commit/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; the draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
   "GET /onboarding/preview/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; reads the caller's own draft and writes nothing" },
@@ -472,7 +522,8 @@ const LIST_NO_IDS = {
       data: { schoolId: id, employeeCode: `${P}${tag}T`, name: `${P} ${tag} Teacher`, maxPeriodsPerWeek: 30 },
     });
     const config = await prisma.timetableConfig.create({
-      data: { schoolId: id, name: `${P} ${tag} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
+      data: {
+        resourceGroupId: await groupFor(prisma, year.id), schoolId: id, name: `${P} ${tag} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
     });
     // Real periods, so the board and readiness routes have something to answer
     // about rather than 404-ing for their owner too.
@@ -488,6 +539,7 @@ const LIST_NO_IDS = {
     const section = await prisma.section.create({ data: { classId: cls.id, name: "A", schoolId: id } });
     const classSection = await prisma.classSection.create({
       data: {
+        resourceGroupId: await groupFor(prisma, year.id),
         classId: cls.id, sectionId: section.id, academicYearId: year.id,
         schoolId: id, timetableConfigId: config.id, strength: 30,
       },
@@ -521,6 +573,17 @@ const LIST_NO_IDS = {
         schoolId: id, timetableConfigId: config.id, classSectionId: classSection.id,
         subjectId: subject.id, teacherId: teacher.id, dayOfWeek: 1, periodNumber: 5,
         reason: `${P} ${tag} revision`,
+      },
+    });
+    // §29.2 — an open staffing change, so its three by-id routes have a real
+    // row to be refused. Created directly rather than through the API because
+    // the fixture predates a published week here, and the sweep only needs a
+    // row that belongs to one school and not the other.
+    const staffingChange = await prisma.staffingChange.create({
+      data: {
+        schoolId: id, timetableConfigId: config.id, reason: "resigned",
+        note: `${P} ${tag} staffing`,
+        teachers: { create: [{ teacherId: teacher.id, role: "releasing", schoolId: id }] },
       },
     });
     const absence = await prisma.teacherAbsence.create({
@@ -567,7 +630,7 @@ const LIST_NO_IDS = {
 
     return {
       id, tag, token,
-      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, electiveBlock, absence, notification, role, user },
+      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, electiveBlock, staffingChange, absence, notification, role, user },
     };
   }
 
@@ -602,13 +665,15 @@ const LIST_NO_IDS = {
         data: { schoolId: id, employeeCode: `${P}${t}T${n}`, name: `${P} ${t} T${n}`, maxPeriodsPerWeek: 30 },
       });
       case "config": return prisma.timetableConfig.create({
-        data: { schoolId: id, name: `${P} ${t} W${n}`, academicYearId: base.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
+        data: {
+          resourceGroupId: await groupFor(prisma, base.year.id), schoolId: id, name: `${P} ${t} W${n}`, academicYearId: base.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
       });
       case "classSection": {
         const cls = await prisma.schoolClass.create({ data: { schoolId: id, name: `${P} ${t} CS${n}`, sequence: n } });
         const sec = await prisma.section.create({ data: { classId: cls.id, name: "A", schoolId: id } });
         return prisma.classSection.create({
-          data: { classId: cls.id, sectionId: sec.id, academicYearId: base.year.id, schoolId: id, strength: 30 },
+          data: {
+            resourceGroupId: await groupFor(prisma, base.year.id), classId: cls.id, sectionId: sec.id, academicYearId: base.year.id, schoolId: id, strength: 30 },
         });
       }
       case "curriculum": {
@@ -658,6 +723,14 @@ const LIST_NO_IDS = {
         const teacher = await freshRow(school, "teacher");
         return prisma.teacherAbsence.create({ data: { teacherId: teacher.id, date: new Date("2026-10-01"), schoolId: id } });
       }
+      // §29.2 — DELETE discards a plan, so it needs a throwaway one each time.
+      case "staffingChange": return prisma.staffingChange.create({
+        data: {
+          schoolId: id, timetableConfigId: base.config.id, reason: "resigned",
+          note: `${P} ${t} staffing ${n}`,
+          teachers: { create: [{ teacherId: base.teacher.id, role: "releasing", schoolId: id }] },
+        },
+      });
       case "notification": return prisma.notification.create({
         data: { userId: base.user.id, schoolId: id, type: "test", title: `${P} ${t} n${n}`, body: "x" },
       });
@@ -683,7 +756,15 @@ const LIST_NO_IDS = {
   const census = await call("GET", "/dev/routes", A.token);
   check(census.status === 200 && census.json?.count > 0, "the running app reported its route table",
     `${census.json?.count ?? 0} route(s)`);
-  const routes = census.json?.routes ?? [];
+  /*
+    A route whose path carries a discriminator is expanded into the concrete
+    routes it serves BEFORE anything is classified, so each gets a real
+    controlled experiment rather than a note explaining why it has none.
+  */
+  const routes = (census.json?.routes ?? []).flatMap((r) => {
+    const values = ENUM_PARAMS[r.path];
+    return values ? values.map((v) => ({ ...r, path: r.path.replace(/:(\w+)/, v) })) : [r];
+  });
 
   const buckets = { path: [], list: [], body: [], effect: [], stamp: [], none: [], platform: [], public: [], dev: [] };
   const unclassified = [];

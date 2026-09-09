@@ -14,6 +14,41 @@ import { CacheKeysService } from "../redis/cache-keys.service";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/**
+ * §10.6 — one row of a card's week.
+ *
+ * `key` exists because a period NUMBER is not an identity once a card can span
+ * more than one wing (§3.10). Primary's P3 and Senior's P3 are different rows
+ * at different times, and `grid` is a flat map — keyed by number, one of them
+ * silently wins. The key is uniformly `c{configId}p{periodNumber}`: never
+ * "sometimes the number, sometimes this", because a two-mode key is a bug
+ * waiting for the first school that has two wings.
+ *
+ * Rows are NOT merged across wings even when their times match. A card shows
+ * what is true of one entity; making 09:35 a single shared row is a property of
+ * a WALL of cards, which is where the merge belongs — here it would have to
+ * pick one of two period numbers and be wrong about the other.
+ */
+export interface GridRow {
+  key: string;
+  configId: number;
+  /** The wing this row's clock comes from. Renderers show it only when a card spans several. */
+  wing: string;
+  periodNumber: number | null;
+  startTime: string;
+  endTime: string | null;
+  isBreak: boolean;
+  breakName: string | null;
+  isActivity?: boolean;
+  activityTeacher?: string | null;
+  activityRoom?: string | null;
+}
+
+/** The one place a row key is built, so the grid writer and the grid reader cannot disagree. */
+export const rowKey = (configId: number, periodNumber: number | null) => `c${configId}p${periodNumber}`;
+/** And the one place a grid key is built. */
+export const cellKey = (day: number, key: string) => `${day}:${key}`;
+
 export interface GridCell {
   period: number;
   subject: string | null;
@@ -24,6 +59,21 @@ export interface GridCell {
   isBreak?: boolean;
   breakName?: string | null;
   /**
+   * §10.6 — the slot rows this cell is drawn from.
+   *
+   * Carried so a wall of cards can highlight one lesson everywhere it appears:
+   * a teacher's card, their class's card and their room's card are three
+   * projections of the same `timetable_slot`, and this is what says so. Sent as
+   * strings because slot ids are BigInt.
+   */
+  slotIds?: string[];
+  /**
+   * §10.6 — a subject card's cell is a COUNT, not a lesson. Maths runs in eight
+   * sections at Monday P1; a cell that named one of them would discard seven.
+   */
+  count?: number;
+  sections?: string[];
+  /**
    * §4.9 — a split-elective cell. The section's own row carries no subject,
    * teacher or room by design (invariant 9): the lessons are the block's
    * option rows, which belong to no section. Without these two fields the
@@ -32,6 +82,42 @@ export interface GridCell {
    */
   blockName?: string | null;
   electiveOptions?: Array<{ subject: string | null; teacher: string | null; room: string | null; substituted: boolean }>;
+}
+
+/** The four things a §10.6 wall card can be bound to. */
+export const WALL_KINDS = ["teacher", "class-section", "room", "subject"] as const;
+export type WallKind = (typeof WALL_KINDS)[number];
+
+/**
+ * How many cards one wall request will serve.
+ *
+ * A number rather than "as many as you like": each card is a handful of
+ * queries, and the §14 budget is 300 ms for the request as a whole. 24 is four
+ * rows of six, which is more than fits legibly on a screen anyway.
+ */
+export const WALL_MAX = 24;
+
+/** `t:1,cs:44,r:7,sub:3` — the §29.3 `units=` idiom, so a heterogeneous id list
+ *  has ONE shape in this codebase rather than two. */
+const WALL_PREFIX: Record<string, WallKind> = {
+  t: "teacher", cs: "class-section", r: "room", sub: "subject",
+};
+
+export function parseWallCards(raw: string | undefined): Array<{ kind: WallKind; id: number }> {
+  if (!raw) return [];
+  const out: Array<{ kind: WallKind; id: number }> = [];
+  for (const part of raw.split(",")) {
+    const [p, rawId] = part.trim().split(":");
+    const kind = WALL_PREFIX[p];
+    const id = Number(rawId);
+    // An unknown prefix is SKIPPED, not refused. A wall is a saved layout that
+    // outlives the things on it, and a stale entry must not make the other
+    // eleven cards unreachable — §21's "an unknown key is ignored, the screen
+    // may be stale" applied to the same shape of problem.
+    if (!kind || !Number.isInteger(id) || id <= 0) continue;
+    if (!out.some((c) => c.kind === kind && c.id === id)) out.push({ kind, id });
+  }
+  return out;
 }
 
 function scopedSectionIds(scope: ViewScope): number[] | "all" | "none" {
@@ -95,6 +181,92 @@ export class ReportsService {
     };
   }
 
+  /**
+   * §10.6 — the rows for a card that may span several wings.
+   *
+   * This replaces a real defect rather than adding a feature. `teacherTimetable`
+   * took its day shape from `slots[0].timetableConfigId` — whichever row the
+   * database happened to return first — and then the renderer iterated THAT
+   * wing's periods. A teacher working in a 6-period wing and an 8-period wing
+   * got one of the two: lessons at a period number the chosen wing does not
+   * have were **not drawn at all**, and lessons at a shared number were drawn on
+   * the wrong clock row. §3.10 makes cross-wing teachers ordinary, so this was
+   * wrong for every school that has one.
+   *
+   * Rows are the UNION, ordered by real time, each carrying the wing it came
+   * from. Two wings whose periods interleave therefore interleave here, which is
+   * what is actually true of that person's morning.
+   */
+  private async shapeFor(configIds: number[]) {
+    const ids = [...new Set(configIds)].filter((id): id is number => typeof id === "number");
+    if (ids.length === 0) {
+      return {
+        rows: [] as GridRow[], workingDays: [1, 2, 3, 4, 5],
+        wings: [] as Array<{ id: number; name: string; effectiveFrom: string | null; effectiveTo: string | null }>,
+      };
+    }
+    const configs = await this.prisma.timetableConfig.findMany({
+      where: { id: { in: ids } },
+      orderBy: { id: "asc" },
+      include: {
+        periods: {
+          orderBy: { sortOrder: "asc" },
+          include: {
+            activity: {
+              include: {
+                teacher: { select: { name: true, initials: true } },
+                room: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (configs.length === 0) throw new NotFoundException("Timetable config not found");
+
+    const rows: GridRow[] = [];
+    // A day is a working day of the card if ANY of its wings teaches then —
+    // intersecting would hide a Saturday that one wing really does run.
+    const days = new Set<number>();
+    for (const cfg of configs) {
+      for (const d of ((cfg.workingDays as number[]) ?? [1, 2, 3, 4, 5])) days.add(d);
+      for (const p of cfg.periods) {
+        rows.push({
+          key: rowKey(cfg.id, p.periodNumber),
+          configId: cfg.id,
+          wing: cfg.name,
+          periodNumber: p.periodNumber,
+          startTime: p.startTime,
+          endTime: p.endTime,
+          isBreak: p.isBreak,
+          breakName: p.breakName,
+          isActivity: p.isActivity,
+          activityTeacher: p.activity?.teacher?.initials ?? p.activity?.teacher?.name ?? null,
+          activityRoom: p.activity?.room?.name ?? null,
+        });
+      }
+    }
+    // By clock, then by wing, so a single-wing card keeps exactly the order it
+    // has always had and a two-wing card reads down the morning.
+    rows.sort((a, b) => a.startTime.localeCompare(b.startTime) || a.configId - b.configId);
+    return {
+      rows,
+      workingDays: [...days].sort((a, b) => a - b),
+      /*
+        §30.5 — the window travels with the WING, not with the card. A card can
+        span two wings (§10.6), and those wings may apply over different dates;
+        one window on the card would have to pick one of them and be wrong about
+        the other.
+      */
+      wings: configs.map((c) => ({
+        id: c.id,
+        name: c.name,
+        effectiveFrom: c.effectiveFrom ? c.effectiveFrom.toISOString().slice(0, 10) : null,
+        effectiveTo: c.effectiveTo ? c.effectiveTo.toISOString().slice(0, 10) : null,
+      })),
+    };
+  }
+
   private async subsFor(date: string | null, slotIds: bigint[]) {
     if (!date || slotIds.length === 0) return new Map<string, number>();
     const rows = await this.prisma.substitutionLog.findMany({
@@ -120,7 +292,9 @@ export class ReportsService {
         include: { class: true, section: true, classTeacher: true },
       });
       if (!cs || cs.timetableConfigId === null) throw new NotFoundException("Class-section not found or not in a timetable");
-      const shape = await this.dayShape(cs.timetableConfigId);
+      // Exactly one config, by invariant 11 — so this card's rows can never be
+      // the union of two wings, and it keeps the shape it has always had.
+      const shape = await this.shapeFor([cs.timetableConfigId]);
       const slots = await this.prisma.timetableSlot.findMany({
         where: { classSectionId, status: "published" },
       });
@@ -174,8 +348,10 @@ export class ReportsService {
             })
             .sort((a, b) => (a.subject ?? "").localeCompare(b.subject ?? ""));
           const blockName = blockNames.get(s.electiveBlockId) ?? "Elective";
-          grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
+          const optRows = optionsAt.get(`${s.electiveBlockId}:${s.dayOfWeek}:${s.periodNumber}`) ?? [];
+          grid[cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber))] = {
             period: s.periodNumber,
+            slotIds: [s.id.toString(), ...optRows.map((o) => o.id.toString())],
             // `subject` carries the block name so every existing consumer —
             // exports, the AI assistant, anything reading the flat cell —
             // says "Third Language" instead of nothing.
@@ -189,8 +365,9 @@ export class ReportsService {
           };
           continue;
         }
-        grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
+        grid[cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber))] = {
           period: s.periodNumber,
+          slotIds: [s.id.toString()],
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
           teacher: teacherNames.get(sub ?? s.teacherId ?? -1) ?? null,
           room: s.roomId !== null ? (rooms.get(s.roomId) ?? null) : null,
@@ -205,7 +382,8 @@ export class ReportsService {
         date,
         workingDays: shape.workingDays,
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
-        periods: shape.periods,
+        periods: shape.rows,
+        wings: shape.wings,
         grid,
       };
     });
@@ -239,17 +417,19 @@ export class ReportsService {
       // slots someone else covers FOR them on the date (shown as released)
       const covered = await this.subsFor(date, slots.map((s) => s.id));
 
-      const configId = slots[0]?.timetableConfigId ?? dutySlots[0]?.timetableConfigId;
-      const shape = configId
-        ? await this.dayShape(configId)
-        : {
-            workingDays: [1, 2, 3, 4, 5],
-            periods: [] as Array<{
-              periodNumber: number | null; startTime: string; endTime: string | null;
-              isBreak: boolean; breakName: string | null;
-              isActivity?: boolean; activityTeacher?: string | null; activityRoom?: string | null;
-            }>,
-          };
+      /*
+        §10.6 — EVERY wing this teacher appears in, not `slots[0]`'s.
+
+        The old line took the day shape from whichever slot row came back first
+        and drew the whole week against it. §3.10 makes a cross-wing teacher
+        ordinary — the art teacher who also covers Class 6 — so for those
+        teachers the grid was wrong twice over: a lesson at a period number the
+        chosen wing does not have was dropped entirely by the renderer, and one
+        at a shared number was drawn at the other wing's clock time.
+      */
+      const shape = await this.shapeFor(
+        [...slots, ...dutySlots].map((s) => s.timetableConfigId),
+      );
 
       const all = [...slots, ...dutySlots];
       const sectionRows = await this.prisma.classSection.findMany({
@@ -281,8 +461,9 @@ export class ReportsService {
       const grid: Record<string, GridCell & { released?: boolean; duty?: boolean }> = {};
       for (const s of slots) {
         if (covered.has(s.id.toString())) continue; // released to a substitute that day
-        grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
+        grid[cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber))] = {
           period: s.periodNumber,
+          slotIds: [s.id.toString()],
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
           teacher: null,
           room: s.roomId !== null ? (rooms.get(s.roomId) ?? null) : null,
@@ -291,8 +472,9 @@ export class ReportsService {
         };
       }
       for (const s of dutySlots) {
-        grid[`${s.dayOfWeek}:${s.periodNumber}`] = {
+        grid[cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber))] = {
           period: s.periodNumber,
+          slotIds: [s.id.toString()],
           subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
           teacher: null,
           room: s.roomId !== null ? (rooms.get(s.roomId) ?? null) : null,
@@ -310,10 +492,229 @@ export class ReportsService {
         date,
         workingDays: shape.workingDays,
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
-        periods: shape.periods,
+        periods: shape.rows,
+        wings: shape.wings,
         grid,
       };
     });
+  }
+
+  /**
+   * §10.6 report 5 — one ROOM's week.
+   *
+   * Needs `view.all`, deliberately, and this is the one place the §10.6 plan was
+   * corrected while building it. Scope elsewhere in this module is a row-level
+   * *filter* — a class-scoped teacher sees their own sections and nothing else.
+   * Filtering a room's occupancy that way produces a grid that says **"Lab 2 is
+   * free on Monday P3"** when another class is in it, which is worse than
+   * refusing: it is a wrong answer to the exact question the screen exists for.
+   * Room utilisation already required `view.all` for the same reason.
+   *
+   * Option rows (§4.9, `class_section_id = NULL`) arrive naturally here because
+   * the query is by room rather than by section — but they are the invariant-9
+   * trap one level out, so they are labelled by their block rather than left
+   * with a blank class.
+   */
+  async roomTimetable(scope: ViewScope, roomId: number, date: string | null) {
+    if (scope.level !== "all") {
+      throw new ForbiddenException("A room's week needs view.all — a partly-filtered one would show occupied rooms as free (§15.3)");
+    }
+    return this.cached(`room:${roomId}:${date ?? "base"}`, async () => {
+      const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+      if (!room) throw new NotFoundException("Room not found");
+      const slots = await this.prisma.timetableSlot.findMany({
+        where: { roomId, status: "published" },
+      });
+      const shape = await this.shapeFor(slots.map((s) => s.timetableConfigId));
+      const subs = await this.subsFor(date, slots.map((s) => s.id));
+      const teacherNames = await this.names([
+        ...new Set([...slots.map((s) => s.teacherId).filter((x): x is number => x !== null), ...subs.values()]),
+      ]);
+      const subjects = new Map(
+        (await this.prisma.subject.findMany({ where: { id: { in: slots.map((s) => s.subjectId).filter((x): x is number => x !== null) } } })).map((s) => [s.id, s.name]),
+      );
+      const sectionRows = await this.prisma.classSection.findMany({
+        where: { id: { in: [...new Set(slots.map((s) => s.classSectionId).filter((x): x is number => x !== null))] } },
+        include: { class: true, section: true },
+      });
+      const sectionLabel = new Map(sectionRows.map((cs) => [cs.id, `${cs.class.name}-${cs.section.name}`]));
+      const blockRows = await this.prisma.electiveBlock.findMany({
+        where: { id: { in: [...new Set(slots.map((s) => s.electiveBlockId).filter((x): x is number => x !== null))] } },
+        select: { id: true, name: true },
+      });
+      const blockName = new Map(blockRows.map((b) => [b.id, b.name]));
+
+      const grid: Record<string, GridCell> = {};
+      for (const s of slots) {
+        const sub = subs.get(s.id.toString());
+        grid[cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber))] = {
+          period: s.periodNumber,
+          slotIds: [s.id.toString()],
+          subject: s.subjectId !== null ? (subjects.get(s.subjectId) ?? null) : null,
+          teacher: teacherNames.get(sub ?? s.teacherId ?? -1) ?? null,
+          room: null,
+          classSection:
+            s.classSectionId !== null
+              ? (sectionLabel.get(s.classSectionId) ?? null)
+              : s.electiveBlockId !== null
+                ? (blockName.get(s.electiveBlockId) ?? null)
+                : null,
+          substituted: sub !== undefined,
+        };
+      }
+      return {
+        kind: "room" as const,
+        label: room.name,
+        roomType: room.roomType,
+        date,
+        workingDays: shape.workingDays,
+        dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
+        periods: shape.rows,
+        wings: shape.wings,
+        grid,
+      };
+    });
+  }
+
+  /**
+   * §10.6 report 6 — one SUBJECT's week, as density.
+   *
+   * A subject is not one lesson. Maths runs in eight sections at Monday P1, so a
+   * cell drawn like a teacher's would name one of them and quietly discard
+   * seven. The cell is therefore a count plus the sections behind it, which
+   * answers the question the card is actually for: *when is this taught, and is
+   * it stacked where the school said it should be* (§26's priority and lunch
+   * rules, audited after the fact rather than asserted).
+   *
+   * `view.all` for the same reason as the room card: a filtered count is a
+   * wrong number, not a smaller one.
+   */
+  async subjectTimetable(scope: ViewScope, subjectId: number, date: string | null) {
+    if (scope.level !== "all") {
+      throw new ForbiddenException("A subject's week needs view.all — a filtered count would be a wrong number, not a smaller one (§15.3)");
+    }
+    return this.cached(`subj:${subjectId}:${date ?? "base"}`, async () => {
+      const subject = await this.prisma.subject.findUnique({ where: { id: subjectId } });
+      if (!subject) throw new NotFoundException("Subject not found");
+      const slots = await this.prisma.timetableSlot.findMany({
+        where: { subjectId, status: "published" },
+      });
+      const shape = await this.shapeFor(slots.map((s) => s.timetableConfigId));
+      const subs = await this.subsFor(date, slots.map((s) => s.id));
+      const sectionRows = await this.prisma.classSection.findMany({
+        where: { id: { in: [...new Set(slots.map((s) => s.classSectionId).filter((x): x is number => x !== null))] } },
+        include: { class: true, section: true },
+      });
+      const sectionLabel = new Map(sectionRows.map((cs) => [cs.id, `${cs.class.name}-${cs.section.name}`]));
+      const blockRows = await this.prisma.electiveBlock.findMany({
+        where: { id: { in: [...new Set(slots.map((s) => s.electiveBlockId).filter((x): x is number => x !== null))] } },
+        select: { id: true, name: true },
+      });
+      const blockName = new Map(blockRows.map((b) => [b.id, b.name]));
+      const whereTaught = (s: { classSectionId: number | null; electiveBlockId: number | null }) =>
+        s.classSectionId !== null
+          ? (sectionLabel.get(s.classSectionId) ?? null)
+          : s.electiveBlockId !== null
+            ? (blockName.get(s.electiveBlockId) ?? null)
+            : null;
+
+      const grid: Record<string, GridCell> = {};
+      let busiest = 0;
+      for (const s of slots) {
+        const k = cellKey(s.dayOfWeek, rowKey(s.timetableConfigId, s.periodNumber));
+        const at = grid[k];
+        const where = whereTaught(s);
+        if (at) {
+          at.count = (at.count ?? 0) + 1;
+          if (where) at.sections!.push(where);
+          at.slotIds!.push(s.id.toString());
+          at.substituted = at.substituted || subs.has(s.id.toString());
+        } else {
+          grid[k] = {
+            period: s.periodNumber,
+            slotIds: [s.id.toString()],
+            subject: subject.name,
+            teacher: null,
+            room: null,
+            classSection: null,
+            substituted: subs.has(s.id.toString()),
+            count: 1,
+            sections: where ? [where] : [],
+          };
+        }
+        busiest = Math.max(busiest, grid[k].count ?? 1);
+      }
+      for (const cell of Object.values(grid)) cell.sections?.sort((a, b) => a.localeCompare(b));
+      return {
+        kind: "subject" as const,
+        label: subject.name,
+        /** The scale the heat tint is drawn against — sent, never guessed at render time. */
+        busiest,
+        weeklyLessons: slots.length,
+        date,
+        workingDays: shape.workingDays,
+        dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
+        periods: shape.rows,
+        wings: shape.wings,
+        grid,
+      };
+    });
+  }
+
+  /**
+   * §10.6 — many cards, one request.
+   *
+   * A wall of twelve grids is twelve round trips otherwise, against a 300 ms
+   * budget (§14). Each card still goes through its own function, so a card on
+   * the wall and the same card on the Reports screen cannot come out different —
+   * the saving is the round trips and the shared Redis reads, not a second
+   * query path.
+   *
+   * **A refused card is data, not an error.** One card outside the caller's
+   * scope must not blank the other eleven: a wall is often shared, and the
+   * viewer who cannot see one room should still see the ten teachers. So each
+   * card resolves independently and a refusal comes back as `{ denied, reason }`
+   * in its own place on the wall.
+   *
+   * The cap is stated in the response rather than applied silently — §10.6's own
+   * rule, and the one the codebase keeps having to relearn: a truncation nobody
+   * is told about reads as "that is everything".
+   */
+  async wall(
+    scope: ViewScope,
+    cards: Array<{ kind: WallKind; id: number }>,
+    date: string | null,
+  ) {
+    const taken = cards.slice(0, WALL_MAX);
+    const results = await Promise.all(
+      taken.map(async (c) => {
+        try {
+          switch (c.kind) {
+            case "teacher": return { ...c, card: await this.teacherTimetable(scope, c.id, date) };
+            case "class-section": return { ...c, card: await this.classSectionTimetable(scope, c.id, date) };
+            case "room": return { ...c, card: await this.roomTimetable(scope, c.id, date) };
+            case "subject": return { ...c, card: await this.subjectTimetable(scope, c.id, date) };
+          }
+        } catch (e) {
+          /*
+            Only the two refusals a wall can legitimately meet are swallowed.
+            Anything else — a broken query, a bad migration — must still be a
+            500, or the wall becomes the one screen in the app where a real
+            fault renders as a tidy grey card saying "not available".
+          */
+          if (e instanceof ForbiddenException || e instanceof NotFoundException) {
+            return { ...c, denied: true, reason: (e.getResponse() as any)?.message ?? e.message };
+          }
+          throw e;
+        }
+      }),
+    );
+    return {
+      date,
+      max: WALL_MAX,
+      dropped: cards.length - taken.length,
+      cards: results,
+    };
   }
 
   /** §10 report 3 — Room Utilization across the week. */

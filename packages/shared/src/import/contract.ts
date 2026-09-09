@@ -174,7 +174,11 @@ export const SHEETS: SheetDef[] = [
       { header: "Capacity", key: "capacity", type: "int", min: 1, max: 500, width: 11, help: "Seats (optional)", sample: [40] },
       { header: "Shared", key: "isShared", type: "enum", values: YES_NO, width: 10, help: "Shared between classes? Labs default to Yes", sample: ["No"] },
       { header: "Home Room For", key: "homeFor", type: "string", maxLength: 40, refSheet: "Class Sections", width: 18, help: "The class-section that sits here all week, e.g. Class 1-A. One only", sample: [""] },
-      { header: "Lab For Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 26, help: "Which subjects this lab is set up for. Leave blank for a general lab that serves any of them", sample: [""] },
+      // The header is not renamed on purpose: it is the column's key in every
+      // workbook a school has already downloaded, and a rename would make those
+      // files import a room with no subjects. The HELP says what it now covers
+      // — §19.1 uses these same rows for a music room or a computer room.
+      { header: "Lab For Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 26, help: "Which subjects this room is set up for — a lab's own subjects, or the room a subject marked 'Own Room' is taught in. Leave blank for a general lab that serves any lab subject", sample: [""] },
     ],
   },
   {
@@ -194,6 +198,17 @@ export const SHEETS: SheetDef[] = [
       { header: "Lunch Rule", key: "lunchRule", type: "enum", values: LUNCH_VALUES, width: 16, help: "Which side of lunch this may be taught. HARD — Readiness refuses a school that cannot fit it", sample: ["Any time"] },
       { header: "Gap After Lunch", key: "gapAfterLunch", type: "enum", values: YES_NO, width: 16, help: "Yes = never in the period immediately after lunch. For games and dance, which cannot be held on a full stomach", sample: ["No"] },
       { header: "Is Lab", key: "isLab", type: "enum", values: YES_NO, width: 10, help: "Needs a lab room?", sample: ["No"] },
+      // §19.1 — WHETHER, here; WHERE stays on the Rooms sheet's own Subjects
+      // column, which has written `room_subjects` since §19. One writer for
+      // that table keeps the workbook free of sheet-order coupling: a room name
+      // typed here would have to exist by the time Subjects is read, and
+      // Subjects is read first.
+      { header: "Own Room", key: "taughtInOwnRoom", type: "enum", values: YES_NO, width: 12, help: "Yes = always taught in its own room (a music room, a computer room), never the class's home room. Name the room on the Rooms sheet by listing this subject against it", sample: ["No"] },
+      // §27.16 — the classes this subject is taught to. Blank is "not decided
+      // yet", exactly as the Teachers sheet's Teaching Scope is, and for the
+      // same reason: an old workbook uploaded with the column absent must not
+      // read as "this subject is taught to nobody".
+      { header: "Classes", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes take this subject, comma separated. The Allocation page then proposes it only there. Leave blank for every class", sample: [""] },
       { header: "Requires Double Period", key: "requiresDoublePeriod", type: "enum", values: YES_NO, width: 20, help: "Usually taught as a double period?", sample: ["No"] },
     ],
   },

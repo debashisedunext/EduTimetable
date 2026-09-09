@@ -11,38 +11,16 @@
  * all: every screen must agree. A grid that worked out its own colours would
  * make Maths green on the Board and blue on the Matrix.
  *
- * Until the lists arrive — and for anyone whose role cannot read them — every
- * lookup returns null and the grids draw exactly as they did before. Colour is
- * an enhancement to a screen that already works.
+ * **This module exports a component and nothing else, deliberately.** The
+ * context, the hook and `classOfLabel` live in `colors-context.ts` — see the
+ * note there: a module that mixes them cannot be fast-refreshed, and each
+ * invalidation minted a new context object while the grids held the old one,
+ * which turned every cell white with nothing anywhere reporting an error.
  */
-import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { assignSwatches, lookupSwatch, type Swatch } from "@edutimetable/shared";
+import { useMemo, type ReactNode } from "react";
+import { assignSwatches, lookupSwatch } from "@edutimetable/shared";
+import { ColorContext, NO_COLORS, classOfLabel, type Colors } from "./colors-context";
 import { useApi } from "./hooks";
-
-interface Colors {
-  subject: (name: string | null | undefined) => Swatch | null;
-  /** Keyed on the CLASS, so 5-A, 5-B and 5-C read as one family. */
-  classOf: (classSectionLabel: string | null | undefined) => Swatch | null;
-  ready: boolean;
-}
-
-const NONE: Colors = { subject: () => null, classOf: () => null, ready: false };
-const ColorContext = createContext<Colors>(NONE);
-
-export const useColors = () => useContext(ColorContext);
-
-/**
- * "Class 5-A" → "Class 5". Sections of a class share their class's colour: on a
- * teacher's grid the useful grouping is "which class am I with", and three
- * shades for 5-A/5-B/5-C would spend three palette slots saying one thing.
- *
- * Splits on the LAST hyphen because class names themselves contain them —
- * "Pre-Nursery-A" must become "Pre-Nursery", not "Pre".
- */
-export function classOfLabel(label: string): string {
-  const cut = label.lastIndexOf("-");
-  return cut > 0 ? label.slice(0, cut).trim() : label.trim();
-}
 
 interface ColorNames {
   subjects: { id: number; name: string }[];
@@ -57,7 +35,7 @@ export function ColorProvider({ children }: { children: ReactNode }) {
   const { data } = useApi<ColorNames>("/me/colors");
 
   const value = useMemo<Colors>(() => {
-    if (!data) return NONE;
+    if (!data) return NO_COLORS;
     const subjectMap = assignSwatches(data.subjects.map((s) => s.name));
     const classMap = assignSwatches(data.classes.map((c) => c.name));
     return {

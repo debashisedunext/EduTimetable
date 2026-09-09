@@ -14,6 +14,7 @@ import {
   scanDel,
   readinessKey,
   reportKey,
+  readinessKeyPattern,
   reportKeyPattern,
   schoolKeyPattern,
   slotsKey,
@@ -79,7 +80,17 @@ export class CacheKeysService {
         // so naming three exact keys leaves every per-draft copy stale. Sweep
         // the config's whole prefix instead.
         : await this.scanDel(configSlotsKeyPattern(schoolId, configId));
-    return removed + (await this.scanDel(reportKeyPattern(schoolId)));
+    /*
+      §30.7 — readiness too, and for the same reason the reports are here.
+      A readiness answer used to be about one timetable alone; it now also
+      reports clashes with the other timetables that are LIVE, so publishing B
+      changes what A says. Swept by pattern rather than by config id, because
+      the answer that went stale belongs to a different config from the one
+      being published — which is precisely what a per-config sweep cannot reach.
+    */
+    return removed
+      + (await this.scanDel(reportKeyPattern(schoolId)))
+      + (await this.scanDel(readinessKeyPattern(schoolId)));
   }
 
   /**

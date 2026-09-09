@@ -23,6 +23,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 const { PrismaClient: ControlClient } = req("/app/apps/api/prisma/generated/control-client");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -97,6 +98,7 @@ async function newOwnerWithSchool(email, schoolName) {
   async function buildConfig(schoolId, yearId, name, { published = false } = {}) {
     const cfg = await prisma.timetableConfig.create({
       data: {
+        resourceGroupId: await groupFor(prisma, yearId),
         schoolId, academicYearId: yearId, name,
         workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4, periodDurationMins: 40, startTime: "08:00",
       },
@@ -116,7 +118,8 @@ async function newOwnerWithSchool(email, schoolName) {
     for (const letter of ["A", "B", "C"]) {
       const sec = await prisma.section.create({ data: { schoolId, classId: klass.id, name: letter } });
       sections.push(await prisma.classSection.create({
-        data: { schoolId, classId: klass.id, sectionId: sec.id, academicYearId: yearId, timetableConfigId: cfg.id },
+        data: {
+          resourceGroupId: await groupFor(prisma, yearId), schoolId, classId: klass.id, sectionId: sec.id, academicYearId: yearId, timetableConfigId: cfg.id },
       }));
     }
     const subject = await prisma.subject.create({ data: { schoolId, name: `ZZ Maths ${cfg.id}` } });

@@ -18,10 +18,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CLASS_LADDER,
   CLASS_LADDER_SHORT,
+  DEFAULT_WING_SECTIONS,
   planClasses,
   planSummary,
   weeklyCapacity,
   WING_SUGGESTIONS,
+  wingRangeFor,
   type WingAnswer,
 } from "@edutimetable/shared";
 import { api } from "../../api";
@@ -91,15 +93,15 @@ export function StepWings({ answers, onChange }: {
 
   const add = (
     n: string,
-    // A sensible default range so the slider on the next step opens somewhere
-    // useful rather than collapsed on Pre-Nursery.
-    range: { fromIndex: number; toIndex: number } = { fromIndex: 4, toIndex: 9 },
+    // The default range and section count live in `shared` — three doors create
+    // a wing now, and each used to carry its own copy of 4/9/2.
+    range: { fromIndex: number; toIndex: number } = wingRangeFor(n),
     onto: WingAnswer[] = wings,
   ): WingAnswer[] => {
     const trimmed = n.trim();
     if (!trimmed) return onto;
     if (onto.some((w) => w.name.toLowerCase() === trimmed.toLowerCase())) return onto;
-    return [...onto, { name: trimmed, ...range, sections: 2 }];
+    return [...onto, { name: trimmed, ...range, sections: DEFAULT_WING_SECTIONS }];
   };
 
   const addTyped = () => {
@@ -324,12 +326,26 @@ function Ladder({ wing, onChange }: { wing: WingAnswer; onChange: (w: WingAnswer
   );
 }
 
-export function StepClasses({ answers, onChange }: {
+export function StepClasses({ answers, onChange, startWing = null }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
+  /**
+   * §3.10a — open on this wing rather than the first one.
+   *
+   * Somebody arriving from "New Timetable" has one wing in mind, and on a
+   * school that already runs three, landing on the ladder for Primary Wing
+   * reads as the button having done nothing. Read ONCE, as the initial tab: a
+   * value that kept re-applying would fight every click on the tab strip.
+   */
+  startWing?: string | null;
 }) {
   const wings: WingAnswer[] = answers.wings ?? [];
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(() => {
+    const want = (startWing ?? "").trim().toLowerCase();
+    if (!want) return 0;
+    const i = wings.findIndex((w) => w.name.trim().toLowerCase() === want);
+    return i < 0 ? 0 : i;
+  });
   const wing = wings[active];
   const { classes, issues } = useMemo(() => planClasses(wings), [wings]);
   const summary = useMemo(() => planSummary({ wings }), [wings]);

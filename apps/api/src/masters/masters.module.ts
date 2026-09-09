@@ -4,6 +4,7 @@ import { SchoolController } from "./school.controller";
 import { ClassesController, ClassSectionsController } from "./classes.controller";
 import { RoomsController } from "./rooms.controller";
 import { SubjectsController } from "./subjects.controller";
+import { AvailabilityController } from "./availability.controller";
 import { TeachersController } from "./teachers.controller";
 import { CurriculumController } from "./curriculum.controller";
 import { MappingsController, MergedGroupsController } from "./mappings.controller";
@@ -32,6 +33,7 @@ import { InstructionService } from "./instruction.service";
     ClassSectionsController,
     RoomsController,
     SubjectsController,
+    AvailabilityController,
     TeachersController,
     CurriculumController,
     MappingsController,

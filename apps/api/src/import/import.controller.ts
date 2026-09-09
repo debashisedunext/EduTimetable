@@ -19,6 +19,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import type { AuthedRequest } from "../masters/crud.util";
 import { ImportService } from "./import.service";
+import { FreezeService } from "../freeze/freeze.service";
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -56,7 +57,10 @@ const stamp = () => new Date().toISOString().slice(0, 10);
 @Controller("import")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
 export class ImportController {
-  constructor(private readonly importer: ImportService) {}
+  constructor(
+    private readonly importer: ImportService,
+    private readonly freeze: FreezeService,
+  ) {}
 
   /** Blank template with samples, dropdowns, and the school's names to copy. */
   @Get("template")
@@ -88,6 +92,16 @@ export class ImportController {
   @Post("commit")
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: MAX_BYTES } }))
   async commit(@Req() req: AuthedRequest, @UploadedFile() file: UploadedXlsx) {
+    /*
+      §29.1 — the blunt check, and deliberately so.
+
+      A workbook resolves names to rows deep inside one transaction, so it
+      cannot say up front which timetables it will touch. The narrow version
+      would have to re-derive the importer's own name resolution, and a second
+      copy of that is exactly how the two would drift. `dry-run` is untouched:
+      seeing what a file would do is not a change.
+    */
+    await this.freeze.assertNoneFrozen("master data");
     const f = assertXlsx(file);
     return this.importer.commit(req.user.schoolId, f.buffer);
   }

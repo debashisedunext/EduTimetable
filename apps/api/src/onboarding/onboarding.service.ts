@@ -14,14 +14,15 @@
  * wizard leave nothing behind in `classes`, `rooms` or anywhere else — and it is
  * the property the smoke suite checks rather than assumes.
  */
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   CLASS_LADDER,
-  classSheets, coverageGaps, curriculumSheets, mappingSheets, roomSheets, sessionSheets,
+  classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
+  roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
-  withCurriculumPeriods,
+  wingRangeFor, withCurriculumPeriods,
   type CurriculumCell, type MappingSuggestion, type SubjectAnswer, type SuggestedRoom,
-  type TeacherAnswer, type WizardAnswers,
+  type TeacherAnswer, type WingAnswer, type WizardAnswers,
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
 import { TermsService } from "../terms/terms.service";
@@ -43,6 +44,15 @@ import { stepFrom } from "./interview.answers";
  * kind of thing only a school ever finds.
  */
 export const TOTAL_STEPS = 10;
+
+/**
+ * Step 4 — "Which classes does this wing teach?".
+ *
+ * Named because §3.10a opens the guided setup there, and a bare `4` at the far
+ * end of an HTTP call is the sort of number that survives a renumbering the
+ * step titles do not.
+ */
+export const CLASSES_STEP = 4;
 const STEP_SCHEME_KEY = "__stepScheme";
 const STEP_SCHEME = 2;
 
@@ -254,6 +264,86 @@ export class OnboardingService {
   }
 
   /**
+   * §3.10a — a new timetable IS a wing, so creating one enters the guided setup.
+   *
+   * "New Timetable" used to create a `timetable_config` and hand the admin the
+   * step-by-step Setup Wizard, which then asked them to build a school around
+   * it master by master. But the thing they had just made is precisely what
+   * step 3 of the guided setup makes — a wing — and the very next question, in
+   * either flow, is *which classes does it teach*. So the button now finishes
+   * the guided setup's step 3 and opens step 4.
+   *
+   * Three things this has to get right, and each was a way to lose data:
+   *
+   *  - **A wing already in the draft is not added twice.** Names are the
+   *    natural key everywhere in this flow (`commitWings` skips by name, the
+   *    §16 importer skips by name), so a duplicate row would be silently
+   *    ignored later while showing twice on screen now.
+   *  - **With no draft, the school's own answers are rebuilt first** (§27.12).
+   *    `prefillFromSchool` deliberately does not save, so writing a draft
+   *    holding only this wing would be the *first* row for this person — and
+   *    every subject, teacher and room the school has already entered would
+   *    vanish from the guided setup for good.
+   *  - **The session is aligned to the config's own year.** Step 4 writes
+   *    class-sections through the §16 importer with an `Academic Year` column
+   *    taken from `answers.session.name`; if that names a different year from
+   *    the one this config belongs to, the sections attach to the wrong session
+   *    — or to none — and the wing looks empty afterwards.
+   *
+   * The config is read rather than trusted from the request: another school's
+   * id finds nothing under the ambient scope (§17) and is a 404, never a wing
+   * quietly named after somebody else's timetable.
+   *
+   * Returns the saved draft, whose `currentStep` is where the client opens —
+   * so "which step is Classes?" is answered once, here, rather than by a
+   * number typed into a URL on the other side of the wire.
+   */
+  async recordWing(schoolId: number, userId: number, timetableConfigId: number) {
+    const cfg = await this.prisma.timetableConfig.findUnique({
+      where: { id: timetableConfigId },
+      include: { academicYear: true },
+    });
+    if (!cfg) throw new NotFoundException(`Timetable ${timetableConfigId} not found`);
+
+    const draft = await this.draftFor(schoolId, userId);
+    const base: Record<string, unknown> = draft
+      ? draft.answers
+      : (await this.answersFromSchool(schoolId)).answers;
+
+    const wings = (Array.isArray(base.wings) ? [...(base.wings as WingAnswer[])] : []);
+    const already = wings.some(
+      (w) => String(w?.name ?? "").trim().toLowerCase() === cfg.name.trim().toLowerCase(),
+    );
+    if (!already) {
+      wings.push({ name: cfg.name, ...wingRangeFor(cfg.name), sections: DEFAULT_WING_SECTIONS });
+    }
+
+    const session = base.session as { name?: string } | undefined;
+    const year = cfg.academicYear;
+
+    return this.save(schoolId, userId, {
+      // With no draft this is the whole of `base` plus the wing: `save` starts
+      // a fresh row from what THIS turn supplies, so anything left out of the
+      // payload is not merged in afterwards — it is simply gone.
+      answers: {
+        ...(draft ? {} : base),
+        wings,
+        ...(session?.name === year.name
+          ? {}
+          : {
+              session: {
+                name: year.name,
+                startDate: year.startDate.toISOString().slice(0, 10),
+                endDate: year.endDate.toISOString().slice(0, 10),
+              },
+            }),
+      },
+      currentStep: CLASSES_STEP,
+      mode: "wizard",
+    });
+  }
+
+  /**
    * What a school with no draft should open the guided setup on.
    *
    * Reads, never writes. A brand-new school gets `{ empty: true }` and question
@@ -293,7 +383,15 @@ export class OnboardingService {
     const [configs, years, subjects, teachers, school] = await Promise.all([
       this.prisma.timetableConfig.findMany({ where: { schoolId }, orderBy: { id: "asc" } }),
       this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { id: "desc" } }),
-      this.prisma.subject.findMany({ where: { schoolId }, orderBy: { name: "asc" } }),
+      this.prisma.subject.findMany({
+        where: { schoolId },
+        // §27.16 — read back, never re-derived. A school that has said Biology
+        // is Class 9 upward has said it, and an adopted draft that quietly
+        // widened it to every class would re-propose the school a curriculum
+        // nobody chose — the same rule `eligibility` follows below.
+        include: { classes: { include: { class: true }, orderBy: { class: { sequence: "asc" } } } },
+        orderBy: { name: "asc" },
+      }),
       this.prisma.teacher.findMany({ where: { schoolId, isActive: true }, orderBy: { name: "asc" } }),
       this.prisma.school.findUnique({ where: { id: schoolId }, select: { name: true } }),
     ]);
@@ -379,14 +477,16 @@ export class OnboardingService {
        * what would be.
        */
       const perClass = names.map((n) => mine.filter((cs) => cs.class.name === n).length);
+      const blank = wingRangeFor(cfg.name);
       wings.push({
         name: cfg.name,
-        fromIndex: names.length > 0 ? Math.min(...indices) : 4,
-        toIndex: names.length > 0 ? Math.max(...indices) : 9,
+        fromIndex: names.length > 0 ? Math.min(...indices) : blank.fromIndex,
+        toIndex: names.length > 0 ? Math.max(...indices) : blank.toIndex,
         // The commonest, since one number has to stand for the wing; a class
         // that differs keeps its own count, because step 4 writes nothing over
         // sections that already exist.
-        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0] ?? 2,
+        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0]
+          ?? DEFAULT_WING_SECTIONS,
       });
 
       const periods = await this.prisma.period.findMany({
@@ -500,6 +600,9 @@ export class OnboardingService {
             subjects: subjects.map((s) => ({
               name: s.name, code: s.code ?? "", isLab: s.isLab,
               requiresDoublePeriod: s.requiresDoublePeriod,
+              // §27.16. Empty stays empty — "not stated", which is what lets
+              // the §27.15 ladder go on proposing for a subject nobody narrowed.
+              classes: s.classes.map((c) => c.class.name),
             })),
           }
         : {}),
@@ -676,10 +779,17 @@ export class OnboardingService {
       case 7:
         return { sheets: teacherSheets(teachers, wings), issues };
       case 8: {
-        // Rooms carry their subject mappings, which the Rooms SHEET has no
-        // column for — §19's room_subjects is a separate table. The sheet
-        // creates the rooms; `attachLabSubjects` maps them, and without that a
-        // proposed lab is a general-purpose room with a misleading name.
+        /*
+          The Rooms sheet DOES have a column for the subject mapping — "Lab For
+          Subjects", since §19 — and `roomSheets` simply was not filling it in.
+          A second pass (`attachLabSubjects`) upserted the same rows after the
+          import to cover for that, so one fact had two writers on one path.
+
+          §19.1 filled the column in, and this is the other half: the sheet is
+          the writer, as it is for every other master fact. Nothing is lost —
+          the importer's own Rooms loop runs for every row, not just new ones,
+          so re-committing this step still updates the mapping.
+        */
         return { sheets: roomSheets(await this.roomsFor(schoolId, answers)), issues };
       }
       /**
@@ -787,7 +897,6 @@ export class OnboardingService {
     // creating "Science Lab" without mapping Science to it produces a second
     // general-purpose room the solver will put Hindi in. The Rooms sheet has no
     // column for it, so it is done here, right after the rooms exist.
-    if (step === 8) await this.attachLabSubjects(schoolId, answers);
     // §25 — the terms of the session the importer has just created. Not a
     // sheet, for the same reason the week is not one: §16 is master data, and
     // the school calendar is not master data. Matched by name so pressing Next
@@ -866,33 +975,6 @@ export class OnboardingService {
       answers.wings ?? [], answers.subjects ?? [],
       await this.capacityByWing(schoolId), await this.daysByWing(schoolId),
     );
-  }
-
-  private async attachLabSubjects(schoolId: number, answers: WizardAnswers & Record<string, any>) {
-    const proposed = await this.roomsFor(schoolId, answers);
-    const labs = proposed.filter((r: { subjects: string[] }) => r.subjects?.length > 0);
-    if (labs.length === 0) return;
-
-    const [rooms, subjects] = await Promise.all([
-      this.prisma.room.findMany({ where: { schoolId } }),
-      this.prisma.subject.findMany({ where: { schoolId } }),
-    ]);
-    const roomByName = new Map(rooms.map((r) => [r.name.toLowerCase(), r.id]));
-    const subjectByName = new Map(subjects.map((s) => [s.name.toLowerCase(), s.id]));
-
-    for (const lab of labs) {
-      const roomId = roomByName.get(lab.name.toLowerCase());
-      if (!roomId) continue;
-      for (const name of lab.subjects) {
-        const subjectId = subjectByName.get(name.toLowerCase());
-        if (!subjectId) continue;
-        await this.prisma.roomSubject.upsert({
-          where: { roomId_subjectId: { roomId, subjectId } },
-          create: { roomId, subjectId, schoolId },
-          update: {},
-        });
-      }
-    }
   }
 
   /**

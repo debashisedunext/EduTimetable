@@ -22,6 +22,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZCLN";
@@ -108,6 +109,7 @@ async function call(method, p, token, body) {
   });
   const config = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       schoolId: SCHOOL, name: `${P} Wing 25-26`, academicYearId: year.id,
       workingDays: [1, 2, 3, 4, 5], periodsPerDay: 6, periodDurationMins: 40,
       startTime: "08:00", extraPeriodsPerDay: 1, extraPeriodDurationMins: 30,
@@ -156,9 +158,13 @@ async function call(method, p, token, body) {
   // The one who has left. Their Maths in 5-B must not be carried forward.
   const tGone = await mkTeacher("Gone", { isActive: false });
 
+  // §30 — resolved once, outside the arrow: `mkSection` is not async, and the
+  // pool is the same for every section of one session anyway.
+  const sectionGroupId = await groupFor(prisma, year.id);
   const mkSection = (sectionId, classTeacherId) =>
     prisma.classSection.create({
       data: {
+        resourceGroupId: sectionGroupId,
         schoolId: SCHOOL, classId: cls.id, sectionId, academicYearId: year.id,
         timetableConfigId: config.id, strength: 30, homeRoomId: room.id, classTeacherId,
       },

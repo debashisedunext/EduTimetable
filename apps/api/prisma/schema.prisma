@@ -73,6 +73,7 @@ model School {
   users                       User[]
   erpRoleMappings             ErpRoleMapping[]
   academicYears               AcademicYear[]
+  timetableGroups             TimetableGroup[]
   academicTerms               AcademicTerm[]
   classes                     SchoolClass[]
   sections                    Section[]
@@ -81,6 +82,9 @@ model School {
   subjects                    Subject[]
   teachers                    Teacher[]
   teacherUnavailability       TeacherUnavailability[]
+  classSectionUnavailability  ClassSectionUnavailability[]
+  subjectUnavailability       SubjectUnavailability[]
+  roomUnavailability          RoomUnavailability[]
   teacherClassEligibility     TeacherClassEligibility[]
   roomSubjects                RoomSubject[]
   extraClasses                ExtraClass[]
@@ -107,8 +111,13 @@ model School {
   erpSyncRuns                 ErpSyncRun[]
   onboardingSessions          OnboardingSession[]
 
-  dailyActivities             DailyActivity[]
-  teacherSubjects             TeacherSubject[]
+  dailyActivities        DailyActivity[]
+  teacherSubjects        TeacherSubject[]
+  subjectClasses         SubjectClass[]
+  staffingChanges        StaffingChange[]
+  staffingChangeTeachers StaffingChangeTeacher[]
+  staffingChangeItems    StaffingChangeItem[]
+
   @@map("schools")
 }
 
@@ -283,6 +292,7 @@ model AcademicYear {
   classSubjects    ClassSubject[]
   holidays         Holiday[]
   terms            AcademicTerm[]
+  timetableGroups  TimetableGroup[]
 
   @@unique([schoolId, name])
   @@map("academic_years")
@@ -335,6 +345,8 @@ model SchoolClass {
   classSections    ClassSection[]
   classSubjects    ClassSubject[]
   eligibleTeachers TeacherClassEligibility[]
+  /// §27.16 — the subjects DECLARED as taught to this class.
+  subjectClasses   SubjectClass[]
 
   @@unique([schoolId, name])
   @@map("classes")
@@ -362,7 +374,13 @@ model ClassSection {
   section                  Section                      @relation(fields: [sectionId], references: [id])
   academicYearId           Int                          @map("academic_year_id")
   academicYear             AcademicYear                 @relation(fields: [academicYearId], references: [id])
-  // §3.10: a class-section belongs to exactly ONE timetable config (null = unassigned)
+  /// §30 — the pool that OWNS this cohort row. `timetableConfigId` below then
+  /// means "which timetable IN THIS POOL teaches it", and null still means "not
+  /// attached yet" — available to the pool, not to the school.
+  resourceGroupId          Int                          @map("resource_group_id")
+  resourceGroup            TimetableGroup               @relation(fields: [resourceGroupId], references: [id])
+  // §3.10 / §30: within a resource group, a class-section belongs to exactly
+  // ONE timetable config (null = unassigned)
   timetableConfigId        Int?                         @map("timetable_config_id")
   timetableConfig          TimetableConfig?             @relation(fields: [timetableConfigId], references: [id])
   homeRoomId               Int?                         @map("home_room_id")
@@ -375,10 +393,15 @@ model ClassSection {
   mappings                 TeacherSubjectClassSection[]
   mergedGroupMemberships   MergedTeachingGroupMember[]
   electiveBlockMemberships ElectiveBlockMember[]
+  unavailability           ClassSectionUnavailability[]
   extraClasses             ExtraClass[]
 
-  @@unique([classId, sectionId, academicYearId])
+  /// §30 — Class 1-A exists once PER POOL, not once per school-year. That one
+  /// column is what lets an individual timetable hold its own Class 1-A with
+  /// its own class teacher, home room and Maths teacher.
+  @@unique([classId, sectionId, academicYearId, resourceGroupId], map: "uq_section_in_group")
   @@index([schoolId])
+  @@index([resourceGroupId], map: "class_sections_group_idx")
   @@map("class_sections")
 }
 
@@ -399,7 +422,9 @@ model Room {
   electiveOptions ElectiveOption[]
   extraClasses    ExtraClass[]
 
-  dailyActivities   DailyActivity[]
+  dailyActivities DailyActivity[]
+  unavailability  RoomUnavailability[]
+
   @@unique([schoolId, name])
   @@map("rooms")
 }
@@ -442,6 +467,14 @@ model Subject {
   /// be held on a full stomach.
   gapAfterLunch        Boolean                      @default(false) @map("gap_after_lunch")
   isLab                Boolean                      @default(false) @map("is_lab")
+  /// §19.1 — this subject is always taught in its OWN room, never the class's
+  /// home room. WHERE is not here: the rooms come from `room_subjects`, which
+  /// has meant "this room serves these subjects" since §19. A room id beside
+  /// this flag would be a second answer to "where does Music happen?", free to
+  /// disagree with the first, and could not describe a school with two music
+  /// rooms. Flag set but nothing mapped falls back to the home room, and
+  /// Feasibility Check 5b says so rather than the timetable going quietly wrong.
+  taughtInOwnRoom      Boolean                      @default(false) @map("taught_in_own_room")
   requiresDoublePeriod Boolean                      @default(false) @map("requires_double_period")
   classSubjects        ClassSubject[]
   mappings             TeacherSubjectClassSection[]
@@ -450,37 +483,41 @@ model Subject {
   extraClasses         ExtraClass[]
   rooms                RoomSubject[]
 
-  teacherSubjects   TeacherSubject[]
+  teacherSubjects TeacherSubject[]
+  unavailability  SubjectUnavailability[]
+  /// §27.16 — the classes this subject is DECLARED for. Empty = not stated.
+  classes         SubjectClass[]
+
   @@unique([schoolId, name])
   @@map("subjects")
 }
 
 model Teacher {
-  id                     Int                          @id @default(autoincrement())
-  schoolId               Int                          @map("school_id")
-  school                 School                       @relation(fields: [schoolId], references: [id])
-  employeeCode           String                       @map("employee_code") @db.VarChar(20)
-  name                   String                       @db.VarChar(100)
-  maxPeriodsPerDay       Int                          @default(6) @map("max_periods_per_day")
+  id                          Int                          @id @default(autoincrement())
+  schoolId                    Int                          @map("school_id")
+  school                      School                       @relation(fields: [schoolId], references: [id])
+  employeeCode                String                       @map("employee_code") @db.VarChar(20)
+  name                        String                       @db.VarChar(100)
+  maxPeriodsPerDay            Int                          @default(6) @map("max_periods_per_day")
   /// §20: the floor to go with the cap. A teacher works a day properly or not
   /// at all — never a single period. `max` bounds the top of the range, this
   /// bounds the bottom, and the solver treats a day as "0 or at least this".
-  minPeriodsPerDay       Int                          @default(3) @map("min_periods_per_day")
-  maxPeriodsPerWeek      Int                          @default(30) @map("max_periods_per_week")
-  classTeacherPeriodRule ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
-  periodPattern          PeriodPattern                @default(every_period) @map("period_pattern")
-  alternateDaySet        Json?                        @map("alternate_day_set")
+  minPeriodsPerDay            Int                          @default(3) @map("min_periods_per_day")
+  maxPeriodsPerWeek           Int                          @default(30) @map("max_periods_per_week")
+  classTeacherPeriodRule      ClassTeacherPeriodRule       @default(none) @map("class_teacher_period_rule")
+  periodPattern               PeriodPattern                @default(every_period) @map("period_pattern")
+  alternateDaySet             Json?                        @map("alternate_day_set")
   /// §15.3 Phase 25.4 — recorded for the staff directory and printed lists.
   /// Never used to authorise or to schedule anything.
-  gender                 TeacherGender?
+  gender                      TeacherGender?
   /// Short form for grids and printed timetables, where a full name will not
   /// fit. Proposed from first + last name, editable, and NOT unique-enforced:
   /// a school with an Anil Yadav and an Ajay Yadav will have a collision the
   /// grid resolves visibly rather than the database refusing at 3am.
-  initials               String?                      @db.VarChar(6)
+  initials                    String?                      @db.VarChar(6)
   /// Where an invitation is sent (§15.3 Phase 25.6). Nullable — a teacher who
   /// never signs in does not need one.
-  email                  String?                      @db.VarChar(120)
+  email                       String?                      @db.VarChar(120)
   /// §15.3 Phase 25.4 — the longest run of back-to-back periods this teacher
   /// will take in one day.
   ///
@@ -489,15 +526,15 @@ model Teacher {
   /// field, because it reads as a promise. Being in `check()` means the board's
   /// drag-and-drop and the legal-destination highlighting honour it too — one
   /// rules engine, three call sites.
-  maxConsecutivePeriodsPerDay Int?                     @map("max_consecutive_periods_per_day")
+  maxConsecutivePeriodsPerDay Int?                         @map("max_consecutive_periods_per_day")
   /// Whether this teacher may be offered as a substitute (§9).
   ///
   /// A refusal, not a low score — the same treatment §4.7a unavailability gets.
   /// Somebody who has said they will not cover should not appear at the bottom
   /// of the list; they should not appear.
-  canSubstitute          Boolean                      @default(true) @map("can_substitute")
-  employmentType         EmploymentType               @default(permanent) @map("employment_type")
-  isActive               Boolean                      @default(true) @map("is_active")
+  canSubstitute               Boolean                      @default(true) @map("can_substitute")
+  employmentType              EmploymentType               @default(permanent) @map("employment_type")
+  isActive                    Boolean                      @default(true) @map("is_active")
   /// §18: which classes this teacher may be given at all. A primary teacher
   /// cannot be mapped to Class 12 however the mapping is created — and unlike
   /// the grade band the substitute engine used to derive from existing
@@ -507,27 +544,30 @@ model Teacher {
   ///
   /// Kept verbatim and kept even when refused: it is what a person typed, and
   /// discarding it to teach them about phrasing is not our call.
-  specialInstruction     String?                      @map("special_instruction") @db.Text
-  instructionStatus      InstructionStatus?           @map("instruction_status")
+  specialInstruction          String?                      @map("special_instruction") @db.Text
+  instructionStatus           InstructionStatus?           @map("instruction_status")
   /// §26.5 — what the instruction BECAME: constraints the engine already
   /// enforces. This is the authority. Remove the school's AI key tomorrow and
   /// the timetable does not change, because by then these are ordinary rows.
-  instructionCompiled    Json?                        @map("instruction_compiled")
+  instructionCompiled         Json?                        @map("instruction_compiled")
   /// Why it was refused, or the plain-English read-back of what was understood
   /// — so the green tick is auditable rather than trusted.
-  instructionNote        String?                      @map("instruction_note") @db.VarChar(400)
-  instructionAt          DateTime?                    @map("instruction_at")
-  eligibility            TeacherClassEligibility[]
-  extraClasses           ExtraClass[]
-  unavailability         TeacherUnavailability[]
-  mappings               TeacherSubjectClassSection[]
-  classTeacherOf         ClassSection[]               @relation("classTeacherOf")
-  mergedGroups           MergedTeachingGroup[]
-  electiveOptions        ElectiveOption[]
-  absences               TeacherAbsence[]
+  instructionNote             String?                      @map("instruction_note") @db.VarChar(400)
+  instructionAt               DateTime?                    @map("instruction_at")
+  eligibility                 TeacherClassEligibility[]
+  extraClasses                ExtraClass[]
+  unavailability              TeacherUnavailability[]
+  mappings                    TeacherSubjectClassSection[]
+  classTeacherOf              ClassSection[]               @relation("classTeacherOf")
+  mergedGroups                MergedTeachingGroup[]
+  electiveOptions             ElectiveOption[]
+  absences                    TeacherAbsence[]
 
-  dailyActivities        DailyActivity[]
-  teacherSubjects        TeacherSubject[]
+  dailyActivities DailyActivity[]
+  teacherSubjects TeacherSubject[]
+  /// §29.2 — the staffing changes this teacher is named in, on either side.
+  staffingChanges StaffingChangeTeacher[]
+
   @@unique([schoolId, employeeCode])
   @@map("teachers")
 }
@@ -547,6 +587,29 @@ model TeacherClassEligibility {
   @@map("teacher_class_eligibility")
 }
 
+/// §27.16 — which classes a subject is taught to, DECLARED rather than guessed.
+///
+/// §27.15's ladder ranges already keep Biology out of Pre-Nursery, but they read
+/// the subject's NAME: an opinion good enough to shape a proposal and never good
+/// enough to be a statement. This is the statement. Where it exists it wins, and
+/// the ladder has nothing to say about that subject.
+///
+/// Empty means "not stated", never "no classes" (invariant 7) — which is what
+/// keeps every school that predates it behaving exactly as it does today.
+model SubjectClass {
+  subjectId Int         @map("subject_id")
+  subject   Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  classId   Int         @map("class_id")
+  class     SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  schoolId  Int         @map("school_id")
+  school    School      @relation(fields: [schoolId], references: [id])
+
+  @@id([subjectId, classId])
+  @@index([schoolId])
+  @@index([classId])
+  @@map("subject_classes")
+}
+
 model TeacherUnavailability {
   id           Int     @id @default(autoincrement())
   teacherId    Int     @map("teacher_id")
@@ -559,6 +622,61 @@ model TeacherUnavailability {
 
   @@index([schoolId])
   @@map("teacher_unavailability")
+}
+
+/// §4.7b — the class is not in school then. Unlike the other three, this one
+/// makes the WEEK SMALLER: Check 1 subtracts these cells from a section's
+/// available slots, or a class with Friday afternoon off reads as having 40
+/// periods to fill and the solver fails on a curriculum that no longer fits.
+model ClassSectionUnavailability {
+  id             Int          @id @default(autoincrement())
+  classSectionId Int          @map("class_section_id")
+  classSection   ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  dayOfWeek      Int          @map("day_of_week") @db.TinyInt
+  /// NULL = the whole day, so a blocked Friday survives a period being added.
+  periodNumber   Int?         @map("period_number")
+  reason         String?      @db.VarChar(100)
+  schoolId       Int          @map("school_id")
+  school         School       @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+  @@index([classSectionId])
+  @@map("class_section_unavailability")
+}
+
+/// §4.7b — this subject may not be taught then, for anybody. A generalisation
+/// of §26.3's lunch rules, which stay as they are: "not straight after lunch"
+/// follows the break wherever it moves, where these are fixed cells.
+model SubjectUnavailability {
+  id           Int     @id @default(autoincrement())
+  subjectId    Int     @map("subject_id")
+  subject      Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int     @map("day_of_week") @db.TinyInt
+  periodNumber Int?    @map("period_number")
+  reason       String? @db.VarChar(100)
+  schoolId     Int     @map("school_id")
+  school       School  @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+  @@index([subjectId])
+  @@map("subject_unavailability")
+}
+
+/// §4.7b — the room cannot be used then. Reduces the supply the §19.1 and §19
+/// room checks measure against, as well as pruning the solver's choice.
+model RoomUnavailability {
+  id           Int     @id @default(autoincrement())
+  roomId       Int     @map("room_id")
+  room         Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int     @map("day_of_week") @db.TinyInt
+  periodNumber Int?    @map("period_number")
+  reason       String? @db.VarChar(100)
+  schoolId     Int     @map("school_id")
+  school       School  @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+  @@index([roomId])
+  @@map("room_unavailability")
 }
 
 /// The curriculum: what a class studies in a given year, and how it is spread.
@@ -608,12 +726,59 @@ model TeacherSubjectClassSection {
   @@map("teacher_subject_class_section")
 }
 
+/// §30 Phase 43 — a pool's two modes.
+///
+/// `grouped` shares cohorts and staff capacity with the other timetables in the
+/// pool; `individual` is a pool of one, calculated alone.
+enum TimetableGroupMode {
+  grouped
+  individual
+}
+
+/// §30 Phase 43 — the pool a timetable draws its cohorts and its staff capacity
+/// from.
+///
+/// Every school migrates to exactly one of these per session, which reproduces
+/// today's behaviour precisely: one pool means invariant 11 ("a class-section
+/// belongs to exactly one timetable_config") and Check 2's cross-config load
+/// sum say exactly what they said before.
+///
+/// `individual` is a pool that holds ONE timetable and refuses a second. That
+/// refusal is the whole of "an individual timetable cannot have more than one
+/// wing" — checkable here, rather than a rule the Wings step has to remember.
+model TimetableGroup {
+  id             Int                @id @default(autoincrement())
+  schoolId       Int                @map("school_id")
+  school         School             @relation(fields: [schoolId], references: [id])
+  /// Per session, because everything it scopes already is (§3.11).
+  academicYearId Int                @map("academic_year_id")
+  academicYear   AcademicYear       @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  name           String             @db.VarChar(60)
+  mode           TimetableGroupMode @default(grouped)
+  createdAt      DateTime           @default(now()) @map("created_at")
+  configs        TimetableConfig[]
+  classSections  ClassSection[]
+
+  @@unique([schoolId, academicYearId, name], map: "uq_group_name")
+  @@index([schoolId])
+  @@index([academicYearId], map: "timetable_groups_year_idx")
+  @@map("timetable_groups")
+}
+
 model TimetableConfig {
   id                          Int                   @id @default(autoincrement())
   schoolId                    Int                   @map("school_id")
   school                      School                @relation(fields: [schoolId], references: [id])
   academicYearId              Int                   @map("academic_year_id")
   academicYear                AcademicYear          @relation(fields: [academicYearId], references: [id])
+  /// §30 — which pool this timetable competes for resources in.
+  resourceGroupId             Int                   @map("resource_group_id")
+  resourceGroup               TimetableGroup        @relation(fields: [resourceGroupId], references: [id])
+  /// §30.5 — when this timetable applies. NULL at both ends means the whole
+  /// session, which is every school before this feature; publishing then refuses
+  /// a second live timetable over any class this one teaches.
+  effectiveFrom               DateTime?             @map("effective_from") @db.Date
+  effectiveTo                 DateTime?             @map("effective_to") @db.Date
   name                        String                @db.VarChar(50)
   description                 String?               @db.Text
   workingDays                 Json                  @map("working_days")
@@ -639,6 +804,21 @@ model TimetableConfig {
   /// its own reporting would make most real schools ungenerable.
   loadAlertPct                Int                   @default(75) @map("load_alert_pct")
   status                      TimetableConfigStatus @default(draft)
+  /// §29.1 — when this timetable was frozen, or NULL if it is not.
+  ///
+  /// A separate column rather than a `status` value: `status` already means
+  /// draft/active/archived, and a second meaning on one column is how a field
+  /// ends up unable to say "archived AND frozen". A timestamp also answers
+  /// *when*, which is the first thing anybody asks of a change somebody else
+  /// made. NULL is every timetable that exists today, so nothing changes until
+  /// a school presses the button — freezing is a decision, never a side effect
+  /// of publishing.
+  frozenAt                    DateTime?             @map("frozen_at")
+  /// Who froze it. No relation, matching `timetable_publications.published_by_id`:
+  /// a record of who acted has to survive their account being removed.
+  frozenById                  Int?                  @map("frozen_by_id")
+  /// §29.2 — the staffing changes made against this timetable.
+  staffingChanges             StaffingChange[]
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]
@@ -647,6 +827,7 @@ model TimetableConfig {
   dailyActivities             DailyActivity[]
 
   @@unique([schoolId, name, academicYearId])
+  @@index([resourceGroupId, effectiveFrom, effectiveTo], map: "tc_window_idx")
   @@map("timetable_config")
 }
 
@@ -690,26 +871,26 @@ model Period {
 /// would put a teacher on assembly duty into a slot `uq_teacher_slot` cannot
 /// check, because that key compares period NUMBERS.
 model DailyActivity {
-  id                Int             @id @default(autoincrement())
-  timetableConfigId Int             @map("timetable_config_id")
-  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
-  name              String          @db.VarChar(60)
+  id                Int               @id @default(autoincrement())
+  timetableConfigId Int               @map("timetable_config_id")
+  timetableConfig   TimetableConfig   @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  name              String            @db.VarChar(60)
   placement         ActivityPlacement
-  durationMins      Int             @map("duration_mins")
+  durationMins      Int               @map("duration_mins")
   /// ISO day numbers it runs on. Assembly on Monday only is ordinary.
   days              Json
   /// Who is on duty, and where. Both nullable, and null means "not stated"
   /// rather than "nobody" — the same reading §18 gives an empty scope.
-  teacherId         Int?            @map("teacher_id")
-  teacher           Teacher?        @relation(fields: [teacherId], references: [id], onDelete: SetNull)
-  roomId            Int?            @map("room_id")
-  room              Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
-  sortOrder         Int             @default(0) @map("sort_order")
-  isActive          Boolean         @default(true) @map("is_active")
-  schoolId          Int             @map("school_id")
-  school            School          @relation(fields: [schoolId], references: [id])
-  createdAt         DateTime        @default(now()) @map("created_at")
-  updatedAt         DateTime        @updatedAt @map("updated_at")
+  teacherId         Int?              @map("teacher_id")
+  teacher           Teacher?          @relation(fields: [teacherId], references: [id], onDelete: SetNull)
+  roomId            Int?              @map("room_id")
+  room              Room?             @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  sortOrder         Int               @default(0) @map("sort_order")
+  isActive          Boolean           @default(true) @map("is_active")
+  schoolId          Int               @map("school_id")
+  school            School            @relation(fields: [schoolId], references: [id])
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
   periods           Period[]
 
   @@unique([timetableConfigId, name], map: "uq_activity_name")
@@ -1056,21 +1237,22 @@ model TimetablePublication {
   term              AcademicTerm? @relation(fields: [termId], references: [id])
   termScope         Int           @default(dbgenerated()) @map("term_scope")
   version           Int
-  slotCount         Int      @map("slot_count")
-  changedCount      Int      @map("changed_count")
-  unallocatedCount  Int      @map("unallocated_count")
-  publishedById     Int?     @map("published_by_id")
-  publishedAt       DateTime @default(now()) @map("published_at")
+  slotCount         Int           @map("slot_count")
+  changedCount      Int           @map("changed_count")
+  unallocatedCount  Int           @map("unallocated_count")
+  publishedById     Int?          @map("published_by_id")
+  publishedAt       DateTime      @default(now()) @map("published_at")
   /// §3.14 — set when this version was withdrawn back into a draft. The row is
   /// KEPT: deleting it would make v3 disappear and renumber the next publish to
   /// v3, quietly changing the school's own record of what was on the wall.
-  withdrawnAt       DateTime? @map("withdrawn_at")
-  withdrawnById     Int?      @map("withdrawn_by_id")
-  schoolId          Int      @map("school_id")
-  school            School   @relation(fields: [schoolId], references: [id])
+  withdrawnAt       DateTime?     @map("withdrawn_at")
+  withdrawnById     Int?          @map("withdrawn_by_id")
+  schoolId          Int           @map("school_id")
+  school            School        @relation(fields: [schoolId], references: [id])
 
   @@unique([timetableConfigId, termScope, version], map: "uq_config_version")
   @@index([schoolId])
+  @@index([timetableConfigId, withdrawnAt], map: "tp_live_idx")
   @@map("timetable_publications")
 }
 
@@ -1320,4 +1502,124 @@ model OnboardingSession {
 enum OnboardingMode {
   wizard
   ai
+}
+
+// ============== PHASE 39 (§29.2): STAFFING CHANGES ON A SETTLED TIMETABLE ==============
+
+enum StaffingChangeReason {
+  resigned
+  leave
+  joined
+  adjustment
+}
+
+enum StaffingChangeStatus {
+  planning
+  applied
+  reverted
+}
+
+enum StaffingRole {
+  releasing
+  receiving
+}
+
+enum StaffingUnitType {
+  mapping
+  merged_group
+  elective_option
+  class_teacher
+}
+
+/// §29.2 — a teacher's classes moving, on a timetable that is otherwise settled.
+///
+/// The scoped thaw of §29.1, and deliberately a RECORD rather than a mode. A
+/// mode that is switched on and off cannot answer "who taught Class 5-A Maths
+/// before September, and why did it move?", which is a question a school asks.
+///
+/// It is also the only thing allowed to write while a timetable is frozen: the
+/// ordinary routes stay refused, because the point of §29 is that re-staffing
+/// is a decided, validated, reversible act rather than twenty free-hand edits.
+model StaffingChange {
+  id                Int                  @id @default(autoincrement())
+  timetableConfigId Int                  @map("timetable_config_id")
+  config            TimetableConfig      @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// An enum, not free text: the reason chooses the default SHAPE of the change
+  /// (a resignation releases everything a teacher holds; an adjustment releases
+  /// what somebody picks), and free text cannot drive that. `note` is where the
+  /// school's own sentence goes.
+  reason            StaffingChangeReason
+  status            StaffingChangeStatus @default(planning)
+  /// Recorded, never acted on. A change takes effect when somebody applies it;
+  /// a timetable that rewrote itself overnight on a stored date is exactly the
+  /// behaviour §29 was asked not to have.
+  effectiveFrom     DateTime?            @map("effective_from") @db.Date
+  note              String?              @db.VarChar(200)
+  createdById       Int?                 @map("created_by_id")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  appliedById       Int?                 @map("applied_by_id")
+  appliedAt         DateTime?            @map("applied_at")
+  revertedAt        DateTime?            @map("reverted_at")
+  schoolId          Int                  @map("school_id")
+  school            School               @relation(fields: [schoolId], references: [id])
+
+  teachers StaffingChangeTeacher[]
+  items    StaffingChangeItem[]
+
+  @@index([schoolId])
+  @@index([timetableConfigId, status])
+  @@map("staffing_changes")
+}
+
+/// Which teachers a change concerns, and on which side.
+///
+/// A teacher is `releasing` or `receiving`, never both — which is what the
+/// composite primary key enforces. Both at once is not a shape the engine can
+/// score: a candidate must have a settled load before anything is offered to
+/// them, and a teacher simultaneously losing and gaining has two answers to
+/// "how full are they?".
+model StaffingChangeTeacher {
+  changeId  Int            @map("change_id")
+  change    StaffingChange @relation(fields: [changeId], references: [id], onDelete: Cascade)
+  teacherId Int            @map("teacher_id")
+  teacher   Teacher        @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  role      StaffingRole
+  schoolId  Int            @map("school_id")
+  school    School         @relation(fields: [schoolId], references: [id])
+
+  @@id([changeId, teacherId])
+  @@index([schoolId])
+  @@index([teacherId])
+  @@map("staffing_change_teachers")
+}
+
+/// What actually moved — the undo record, written by §29.4's apply.
+///
+/// A real table rather than `auto_fix_runs`-style JSON, and that precedent is
+/// close enough to be worth answering: an auto-fix change is a heterogeneous
+/// field-set replayed only as a unit, whereas every row here is the SAME fact —
+/// this unit moved from teacher X to teacher Y — and it answers a standing
+/// question that JSON cannot index.
+///
+/// `unitId` is polymorphic and has NO foreign key. §4.7b argues against that
+/// for LIVE rows and is right; this is history, and an FK would erase the
+/// record when its mapping is deleted — which is exactly the case you most want
+/// the record for. `label` is denormalised for the same reason: the row has to
+/// survive its subject, and a join cannot.
+model StaffingChangeItem {
+  id            Int              @id @default(autoincrement())
+  changeId      Int              @map("change_id")
+  change        StaffingChange   @relation(fields: [changeId], references: [id], onDelete: Cascade)
+  unitType      StaffingUnitType @map("unit_type")
+  unitId        Int              @map("unit_id")
+  label         String           @db.VarChar(120)
+  fromTeacherId Int?             @map("from_teacher_id")
+  toTeacherId   Int?             @map("to_teacher_id")
+  slotCount     Int              @default(0) @map("slot_count")
+  schoolId      Int              @map("school_id")
+  school        School           @relation(fields: [schoolId], references: [id])
+
+  @@unique([changeId, unitType, unitId], map: "uq_change_unit")
+  @@index([schoolId])
+  @@map("staffing_change_items")
 }
