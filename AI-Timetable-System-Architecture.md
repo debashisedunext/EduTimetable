@@ -2567,11 +2567,29 @@ On a **Lesson grid** cell there is no clock at all. It shows the subject, its pe
 
 Two derivations are pure and therefore live in `packages/shared` beside the pivot, where they are unit-tested: `blockSections` (a block's attending sections, from the member rows — invariant 9 again, since option rows carry no section and contribute none) and `cellEvents`.
 
-### 31.7 What is left
+### 31.7 Placed against required
 
-Stage 3 puts placed against required, and only when they differ — a number that is always two numbers is a number nobody reads. Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today.
+The Lesson grid's cells are the **curriculum** — a 6 means Class 5-A is meant to have six periods of Maths. §31.7 adds the other half, so the screen says `5/6` at the moment somebody is looking at the row rather than leaving it for Readiness to mention later.
 
-Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, and §17.8), `pivot.spec.ts` (18 unit tests over every §4.9 and §4.10 shape), and the §17.8 sweep, which classified the new route with no help — A gets a payload, B gets 404.
+**Two numbers only when they differ.** A number that is always two numbers is a number nobody reads. The cell drops the subject's colour and takes the signal red when it does differ — §10.5's own rule cuts this way, since "this row is short" is the more urgent fact and the column header is still carrying the subject's colour. The same rule and the same arithmetic drive the strip's curriculum chips and the Lesson-grid strip, from one module (`packages/shared/src/timetable/coverage.ts`), so the grid and the strip cannot disagree about whether a row is short.
+
+**The point of the module is being *sure* about a difference.** A screen that cries wolf about a missing period is worse than one that says nothing, because the first thing a false report costs is the reader's trust in the other five hundred cells. Five things make the count wrong if they are not handled:
+
+1. **Required is a CLASS fact; placed is a SECTION fact** (§27). "Six periods of Maths" is true of Class 5 and therefore of 5-A *and* 5-B separately. Summing the two sections and comparing 12 against 6 would report every class in the school as massively over-taught.
+2. **§18 extra classes are not the syllabus.** Counting next week's revision class would hide a genuine shortfall. The filter is the same `teachingPeriods` set the fill rate uses, so the two figures on the screen cannot disagree about which periods are the week.
+3. **A §4.10 merged group places one row per section**, and both sections are credited — this is the one place in §31 where merged rows are deliberately *not* collapsed. `cellEvents` collapses them because a teacher is in one place; here the question is what each class received.
+4. **A §4.9 option row cannot be attributed.** It belongs to no class-section (invariant 9), so a school that also holds French as a curriculum row would read `0/4` for every section while the children are sitting in French. A subject that runs as an elective option is marked **not comparable** and the curriculum figure stands alone.
+5. **"Nothing placed" and "nothing generated" are different facts.** Before a generation every cell would read `0/6` — not five hundred missing periods, an empty week — and a notation that screams on a blank screen teaches the reader to ignore it. A section with no placed teaching lesson at all is not compared. A *partly* generated one is, because there the gaps are real.
+
+A placed lesson with **no** curriculum row is deliberately out of scope: it is a different question, Readiness owns it, and it would only ever be visible in the cases where some other class happened to give the subject a column.
+
+Validated against the reference school as well as the fixture: 844 (section, subject) pairs compared, 8 sections matching exactly, 8 correctly skipped as ungenerated — and **zero over-placed pairs**, which is the shape a merged-group or elective mis-count would take. The 444 under-placed pairs are that school's own curriculum genuinely exceeding its week (Class 1 is owed 67 periods in a 40-period week), which is the feature doing its job.
+
+### 31.8 What is left
+
+Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today. Measured against §14's 600ms render-to-usable before and after, rather than assumed.
+
+Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, coverage on a clean week and after one deletion, and §17.8), `pivot.spec.ts` + `coverage.spec.ts` (25 unit tests), and the §17.8 sweep, which classified the new route with no help.
 
 ## 25. Term-wise Timetables (Phase 26)
 

@@ -27,7 +27,14 @@
  *     fact (§27) — and another school's config id must 404 rather than return
  *     an empty grid, which would read as "this timetable teaches nothing".
  *
- *  4. **A teacher's load in the pool's OTHER timetables is reported, never
+ *  4. **Nothing is reported as missing on a school where nothing is.** §31.7
+ *     draws two numbers where the week does not match the curriculum, and the
+ *     first thing a false one costs is the reader's trust in the other 500
+ *     cells. So the test is the negative first — a 100%-generated week produces
+ *     ZERO differences — and only then the positive, by deleting one lesson and
+ *     requiring exactly one cell to move.
+ *
+ *  5. **A teacher's load in the pool's OTHER timetables is reported, never
  *     folded in.** The fixture puts one teacher in two wings on purpose.
  *     CLAUDE.md records exactly what a single blended figure costs — "a line
  *     round one wing reads 67% where the truth is 87%" — so the strip states
@@ -40,7 +47,9 @@ const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
 const { PrismaClient: ControlClient } = req("/app/apps/api/prisma/generated/control-client");
-const { blockSections, cellEvents, initialsOf, pivotSlots, pivotCellKey, SLOT } = req("@edutimetable/shared");
+const {
+  blockSections, buildCoverage, cellEvents, initialsOf, pivotSlots, pivotCellKey, SLOT,
+} = req("@edutimetable/shared");
 const Redis = req("ioredis");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -380,6 +389,74 @@ async function main() {
   check(cacheKeys.length === 1,
     "the payload is cached under the config's slot prefix, so invalidateTimetable sweeps it",
     cacheKeys.join(", ") || "(not cached)");
+
+  // ───────────────────────── 3d. PLACED AGAINST REQUIRED (§31.7)
+  console.log("\nA fully generated week reports nothing missing:");
+  const teachingPeriods = new Set(
+    slots.periods
+      .filter((p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== null && p.periodNumber !== 0)
+      .map((p) => p.periodNumber),
+  );
+  const cov = buildCoverage({ slots: slots.slots, teachingPeriods });
+  const requiredFor = (sectionId, subjectId) => {
+    const cls = ctx3.sections.find((x) => x.id === sectionId)?.classId;
+    return (ctx3.cells.find(([c, sid]) => c === cls && sid === subjectId) ?? [])[2] ?? 0;
+  };
+  const differences = (coverage, payload) => {
+    const out = [];
+    for (const sec of ctx3.sections) {
+      for (const sub of ctx3.subjects) {
+        const req = requiredFor(sec.id, sub.id);
+        if (req === 0 || !coverage.comparable(sec.id, sub.id)) continue;
+        const got = coverage.placedAt(sec.id, sub.id);
+        if (got !== req) out.push(`${sec.label} ${sub.name} ${got}/${req}`);
+      }
+    }
+    return out;
+  };
+  const clean = differences(cov, slots);
+  check(clean.length === 0,
+    "every class-section has exactly the periods its curriculum asks for — no cell shows two numbers",
+    clean.length ? clean.join(" | ") : `${ctx3.sections.length} sections × ${ctx3.subjects.length} subjects checked`);
+  // ...and the check above is only worth anything if it CAN fail, so the
+  // fixture is asked for a number it has to have got right by counting.
+  check(cov.placedAt(a.id, subj.Maths.id) === 6 && cov.placedAt(b.id, subj.Music.id) === 4,
+    "and the counts are the real ones, not zero on both sides",
+    `5-A Maths ${cov.placedAt(a.id, subj.Maths.id)} · 5-B Music ${cov.placedAt(b.id, subj.Music.id)}`);
+  // §4.10 — a merged group is one lesson for the teacher and a period for EACH
+  // class, so both sections must be credited or every merged subject in the
+  // school reads as half-taught.
+  check(cov.placedAt(a.id, subj.Music.id) === 4 && cov.placedAt(b.id, subj.Music.id) === 4,
+    "a merged group credits both of its sections, not one",
+    `${cov.placedAt(a.id, subj.Music.id)} · ${cov.placedAt(b.id, subj.Music.id)}`);
+  // §4.9 — an option row belongs to no section, so no honest per-section count
+  // exists. Marked not-comparable rather than reported as zero.
+  check(cov.electiveSubjects.has(subj.French.id) && !cov.comparable(a.id, subj.French.id),
+    "a subject running as a split-elective option is not compared — a confident 0 would be worse than nothing");
+
+  console.log("\nDelete one lesson and exactly one cell says so:");
+  const victim = await prisma.timetableSlot.findFirst({
+    where: { schoolId, timetableConfigId: cfg.id, status: "draft", classSectionId: a.id, subjectId: subj.Maths.id },
+  });
+  await prisma.timetableSlot.delete({ where: { id: victim.id } });
+  const stale = await redis.keys(`s${schoolId}:slots:${cfg.id}:*`);
+  if (stale.length) await redis.del(...stale);
+  const after = (await call("GET", `/timetable-configs/${cfg.id}/slots?status=draft`, S)).json;
+  const covAfter = buildCoverage({ slots: after.slots, teachingPeriods });
+  const moved = differences(covAfter, after);
+  check(moved.length === 1 && moved[0] === "Class 5-A ZZMG Maths 5/6",
+    "exactly one cell differs, and it is the one whose lesson was removed",
+    moved.join(" | ") || "(none — the comparison is not working)");
+  check(covAfter.placedAt(b.id, subj.Maths.id) === 6,
+    "the other section of the same class is untouched — required is a CLASS fact, placed is a SECTION fact",
+    `${covAfter.placedAt(b.id, subj.Maths.id)}`);
+
+  console.log("\nAn ungenerated wing is not 'everything missing':");
+  const empty = (await call("GET", `/timetable-configs/${cfg2.id}/slots?status=draft`, S)).json;
+  const covEmpty = buildCoverage({ slots: empty.slots, teachingPeriods });
+  check(empty.slots.length === 0, "the second wing has never been generated", `${empty.slots.length} slots`);
+  check(!covEmpty.comparable(n9.id, subj.Maths.id),
+    "so its 8 periods of Maths are not reported as 8 missing — 'not generated' and 'nothing placed' are different facts");
 
   // ───────────────────────── 4. §17.8
   console.log("\nAnother school cannot read either of them:");

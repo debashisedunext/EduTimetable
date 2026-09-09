@@ -2723,9 +2723,53 @@ load naming its timetable, the cache key, and a block's members from the tuples 
 (`A 200 · B 404`). Regression: shared **523**, api **216**, grids, groups, freeze, staffing, drafts,
 electives, lint, typecheck, `vite build`.
 
-## Phase 44 stages 3–4 — not started
+## Phase 44 stage 3 — placed against required
 
-- **Stage 3, placed against required** — and only when they differ; a number that is always two
-  numbers is a number nobody reads.
-- **Stage 4, virtualisation.** `react-window`/AG Grid, measured against §14's 600ms
-  render-to-usable before and after rather than assumed.
+**Landed.** The Lesson grid's cells are the curriculum; this adds the other half, so a short row says
+`5/6` at the moment somebody is looking at it rather than waiting for Readiness.
+
+`packages/shared/src/timetable/coverage.ts` — one module, read by the Lesson grid cells, the row
+total, the strip's curriculum chips and the Lesson-grid strip, so none of them can disagree about
+whether a row is short.
+
+**Two numbers only when they differ**, and the differing cell drops the subject's colour for signal
+red: §10.5's own rule cuts this way, since "this row is short" outranks "this is Maths" and the
+column header is still carrying the hue.
+
+The module's whole job is being *sure* about a difference — a false one costs the reader's trust in
+the other five hundred cells — so five traps are handled by name:
+
+- **Required is a CLASS fact; placed is a SECTION fact** (§27). Summing 5-A and 5-B against one
+  class's 6 would report every class in the school as massively over-taught.
+- **§18 extras are not the syllabus**, filtered by the same `teachingPeriods` set the fill rate uses.
+- **A §4.10 merged group credits BOTH sections** — the one place in §31 merged rows are deliberately
+  not collapsed. `cellEvents` collapses them because a teacher is in one place; here the question is
+  what each class received.
+- **A §4.9 option row cannot be attributed** (no class-section, invariant 9), so a subject that also
+  runs as an option is marked not-comparable rather than reported as `0/4` while the children sit in
+  it.
+- **"Nothing placed" is not "nothing generated."** An ungenerated section is never compared, or a
+  blank screen screams `0/6` in every cell and teaches the reader to ignore the notation entirely.
+
+A placed lesson with no curriculum row is out of scope — a different question, and Readiness owns it.
+
+Verified: `coverage.spec.ts` **7 unit tests**, one per trap. `pnpm test:mastergrid` — **53
+assertions** (9 new), built as the negative first: a 100%-generated week must produce **zero**
+differences, and only then one lesson is deleted and **exactly one** cell must move to `5/6` with the
+other section of the same class untouched. Plus the ungenerated second wing, which must not report
+its 8 periods of Maths as 8 missing.
+
+Scale check against the reference school (not in the suite — it needs the seeded data): 844
+(section, subject) pairs, 8 sections matching exactly, 8 correctly skipped, and **zero over-placed**
+— the shape a merged-group or elective mis-count would take. Its 444 under-placed pairs are that
+school's own curriculum exceeding its week (Class 1 is owed 67 periods in a 40-period week), which is
+the feature working.
+
+Regression: shared **530**, api **216**, isolation **211 routes**, grids, groups, freeze, drafts,
+electives, guided setup, lint, typecheck, `vite build`.
+
+## Phase 44 stage 4 — not started
+
+- **Virtualisation.** `react-window`/AG Grid, measured against §14's 600ms render-to-usable before
+  and after rather than assumed. 122 teachers x 55 columns is 6,710 cells; the Matrix gets away with
+  ~2,750 today.

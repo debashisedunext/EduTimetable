@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  blockSections, cellEvents, initialsOf, pivotCellKey, pivotSlots, SLOT,
-  type GridPivot, type SlotTuple,
+  blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots, SLOT,
+  type Coverage, type GridPivot, type SlotTuple,
 } from "@edutimetable/shared";
 import { useApi, useConfigCtx } from "../hooks";
 import { useColors } from "../colors-context";
@@ -421,6 +421,20 @@ export function MasterGrid() {
     const attending = event.map((e) => sectionLabel(e[SLOT.classSectionId])).filter(Boolean) as string[];
     const groups: StripGroup[] = [];
 
+    // §31.7 — how this class is doing for this subject, said only when it is
+    // not doing fine. The class-section is the one in the cell; for a §4.9
+    // option row (no section of its own) it is the block's first member.
+    const coverageSectionId = csId ?? blockSections(data.slots, blockId ?? -1)[0] ?? null;
+    const coverageLine = (() => {
+      if (coverageSectionId === null || subjectId === null || subjectId === undefined) return "";
+      const owed = context?.cells.find(
+        ([c, sid]) => c === context.sections.find((x) => x.id === coverageSectionId)?.classId && sid === subjectId,
+      )?.[2] ?? 0;
+      if (owed === 0 || !coverage.comparable(coverageSectionId, subjectId)) return "";
+      const got = coverage.placedAt(coverageSectionId, subjectId);
+      return got === owed ? "" : `${got} of ${owed} placed this week`;
+    })();
+
     groups.push({
       label: "The cell",
       primary: subject ?? block?.name ?? "Lesson",
@@ -429,6 +443,7 @@ export function MasterGrid() {
         when,
         [room, locked === 1 ? "pinned" : null, substituted === 1 ? "substitute" : null]
           .filter(Boolean).join(" · "),
+        coverageLine,
       ].filter(Boolean),
     });
 
@@ -497,20 +512,36 @@ export function MasterGrid() {
     // What else this class studies. The curriculum, so it is what they are
     // OWED rather than what happens to be placed — stage 3 puts the two side
     // by side, and only where they differ.
-    const classId = context?.sections.find((x) => x.label === memberLabels[0])?.classId ?? null;
-    if (classId !== null && context) {
+    const contextSection = context?.sections.find((x) => x.id === coverageSectionId)
+      ?? context?.sections.find((x) => x.label === memberLabels[0])
+      ?? null;
+    if (contextSection && context) {
       const owed = context.cells
-        .filter(([c]) => c === classId)
-        .map(([, sid, n]) => ({ name: context.subjects.find((x) => x.id === sid)?.name ?? "?", periods: n }))
+        .filter(([c]) => c === contextSection.classId)
+        .map(([, sid, n]) => ({
+          id: sid,
+          name: context.subjects.find((x) => x.id === sid)?.name ?? "?",
+          periods: n,
+        }))
         .sort((a, b) => b.periods - a.periods);
       if (owed.length > 0) {
         groups.push({
-          label: `${memberLabels[0].replace(/-[^-]*$/, "")} studies`,
-          chips: owed.map((o) => ({
-            text: `${abbr(o.name)} ${o.periods}`,
-            swatch: colors.subject(o.name),
-            title: `${o.name} — ${o.periods} periods a week`,
-          })),
+          label: `${contextSection.label.replace(/-[^-]*$/, "")} studies`,
+          chips: owed.map((o) => {
+            // §31.7 — the same rule as the Lesson grid: two numbers only when
+            // they differ, and the chip drops the subject's colour when they
+            // do, because a red chip in a row of coloured ones is the point.
+            const short = coverage.comparable(contextSection.id, o.id)
+              && coverage.placedAt(contextSection.id, o.id) !== o.periods;
+            const got = coverage.placedAt(contextSection.id, o.id);
+            return {
+              text: short ? `${abbr(o.name)} ${got}/${o.periods}` : `${abbr(o.name)} ${o.periods}`,
+              swatch: short ? { bg: "var(--signal-bg)", fg: "var(--signal)" } : colors.subject(o.name),
+              title: short
+                ? `${o.name} — ${got} placed of ${o.periods} a week for ${contextSection.label}`
+                : `${o.name} — ${o.periods} periods a week`,
+            };
+          }),
         });
       }
     }
@@ -546,17 +577,29 @@ export function MasterGrid() {
     const teachers = [...new Set(together.map((x) => x[SLOT.teacherId]).filter((x) => x !== null))] as number[];
     const rooms = [...new Set(together.map((x) => x[SLOT.roomId]).filter((x) => x !== null))] as number[];
 
+    // §31.7 — the same arithmetic the cells use, so the strip and the grid
+    // cannot disagree about whether this row is short.
+    const got = coverage.placedAt(section.id, sel.subjectId);
+    const short = periods > 0 && coverage.comparable(section.id, sel.subjectId) && got !== periods;
     const groups: StripGroup[] = [
       {
         label: "The lesson",
         primary: subject.name,
         swatch: colors.subject(subject.name),
         lines: [
-          `${periods} period${periods === 1 ? "" : "s"} a week`,
+          short
+            ? `${got} placed of ${periods} a week — ${got < periods ? `${periods - got} missing` : `${got - periods} too many`}`
+            : `${periods} period${periods === 1 ? "" : "s"} a week`,
           // Periods are a CLASS fact (§27), and the strip says so rather than
           // letting a per-section grid imply otherwise.
           `for every section of ${section.label.replace(/-[^-]*$/, "")}`,
-        ],
+          coverage.electiveSubjects.has(sel.subjectId)
+            // §4.9 — the children are in the block doing this subject, but the
+            // option row belongs to no section, so no honest per-section count
+            // exists. Saying so beats a confident 0.
+            ? "Also runs as a split elective — placements are not counted per section"
+            : "",
+        ].filter(Boolean),
       },
       {
         label: "The class",
@@ -578,7 +621,7 @@ export function MasterGrid() {
     }
     groups.push({
       label: sharing.length > 1 ? "Sharing the lesson" : "Placed",
-      primary: `${mine.length} placed`,
+      primary: `${got} placed`,
       chips: sharing.map((label) => ({ text: shortSection(label), swatch: colors.classOf(label), title: label })),
     });
     groups.push({
@@ -646,6 +689,12 @@ export function MasterGrid() {
     columns.filter((p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== null)
       .map((p) => p.periodNumber),
   );
+  /*
+    §31.7 — what each class-section actually has, against what it is owed.
+    Built from the SAME `teachingPeriodNumbers` the fill rate uses, so the two
+    figures on this screen cannot disagree about which periods are the week.
+  */
+  const coverage = buildCoverage({ slots: data.slots, teachingPeriods: teachingPeriodNumbers });
   const capacity = data.sections.length * days.length * teachingPeriodNumbers.size;
   const filled = data.slots.filter(
     (s) => s[SLOT.classSectionId] !== null && teachingPeriodNumbers.has(s[SLOT.period]),
@@ -742,6 +791,7 @@ export function MasterGrid() {
         >
           {tab === "lesson" ? (
             <LessonGrid
+              coverage={coverage}
               context={context}
               visibleRows={visibleRows}
               colors={colors}
@@ -1028,12 +1078,14 @@ function Strip({ groups }: { groups: StripGroup[] | null }) {
  * class for exactly that reason.
  */
 function LessonGrid({
+  coverage,
   context,
   visibleRows,
   colors,
   selected,
   onSelect,
 }: {
+  coverage: Coverage;
   context: ContextPayload | null;
   visibleRows: Array<{ key: number; label: string }>;
   colors: ReturnType<typeof useColors>;
@@ -1092,6 +1144,20 @@ function LessonGrid({
           const classId = classOfSection.get(row.key);
           const cells = subjects.map((s) => byClass.get(`${classId}:${s.id}`) ?? 0);
           const total = cells.reduce((a, b) => a + b, 0);
+          /*
+            §31.7 — the row's own shortfall, over the subjects that CAN be
+            compared. Deliberately not `placedIn`, which counts every teaching
+            lesson the section has: a §4.9 block's periods are real lessons and
+            are not curriculum rows, so on any school with an elective the two
+            would differ by the block's length and the row would always look
+            over-taught.
+          */
+          const counted = subjects
+            .map((s, i) => ({ s, required: cells[i] }))
+            .filter((x) => x.required > 0 && coverage.comparable(row.key, x.s.id));
+          const requiredCounted = counted.reduce((a, x) => a + x.required, 0);
+          const placedCounted = counted.reduce((a, x) => a + coverage.placedAt(row.key, x.s.id), 0);
+          const short = counted.length > 0 && placedCounted !== requiredCounted;
           // Over the week this timetable actually offers. Not a blocker and not
           // a score — Readiness owns that verdict (§4); this only says out loud
           // that the arithmetic on this row does not fit, at the moment
@@ -1102,17 +1168,37 @@ function LessonGrid({
               <th title={row.label} style={rowTh}>{row.label}</th>
               {subjects.map((s, i) => {
                 const n = cells[i];
-                const sw = n > 0 ? colors.subject(s.name) : null;
+                const placed = coverage.placedAt(row.key, s.id);
+                /*
+                  §31.7 — two numbers ONLY when they differ. A cell that always
+                  read `6/6` would be a number nobody reads, and within a week
+                  nobody would be reading `5/6` either.
+
+                  `comparable` is what stops it crying wolf: an ungenerated
+                  section and a subject that also runs as a §4.9 option both
+                  produce a difference that is not one.
+                */
+                const differs = n > 0 && coverage.comparable(row.key, s.id) && placed !== n;
+                // The subject's colour is given up for this one cell. §10.5's
+                // own rule — an existing meaning outranks a new one — cuts this
+                // way here: "this row is short" is the more urgent fact, and
+                // the column header is still carrying the subject's colour.
+                const sw = differs || n === 0 ? null : colors.subject(s.name);
                 return (
                   <td
                     key={s.id}
                     onClick={() => onSelect(row.key, s.id)}
-                    title={n > 0 ? `${row.label} · ${s.name} · ${n} periods a week` : `${row.label} does not take ${s.name}`}
+                    title={
+                      n === 0 ? `${row.label} does not take ${s.name}`
+                      : differs ? `${row.label} · ${s.name} · ${placed} placed of ${n} a week`
+                      : `${row.label} · ${s.name} · ${n} periods a week`
+                    }
                     style={{
                     borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                    height: 22, textAlign: "center", fontSize: 9.5, fontFamily: "var(--font-mono)",
+                    height: 22, textAlign: "center", fontSize: differs ? 8.5 : 9.5, fontFamily: "var(--font-mono)",
                     fontWeight: n > 0 ? 700 : 400, padding: 0, cursor: "pointer",
-                    background: sw?.bg ?? "var(--paper)", color: sw?.fg ?? "var(--ink-faint)",
+                    background: differs ? "var(--signal-bg)" : sw?.bg ?? "var(--paper)",
+                    color: differs ? "var(--signal)" : sw?.fg ?? "var(--ink-faint)",
                     ...(selected?.kind === "lesson" && selected.sectionId === row.key && selected.subjectId === s.id
                       ? { outline: "2px solid var(--brand-deep)", outlineOffset: -2, position: "relative", zIndex: 1 }
                       : {}),
@@ -1121,17 +1207,21 @@ function LessonGrid({
                         not take this subject" are the same fact here (§27.15
                         made not-taken a real deletion), and a grid of zeros
                         would hide the numbers that matter. */}
-                    {n > 0 ? n : ""}
+                    {n === 0 ? "" : differs ? `${placed}/${n}` : n}
                   </td>
                 );
               })}
-              <td title={`${total} of ${context.weekCapacity} periods a week`} style={{
+              <td title={
+                short
+                  ? `${placedCounted} placed of the ${requiredCounted} this section is owed · ${total} of ${context.weekCapacity} periods a week`
+                  : `${total} of ${context.weekCapacity} periods a week`
+              } style={{
                 borderBottom: "1px solid var(--line)", height: 22, textAlign: "center",
-                fontSize: 9.5, fontFamily: "var(--font-mono)", fontWeight: 800, padding: 0,
-                background: over ? "var(--signal-bg, #FBE9E7)" : "var(--offwhite)",
-                color: over ? "var(--signal)" : "var(--brand-deep)",
+                fontSize: short ? 8.5 : 9.5, fontFamily: "var(--font-mono)", fontWeight: 800, padding: 0,
+                background: over || short ? "var(--signal-bg, #FBE9E7)" : "var(--offwhite)",
+                color: over || short ? "var(--signal)" : "var(--brand-deep)",
               }}>
-                {total}{over ? "!" : ""}
+                {short ? `${placedCounted}/${requiredCounted}` : total}{over ? "!" : ""}
               </td>
             </tr>
           );
