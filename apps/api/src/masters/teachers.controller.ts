@@ -3,6 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { InstructionService } from "./instruction.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 const RULES = ["none", "always_first_period", "random"];
@@ -15,6 +16,7 @@ export class TeachersController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
+    private readonly instructions: InstructionService,
   ) {}
 
   /** Teacher Directory (§8.1a): list-first with load vs. capacity. */
@@ -24,6 +26,9 @@ export class TeachersController {
       where: { schoolId: req.user.schoolId },
       include: {
         mappings: { include: { subject: true } },
+        // §27.13 — what this teacher is DECLARED to teach, which is not the
+        // same question as what they have been given.
+        teacherSubjects: { include: { subject: true } },
         classTeacherOf: { include: { class: true, section: true } },
         unavailability: true,
         eligibility: { include: { class: true }, orderBy: { class: { sequence: "asc" } } },
@@ -38,6 +43,10 @@ export class TeachersController {
       minPeriodsPerDay: t.minPeriodsPerDay,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
       classTeacherPeriodRule: t.classTeacherPeriodRule,
+      // §26.5 — what the school said about this teacher, and what became of it.
+      specialInstruction: t.specialInstruction,
+      instructionStatus: t.instructionStatus,
+      instructionNote: t.instructionNote,
       periodPattern: t.periodPattern,
       alternateDaySet: t.alternateDaySet,
       employmentType: t.employmentType,
@@ -45,7 +54,26 @@ export class TeachersController {
       classIds: t.eligibility.map((e) => e.classId),
       classNames: t.eligibility.map((e) => e.class.name),
       isActive: t.isActive,
-      subjects: [...new Set(t.mappings.map((m) => m.subject.name))],
+      /**
+       * §27.13 — DECLARED, so the screen can edit it and so a teacher who has
+       * been given nothing yet still says what they teach.
+       */
+      subjectIds: t.teacherSubjects.map((x) => x.subjectId),
+      /**
+       * §27.13 — the UNION of declared and mapped, which is the documented
+       * reading rule and was not being followed here.
+       *
+       * Mapped-only was invisible in the obvious case and wrong in the one that
+       * matters: a school that has just entered its staff has no mappings yet,
+       * so every teacher's Subjects column read "—" however carefully it had
+       * been filled in. Declared-only would be worse — every school predating
+       * `teacher_subjects` has no declarations and would lose the column
+       * entirely. Both, de-duplicated by name.
+       */
+      subjects: [...new Set([
+        ...t.teacherSubjects.map((x) => x.subject.name),
+        ...t.mappings.map((m) => m.subject.name),
+      ])].sort(),
       sectionsMapped: new Set(t.mappings.map((m) => m.classSectionId)).size,
       weeklyLoad: t.mappings.reduce((s, m) => s + m.periodsPerWeek, 0),
       classTeacherOf: t.classTeacherOf.map((cs) => `${cs.class.name}-${cs.section.name}`),
@@ -78,6 +106,7 @@ export class TeachersController {
         }),
       `Teacher '${body.employeeCode}'`,
     );
+    await this.setSubjects(req.user.schoolId, created.id, body.subjectIds);
     await this.readiness.invalidate(req.user.schoolId);
     return created;
   }
@@ -118,8 +147,43 @@ export class TeachersController {
         }),
       ]);
     }
+    await this.setSubjects(req.user.schoolId, toInt(id, "id"), body.subjectIds);
     await this.readiness.invalidate(req.user.schoolId);
     return updated;
+  }
+
+  /**
+   * §27.13 — replace what this teacher is DECLARED to teach.
+   *
+   * There was no way to set this from the API at all: `teacher_subjects` could
+   * only be written by the §16 importer's Subjects column or the guided setup,
+   * so a school that entered its staff on the Teachers screen and then looked
+   * at the Subjects column saw "—" and had nowhere to fix it. The table existed,
+   * the screen did not.
+   *
+   * Same contract as the eligibility above and §19.1's rooms: sent means
+   * replace, absent means not mentioned. A PUT that changes a max-periods field
+   * must not clear what somebody teaches.
+   */
+  private async setSubjects(schoolId: number, teacherId: number, subjectIds: unknown) {
+    if (!Array.isArray(subjectIds)) return;
+    const ids = [...new Set(subjectIds.map((s) => toInt(s, "subjectIds[]")))];
+    if (ids.length > 0) {
+      // Scoped: `createMany` would otherwise stamp this school's id onto a link
+      // to another school's subject (§17, invariant 18).
+      const mine = await this.prisma.subject.findMany({ where: { id: { in: ids } }, select: { id: true } });
+      const known = new Set(mine.map((s) => s.id));
+      const stranger = ids.find((x) => !known.has(x));
+      if (stranger !== undefined) throw new BadRequestException(`No subject with id ${stranger}`);
+    }
+    await this.prisma.$transaction([
+      this.prisma.teacherSubject.deleteMany({ where: { teacherId } }),
+      ...(ids.length > 0
+        ? [this.prisma.teacherSubject.createMany({
+            data: ids.map((subjectId) => ({ teacherId, subjectId, schoolId })),
+          })]
+        : []),
+    ]);
   }
 
   /** Replace a teacher's weekly-off / unavailability rows. */
@@ -200,5 +264,40 @@ export class TeachersController {
         throw new BadRequestException("alternateDaySet must be an array of day numbers 1-7");
       }
     }
+  }
+
+  /**
+   * §26.5 — evaluate a teacher's plain-English instruction, and apply it.
+   *
+   * A single endpoint rather than a separate "check" and "apply", because there
+   * is nothing to decide in between: an accepted instruction that had not
+   * written its rows would be a green tick over nothing, which is precisely the
+   * failure the whole design is arranged to avoid. The refusal path writes
+   * nothing but keeps the text.
+   *
+   * `masters.manage`, inherited from the controller — the authority to set a
+   * teacher's availability is the one this borrows, not a new AI permission.
+   */
+  @Put(":id/instruction")
+  async instruction(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const teacherId = toInt(id, "id");
+    // Ownership first, so a stranger is told "no such teacher" rather than
+    // anything about this school's AI configuration (§17).
+    const own = await this.prisma.teacher.findFirst({ where: { id: teacherId }, select: { id: true } });
+    if (!own) throw new NotFoundException("Teacher not found");
+
+    const result = await this.instructions.evaluate(
+      req.user.schoolId, req.user.sub ?? null, teacherId, String(body?.text ?? ""),
+    );
+    // An accepted instruction changes availability and load, both of which
+    // Readiness reports on.
+    await this.readiness.invalidate(req.user.schoolId);
+    return result;
+  }
+
+  /** Whether this school can evaluate instructions at all — decides if the box is shown. */
+  @Get("instruction/available")
+  async instructionAvailable(@Req() req: AuthedRequest) {
+    return { available: await this.instructions.available(req.user.schoolId) };
   }
 }

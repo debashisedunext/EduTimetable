@@ -9,9 +9,29 @@ const SCHOOL_ID = 1;
 // so the denormalized school_id on child tables like role_permissions is
 // stamped here exactly as it would be at runtime — one code path, not two.
 const tenant = new TenantContextService();
-const prisma = withSchoolScope(new PrismaClient(), tenant);
+const base = new PrismaClient();
+const prisma = withSchoolScope(base, tenant);
 
 async function main() {
+  // The school this seed is about must exist before anything can reference it.
+  //
+  // Phase 9.2's migration back-FILLS `schools` from rows that already carried a
+  // school_id, which is right for an upgrade and does nothing at all on an
+  // empty database — so a genuinely fresh volume reached this seed with no
+  // school 1 and failed on the foreign key, with a message naming `roles`
+  // rather than the actual gap. Created through the UNSCOPED client because
+  // `schools` is the tenant root: it is scoped by its own id and never stamped
+  // with somebody else's (§17, invariant 18).
+  //
+  // The name is a placeholder on purpose. Inventing a real school's name here
+  // would be a guess; SSO provisioning overwrites it from the ERP on the first
+  // login, and a self-serve admin renames it on School Profile.
+  await base.school.upsert({
+    where: { id: SCHOOL_ID },
+    create: { id: SCHOOL_ID, code: `SCHOOL-${SCHOOL_ID}`, name: `School ${SCHOOL_ID}` },
+    update: {},
+  });
+
   for (const [name, permissions] of Object.entries(DEFAULT_ROLES)) {
     const role = await prisma.role.upsert({
       where: { schoolId_name: { schoolId: SCHOOL_ID, name } },

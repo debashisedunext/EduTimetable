@@ -1,0 +1,1985 @@
+<title>Three Doors to a Timetable</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+
+<style>
+/* ── Tokens: the EduTimetable dynamic-blue system, verbatim (CLAUDE.md §UI) ── */
+:root{
+  --brand:#2563EB; --brand-dark:#1E4FC4; --brand-deep:#0B1F44;
+  --steel:#5578A8; --steel-light:#B6CBE8; --steel-pale:#E7EEFA;
+  --offwhite:#F4F7FC; --line:#DBE3F0; --paper:#FFFFFF;
+  --ink:#141B26; --ink-soft:#4F5D70; --ink-faint:#8695A9;
+  --signal:#C2372F; --signal-bg:#FBEEED; --amber:#B9791A; --amber-bg:#FBF3E6;
+  --accent:#0891B2; --accent-bg:#E6F6FA;
+  --shadow:0 1px 2px rgba(11,31,68,.05),0 8px 24px rgba(11,31,68,.07);
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --brand:#5B8DEF; --brand-dark:#3E74DE; --brand-deep:#0A1729;
+    --steel:#8CAAD1; --steel-light:#2E4463; --steel-pale:#17253C;
+    --offwhite:#0E1725; --line:#25344B; --paper:#141F31;
+    --ink:#EAF0F8; --ink-soft:#B4C3D6; --ink-faint:#7E8FA6;
+    --signal:#F08A82; --signal-bg:#2E1A19; --amber:#E0A94E; --amber-bg:#2B2213;
+    --accent:#3FC3DE; --accent-bg:#122A31;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --brand:#5B8DEF; --brand-dark:#3E74DE; --brand-deep:#0A1729;
+  --steel:#8CAAD1; --steel-light:#2E4463; --steel-pale:#17253C;
+  --offwhite:#0E1725; --line:#25344B; --paper:#141F31;
+  --ink:#EAF0F8; --ink-soft:#B4C3D6; --ink-faint:#7E8FA6;
+  --signal:#F08A82; --signal-bg:#2E1A19; --amber:#E0A94E; --amber-bg:#2B2213;
+  --accent:#3FC3DE; --accent-bg:#122A31;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--offwhite); color:var(--ink);
+  font:400 15px/1.62 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1140px;margin:0 auto;padding:0 24px 96px}
+h1,h2,h3,h4{font-family:Fraunces,Georgia,serif;text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,4.4vw,46px);font-weight:600;letter-spacing:-.015em;line-height:1.1}
+h2{font-size:26px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px}
+h3{font-size:18.5px;font-weight:600;margin:0 0 5px}
+h4{font-size:15px;font-weight:600;margin:0 0 4px}
+p{margin:0 0 12px;max-width:74ch}
+a{color:var(--brand)}
+code,.mono{font-family:var(--mono);font-size:.88em}
+.eyebrow{font:600 11px/1 Inter;text-transform:uppercase;letter-spacing:.11em;color:var(--steel)}
+.lede{font-size:17px;color:var(--ink-soft);max-width:72ch}
+.muted{color:var(--ink-soft)}
+.faint{color:var(--ink-faint)}
+hr{border:0;border-top:1px solid var(--line);margin:44px 0}
+
+header.top{
+  background:var(--brand-deep); color:#fff; padding:52px 0 44px; margin-bottom:40px;
+  border-bottom:3px solid var(--brand);
+}
+header.top .wrap{padding-bottom:0}
+header.top h1{color:#fff}
+header.top .eyebrow{color:var(--steel-light)}
+header.top p{color:#C7D6EC;font-size:16.5px;margin-top:14px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.meta span{
+  font:500 12px/1 Inter;padding:6px 11px;border-radius:99px;
+  background:rgba(255,255,255,.09);color:#DCE7F7;border:1px solid rgba(255,255,255,.14);
+}
+
+section{margin:0 0 40px}
+.section-head{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.section-head .n{
+  font-family:var(--mono);font-size:12px;color:var(--brand);
+  border:1px solid var(--steel-light);border-radius:6px;padding:3px 7px;background:var(--steel-pale);
+}
+
+.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:20px 22px;box-shadow:var(--shadow)}
+.grid{display:grid;gap:16px}
+.g3{grid-template-columns:repeat(auto-fit,minmax(268px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+
+.note{border-left:3px solid var(--brand);background:var(--steel-pale);padding:14px 16px;border-radius:0 9px 9px 0;margin:14px 0}
+.note.warn{border-left-color:var(--amber);background:var(--amber-bg)}
+.note.stop{border-left-color:var(--signal);background:var(--signal-bg)}
+.note.good{border-left-color:var(--accent);background:var(--accent-bg)}
+.note h4{margin-bottom:4px}
+.note p:last-child{margin-bottom:0}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+.scroll table{min-width:640px}
+th{
+  text-align:left;font:600 11px/1.3 Inter;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--steel);padding:11px 13px;border-bottom:1px solid var(--line);background:var(--offwhite);
+}
+td{padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink-soft)}
+td:first-child{color:var(--ink);font-weight:500}
+tr:last-child td{border-bottom:0}
+td code,th code{white-space:nowrap}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+tr.grouprow td{
+  background:var(--steel-pale);color:var(--brand);font-weight:600;font-size:12px;
+  letter-spacing:.05em;text-transform:uppercase;
+}
+
+.pill{display:inline-block;font:600 10.5px/1 Inter;padding:4px 8px;border-radius:5px;letter-spacing:.02em;white-space:nowrap}
+.p-new{background:var(--accent-bg);color:var(--accent)}
+.p-have{background:var(--steel-pale);color:var(--steel)}
+.p-mig{background:var(--amber-bg);color:var(--amber)}
+.p-risk{background:var(--signal-bg);color:var(--signal)}
+
+ul.tight{margin:0 0 12px;padding-left:20px}
+ul.tight li{margin-bottom:5px;color:var(--ink-soft);max-width:72ch}
+ul.tight li strong{color:var(--ink)}
+
+/* ── mockup frame ── */
+.tabrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tabrow.last{border-bottom:1px solid var(--line)}
+.tabgroup{
+  font:600 10px/1 Inter;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-faint);
+  padding:0 8px 0 2px;white-space:nowrap;
+}
+.tab{
+  font:500 12.5px/1 Inter;padding:9px 12px;border:1px solid transparent;border-bottom:0;cursor:pointer;
+  background:none;color:var(--ink-soft);border-radius:8px 8px 0 0;margin-bottom:-1px;
+}
+.tab:hover{color:var(--ink);background:var(--steel-pale)}
+.tab[aria-selected="true"]{background:var(--paper);border-color:var(--line);color:var(--brand);font-weight:600}
+.tab:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.stage{
+  background:var(--offwhite);border:1px solid var(--line);border-top:0;border-radius:0 0 12px 12px;
+  padding:26px;overflow-x:auto;
+}
+.panel[hidden]{display:none}
+
+.app{
+  background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  box-shadow:var(--shadow);min-width:600px;
+}
+.appbar{display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--brand-deep);color:#fff;font-size:12.5px}
+.appbar .dot{width:9px;height:9px;border-radius:50%;background:#FF5F57}
+.appbar .dot:nth-child(2){background:#FEBC2E}.appbar .dot:nth-child(3){background:#28C840}
+.appbar b{font-weight:600;margin-left:8px;font-size:12.5px}
+.appbar .right{margin-left:auto;color:#9FB6D6;font-size:11.5px}
+.scrim{background:rgba(11,31,68,.35);padding:26px 20px}
+.modal{
+  background:var(--paper);border-radius:14px;max-width:840px;margin:0 auto;overflow:hidden;
+  box-shadow:0 24px 64px rgba(11,31,68,.3);border:1px solid var(--line);
+}
+.modal-head{padding:24px 28px 18px;border-bottom:1px solid var(--line)}
+.modal-body{padding:22px 28px}
+.modal-foot{padding:14px 28px;border-top:1px solid var(--line);background:var(--offwhite);display:flex;align-items:center;gap:10px}
+
+.btn{
+  font:600 13px/1 Inter;padding:9px 16px;border-radius:8px;border:1px solid var(--line);
+  background:var(--paper);color:var(--ink);cursor:pointer;
+}
+.btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.btn-primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-dark)}
+.btn-ghost{border-color:transparent;color:var(--ink-soft);background:none}
+.btn-sm{padding:5px 10px;font-size:11.5px}
+.btn-lg{padding:12px 22px;font-size:14px}
+.btn-white{background:#fff;border-color:#fff;color:var(--brand-deep)}
+.btn-outline-light{background:none;border-color:rgba(255,255,255,.4);color:#fff}
+
+/* ── the public site mock ── */
+.site{background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);min-width:600px}
+.sitenav{
+  display:flex;align-items:center;gap:20px;padding:14px 24px;border-bottom:1px solid var(--line);
+  background:var(--paper);flex-wrap:wrap;
+}
+.logo{font-family:Fraunces,Georgia,serif;font-weight:700;font-size:17px;color:var(--brand-deep);letter-spacing:-.01em}
+.logo span{color:var(--brand)}
+.sitenav .links{display:flex;gap:18px;font-size:13px;color:var(--ink-soft);flex-wrap:wrap}
+.sitenav .links a{color:var(--ink-soft);text-decoration:none}
+.sitenav .links a:hover{color:var(--brand)}
+.sitenav .cta{margin-left:auto;display:flex;gap:8px;align-items:center}
+.hero{
+  background:linear-gradient(160deg,var(--brand-deep) 0%,#123163 60%,#1A3F7C 100%);
+  color:#fff;padding:56px 24px 52px;text-align:center;
+}
+.hero h2{font-size:clamp(24px,3.6vw,38px);color:#fff;max-width:20ch;margin:0 auto 14px;line-height:1.14}
+.hero p{color:#C2D3EC;font-size:15.5px;max-width:56ch;margin:0 auto 26px}
+.hero .btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.hero .fine{color:#8FA9CC;font-size:12px;margin:18px 0 0}
+.strip{display:grid;gap:1px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));background:var(--line)}
+.strip div{background:var(--paper);padding:20px 22px}
+.strip b{font-family:Fraunces,Georgia,serif;font-size:24px;color:var(--brand);display:block;font-variant-numeric:tabular-nums}
+.strip span{font-size:12.5px;color:var(--ink-soft)}
+.siteband{padding:34px 24px;border-top:1px solid var(--line)}
+.entrycards{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.entrycard{border:1.5px solid var(--line);border-radius:11px;padding:18px;background:var(--paper)}
+.entrycard.hi{border-color:var(--brand);background:var(--steel-pale)}
+.entrycard h4{font-family:Fraunces,Georgia,serif;font-size:16px}
+.entrycard p{font-size:12.8px;color:var(--ink-soft);margin:6px 0 10px;line-height:1.5}
+.placeholder{
+  border:1px dashed var(--steel-light);border-radius:9px;padding:11px 14px;background:var(--offwhite);
+  font-size:12.3px;color:var(--ink-faint);margin-top:14px;
+}
+
+/* auth card */
+.authwrap{background:var(--offwhite);padding:34px 22px;display:flex;justify-content:center}
+.authcard{background:var(--paper);border:1px solid var(--line);border-radius:13px;padding:26px 28px;max-width:430px;width:100%;box-shadow:var(--shadow)}
+.authcard h3{font-size:20px;margin-bottom:4px}
+.divider{display:flex;align-items:center;gap:11px;margin:18px 0;color:var(--ink-faint);font-size:11.5px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* the two-provenance diagram */
+.flow{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin:18px 0}
+.lane{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--paper)}
+.lane .lh{padding:12px 16px;font:600 12.5px Inter;color:#fff;display:flex;align-items:center;gap:8px}
+.lane.selfserve .lh{background:var(--brand)}
+.lane.erp .lh{background:var(--steel)}
+.lane ol{margin:0;padding:14px 16px 14px 34px;font-size:13px;color:var(--ink-soft)}
+.lane ol li{margin-bottom:7px}
+.lane ol li strong{color:var(--ink)}
+.lane .foot{padding:11px 16px;border-top:1px solid var(--line);background:var(--offwhite);font-size:12.3px;color:var(--ink-faint)}
+
+label.f{display:block;font:600 11px/1.4 Inter;text-transform:uppercase;letter-spacing:.06em;color:var(--steel);margin-bottom:5px}
+input.i,select.i,textarea.i{
+  width:100%;padding:8px 11px;border:1px solid var(--line);border-radius:8px;font:400 13.5px Inter;
+  background:var(--paper);color:var(--ink);
+}
+input.i:focus,select.i:focus{outline:2px solid var(--brand);outline-offset:-1px;border-color:var(--brand)}
+input.i[readonly]{background:var(--offwhite);color:var(--ink-soft)}
+.row{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
+.row.two{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.hint{font-size:11.5px;color:var(--ink-faint);margin-top:4px}
+
+/* stepper rail */
+.rail{display:flex;gap:0;align-items:center;flex-wrap:wrap;row-gap:8px;margin-bottom:20px}
+.rail .s{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-faint);white-space:nowrap}
+.rail .s .b{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;border:1.5px solid var(--line);font:600 10px/1 var(--mono);background:var(--paper);color:var(--ink-faint)}
+.rail .s.done .b{background:var(--accent);border-color:var(--accent);color:#fff}
+.rail .s.now .b{background:var(--brand);border-color:var(--brand);color:#fff}
+.rail .s.now{color:var(--brand);font-weight:600}
+.rail .line{flex:1 1 8px;min-width:8px;height:1px;background:var(--line);margin:0 6px}
+
+/* school cards */
+.schoolgrid{display:grid;gap:13px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.schoolcard{border:1px solid var(--line);border-radius:11px;padding:16px 17px;background:var(--paper);display:flex;flex-direction:column;gap:7px}
+.schoolcard .top{display:flex;align-items:center;gap:9px}
+.avatar{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;font:700 13px Inter;color:#fff;background:var(--brand);flex:0 0 auto}
+.avatar.b{background:var(--accent)}.avatar.c{background:var(--steel)}
+.schoolcard h4{margin:0;font-family:Fraunces,Georgia,serif;font-size:15.5px}
+.schoolcard .code{font:500 10.5px var(--mono);color:var(--ink-faint)}
+.bar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:2px}
+.bar i{display:block;height:100%;background:var(--accent)}
+.schoolcard .st{font-size:11.5px;color:var(--ink-soft);display:flex;justify-content:space-between;gap:8px}
+.schoolcard.add{border-style:dashed;align-items:center;justify-content:center;text-align:center;color:var(--ink-faint);cursor:pointer;min-height:130px}
+.schoolcard.add:hover{border-color:var(--brand);color:var(--brand);background:var(--steel-pale)}
+
+/* the three doors */
+.doors{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(228px,1fr))}
+.door{border:1.5px solid var(--line);border-radius:12px;padding:18px;background:var(--paper);cursor:pointer;position:relative;display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit}
+.door:hover{border-color:var(--steel-light);background:var(--offwhite)}
+.door.pick{border-color:var(--brand);box-shadow:0 0 0 3px var(--steel-pale)}
+.door .icon{font-size:22px;line-height:1}
+.door h4{font-family:Fraunces,Georgia,serif;font-size:16.5px;margin:0}
+.door p{font-size:12.8px;color:var(--ink-soft);margin:0;line-height:1.5}
+.door .tagline{font-size:11.5px;color:var(--ink-faint);margin-top:auto;padding-top:8px;border-top:1px dashed var(--line)}
+.badge-rec{position:absolute;top:-9px;right:12px;background:var(--brand);color:#fff;font:600 10px/1 Inter;letter-spacing:.05em;text-transform:uppercase;padding:4px 8px;border-radius:5px}
+
+/* class ladder */
+.ladder{background:var(--offwhite);border:1px solid var(--line);border-radius:10px;padding:18px 20px 10px}
+.ticks{display:flex;justify-content:space-between;font:500 10.5px var(--mono);color:var(--ink-faint);margin-bottom:7px}
+.ticks span{flex:1;text-align:center}
+.ticks span.on{color:var(--brand);font-weight:700}
+.track{position:relative;height:26px}
+.track input[type=range]{position:absolute;left:0;top:0;width:100%;margin:0;height:26px;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+.track input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;width:20px;height:20px;border-radius:50%;background:var(--brand);border:3px solid var(--paper);box-shadow:0 1px 4px rgba(11,31,68,.35);cursor:grab}
+.track input[type=range]::-moz-range-thumb{pointer-events:auto;width:20px;height:20px;border-radius:50%;background:var(--brand);border:3px solid var(--paper);box-shadow:0 1px 4px rgba(11,31,68,.35);cursor:grab}
+.track .bar2{position:absolute;left:0;right:0;top:12px;height:4px;border-radius:3px;background:var(--steel-light)}
+.track .fill{position:absolute;top:12px;height:4px;border-radius:3px;background:var(--brand)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:14px}
+.chip{font:600 11px/1 var(--mono);padding:5px 9px;border-radius:6px;background:var(--steel-pale);color:var(--brand);border:1px solid var(--steel-light)}
+
+/* excel-ish grid */
+.xl{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--paper)}
+.xl table{font-size:12.5px;min-width:700px}
+.xl th{padding:8px 10px;font-size:10px}
+.xl td{padding:0;border-right:1px solid var(--line)}
+.xl td:last-child{border-right:0}
+.xl .cell{padding:7px 10px;font-size:12.5px;color:var(--ink)}
+.xl .auto{color:var(--accent);font-style:italic}
+.xl .sel{background:var(--steel-pale);box-shadow:inset 0 0 0 2px var(--brand)}
+.xl tr.add td{background:var(--offwhite);color:var(--ink-faint);font-style:italic;padding:8px 10px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-faint);margin-top:9px}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:middle}
+
+/* chat */
+.chat{display:flex;flex-direction:column;gap:11px;max-width:600px}
+.bub{padding:10px 13px;border-radius:11px;font-size:13.2px;line-height:1.55;max-width:82%}
+.bub.ai{background:var(--offwhite);border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:3px}
+.bub.me{background:var(--brand);color:#fff;align-self:flex-end;border-bottom-right-radius:3px}
+.bub.ai b{color:var(--ink)}
+.progress-strip{display:flex;gap:4px;margin-bottom:16px;padding:10px 12px;background:var(--offwhite);border:1px solid var(--line);border-radius:9px;flex-wrap:wrap;align-items:center;font-size:11px}
+.progress-strip .pc{height:5px;border-radius:3px;flex:1;min-width:14px;background:var(--line)}
+.progress-strip .pc.on{background:var(--accent)}
+.progress-strip .pc.now{background:var(--brand)}
+
+.kbd{font:500 11px var(--mono);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:2px 6px;background:var(--offwhite);color:var(--ink-soft)}
+.footnote{font-size:12.5px;color:var(--ink-faint);margin-top:10px;max-width:74ch}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">Phase 25 · proposal · rev 2</div>
+    <h1>Three Doors to a Timetable</h1>
+    <p>The whole way in — from a public home page a stranger can sign up on, through two very
+      different kinds of account, to a guided first run that reaches a Readiness Score without the
+      admin ever meeting an empty master-data table.</p>
+    <div class="meta">
+      <span>Public site · Create account · Sign in</span>
+      <span>Self-serve admin owns many schools</span>
+      <span>Users &amp; teacher logins</span>
+      <span>SSO path unchanged</span>
+      <span>11-step guided wizard</span>
+      <span>AI interview mode</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ═══════════════════ 1. WHAT CHANGED ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">01</span><h2>Two kinds of customer</h2></div>
+  <p class="lede">They buy different things, arrive by different roads, and disagree about something
+    fundamental: <strong>who owns the school and its people.</strong> Everything below follows from
+    that one difference.</p>
+
+  <div class="flow">
+    <div class="lane selfserve">
+      <div class="lh">🆕 Bought the Timetable module only</div>
+      <ol>
+        <li>A stranger finds the <strong>home page</strong> and presses Create account.</li>
+        <li>They give <strong>their own</strong> details — name, work email, password, organisation.</li>
+        <li>They verify the email and sign in. They own <strong>no school yet</strong>.</li>
+        <li>They land on <strong>My Schools</strong> and <strong>create</strong> one — <em>they</em> type
+          the name, because nobody else knows it. They may create several.</li>
+        <li>They run the wizard, then <strong>create their own users</strong> and
+          <strong>generate teacher logins</strong>, so staff can sign in and see their own timetable,
+          reports and substitutions.</li>
+      </ol>
+      <div class="foot">Owns everything: the school, the staff list and the logins. All editable.</div>
+    </div>
+    <div class="lane erp">
+      <div class="lh">🔗 Bought the ERP — SSO, unchanged</div>
+      <ol>
+        <li>They click Timetable <strong>inside the ERP</strong>. A signed, single-use token arrives
+          carrying the school's code and name.</li>
+        <li>The school is provisioned on the spot if unknown; the name is
+          <strong>refreshed every login</strong>.</li>
+        <li>Step 1 shows those details <strong>already filled in</strong> — read, press Next. A trust
+          gets a picker from the token's <code>schools[]</code>.</li>
+        <li><strong>No school can be added here.</strong> Schools exist because the ERP says so.</li>
+        <li><strong>No user can be added here either.</strong> Every staff member appears the first
+          time they open Timetable from the ERP, with the role their ERP role maps to.</li>
+      </ol>
+      <div class="foot">Owns nothing here: schools, staff and logins all come from the ERP. Read-only.</div>
+    </div>
+  </div>
+
+  <div class="note good">
+    <h4>Both roads meet at the same place</h4>
+    <p>From the moment a school is selected, there is <strong>one</strong> onboarding — the same three
+      doors, the same eleven steps, the same commit — and afterwards one app, one permission registry
+      and one set of scoped views. The lanes differ only in <em>where identity came from</em>.</p>
+  </div>
+
+  <div class="note">
+    <h4>The same split, in three places — so make it one mechanism</h4>
+    <p>School identity, the school list and now the user list all need to be
+      <strong>read-only for ERP customers and editable for self-serve ones</strong>. Three screens
+      each deciding that for themselves is three chances to get it wrong. One column —
+      <code>schools.origin</code> — decides all three, and any future screen inherits the answer for
+      free.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 2. DECISIONS ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">02</span><h2>Eight things to settle before any code</h2></div>
+  <p class="lede">The first two are new in this revision and are the serious ones — each contradicts
+    a rule the system currently states outright. Neither is a blocker; both change what gets built.</p>
+
+  <div class="note stop">
+    <h4>① Local login contradicts a stated invariant, and adds real attack surface</h4>
+    <p>The project currently says, in <code>CLAUDE.md</code> invariant 16:
+      <em>"SSO-only entry… <strong>there is no local login</strong>"</em>. Self-serve signup makes that
+      false. <code>users</code> has no password column, and is keyed
+      <code>(school_id, erp_user_id)</code> — an ERP-identity table, not a credential store.</p>
+    <p><strong>Proposed:</strong> credentials live <strong>once, in the control plane</strong> — a new
+      <code>accounts</code> table beside <code>platform_users</code>, never inside a tenant database. One
+      account, many schools, one password. Each school still gets its ordinary <code>users</code> row,
+      linked by a stable identity string, so <em>every existing permission, scope and audit path keeps
+      working unchanged</em>. SSO users get no account row and no password; the two identity sources
+      never mix.</p>
+    <p>This brings work that SSO let us skip entirely: Argon2id hashing, email verification before
+      first sign-in, password reset with single-use expiring tokens, rate limiting, and login
+      responses that do not reveal whether an address is registered. That is sub-phase
+      <strong>25.0</strong> below, and it is the part I would not compress.</p>
+  </div>
+
+  <div class="note stop">
+    <h4>② A login may create a school — but never a database</h4>
+    <p>§17.3 says provisioning <em>"is an operator command, never something a login triggers"</em>,
+      and in the control plane <code>Tenant.erp_instance_id</code> is <strong>required</strong> — a
+      self-serve school has no ERP instance to point at.</p>
+    <p><strong>Proposed, and the distinction is the whole answer:</strong> a self-serve school is a
+      <strong>row in the shared tenant group</strong> — a <code>schools</code> record plus a
+      <code>tenants</code> entry with <code>mode = shared</code>. That is cheap, instant and safe.
+      A <strong>dedicated database</strong> stays exactly what it is today: an operator command
+      (<code>pnpm tenant:create</code>), never reachable from a sign-up form. So the sentence becomes
+      <em>"creating a database is an operator command"</em>, which is the part that actually mattered.
+      <code>erp_instance_id</code> becomes nullable.</p>
+    <p>It also needs a ceiling: an unverified account creating schools in a loop is a trivial denial
+      of service. Verified email required, and a per-account cap (say 10) that an operator can raise.</p>
+  </div>
+
+  <div class="note stop">
+    <h4>③ Only an admin creates schools. A teacher signs in to look, and to nothing else.</h4>
+    <p><strong>Settled.</strong> Two rules, enforced in two different places, because they are two
+      different questions.</p>
+    <p><strong>Who may create a school</strong> — <code>accounts.kind</code>: an <code>owner</code>
+      registered themselves from the home page and may create schools; a <code>member</code> was
+      <em>invited into</em> one and may never create any. Teachers are always members. Same login
+      screen, same credential machinery, one field's difference — and <em>My Schools</em> simply has
+      no "Add a school" tile for a member. <code>POST /schools</code> refuses a member outright, in the
+      server, because hiding the tile is cosmetic.</p>
+    <p><strong>What a teacher may do inside a school</strong> — the existing <code>Teacher</code> role,
+      unchanged: <code>timetable.view.own</code>, <code>timetable.view.class</code>,
+      <code>reports.view</code>, <code>notifications.view</code>. <strong>Four permissions, none of
+      which writes anything.</strong> No generate, no drag-and-drop, no publish, no master data, no
+      roles, no AI configuration. And the §15 rule that makes this real rather than cosmetic: the view
+      levels are <em>row-level scope filters injected server-side into every query</em> — REST, sockets,
+      reports and AI tools alike — so a teacher gets their own grid and their linked sections whatever
+      they send.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>③b One thing to confirm: substitution entry</h4>
+    <p>Your earlier brief said teachers could log in to see <em>"timetable, reports, substitution entry
+      if any"</em>. This one says <em>"no changes they can be able to do"</em>. Substitution entry is a
+      write, so the two do not agree.</p>
+    <p><strong>I have taken the stricter reading:</strong> the default <code>Teacher</code> role is
+      view-only, and there is no pre-made "Teacher + Substitutions" role. If you do want some teachers
+      to record cover, it needs <strong>no new permission and no new build</strong> —
+      <code>substitute.manage</code> already exists and the Roles &amp; Responsibility screen already
+      lets an admin tick it onto a role. So this stays a decision you can make later, on a screen that
+      already ships, rather than a thing to design now.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>④ A locally-created user still needs a stable identity string</h4>
+    <p><code>users</code> is unique on <code>(school_id, erp_user_id)</code> and that column is
+      <code>NOT NULL</code> — it is how every session, audit row and scope filter finds a person. A
+      user created on our own Users screen has no ERP id.</p>
+    <p><strong>Proposed:</strong> write a synthetic, stable value — <code>local:{account_id}</code> —
+      and add a nullable <code>users.account_id</code> pointing at the control-plane account. The
+      unique key, the session token and every existing query keep working untouched. The column name
+      then slightly overstates itself; renaming it to <code>external_user_id</code> is a clean but
+      wide change (auth, SSO, platform admin, the isolation sweep) and I would do it separately
+      rather than inside this phase.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>⑤ School identity now has two provenances, and they must not be confused</h4>
+    <p>An ERP school's name is the ERP's and is overwritten on every login — letting someone edit it
+      would produce an edit that silently reverts. A self-serve school's name is the admin's and must
+      be editable.</p>
+    <p><strong>Proposed:</strong> <code>schools.origin</code> — <code>erp</code> or <code>self_serve</code>.
+      Step 1 and the School Profile screen read it: <em>erp</em> renders read-only with "managed by
+      your ERP", <em>self_serve</em> renders an editable field. One column decides it everywhere,
+      rather than each screen guessing.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>⑥ "Popup on every login" becomes something people dismiss unread</h4>
+    <p><strong>Proposed:</strong> the three doors open by themselves only while the school has no
+      timetable config — the real definition of "new" — and afterwards live behind a permanent
+      <span class="kbd">Set up a timetable</span> button. For a self-serve admin who has just created
+      a school, that condition is true by construction, so it opens immediately anyway.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>⑦ A single slider cannot describe a Secondary wing</h4>
+    <p>9–12 with one handle means creating Pre-Nur→12 and then deleting nine classes.
+      <strong>Proposed:</strong> a two-handle range. The Primary case never moves the left handle, so
+      nothing is lost. Mocked below — drag it.</p>
+  </div>
+
+  <div class="note warn">
+    <h4>⑧ The assistant stays an interviewer, not a second writer</h4>
+    <p>Option 3's steps 1–8 create academic years, timetable configs and rooms — all
+      <strong>deliberately absent</strong> from what the assistant may draft (§13.5).
+      <strong>Proposed:</strong> the AI asks the questions and fills the <em>same wizard state</em>
+      Option 2 fills; pressing Create runs the identical commit. Zero new authority, one commit path,
+      and Option 3 becomes cheap because it reuses everything.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 3. MOCKUPS ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">03</span><h2>Mock design</h2></div>
+  <p class="lede">Twelve screens in the product's design system. Step&nbsp;4's class ladder is live —
+    drag the handles and change the section count.</p>
+
+  <div class="tabrow" role="tablist" aria-label="Getting in">
+    <span class="tabgroup">Getting in</span>
+    <button class="tab" role="tab" aria-selected="true" aria-controls="m0" id="t0">Home page</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m1" id="t1">Create account</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m2" id="t2">Sign in</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m3" id="t3">My Schools</button>
+  </div>
+  <div class="tabrow" role="tablist" aria-label="Setting up">
+    <span class="tabgroup">Setting up</span>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m4" id="t4">Three doors</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m5" id="t5">Step 1 · School</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m6" id="t6">Step 3 · Wings</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m7" id="t7">Step 4 · Classes</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m8" id="t8">Step 5 · Config</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m9" id="t9">Step 7 · Teachers</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m10" id="t10">Step 8 · Rooms</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m11" id="t11">Step 9 · Curriculum</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m12" id="t12">Option 3 · AI</button>
+  </div>
+  <div class="tabrow last" role="tablist" aria-label="Users and access">
+    <span class="tabgroup">Users &amp; access</span>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m13" id="t13">Users &amp; Access</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m14" id="t14">Generate teacher logins</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="m15" id="t15">A teacher's first sign-in</button>
+  </div>
+
+  <div class="stage">
+
+    <!-- ─────────── M0: HOME PAGE ─────────── -->
+    <div class="panel" id="m0" role="tabpanel" aria-labelledby="t0">
+      <div class="site">
+        <div class="sitenav">
+          <div class="logo">Edu<span>Timetable</span></div>
+          <div class="links">
+            <a href="#">How it works</a><a href="#">Features</a><a href="#">Pricing</a><a href="#">For ERP customers</a>
+          </div>
+          <div class="cta">
+            <button class="btn btn-sm">Sign in</button>
+            <button class="btn btn-sm btn-primary">Create account</button>
+          </div>
+        </div>
+
+        <div class="hero">
+          <h2>A conflict-free school timetable, proved before it is built</h2>
+          <p>Tell us your classes, teachers and subjects. We check a complete timetable can exist —
+            and name the exact row to fix if it can't — before the solver places a single period.</p>
+          <div class="btns">
+            <button class="btn btn-lg btn-white">Create a free account →</button>
+            <button class="btn btn-lg btn-outline-light">Sign in with Edunext ERP</button>
+          </div>
+          <p class="fine">No card required · Set up your first timetable in about 20 minutes</p>
+        </div>
+
+        <div class="strip">
+          <div><b>100%</b><span>Conflict-free by construction — never a best effort</span></div>
+          <div><b>2</b><span>Phases: feasibility proved first, then the solver runs</span></div>
+          <div><b>&lt;1s</b><span>Every screen and report, at 50 sections and 2,000 periods</span></div>
+          <div><b>3</b><span>Ways to enter your data — by hand, guided, or by talking</span></div>
+        </div>
+
+        <div class="siteband">
+          <div class="eyebrow" style="margin-bottom:10px">Two ways in</div>
+          <div class="entrycards">
+            <div class="entrycard hi">
+              <h4>New here</h4>
+              <p>Create an account with your work email. You can add as many schools as you look
+                after, and switch between them from one sign-in.</p>
+              <button class="btn btn-sm btn-primary">Create account</button>
+            </div>
+            <div class="entrycard">
+              <h4>Already an Edunext ERP customer</h4>
+              <p>Don't create anything. Open Timetable from your ERP menu and you arrive signed in,
+                with your school's details already filled in.</p>
+              <button class="btn btn-sm">Show me where →</button>
+            </div>
+            <div class="entrycard">
+              <h4>Coming back</h4>
+              <p>Sign in with the email and password you registered.</p>
+              <button class="btn btn-sm">Sign in</button>
+            </div>
+          </div>
+          <div class="placeholder">
+            <strong>Placeholder.</strong> This is a working scaffold — real nav, hero, proof strip and
+            the two entry routes, in the product's palette and type. The full marketing page
+            (screenshots, testimonials, pricing table, footer) is a separate piece of design work,
+            as agreed. What matters structurally is settled here: <em>Create account</em> and
+            <em>Sign in</em> are the only two front doors, and ERP customers are told plainly not to
+            use either.
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>The one line that prevents a support queue:</strong> "Already an
+        Edunext ERP customer — don't create anything." Without it, existing customers sign up with a
+        personal email, create a duplicate school by hand, and then cannot understand why their ERP
+        data is not in it.</p>
+    </div>
+
+    <!-- ─────────── M1: CREATE ACCOUNT ─────────── -->
+    <div class="panel" id="m1" role="tabpanel" aria-labelledby="t1" hidden>
+      <div class="site">
+        <div class="sitenav">
+          <div class="logo">Edu<span>Timetable</span></div>
+          <div class="cta"><span class="faint" style="font-size:12.5px">Already registered?</span>
+            <button class="btn btn-sm">Sign in</button></div>
+        </div>
+        <div class="authwrap">
+          <div class="authcard">
+            <h3>Create your account</h3>
+            <p class="muted" style="font-size:13px">This is <em>you</em>, not your school — you'll add
+              schools in a moment, and you can add more than one.</p>
+
+            <div class="row two" style="margin-top:18px">
+              <div><label class="f">First name</label><input class="i" value="Debashis"></div>
+              <div><label class="f">Last name</label><input class="i" value="Sengupta"></div>
+            </div>
+            <div class="row" style="grid-template-columns:1fr">
+              <div><label class="f">Work email</label><input class="i" value="admin@greenfield.edu.in">
+                <div class="hint">We'll send a verification link here. This becomes your sign-in.</div></div>
+            </div>
+            <div class="row two">
+              <div><label class="f">Organisation / trust</label><input class="i" placeholder="Greenfield Education Trust">
+                <div class="hint">Optional</div></div>
+              <div><label class="f">Country</label>
+                <select class="i"><option>India</option><option>United Arab Emirates</option><option>Nepal</option><option>Other</option></select></div>
+            </div>
+            <div class="row two">
+              <div><label class="f">Phone</label><input class="i" value="+91 98xxx xxxxx">
+                <div class="hint">Optional — for support only</div></div>
+              <div><label class="f">Your role</label>
+                <select class="i"><option>School administrator</option><option>Principal / Head</option><option>Timetable in-charge</option><option>IT / systems</option><option>Other</option></select></div>
+            </div>
+            <div class="row" style="grid-template-columns:1fr;margin-bottom:10px">
+              <div><label class="f">Password</label><input class="i" type="password" value="············">
+                <div class="hint">At least 12 characters. A passphrase of three or four words is
+                  both stronger and easier than <code>P@ssw0rd!</code>.</div></div>
+            </div>
+            <label style="display:flex;gap:9px;font-size:12.3px;color:var(--ink-soft);margin-bottom:16px;align-items:flex-start">
+              <input type="checkbox" style="margin-top:2px">
+              <span>I agree to the Terms of Service and Privacy Policy.</span>
+            </label>
+            <button class="btn btn-primary" style="width:100%;padding:11px">Create account</button>
+
+            <div class="divider">or</div>
+            <div class="note" style="margin:0">
+              <p style="font-size:12.5px;margin:0"><strong>Using Edunext ERP already?</strong>
+                Don't create an account — open Timetable from your ERP menu instead. Your school and
+                staff are already there. <a href="#">How →</a></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>Six fields, and only two are required beyond the credential.</strong>
+        Everything the wizard needs it asks for in the wizard, where it has context. A long signup form
+        is the commonest place a self-serve funnel loses people, and organisation, phone and role are
+        useful to sales rather than necessary to sign in — so they are optional and say so.</p>
+    </div>
+
+    <!-- ─────────── M2: SIGN IN ─────────── -->
+    <div class="panel" id="m2" role="tabpanel" aria-labelledby="t2" hidden>
+      <div class="site">
+        <div class="sitenav">
+          <div class="logo">Edu<span>Timetable</span></div>
+          <div class="cta"><span class="faint" style="font-size:12.5px">New here?</span>
+            <button class="btn btn-sm btn-primary">Create account</button></div>
+        </div>
+        <div class="authwrap">
+          <div class="authcard">
+            <h3>Sign in</h3>
+            <p class="muted" style="font-size:13px">Welcome back.</p>
+            <div class="row" style="grid-template-columns:1fr;margin-top:18px">
+              <div><label class="f">Email</label><input class="i" value="admin@greenfield.edu.in"></div>
+            </div>
+            <div class="row" style="grid-template-columns:1fr;margin-bottom:10px">
+              <div><label class="f">Password</label><input class="i" type="password" value="············"></div>
+            </div>
+            <div style="display:flex;align-items:center;margin-bottom:16px">
+              <label style="display:flex;gap:8px;font-size:12.3px;color:var(--ink-soft)">
+                <input type="checkbox" checked><span>Keep me signed in</span></label>
+              <span style="flex:1"></span>
+              <a href="#" style="font-size:12.3px">Forgot password?</a>
+            </div>
+            <button class="btn btn-primary" style="width:100%;padding:11px">Sign in</button>
+
+            <div class="divider">or</div>
+            <button class="btn" style="width:100%;padding:11px">Continue from Edunext ERP</button>
+            <p class="hint" style="text-align:center;margin-top:9px">
+              ERP customers arrive signed in — this only opens your ERP.</p>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>What this screen must never do is tell you which half was wrong.</strong>
+        "No account with that email" hands an attacker a list of your customers. Wrong email and wrong
+        password give the identical message and take the identical time, and repeated failures throttle
+        on both the address and the source address.</p>
+    </div>
+
+    <!-- ─────────── M3: MY SCHOOLS ─────────── -->
+    <div class="panel" id="m3" role="tabpanel" aria-labelledby="t3" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>EduTimetable</b><span class="right">Debashis Sengupta · self-serve account</span></div>
+        <div style="padding:24px 26px;background:var(--paper)">
+          <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px">
+            <h2 style="font-size:22px">Your schools</h2>
+            <span class="faint" style="font-size:12.5px">3 of 10 · switch any time from the top bar</span>
+          </div>
+          <p class="muted" style="font-size:13.5px;margin-bottom:18px">Each school keeps its own
+            classes, teachers and timetables. Nothing is shared between them.</p>
+
+          <div class="schoolgrid">
+            <div class="schoolcard">
+              <div class="top"><span class="avatar">GP</span>
+                <div><h4>Greenfield Public School</h4><span class="code">greenfield-public</span></div></div>
+              <div class="st"><span>Readiness</span><strong style="color:var(--accent)">100%</strong></div>
+              <div class="bar"><i style="width:100%"></i></div>
+              <div class="st"><span class="faint">Published · 3 wings · 56 sections</span></div>
+              <button class="btn btn-sm" style="margin-top:4px">Open</button>
+            </div>
+            <div class="schoolcard">
+              <div class="top"><span class="avatar b">SB</span>
+                <div><h4>Sunrise Branch</h4><span class="code">sunrise-branch</span></div></div>
+              <div class="st"><span>Readiness</span><strong style="color:var(--amber)">62%</strong></div>
+              <div class="bar"><i style="width:62%;background:var(--amber)"></i></div>
+              <div class="st"><span class="faint">Setup — stopped at step 7 of 11</span></div>
+              <button class="btn btn-sm btn-primary" style="margin-top:4px">Resume setup →</button>
+            </div>
+            <div class="schoolcard">
+              <div class="top"><span class="avatar c">NV</span>
+                <div><h4>Nalanda Vidyalaya</h4><span class="code">nalanda-vidyalaya</span></div></div>
+              <div class="st"><span>Readiness</span><strong class="faint">—</strong></div>
+              <div class="bar"><i style="width:0"></i></div>
+              <div class="st"><span class="faint">Created 2 minutes ago · nothing set up yet</span></div>
+              <button class="btn btn-sm btn-primary" style="margin-top:4px">Start setup →</button>
+            </div>
+            <div class="schoolcard add">
+              <div style="font-size:26px">+</div>
+              <div style="font-size:13px;font-weight:600">Add a school</div>
+              <div style="font-size:11.5px">7 remaining on your plan</div>
+            </div>
+          </div>
+
+          <div class="note good" style="margin-top:20px">
+            <h4>Resume is the point of this screen</h4>
+            <p style="font-size:13px;margin:0">Sunrise Branch stopped at step 7. Eleven steps is more
+              than one sitting for a real school, so every school carries its own saved progress and
+              says exactly where it was left.</p>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>An ERP-signed-in user does not see this screen</strong> unless their
+        token carried <code>schools[]</code> — and then it is a <em>switcher</em>, not a creator: no
+        "Add a school" tile, because the ERP decides which schools exist. One screen, two behaviours,
+        chosen by <code>schools.origin</code>.</p>
+    </div>
+
+    <!-- ─────────── M4: three doors ─────────── -->
+    <div class="panel" id="m4" role="tabpanel" aria-labelledby="t4" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>EduTimetable</b><span class="right">Nalanda Vidyalaya · 2026-27</span></div>
+        <div class="scrim">
+          <div class="modal">
+            <div class="modal-head">
+              <div class="eyebrow">Welcome, Debashis</div>
+              <h2 style="margin-top:6px">Let's build your first timetable</h2>
+              <p class="muted" style="font-size:14px;margin:8px 0 0">
+                Nalanda Vidyalaya has no timetable yet. Choose how you'd like to put the information
+                in — you can switch between these at any point, and nothing is written until you
+                confirm.</p>
+            </div>
+            <div class="modal-body">
+              <div class="doors">
+                <button class="door">
+                  <span class="icon">✎</span>
+                  <h4>Manual entry</h4>
+                  <p>The full Setup Wizard, one master at a time — years, classes, rooms, subjects,
+                    teachers, curriculum, mappings. Every field, under your control.</p>
+                  <span class="tagline">Best when your data is unusual · ~45–90 min</span>
+                </button>
+                <button class="door pick">
+                  <span class="badge-rec">Recommended</span>
+                  <span class="icon">⚡</span>
+                  <h4>Guided setup</h4>
+                  <p>Eleven short steps in this window. Pick your classes on a slider, and the system
+                    proposes rooms, curriculum and teacher mappings for you to correct rather than type.</p>
+                  <span class="tagline">Best for a standard school · ~15–25 min</span>
+                </button>
+                <button class="door">
+                  <span class="icon">✦</span>
+                  <h4>Describe it to the assistant</h4>
+                  <p>Answer the same questions in plain English and the assistant fills the form as
+                    you talk. You review everything on one screen before a single row is saved.</p>
+                  <span class="tagline">Best if you'd rather talk than type · ~10–20 min</span>
+                </button>
+              </div>
+              <div class="note good" style="margin-bottom:0">
+                <p style="font-size:13px;margin:0"><strong>Already have this in a spreadsheet?</strong>
+                  Skip all three and <a href="#">import every master from one Excel file</a> — the
+                  same validator checks it either way.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn btn-ghost">I'll do this later</button>
+              <span style="flex:1"></span>
+              <button class="btn btn-primary">Start guided setup →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>Why a recommendation at all:</strong> three equal options is a
+        decision handed back to somebody with no basis to make it. Each door says what it is
+        <em>best for</em> and roughly how long it takes — the information actually needed to choose.</p>
+    </div>
+
+    <!-- ─────────── M5: STEP 1, BOTH VARIANTS ─────────── -->
+    <div class="panel" id="m5" role="tabpanel" aria-labelledby="t5" hidden>
+      <p class="eyebrow" style="margin-bottom:10px">One step, two faces — decided by <code>schools.origin</code></p>
+      <div class="grid g2">
+
+        <div>
+          <div class="app" style="min-width:0">
+            <div class="appbar" style="background:var(--steel)"><b>🔗 Arrived via ERP SSO</b>
+              <span class="right">Step 1 of 11</span></div>
+            <div style="padding:20px 22px;background:var(--paper)">
+              <h3 style="margin-bottom:3px">Confirm your school</h3>
+              <p class="muted" style="font-size:12.8px">These came from your ERP sign-in.</p>
+              <div class="row" style="grid-template-columns:1fr;margin-top:14px">
+                <div><label class="f">School</label><input class="i" value="Greenfield Public School" readonly>
+                  <div class="hint">🔒 Managed by your ERP — change it there and it updates here on
+                    your next sign-in.</div></div>
+              </div>
+              <div class="row two">
+                <div><label class="f">School code</label><input class="i mono" value="GRN-PUB-014" readonly></div>
+                <div><label class="f">Trust</label><input class="i" value="Greenfield Education Trust" readonly></div>
+              </div>
+              <div class="note" style="margin-bottom:0">
+                <p style="font-size:12.3px;margin:0">Your ERP lists <strong>4 schools</strong> for you.
+                  <a href="#">Choose a different one →</a></p>
+              </div>
+              <div style="display:flex;margin-top:16px"><span style="flex:1"></span>
+                <button class="btn btn-primary">That's right — next →</button></div>
+            </div>
+          </div>
+          <p class="footnote">Nothing is typed. One click and they are past it.</p>
+        </div>
+
+        <div>
+          <div class="app" style="min-width:0">
+            <div class="appbar"><b>🆕 Self-serve account</b><span class="right">Step 1 of 11</span></div>
+            <div style="padding:20px 22px;background:var(--paper)">
+              <h3 style="margin-bottom:3px">Name your school</h3>
+              <p class="muted" style="font-size:12.8px">This is the name that appears on every
+                printed timetable.</p>
+              <div class="row" style="grid-template-columns:1fr;margin-top:14px">
+                <div><label class="f">School name</label><input class="i" value="Nalanda Vidyalaya">
+                  <div class="hint">You can change this later on the School Profile screen.</div></div>
+              </div>
+              <div class="row two">
+                <div><label class="f">Short name</label><input class="i" value="NV">
+                  <div class="hint">For narrow columns</div></div>
+                <div><label class="f">School code</label><input class="i mono" value="nalanda-vidyalaya" readonly>
+                  <div class="hint">Generated · must be unique</div></div>
+              </div>
+              <div class="row two" style="margin-bottom:0">
+                <div><label class="f">Timezone</label><select class="i"><option>Asia/Kolkata</option><option>Asia/Dubai</option></select></div>
+                <div><label class="f">Trust <span class="faint">(optional)</span></label><input class="i" placeholder="—"></div>
+              </div>
+              <div style="display:flex;margin-top:16px"><span style="flex:1"></span>
+                <button class="btn btn-primary">Next →</button></div>
+            </div>
+          </div>
+          <p class="footnote">Typed once, editable afterwards — because nobody else knows it.</p>
+        </div>
+      </div>
+
+      <div class="note stop" style="margin-top:6px">
+        <h4>The failure this split prevents</h4>
+        <p>Give an ERP school an editable name and the admin renames it, the next SSO login overwrites
+          the change, and they report a bug that cannot be reproduced by anyone who did not sign in
+          again. The padlock and the sentence beside it are the fix — and both are driven by one
+          column, not by each screen guessing.</p>
+      </div>
+    </div>
+
+    <!-- ─────────── M6: wings ─────────── -->
+    <div class="panel" id="m6" role="tabpanel" aria-labelledby="t6" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 3 of 11</span></div>
+        <div class="scrim">
+          <div class="modal">
+            <div class="modal-head">
+              <div class="rail">
+                <div class="s done"><span class="b">✓</span>School</div><span class="line"></span>
+                <div class="s done"><span class="b">✓</span>Session</div><span class="line"></span>
+                <div class="s now"><span class="b">3</span>Wings</div><span class="line"></span>
+                <div class="s"><span class="b">4</span>Classes</div><span class="line"></span>
+                <div class="s"><span class="b">5</span>Config</div><span class="line"></span>
+                <div class="s"><span class="b">…</span></div>
+              </div>
+              <h2>Which wings does the school timetable separately?</h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">A wing gets its own week — its
+                own working days, period count and start time. Most schools run two or three. One is
+                perfectly normal.</p>
+            </div>
+            <div class="modal-body">
+              <div class="scroll" style="margin-bottom:14px">
+                <table>
+                  <thead><tr><th>Wing name</th><th>Description</th><th style="width:1%"></th></tr></thead>
+                  <tbody>
+                    <tr><td>Primary Wing</td><td>Pre-Nursery to Class 5</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                    <tr><td>Middle Wing</td><td>Class 6 to Class 8</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                    <tr><td>Senior Wing</td><td>Class 9 to Class 12</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="row" style="margin-bottom:0;align-items:end">
+                <div><label class="f">Add a wing</label><input class="i" placeholder="e.g. Senior Secondary Wing"></div>
+                <div style="flex:0 0 auto"><button class="btn btn-primary">+ Add wing</button></div>
+              </div>
+              <div class="note" style="margin-bottom:0">
+                <p style="font-size:12.8px;margin:0">A wing <em>is</em> a timetable — the same
+                  <code>timetable_config</code> the rest of the app already works with. Wings generate,
+                  publish and are edited entirely independently.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button><span style="flex:1"></span>
+              <button class="btn btn-ghost">Save &amp; close</button>
+              <button class="btn btn-primary">Next: Classes →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>No new table.</strong> "Wing" maps exactly onto the existing
+        <code>timetable_config</code>, already unique per <code>(school, name, academic year)</code> and
+        already owning working days, period count, start time and break structure. Steps 3 and 5 need
+        no schema change at all.</p>
+    </div>
+
+    <!-- ─────────── M7: classes (interactive) ─────────── -->
+    <div class="panel" id="m7" role="tabpanel" aria-labelledby="t7" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 4 of 11</span></div>
+        <div class="scrim">
+          <div class="modal">
+            <div class="modal-head">
+              <div class="rail">
+                <div class="s done"><span class="b">✓</span>School</div><span class="line"></span>
+                <div class="s done"><span class="b">✓</span>Session</div><span class="line"></span>
+                <div class="s done"><span class="b">✓</span>Wings</div><span class="line"></span>
+                <div class="s now"><span class="b">4</span>Classes</div><span class="line"></span>
+                <div class="s"><span class="b">5</span>Config</div><span class="line"></span>
+                <div class="s"><span class="b">…</span></div>
+              </div>
+              <h2>Which classes does <span style="color:var(--brand)" id="wingName">Primary Wing</span> run?</h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">Drag both ends of the ladder.
+                Sections are lettered automatically.</p>
+            </div>
+            <div class="modal-body">
+              <div class="row" style="grid-template-columns:1fr;margin-bottom:14px">
+                <div><label class="f">Wing</label>
+                  <select class="i" id="wingSel">
+                    <option>Primary Wing</option><option>Middle Wing</option><option>Senior Wing</option>
+                  </select></div>
+              </div>
+
+              <label class="f">Class range</label>
+              <div class="ladder">
+                <div class="ticks" id="ticks"></div>
+                <div class="track">
+                  <div class="bar2"></div><div class="fill" id="fill"></div>
+                  <input type="range" id="lo" min="0" max="14" value="0" aria-label="First class">
+                  <input type="range" id="hi" min="0" max="14" value="7" aria-label="Last class">
+                </div>
+                <div class="chips" id="chips"></div>
+              </div>
+
+              <div class="row" style="margin-top:16px;align-items:end">
+                <div><label class="f">Sections per class</label>
+                  <input class="i" type="number" id="secs" value="4" min="1" max="12"></div>
+                <div><label class="f">Will create</label><input class="i" id="summary" readonly></div>
+                <div style="flex:0 0 auto"><button class="btn btn-primary">Create these classes</button></div>
+              </div>
+
+              <div class="scroll" style="margin-top:6px;max-height:200px">
+                <table><thead><tr><th>Class</th><th>Sections</th><th>Wing</th><th style="width:1%"></th></tr></thead>
+                <tbody id="preview"></tbody></table>
+              </div>
+              <p class="faint" style="font-size:12px;margin:9px 0 0">Everything above lands in the grid,
+                where any row can be edited or removed — a class with 6 sections next to classes with
+                4 is one edit, not a reason to avoid the slider.</p>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button><span style="flex:1"></span>
+              <button class="btn btn-ghost">Save &amp; close</button>
+              <button class="btn btn-primary">Next: Timetable configuration →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>Section letters skip nothing.</strong> 4 sections gives A, B, C, D;
+        past 26 it continues AA, AB. The <em>class</em> ladder is a fixed ordered vocabulary
+        (Pre-Nur → 12) so <code>classes.sequence</code> is set correctly on creation — which is what makes
+        every later screen sort classes in school order rather than alphabetically.</p>
+    </div>
+
+    <!-- ─────────── M8: config ─────────── -->
+    <div class="panel" id="m8" role="tabpanel" aria-labelledby="t8" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 5 of 11</span></div>
+        <div class="scrim">
+          <div class="modal">
+            <div class="modal-head">
+              <h2>How does <span style="color:var(--brand)">Primary Wing</span>'s week run?</h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">This is the ceiling for
+                everything after it — a week of 40 periods means no subject can ask for 41. Filled in
+                with the commonest answer; change what differs.</p>
+            </div>
+            <div class="modal-body">
+              <div class="row">
+                <div><label class="f">Working days</label><input class="i" value="Mon – Fri" readonly></div>
+                <div><label class="f">Periods / day</label><input class="i" type="number" value="8"></div>
+                <div><label class="f">Start time</label><input class="i" value="08:00"></div>
+                <div><label class="f">Period duration</label><input class="i" value="40 min"></div>
+              </div>
+              <div class="row">
+                <div><label class="f">Zero period</label><select class="i"><option>No</option><option>Yes</option></select></div>
+                <div><label class="f">Breaks</label><input class="i" type="number" value="2"></div>
+                <div><label class="f">Break 1</label><input class="i" value="After P2 · 15 min"></div>
+                <div><label class="f">Break 2</label><input class="i" value="After P5 · 30 min"></div>
+              </div>
+              <label class="f">Classes in this wing</label>
+              <div class="chips" style="margin:0 0 14px">
+                <span class="chip">Pre-Nur</span><span class="chip">Nur</span><span class="chip">KG</span>
+                <span class="chip">1</span><span class="chip">2</span><span class="chip">3</span>
+                <span class="chip">4</span><span class="chip">5</span>
+                <span class="chip" style="background:none;border-style:dashed;color:var(--ink-faint)">
+                  from Step 4 — 8 classes · 32 sections</span>
+              </div>
+              <div class="note good" style="margin-bottom:0">
+                <h4>Weekly capacity: 40 periods</h4>
+                <p style="font-size:13px;margin:0">8 periods × 5 days. Every curriculum and mapping
+                  entry from here on is checked against this number, and the Curriculum step will
+                  refuse to propose more than it holds.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button>
+              <span class="faint" style="font-size:12px">Wing 1 of 3 · Middle and Senior next</span>
+              <span style="flex:1"></span>
+              <button class="btn btn-primary">Next wing →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote">Every field here already exists on <code>timetable_config</code> —
+        <code>working_days</code>, <code>periods_per_day</code>, <code>start_time</code>,
+        <code>period_duration_mins</code>, <code>has_zero_period</code> — and breaks are
+        <code>periods</code> rows with <code>is_break</code>. This step is a nicer face on data the app
+        already models.</p>
+    </div>
+
+    <!-- ─────────── M9: teachers ─────────── -->
+    <div class="panel" id="m9" role="tabpanel" aria-labelledby="t9" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 7 of 11</span></div>
+        <div class="scrim">
+          <div class="modal" style="max-width:960px">
+            <div class="modal-head">
+              <h2>Teachers in <span style="color:var(--brand)">Primary Wing</span></h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">Type a name and press
+                <span class="kbd">Tab</span>. Everything in italics is a default the system filled in
+                — overwrite anything that's wrong.</p>
+            </div>
+            <div class="modal-body">
+              <div class="xl scroll">
+                <table>
+                  <thead><tr>
+                    <th>Teacher name</th><th>Init.</th><th>Code</th><th>Gender</th>
+                    <th>Subjects taught</th><th>Max/day</th><th>Max/week</th>
+                    <th>Max consec.</th><th>Substitute?</th><th>Type</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr>
+                      <td><div class="cell">Anil Yadav</div></td><td><div class="cell auto">AY</div></td>
+                      <td><div class="cell auto">T-001</div></td><td><div class="cell">Male</div></td>
+                      <td><div class="cell">Mathematics, Science</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">30</div></td>
+                      <td><div class="cell auto">3</div></td><td><div class="cell auto">Yes</div></td>
+                      <td><div class="cell auto">Permanent</div></td>
+                    </tr>
+                    <tr>
+                      <td><div class="cell">Rekha Sharma</div></td><td><div class="cell auto">RS</div></td>
+                      <td><div class="cell auto">T-002</div></td><td><div class="cell">Female</div></td>
+                      <td><div class="cell">English</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">30</div></td>
+                      <td><div class="cell auto">3</div></td><td><div class="cell auto">Yes</div></td>
+                      <td><div class="cell auto">Permanent</div></td>
+                    </tr>
+                    <tr>
+                      <td><div class="cell">Meera Iyer</div></td><td><div class="cell auto">MI</div></td>
+                      <td><div class="cell auto">T-003</div></td><td><div class="cell">Female</div></td>
+                      <td><div class="cell sel">Hindi</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell">24</div></td>
+                      <td><div class="cell auto">3</div></td><td><div class="cell">No</div></td>
+                      <td><div class="cell auto">Permanent</div></td>
+                    </tr>
+                    <tr class="add"><td colspan="10">+ Type a name to add the next teacher…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="legend">
+                <span><i style="background:var(--accent)"></i>italic = filled in for you, editable</span>
+                <span><i style="background:var(--brand)"></i>selected cell</span>
+                <span>Paste a column straight from Excel</span>
+              </div>
+              <div class="note warn" style="margin-bottom:0">
+                <h4>"AY" is a suggestion, not a rule</h4>
+                <p style="font-size:13px;margin:0">Initials from first + last name collide the moment
+                  a school has an Anil Yadav and an Ajay Yadav. The grid proposes <code>AY</code>,
+                  detects the clash on the second and proposes <code>AY2</code> — visibly, in the cell,
+                  so the admin can choose something better.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button>
+              <span class="faint" style="font-size:12px">3 teachers · Primary Wing</span>
+              <span style="flex:1"></span>
+              <button class="btn btn-primary">Next: Rooms →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>Four of these columns don't exist yet.</strong> Gender, initials,
+        max-consecutive-periods and takes-substitute are the one master-data migration this phase
+        needs. Max-consecutive in particular must be <em>enforced by the solver</em>, not merely
+        stored, or it becomes a field that lies.</p>
+    </div>
+
+    <!-- ─────────── M10: rooms ─────────── -->
+    <div class="panel" id="m10" role="tabpanel" aria-labelledby="t10" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 8 of 11</span></div>
+        <div class="scrim">
+          <div class="modal">
+            <div class="modal-head">
+              <h2>Rooms for <span style="color:var(--brand)">Primary Wing</span></h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">Based on your classes and
+                subjects, here is what this wing appears to need. Untick anything you don't have.</p>
+            </div>
+            <div class="modal-body">
+              <div class="grid g2" style="margin-bottom:14px">
+                <div class="card" style="padding:15px 17px">
+                  <h4>🏫 Home classrooms <span class="pill p-have">32</span></h4>
+                  <p class="muted" style="font-size:12.8px;margin:6px 0 0">One per class-section —
+                    <code>Pre-Nur-A</code> … <code>5-D</code>. Assigned as each section's home room, so
+                    every ordinary lesson has a place without anybody choosing one.</p>
+                </div>
+                <div class="card" style="padding:15px 17px">
+                  <h4>🧪 Laboratories <span class="pill p-new">2</span></h4>
+                  <p class="muted" style="font-size:12.8px;margin:6px 0 0"><code>Science Lab</code>,
+                    <code>Computer Lab</code> — proposed because Science and Computer Science are
+                    marked lab subjects in Step 6, and mapped to exactly those.</p>
+                </div>
+                <div class="card" style="padding:15px 17px">
+                  <h4>🎨 Activity rooms <span class="pill p-new">3</span></h4>
+                  <p class="muted" style="font-size:12.8px;margin:6px 0 0"><code>Art Room</code>,
+                    <code>Music Room</code>, <code>Sports Ground</code> — from the Art, Music and
+                    Physical Education subjects on your list.</p>
+                </div>
+                <div class="card" style="padding:15px 17px">
+                  <h4>📚 Shared <span class="pill p-have">1</span></h4>
+                  <p class="muted" style="font-size:12.8px;margin:6px 0 0"><code>Library</code> —
+                    marked shared, so the contention check knows several wings compete for it.</p>
+                </div>
+              </div>
+              <div class="note good">
+                <h4>38 rooms, one click</h4>
+                <p style="font-size:13px;margin:0">Typing these one at a time is 38 forms. The grid
+                  below opens pre-filled and every row stays editable — the suggestion is a starting
+                  point, never a commitment.</p>
+              </div>
+              <div class="scroll" style="max-height:170px">
+                <table><thead><tr><th>Room</th><th>Type</th><th>Serves</th><th>Capacity</th><th>Shared</th><th style="width:1%"></th></tr></thead>
+                  <tbody>
+                    <tr><td>Pre-Nur-A</td><td>Classroom</td><td class="faint">Home room</td><td class="num">35</td><td>No</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                    <tr><td>Science Lab</td><td>Lab</td><td>Science</td><td class="num">40</td><td>No</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                    <tr><td>Computer Lab</td><td>Lab</td><td>Computer Science</td><td class="num">40</td><td>No</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                    <tr><td>Library</td><td>Other</td><td class="faint">Any subject</td><td class="num">60</td><td>Yes</td><td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                  </tbody></table>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button><span style="flex:1"></span>
+              <button class="btn btn-primary">Create 38 rooms →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>One trap to avoid:</strong> a lab with no subjects listed is
+        <em>general</em> and serves everything (§19) — that is what keeps older schools working. The
+        suggester must therefore attach subjects to the labs it proposes, or it would quietly turn
+        every proposed lab into a general-purpose room.</p>
+    </div>
+
+    <!-- ─────────── M11: curriculum ─────────── -->
+    <div class="panel" id="m11" role="tabpanel" aria-labelledby="t11" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Guided setup</b><span class="right">Step 9 of 11</span></div>
+        <div class="scrim">
+          <div class="modal" style="max-width:960px">
+            <div class="modal-head">
+              <h2>Curriculum — every class, one screen</h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">Proposed from your subject list
+                and the 40-period week. Each cell is periods/week; click one to set max/day, block
+                size and same-period.</p>
+            </div>
+            <div class="modal-body">
+              <div class="xl scroll">
+                <table>
+                  <thead><tr><th>Class</th><th>English</th><th>Hindi</th><th>Maths</th><th>Science</th>
+                    <th>Social Sci.</th><th>Computer</th><th>Art</th><th>PE</th>
+                    <th style="background:var(--steel-pale)">Total</th></tr></thead>
+                  <tbody>
+                    <tr><td><div class="cell">Class 1</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">5</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">4</div></td>
+                      <td><div class="cell auto">4</div></td><td><div class="cell auto">2</div></td>
+                      <td><div class="cell auto">2</div></td><td><div class="cell auto">3</div></td>
+                      <td><div class="cell" style="background:var(--steel-pale);font-weight:600">32/40</div></td></tr>
+                    <tr><td><div class="cell">Class 2</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">5</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">4</div></td>
+                      <td><div class="cell auto">4</div></td><td><div class="cell auto">2</div></td>
+                      <td><div class="cell auto">2</div></td><td><div class="cell auto">3</div></td>
+                      <td><div class="cell" style="background:var(--steel-pale);font-weight:600">32/40</div></td></tr>
+                    <tr><td><div class="cell">Class 5</div></td>
+                      <td><div class="cell auto">6</div></td><td><div class="cell auto">5</div></td>
+                      <td><div class="cell sel">8</div></td><td><div class="cell auto">5</div></td>
+                      <td><div class="cell auto">5</div></td><td><div class="cell auto">3</div></td>
+                      <td><div class="cell auto">2</div></td><td><div class="cell auto">3</div></td>
+                      <td><div class="cell" style="background:var(--amber-bg);color:var(--amber);font-weight:600">37/40</div></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="row" style="margin-top:14px;margin-bottom:0">
+                <div><label class="f">Class 5 · Mathematics</label><input class="i" value="8 periods / week"></div>
+                <div><label class="f">Max per day</label><input class="i" value="2"></div>
+                <div><label class="f">Block size</label><select class="i"><option>Single</option><option selected>Double (2)</option></select></div>
+                <div><label class="f">Same period all week</label><select class="i"><option>No</option><option>Yes</option></select></div>
+              </div>
+              <div class="note" style="margin-bottom:0">
+                <p style="font-size:12.8px;margin:0">The <strong>Total</strong> column is the whole
+                  point of putting this on one screen: 37 of 40 is fine, 41 of 40 is a school that can
+                  never generate — and you see it while you type rather than at Readiness.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">← Back</button><span style="flex:1"></span>
+              <button class="btn btn-primary">Next: Teacher mapping →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote">The proposed numbers come from a per-class-band template
+        (<em>lower primary / upper primary / middle / senior</em>) scaled to the wing's actual weekly
+        capacity — never a fixed table, or an 8-period week would be handed a 40-period curriculum.</p>
+    </div>
+
+    <!-- ─────────── M12: AI ─────────── -->
+    <div class="panel" id="m12" role="tabpanel" aria-labelledby="t12" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Set up with the assistant</b><span class="right">Nalanda Vidyalaya</span></div>
+        <div style="padding:22px 24px;background:var(--paper)">
+          <div class="progress-strip">
+            <span class="faint" style="min-width:96px">Steps 1–8 collected</span>
+            <i class="pc on"></i><i class="pc on"></i><i class="pc on"></i><i class="pc on"></i>
+            <i class="pc now"></i><i class="pc"></i><i class="pc"></i><i class="pc"></i>
+            <span class="faint" style="min-width:76px;text-align:right">5 of 8</span>
+          </div>
+          <div class="chat">
+            <div class="bub ai">Right — <b>Primary Wing</b> has Pre-Nursery through Class 5, four
+              sections each. That's <b>32 class-sections</b>.<br><br>Now the week. How many periods
+              does Primary Wing run in a day, and what time does the first one start?</div>
+            <div class="bub me">8 periods, starts at 8am, 40 minutes each. Lunch after the 5th.</div>
+            <div class="bub ai">Got it — 8 × 40 minutes from 08:00, Monday to Friday, with a lunch
+              break after P5. I've put <b>15 minutes</b> for a short break after P2 as well, which is
+              usual; say if you don't have one.<br><br>That's a <b>40-period week</b>. Same for Middle
+              and Senior, or do they differ?</div>
+            <div class="bub me">Senior runs 9 periods.</div>
+            <div class="bub ai">Noted. Next: <b>subjects</b>. Shall I start from the standard CBSE
+              primary list — English, Hindi, Mathematics, EVS, Computer Science, Art, Music, Physical
+              Education — and you tell me what to add or drop?</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:18px;max-width:600px">
+            <input class="i" placeholder="Type your answer…">
+            <button class="btn btn-primary">Send</button>
+          </div>
+          <div class="note good" style="max-width:600px">
+            <h4>Nothing has been saved yet</h4>
+            <p style="font-size:13px;margin:0">Everything above is filling in a form you'll see in
+              full before anything is written. <a href="#">Review what's collected so far →</a> ·
+              <a href="#">switch to the step-by-step wizard</a> and keep all of it.</p>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>The assistant is an interviewer, not a second writer.</strong> It
+        fills the same wizard state Option 2 fills, and pressing Create runs the identical commit
+        through the identical validated endpoints. That is what lets Option 3 cover academic years,
+        timetable configs and rooms — which the assistant may <em>not</em> draft on its own — without
+        widening its authority by one row. At Step 9 it hands over to Setup Wizard → Curriculum, as
+        specified.</p>
+    </div>
+
+    <!-- ─────────── M13: USERS & ACCESS ─────────── -->
+    <div class="panel" id="m13" role="tabpanel" aria-labelledby="t13" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Users &amp; Access</b><span class="right">Nalanda Vidyalaya · self-serve</span></div>
+        <div style="padding:22px 24px;background:var(--paper)">
+          <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px">
+            <h2 style="font-size:21px">Who can sign in</h2>
+            <span class="faint" style="font-size:12.5px">4 active · 2 invited · 1 never signed in</span>
+            <span style="flex:1"></span>
+            <button class="btn btn-sm">+ Add user</button>
+            <button class="btn btn-sm btn-primary">⚡ Generate teacher logins</button>
+          </div>
+          <p class="muted" style="font-size:13.5px;margin-bottom:16px">A user is a login. What they can
+            see is decided by their <strong>role</strong> — edit those on
+            <a href="#">Roles &amp; Responsibility</a>.</p>
+
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Linked teacher</th>
+                <th>Status</th><th>Last sign-in</th><th style="width:1%"></th></tr></thead>
+              <tbody>
+                <tr><td>Debashis Sengupta</td><td class="mono" style="font-size:12px">admin@nalanda.edu.in</td>
+                  <td>Super Admin</td><td class="faint">—</td>
+                  <td><span class="pill p-have">You</span></td><td class="faint">now</td>
+                  <td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                <tr><td>Sunita Rao</td><td class="mono" style="font-size:12px">principal@nalanda.edu.in</td>
+                  <td>Principal</td><td class="faint">—</td>
+                  <td><span class="pill p-new">Active</span></td><td class="faint">2 days ago</td>
+                  <td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                <tr><td>Anil Yadav</td><td class="mono" style="font-size:12px">anil.yadav@nalanda.edu.in</td>
+                  <td>Teacher <span class="faint">(view only)</span></td><td>Anil Yadav <span class="faint">(T-001)</span></td>
+                  <td><span class="pill p-new">Active</span></td><td class="faint">yesterday</td>
+                  <td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+                <tr><td>Rekha Sharma</td><td class="mono" style="font-size:12px">rekha.sharma@nalanda.edu.in</td>
+                  <td>Teacher <span class="faint">(view only)</span></td><td>Rekha Sharma <span class="faint">(T-002)</span></td>
+                  <td><span class="pill p-mig">Invited</span></td><td class="faint">never</td>
+                  <td><button class="btn btn-sm btn-ghost">Resend</button></td></tr>
+                <tr><td>Meera Iyer</td><td class="mono" style="font-size:12px">meera.iyer@nalanda.edu.in</td>
+                  <td>Teacher <span class="faint">(view only)</span></td><td>Meera Iyer <span class="faint">(T-003)</span></td>
+                  <td><span class="pill p-mig">Invited</span></td><td class="faint">never</td>
+                  <td><button class="btn btn-sm btn-ghost">Resend</button></td></tr>
+                <tr><td>Front Desk</td><td class="mono" style="font-size:12px">office@nalanda.edu.in</td>
+                  <td>Front Office</td><td class="faint">—</td>
+                  <td><span class="pill p-new">Active</span></td><td class="faint">3 hours ago</td>
+                  <td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="grid g2" style="margin-top:18px">
+            <div class="note" style="margin:0">
+              <h4>A teacher's role holds four permissions, and none of them writes</h4>
+              <p style="font-size:12.8px;margin:0"><code>timetable.view.own</code>,
+                <code>timetable.view.class</code>, <code>reports.view</code>,
+                <code>notifications.view</code>. No generate, no board, no publish, no master data.
+                And the views are <strong>row-level filters applied on the server</strong> — a short
+                menu is not the protection, the query is.</p>
+            </div>
+            <div class="note warn" style="margin:0">
+              <h4>Deactivate, don't delete</h4>
+              <p style="font-size:12.8px;margin:0">A user who has recorded a substitution or published
+                a timetable is named in the audit log. Deactivating ends the login and keeps the
+                history readable; deleting would leave the record pointing at nobody.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>The ERP customer's version of this screen has no buttons.</strong>
+        Same table, same columns, a banner reading <em>"Users come from your ERP — staff appear here
+        the first time they open Timetable"</em>, and no Add, no invite, no role dropdown: their roles
+        arrive through <code>erp_role_mappings</code>. Driven by <code>schools.origin</code>, like Step 1
+        and My Schools.</p>
+    </div>
+
+    <!-- ─────────── M14: GENERATE TEACHER LOGINS ─────────── -->
+    <div class="panel" id="m14" role="tabpanel" aria-labelledby="t14" hidden>
+      <div class="app">
+        <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <b>Users &amp; Access</b><span class="right">Nalanda Vidyalaya</span></div>
+        <div class="scrim">
+          <div class="modal" style="max-width:880px">
+            <div class="modal-head">
+              <h2>Generate teacher logins</h2>
+              <p class="muted" style="font-size:13.5px;margin:8px 0 0">You already entered these
+                teachers in the wizard. Pick who should be able to sign in — each gets an email with a
+                link to set their own password.</p>
+            </div>
+            <div class="modal-body">
+              <div class="row" style="align-items:end">
+                <div><label class="f">Wing</label>
+                  <select class="i"><option>All wings</option><option>Primary Wing</option><option>Middle Wing</option></select></div>
+                <div><label class="f">Give them the role</label>
+                  <select class="i"><option>Teacher (view only)</option><option>Principal</option></select>
+                  <div class="hint">Changeable per person afterwards</div></div>
+                <div><label class="f">Email pattern for blanks</label>
+                  <input class="i mono" value="{first}.{last}@nalanda.edu.in">
+                  <div class="hint">Only fills teachers with no email</div></div>
+              </div>
+
+              <div class="scroll" style="max-height:230px">
+                <table>
+                  <thead><tr><th style="width:1%"><input type="checkbox" checked></th>
+                    <th>Teacher</th><th>Code</th><th>Email</th><th>Wing</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td><input type="checkbox" checked></td><td>Anil Yadav</td>
+                      <td class="mono" style="font-size:12px">T-001</td>
+                      <td class="mono" style="font-size:12px">anil.yadav@nalanda.edu.in</td>
+                      <td class="faint">Primary</td><td><span class="pill p-have">Already has a login</span></td></tr>
+                    <tr><td><input type="checkbox" checked></td><td>Rekha Sharma</td>
+                      <td class="mono" style="font-size:12px">T-002</td>
+                      <td class="mono" style="font-size:12px">rekha.sharma@nalanda.edu.in</td>
+                      <td class="faint">Primary</td><td><span class="pill p-new">Will be invited</span></td></tr>
+                    <tr><td><input type="checkbox" checked></td><td>Meera Iyer</td>
+                      <td class="mono" style="font-size:12px">T-003</td>
+                      <td class="mono" style="font-size:12px">meera.iyer@nalanda.edu.in</td>
+                      <td class="faint">Primary</td><td><span class="pill p-new">Will be invited</span></td></tr>
+                    <tr><td><input type="checkbox"></td><td>Kabir Nair</td>
+                      <td class="mono" style="font-size:12px">T-004</td>
+                      <td class="faint" style="font-style:italic">no email on record</td>
+                      <td class="faint">Middle</td><td><span class="pill p-risk">Needs an email</span></td></tr>
+                    <tr><td><input type="checkbox"></td><td>Guest — R. Banerjee</td>
+                      <td class="mono" style="font-size:12px">T-118</td>
+                      <td class="faint" style="font-style:italic">—</td>
+                      <td class="faint">Senior</td><td><span class="pill p-have">Guest — excluded</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="note warn">
+                <h4>1 teacher has no email address</h4>
+                <p style="font-size:13px;margin:0">Kabir Nair can't be invited without one. Add it on
+                  the Teachers screen, or apply the pattern above — <strong>but check it first</strong>:
+                  a generated address that doesn't exist produces an invite nobody receives and a user
+                  stuck on "Invited" forever.</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn">Cancel</button>
+              <span class="faint" style="font-size:12px">2 invitations will be sent · 1 already has a
+                login and will be skipped</span>
+              <span style="flex:1"></span>
+              <button class="btn btn-primary">Send 2 invitations</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="footnote"><strong>Three refusals worth noticing.</strong> A teacher who already has a
+        login is <em>skipped and said so</em>, not invited twice. A <code>guest</code> teacher is
+        excluded — §18 keeps them out of the regular timetable, so there is nothing for them to sign in
+        and look at. And a teacher with no email is shown as blocked rather than silently dropped from
+        the count, which is the difference between "2 of 5 invited" being a report and being a bug.</p>
+    </div>
+
+    <!-- ─────────── M15: TEACHER FIRST SIGN-IN ─────────── -->
+    <div class="panel" id="m15" role="tabpanel" aria-labelledby="t15" hidden>
+      <div class="grid g2">
+        <div>
+          <div class="site" style="min-width:0">
+            <div class="sitenav"><div class="logo">Edu<span>Timetable</span></div></div>
+            <div class="authwrap" style="padding:26px 18px">
+              <div class="authcard">
+                <h3>Set your password</h3>
+                <p class="muted" style="font-size:13px">Nalanda Vidyalaya has invited you to view your
+                  timetable.</p>
+                <div class="row" style="grid-template-columns:1fr;margin-top:16px">
+                  <div><label class="f">You are</label>
+                    <input class="i" value="Rekha Sharma · rekha.sharma@nalanda.edu.in" readonly></div>
+                </div>
+                <div class="row" style="grid-template-columns:1fr">
+                  <div><label class="f">Choose a password</label><input class="i" type="password" value="············">
+                    <div class="hint">At least 12 characters.</div></div>
+                </div>
+                <div class="row" style="grid-template-columns:1fr;margin-bottom:10px">
+                  <div><label class="f">Confirm</label><input class="i" type="password" value="············"></div>
+                </div>
+                <button class="btn btn-primary" style="width:100%;padding:11px">Set password &amp; sign in</button>
+                <p class="hint" style="text-align:center;margin-top:10px">This link works once and
+                  expires in 7 days.</p>
+              </div>
+            </div>
+          </div>
+          <p class="footnote">The invitation carries who they are; they only choose a password. Their
+            name and school are shown, never editable — a teacher renaming themselves at the door
+            would break the link to their timetable.</p>
+        </div>
+
+        <div>
+          <div class="app" style="min-width:0">
+            <div class="appbar"><i class="dot"></i><i class="dot"></i><i class="dot"></i>
+              <b>My Timetable</b><span class="right">Rekha Sharma · Teacher</span></div>
+            <div style="padding:18px 20px;background:var(--paper)">
+              <h3 style="margin-bottom:3px">Good morning, Rekha</h3>
+              <p class="muted" style="font-size:12.8px">Primary Wing · 2026-27 · published 2 days ago</p>
+              <div class="scroll" style="margin-top:14px">
+                <table style="font-size:12px">
+                  <thead><tr><th></th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th></tr></thead>
+                  <tbody>
+                    <tr><td class="mono">P1</td><td>5-A Eng</td><td>5-B Eng</td><td>5-A Eng</td><td class="faint">—</td><td>5-C Eng</td></tr>
+                    <tr><td class="mono">P2</td><td>5-B Eng</td><td class="faint">—</td><td>5-C Eng</td><td>5-A Eng</td><td>5-B Eng</td></tr>
+                    <tr><td class="mono">P3</td><td style="background:var(--accent-bg);color:var(--accent)">4-A Eng ⟳</td><td>5-C Eng</td><td class="faint">—</td><td>5-B Eng</td><td class="faint">—</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="chips" style="margin-top:14px">
+                <span class="chip" style="background:var(--accent-bg);color:var(--accent);border-color:var(--accent)">⟳ covering for Anil Yadav today</span>
+              </div>
+              <div class="note" style="margin-bottom:0">
+                <p style="font-size:12.5px;margin:0">Rekha sees <strong>her own grid</strong> and her
+                  linked class-sections, and nothing else — not because the menu is short, but because
+                  the scope filter is applied on the server to every query she can make.</p>
+              </div>
+            </div>
+          </div>
+          <p class="footnote">Rekha gets My Timetable, My Classes, reports and notifications — and
+            <strong>no button that writes anything</strong>. There is no Generate, no Draft Board, no
+            Publish, no Masters and no Substitute Center in her sidebar, and none of those endpoints
+            would accept her session if she found one.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 4. BUILD PLAN ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">04</span><h2>Build plan</h2></div>
+  <p class="lede">Six sub-phases. <strong>25.0 is new and is now the critical path</strong> — nothing
+    self-serve works without it, and it is the only part carrying genuine security risk.</p>
+
+  <div class="scroll" style="margin-bottom:20px">
+    <table>
+      <thead><tr><th style="width:70px">Task</th><th>Deliverable</th><th style="width:96px">Depends on</th></tr></thead>
+      <tbody>
+        <tr class="grouprow"><td colspan="3">25.0 — Public site, accounts and sign-in <span style="text-transform:none;letter-spacing:0">(new)</span></td></tr>
+        <tr><td>25.0a</td><td><code>accounts</code> in the <strong>control plane</strong>: email, Argon2id hash,
+          verified-at, status. Never in a tenant database — one person, one password, many schools.</td><td>—</td></tr>
+        <tr><td>25.0b</td><td><code>POST /auth/register</code> · <code>/verify</code> · <code>/login</code> ·
+          <code>/forgot</code> · <code>/reset</code>. Issues the <em>same</em> session JWT the SSO callback
+          issues, so every downstream guard, scope and audit path is untouched.</td><td>25.0a</td></tr>
+        <tr><td>25.0c</td><td>Email delivery for verification and reset — single-use, expiring, invalidated
+          on use and on password change.</td><td>25.0b</td></tr>
+        <tr><td>25.0d</td><td>Rate limiting per address and per source IP; identical response and timing for
+          unknown-email and wrong-password.</td><td>25.0b</td></tr>
+        <tr><td>25.0e</td><td>Public routes outside the authenticated shell: <code>/</code> home,
+          <code>/signup</code>, <code>/login</code>, <code>/verify</code>, <code>/reset</code>. Scaffold now,
+          full marketing design later.</td><td>—</td></tr>
+        <tr><td>25.0f</td><td><span class="pill p-risk">invariant</span> Rewrite invariant 16 in
+          <code>CLAUDE.md</code>: two entry paths, one session token, credentials only in the control
+          plane. Leaving it saying "there is no local login" would make the document lie.</td><td>25.0b</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.1 — Schools an account owns</td></tr>
+        <tr><td>25.1a</td><td><code>schools.origin</code> (<code>erp</code> / <code>self_serve</code>) and
+          <code>created_by_account_id</code>; <code>tenants.erp_instance_id</code> becomes nullable.</td><td>25.0a</td></tr>
+        <tr><td>25.1b</td><td><code>POST /schools</code> — creates the <code>schools</code> row, the shared-mode
+          <code>tenants</code> entry, the permission registry, a Super Admin role and the creator's
+          <code>users</code> row, in one transaction. <strong>Never a database.</strong> Verified email
+          required; per-account cap.</td><td>25.1a</td></tr>
+        <tr><td>25.1c</td><td><em>My Schools</em> — cards with per-school readiness and resume point;
+          creator tile for self-serve, switcher only for ERP.</td><td>25.1b</td></tr>
+        <tr><td>25.1d</td><td>School Profile and Step 1 read <code>origin</code>: read-only with a padlock
+          for ERP, editable for self-serve.</td><td>25.1a</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.2 — Welcome screen &amp; wizard shell</td></tr>
+        <tr><td>25.2a</td><td><code>GET /me/onboarding</code> — <code>{ isNew, hasConfig, hasClasses, hasPublished,
+          dismissedAt }</code> from counts, cached per school.</td><td>—</td></tr>
+        <tr><td>25.2b</td><td><code>WelcomeModal.tsx</code> — three doors, auto-opening only when
+          <code>isNew</code>, plus a permanent entry point.</td><td>25.2a</td></tr>
+        <tr><td>25.2c</td><td><code>onboarding_sessions</code> — server-side draft of every answer, keyed by
+          school + user, resumable. An 11-step wizard <em>will</em> be abandoned halfway; losing 20
+          minutes to a refresh is the failure that would sink the feature.</td><td>—</td></tr>
+        <tr><td>25.2d</td><td><code>OnboardingWizard.tsx</code> — modal shell, step rail, Back / Save&nbsp;&amp;&nbsp;close /
+          Next, per-step validation. Steps 1–2, both Step 1 variants.</td><td>25.2c · 25.1d</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.3 — Structure: wings, classes, week</td></tr>
+        <tr><td>25.3a</td><td>Step 3 Wings → one <code>timetable_config</code> each. No new table.</td><td>25.2d</td></tr>
+        <tr><td>25.3b</td><td>Step 4 class ladder — two-handle range over a fixed ordered vocabulary, section
+          count → auto-lettering, live grid, per-row edit/delete. Sets <code>classes.sequence</code>.</td><td>25.3a</td></tr>
+        <tr><td>25.3c</td><td>Step 5 per-wing week: days, periods, start, duration, zero period, breaks →
+          <code>timetable_config</code> + <code>periods</code>, showing the resulting weekly capacity.</td><td>25.3b</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.4 — People, places, syllabus</td></tr>
+        <tr><td>25.4a</td><td><span class="pill p-mig">migration</span> Teacher gains <code>gender</code>,
+          <code>initials</code>, <code>max_consecutive_periods_per_day</code>, <code>can_substitute</code>.</td><td>—</td></tr>
+        <tr><td>25.4b</td><td><strong>Solver enforcement</strong> of max-consecutive as domain pruning, and
+          <code>can_substitute = false</code> removing a teacher from substitute candidacy. Without this
+          the two columns are decoration.</td><td>25.4a</td></tr>
+        <tr><td>25.4c</td><td>Steps 6–7 grids: keyboard-first, paste-from-Excel, auto-initials with visible
+          collision handling, defaults shown as editable italics.</td><td>25.4a</td></tr>
+        <tr><td>25.4d</td><td>Step 8 room suggester — home room per section, one lab per lab subject
+          <em>with its subject mapping attached</em>, activity rooms, shared Library. Bulk create, then
+          an editable grid.</td><td>25.3b</td></tr>
+        <tr><td>25.4e</td><td>Step 9 curriculum matrix — class × subject on one screen, proposed from a
+          per-band template scaled to real capacity, live per-class total.</td><td>25.3c</td></tr>
+        <tr><td>25.4f</td><td>Step 10 mapping — class teacher per section and subject mapping, pre-filled from
+          teacher subjects, filtered by wing unless inter-wing is on.</td><td>25.4c</td></tr>
+        <tr><td>25.4g</td><td>Step 11 settings — <code>class_teacher_gets_first_period</code>,
+          <code>allow_consecutive_periods</code>, inter-wing teaching, min periods/day → Readiness.</td><td>25.3c</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.5 — The assistant as interviewer</td></tr>
+        <tr><td>25.5a</td><td><code>OnboardingChat.tsx</code> — full-screen conversation writing into the
+          <em>same</em> <code>onboarding_sessions</code> row, with a live "collected so far" panel and a
+          switch-to-wizard button that keeps everything.</td><td>25.2c</td></tr>
+        <tr><td>25.5b</td><td>A <strong>structured-output</strong> interview tool — the model returns the next
+          question plus the fields it just learned. It calls no write tool and gains no new authority.</td><td>25.5a</td></tr>
+        <tr><td>25.5c</td><td>At step 9 it hands over to Setup Wizard → Curriculum, with everything saved.</td><td>25.4e</td></tr>
+
+        <tr class="grouprow"><td colspan="3">25.6 — Users and teacher logins <span style="text-transform:none;letter-spacing:0">(new)</span></td></tr>
+        <tr><td>25.6a</td><td><code>accounts.kind</code> (<code>owner</code> / <code>member</code>) —
+          an invited teacher may sign in but may never create a school. <code>POST /schools</code>
+          refuses a member <strong>in the server</strong>, not by hiding the tile (decision ③).</td><td>25.0a</td></tr>
+        <tr><td>25.6b</td><td><code>users.account_id</code> nullable, and <code>erp_user_id</code> written as
+          <code>local:{account_id}</code> for locally-created users, so the existing unique key, session
+          token and every scope filter keep working untouched (decision ④).</td><td>25.1a</td></tr>
+        <tr><td>25.6c</td><td><span class="pill p-mig">migration</span> <code>teachers.email</code> — there
+          is nowhere today to record the address an invitation would be sent to.</td><td>—</td></tr>
+        <tr><td>25.6d</td><td><code>POST /users/invite</code> · <code>/users/:id/resend</code> ·
+          <code>/users/:id/deactivate</code>, plus <code>PUT /users/:id</code> for role and teacher link.
+          Guarded by <code>roles.manage</code> — the authority to decide who signs in is the one the
+          Roles screen already requires. <strong>Refused outright when
+          <code>schools.origin = 'erp'</code>.</strong></td><td>25.6a · 25.6b</td></tr>
+        <tr><td>25.6e</td><td><em>Users &amp; Access</em> screen — list, add, edit role, link to a teacher,
+          resend, deactivate. Read-only with a banner for ERP schools.</td><td>25.6d</td></tr>
+        <tr><td>25.6f</td><td><strong>Bulk teacher invite</strong> from the teacher master: filter by wing,
+          role defaults to the view-only <code>Teacher</code>, optional email pattern for blanks.
+          Skips those who already have a login,
+          <em>excludes <code>guest</code> teachers</em> (§18 keeps them out of the timetable, so there
+          is nothing for them to see), and reports the ones with no email rather than dropping them
+          from the count.</td><td>25.6e · 25.4c</td></tr>
+        <tr><td>25.6g</td><td>Invitation acceptance: <code>/invite/:token</code> — identity fixed, password
+          chosen, single-use, 7-day expiry, reusing the 25.0c token machinery rather than a second
+          one.</td><td>25.0c</td></tr>
+        <tr><td>25.6h</td><td>A prompt to invite teachers on the post-publish screen — the moment there is
+          finally something for them to look at.</td><td>25.6f</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note stop">
+    <h4>The constraint that governs all of it: no second write path</h4>
+    <p>Every step commits through endpoints that already exist — <code>POST /classes</code>,
+      <code>POST /classes/:id/sections</code>, <code>POST /rooms</code>,
+      <code>POST /timetable-configs</code> — or through the §16 <code>validateWorkbook</code> pipeline the
+      Excel importer, the ERP sync and the AI assistant all share. A wizard with its own committer
+      would be the <em>fourth</em> way rows enter this database, and it would drift from the other
+      three exactly as documented for each of them. <strong>The wizard is a face, never a back door.</strong></p>
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 5. SCHEMA ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">05</span><h2>Schema changes</h2></div>
+  <p class="lede">Two databases are touched now — the control plane gains credentials, the app
+    gains provenance. Most of the wizard's own data is already modelled.</p>
+
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Where</th><th>Change</th><th>Why</th><th style="width:1%"></th></tr></thead>
+      <tbody>
+        <tr class="grouprow"><td colspan="4">Control plane — <code>prisma/control/schema.prisma</code></td></tr>
+        <tr><td><code>accounts</code></td><td>New: email (unique), <code>password_hash</code>,
+          <code>email_verified_at</code>, name, phone, organisation, country, role, status, timestamps</td>
+          <td>One credential per person, not per school. Outside every tenant database, beside
+            <code>platform_users</code> — the existing precedent for identity that outranks a school.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>accounts</code></td><td><code>kind</code> ENUM(owner, member)</td>
+          <td>An invited teacher may sign in but may never create a school (decision ③). One field,
+            and <em>My Schools</em> loses its "Add a school" tile.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>account_tokens</code></td><td>New: account, purpose (verify / reset / <strong>invite</strong>),
+          hash, expires-at, used-at</td><td>Single-use, expiring. Store the hash, never the token — and
+          one table for all three purposes rather than a second one for invitations.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>tenants</code></td><td><code>erp_instance_id</code> → nullable</td>
+          <td>A self-serve school has no ERP instance to point at.</td>
+          <td><span class="pill p-mig">alter</span></td></tr>
+
+        <tr class="grouprow"><td colspan="4">Application — <code>prisma/schema.prisma</code></td></tr>
+        <tr><td><code>schools</code></td><td><code>origin</code> ENUM(erp, self_serve) default <code>erp</code></td>
+          <td>Decides read-only vs editable identity everywhere, in one place (decision ⑤).</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>schools</code></td><td><code>created_by_account_id</code> INT NULL</td>
+          <td>Which self-serve account owns it. Null for ERP schools.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>teachers</code></td><td><code>gender</code>, <code>initials</code>,
+          <code>max_consecutive_periods_per_day</code>, <code>can_substitute</code></td>
+          <td>Step 7's four new columns. The last two must be <em>enforced</em>, not merely stored.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>onboarding_sessions</code></td><td>New: school, user, current step, answers JSON,
+          mode (<code>wizard</code>/<code>ai</code>), completed-at</td>
+          <td>Resume after a refresh, and the shared state both Option 2 and Option 3 write into.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>users</code></td><td><code>account_id</code> INT NULL</td>
+          <td>Which control-plane account signs in as this user. Null for ERP users, who have no
+            account. <code>erp_user_id</code> holds <code>local:{account_id}</code> for locally-created
+            users so the unique key is untouched (decision ④).</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>users</code></td><td><code>onboarding_dismissed_at</code> DATETIME NULL</td>
+          <td>Per user — one admin's "later" must not hide it from a colleague.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>teachers</code></td><td><code>email</code> VARCHAR(120) NULL</td>
+          <td>There is nowhere today to record the address an invitation would be sent to. Nullable —
+            a teacher who never signs in doesn't need one.</td>
+          <td><span class="pill p-mig">new</span></td></tr>
+        <tr><td><code>timetable_config</code></td><td class="faint">nothing</td>
+          <td>Already has working days, periods/day, start time, duration, zero period,
+            class-teacher-first-period, allow-consecutive. Breaks are <code>periods.is_break</code>.</td>
+          <td><span class="pill p-have">have</span></td></tr>
+        <tr><td><code>classes</code> · <code>sections</code> · <code>rooms</code></td><td class="faint">nothing</td>
+          <td><code>sequence</code> orders the ladder; room type, shared flag, home-room pointer and
+            lab→subject mapping all exist (§19).</td>
+          <td><span class="pill p-have">have</span></td></tr>
+        <tr><td><code>teacher_class_eligibility</code></td><td class="faint">nothing</td>
+          <td>"Inter-wing teaching off" is eligibility limited to that wing's classes — an existing,
+            already-enforced mechanism rather than a new flag.</td>
+          <td><span class="pill p-have">have</span></td></tr>
+        <tr><td><code>roles</code> · <code>role_permissions</code></td><td class="faint">nothing</td>
+          <td>The §15.2 registry already carries <code>Teacher</code> — four permissions, none of
+            which writes. <strong>No permission is added and none is needed.</strong> If you ever want
+            some teachers to record cover, <code>substitute.manage</code> already exists and the Roles
+            screen already ticks it onto a role.</td>
+          <td><span class="pill p-have">have</span></td></tr>
+        <tr><td><code>users.teacher_id</code></td><td class="faint">nothing</td>
+          <td>The link that turns a login into "my timetable" already exists and is already what the
+            row-level scope filter reads.</td>
+          <td><span class="pill p-have">have</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="footnote">Two schemas means two histories: <code>pnpm migrate:control</code> for the
+    accounts work, and <code>pnpm --filter @edutimetable/api migrate:all</code> for the app — which must
+    reach <em>every</em> school's database, or a school one build behind is refused on connect rather
+    than served a screen that half-works.</p>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 6. SECURITY ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">06</span><h2>What local login costs</h2></div>
+  <p class="lede">SSO let us skip all of this, because the ERP owned the credential. Owning it
+    ourselves means owning these seven things, and none is optional.</p>
+
+  <div class="grid g3">
+    <div class="card"><h4>Argon2id, never bcrypt-by-habit</h4>
+      <p class="muted" style="font-size:13px;margin:0">Memory-hard, tuned to ~100 ms on the API
+        container, parameters stored beside the hash so they can be raised later without a reset.</p></div>
+    <div class="card"><h4>Verify before first sign-in</h4>
+      <p class="muted" style="font-size:13px;margin:0">Unverified accounts cannot create a school.
+        Otherwise a typo'd address creates schools nobody can reach, and a script creates thousands.</p></div>
+    <div class="card"><h4>No account enumeration</h4>
+      <p class="muted" style="font-size:13px;margin:0">Wrong email and wrong password give the same
+        message and take the same time. Registration and password-reset say "check your email"
+        whether or not the address exists.</p></div>
+    <div class="card"><h4>Reset tokens are single-use</h4>
+      <p class="muted" style="font-size:13px;margin:0">Hashed at rest, short expiry, invalidated on
+        use <em>and</em> on any password change — so an old link in an inbox is inert.</p></div>
+    <div class="card"><h4>Throttle both axes</h4>
+      <p class="muted" style="font-size:13px;margin:0">Per address and per source IP. One catches
+        credential stuffing against one victim; the other catches spraying across many.</p></div>
+    <div class="card"><h4>One session token, two issuers</h4>
+      <p class="muted" style="font-size:13px;margin:0">Password login issues exactly the JWT the SSO
+        callback issues. Every downstream guard, row-scope filter and audit path stays as it is —
+        this is what keeps the blast radius inside <code>auth</code>.</p></div>
+    <div class="card"><h4>A school cap with an operator override</h4>
+      <p class="muted" style="font-size:13px;margin:0">Per account, default 10. A verified human
+        rarely needs more; a script always does.</p></div>
+    <div class="card"><h4>Audit both paths identically</h4>
+      <p class="muted" style="font-size:13px;margin:0">Register, verify, login, failed login, reset
+        and school-create all land in the audit log — so "who created this school" has an answer.</p></div>
+    <div class="card"><h4>Isolation gate covers the new routes</h4>
+      <p class="muted" style="font-size:13px;margin:0">Public routes must be <em>explicitly classified</em>
+        as unauthenticated in the §17.8 sweep — a new controller fails the build until somebody
+        decides which, which is exactly the point.</p></div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 7. VERIFICATION ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">07</span><h2>How it gets proved</h2></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3>The end-to-end test that matters</h3>
+      <p class="muted" style="font-size:13.5px"><code>scripts/onboarding-smoke.cjs</code>: register an
+        account, verify it, sign in, create a school, drive all eleven steps through the API, and
+        assert the school reaches <strong>100% Readiness</strong> and generates a conflict-free
+        timetable — from a stranger on the home page to a working timetable, without one row typed by
+        hand. If that path cannot produce a solvable school, it has not worked however good it looks.</p>
+    </div>
+    <div class="card">
+      <h3>Two accounts, two schools, no leakage</h3>
+      <p class="muted" style="font-size:13.5px">Account A creates school 1, account B creates school 2;
+        assert B is refused A's school <em>and</em> gets a different answer for its own. A route that
+        refuses everyone proves nothing and is reported as such (§17.8).</p>
+    </div>
+    <div class="card">
+      <h3>The auth negatives</h3>
+      <p class="muted" style="font-size:13.5px">Unverified account cannot create a school; reset token
+        works once and never again; a stale token after a password change is dead; unknown email and
+        wrong password are indistinguishable in body and in timing; the cap actually caps.</p>
+    </div>
+    <div class="card">
+      <h3>Resume, honestly</h3>
+      <p class="muted" style="font-size:13.5px">Abandon at step 6, sign in again, assert every earlier
+        answer returns and no partial rows were written. A wizard that half-commits is worse than one
+        that loses your work.</p>
+    </div>
+    <div class="card">
+      <h3>SSO is unchanged — prove it</h3>
+      <p class="muted" style="font-size:13.5px">The existing SSO suite must pass untouched, and an
+        ERP school's name must still be overwritten from the token on every login while its Step 1
+        stays read-only.</p>
+    </div>
+    <div class="card">
+      <h3>A teacher login is a teacher login</h3>
+      <p class="muted" style="font-size:13.5px">Invite a teacher, accept, sign in, and assert they get
+        <strong>their own grid and their linked sections only</strong> — the existing scope negatives,
+        run against a locally-created user rather than an SSO one. Then assert the same account is
+        refused school creation, and that the invite token is dead the second time.</p>
+    </div>
+    <div class="card">
+      <h3>The ERP customer's screens are inert</h3>
+      <p class="muted" style="font-size:13.5px">With <code>origin = 'erp'</code>, assert
+        <code>POST /schools</code> and <code>POST /users/invite</code> are <strong>refused by the
+        server</strong>, not merely hidden in the UI — the hiding is cosmetic, as §15 has always said.</p>
+    </div>
+    <div class="card">
+      <h3>The suggestions are checked, not admired</h3>
+      <p class="muted" style="font-size:13.5px">Unit tests on the room suggester and curriculum
+        template: labs carry their subject mappings, and no proposed curriculum ever exceeds the
+        wing's weekly capacity — including the 8-period-week case a fixed table would break.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════ 8. SCOPE ═══════════════════ -->
+<section>
+  <div class="section-head"><span class="n">08</span><h2>Deliberately not in this phase</h2></div>
+  <ul class="tight">
+    <li><strong>The full marketing home page.</strong> Scaffolded here with real structure, palette and
+      type; screenshots, pricing table, testimonials and footer are separate design work, as agreed.</li>
+    <li><strong>Billing and plans.</strong> The school cap is a fixed number an operator can raise —
+      not a subscription. "7 remaining on your plan" in the mockup is a label, not a payment system.</li>
+    <li><strong>Social sign-in (Google / Microsoft).</strong> A third identity source on top of two is
+      more surface than value right now; the <code>accounts</code> table leaves room for it.</li>
+    <li><strong>Self-registration by staff.</strong> A teacher cannot sign up and attach themselves to
+      a school — they are invited, always. Otherwise anyone who guesses a school code is inside it.</li>
+    <li><strong>Changing a user's email.</strong> It is their sign-in. Changing it is an account
+      operation with its own verification round-trip, not a dropdown on an admin's grid.</li>
+    <li><strong>Split electives in the wizard.</strong> A third-language block has its own screen (§4.9);
+      a twelfth step would make the common path pay for the rare one.</li>
+    <li><strong>Editing an existing school through the wizard.</strong> This is a first-run path;
+      pointing it at a published timetable needs a diff-and-merge story that is its own phase.</li>
+    <li><strong>Changing the Setup Wizard.</strong> Option 1 is the current process, untouched — which
+      is what makes it a safe fallback from either of the other two.</li>
+  </ul>
+
+  <div class="note">
+    <h4>Rough size</h4>
+    <p><strong>25.0 is the new critical path</strong> and the only part I would not compress — it is
+      auth, and auth is where compression shows up later as an incident. 25.1 is small and mostly
+      transactional. 25.2–25.4 are the bulk: eleven steps, two grid components, two suggesters, one
+      migration with solver work behind it. 25.5 stays small <em>because</em> of decision ⑧ — the
+      assistant reuses 25.2–25.4 rather than duplicating it. Cutting 25.5 loses a door, not a
+      foundation.</p>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function () {
+  var tabs = [].slice.call(document.querySelectorAll('.tab'));
+  function show(i) {
+    tabs.forEach(function (t, n) {
+      t.setAttribute('aria-selected', n === i ? 'true' : 'false');
+      var p = document.getElementById(t.getAttribute('aria-controls'));
+      if (p) p.hidden = n !== i;
+    });
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { show(i); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        var n = (i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+        tabs[n].focus(); show(n);
+      }
+    });
+  });
+
+  /* Step 4 — the class ladder */
+  var LADDER = ['Pre-Nur','Nur','KG','1','2','3','4','5','6','7','8','9','10','11','12'];
+  var lo = document.getElementById('lo'), hi = document.getElementById('hi');
+  var ticks = document.getElementById('ticks'), fill = document.getElementById('fill');
+  var chips = document.getElementById('chips'), secs = document.getElementById('secs');
+  var summary = document.getElementById('summary'), preview = document.getElementById('preview');
+  var wing = document.getElementById('wingSel'), wingName = document.getElementById('wingName');
+  if (!lo) return;
+
+  function letters(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      out.push(i < 26 ? String.fromCharCode(65 + i)
+        : String.fromCharCode(65 + Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26)));
+    }
+    return out;
+  }
+
+  function render() {
+    var a = Math.min(+lo.value, +hi.value), b = Math.max(+lo.value, +hi.value);
+    var n = Math.max(1, Math.min(12, +secs.value || 1));
+    var span = LADDER.length - 1;
+
+    ticks.innerHTML = LADDER.map(function (c, i) {
+      return '<span class="' + (i >= a && i <= b ? 'on' : '') + '">' + c + '</span>';
+    }).join('');
+    fill.style.left = (a / span * 100) + '%';
+    fill.style.width = ((b - a) / span * 100) + '%';
+
+    var picked = LADDER.slice(a, b + 1), ls = letters(n);
+    chips.innerHTML = picked.map(function (c) { return '<span class="chip">' + c + '</span>'; }).join('');
+    summary.value = picked.length + ' classes × ' + n + ' = ' + (picked.length * n) + ' sections';
+    if (wingName) wingName.textContent = wing.value;
+    preview.innerHTML = picked.map(function (c) {
+      return '<tr><td>' + c + '</td><td class="mono faint">' + ls.join(', ') +
+        '</td><td class="faint">' + wing.value + '</td>' +
+        '<td><button class="btn btn-sm btn-ghost">Edit</button></td></tr>';
+    }).join('');
+  }
+  [lo, hi, secs, wing].forEach(function (el) {
+    el.addEventListener('input', render); el.addEventListener('change', render);
+  });
+  render();
+})();
+</script>

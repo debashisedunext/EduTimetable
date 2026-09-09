@@ -5,7 +5,7 @@ import { ScopeService } from "../auth/scope.service";
 import { PermissionsService } from "../auth/permissions.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
-import { ReportsService } from "./reports.service";
+import { parseWallCards, ReportsService } from "./reports.service";
 
 const dateOf = (q?: string) => (q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : null);
 
@@ -32,12 +32,19 @@ export class ReportsController {
   @Get("options")
   async options(@Req() req: AuthedRequest) {
     const scope = await this.scopeOf(req);
-    if (scope.level === "none") return { sections: [], teachers: [], configs: [] };
+    if (scope.level === "none") return { sections: [], teachers: [], configs: [], rooms: [], subjects: [] };
     const sectionWhere =
       scope.level === "all"
         ? { timetableConfigId: { not: null } }
         : { id: { in: scope.level === "class" ? scope.classSectionIds : [] } };
-    const [sections, teachers, configs] = await Promise.all([
+    /*
+      §10.6 — rooms and subjects are offered only to `view.all`, because those
+      are the only callers their endpoints will serve. Listing them to a teacher
+      would be a picker whose every entry 403s, which is a worse answer than not
+      offering them at all.
+    */
+    const wide = scope.level === "all";
+    const [sections, teachers, configs, rooms, subjects] = await Promise.all([
       this.prisma.classSection.findMany({
         where: sectionWhere,
         include: { class: true, section: true },
@@ -46,13 +53,17 @@ export class ReportsController {
       scope.level === "all"
         ? this.prisma.teacher.findMany({ where: { isActive: true }, orderBy: { name: "asc" } })
         : this.prisma.teacher.findMany({ where: { id: scope.teacherId } }),
-      scope.level === "all" ? this.prisma.timetableConfig.findMany() : Promise.resolve([]),
+      wide ? this.prisma.timetableConfig.findMany() : Promise.resolve([]),
+      wide ? this.prisma.room.findMany({ orderBy: { name: "asc" } }) : Promise.resolve([]),
+      wide ? this.prisma.subject.findMany({ orderBy: { name: "asc" } }) : Promise.resolve([]),
     ]);
     return {
       scope: scope.level,
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       teachers: teachers.map((t) => ({ id: t.id, name: t.name })),
       configs: configs.map((c) => ({ id: c.id, name: c.name })),
+      rooms: rooms.map((r) => ({ id: r.id, name: r.name, type: r.roomType })),
+      subjects: subjects.map((s) => ({ id: s.id, name: s.name })),
     };
   }
 
@@ -64,6 +75,34 @@ export class ReportsController {
   @Get("teacher/:id")
   async teacher(@Req() req: AuthedRequest, @Param("id") id: string, @Query("date") date?: string) {
     return this.reports.teacherTimetable(await this.scopeOf(req), toInt(id, "id"), dateOf(date));
+  }
+
+  /**
+   * §10.6 — a whole wall of cards in one request.
+   *
+   * A GET because it is a question, and the card list rides in the query string
+   * in the compact `type:id,…` form §29.3's `units=` already uses — one idiom
+   * for "a list of heterogeneous ids in a URL", not two.
+   *
+   * Declared BEFORE `/reports/:kind/:id`-shaped routes above it would matter;
+   * it does not collide with any of them, but it is kept beside the cards it
+   * serves so the two are read together.
+   */
+  @Get("wall")
+  async wall(@Req() req: AuthedRequest, @Query("cards") cards?: string, @Query("date") date?: string) {
+    return this.reports.wall(await this.scopeOf(req), parseWallCards(cards), dateOf(date));
+  }
+
+  /** §10.6 — one room's week. `view.all` only; see the service for why. */
+  @Get("room/:id")
+  async room(@Req() req: AuthedRequest, @Param("id") id: string, @Query("date") date?: string) {
+    return this.reports.roomTimetable(await this.scopeOf(req), toInt(id, "id"), dateOf(date));
+  }
+
+  /** §10.6 — one subject's week, as density rather than as lessons. */
+  @Get("subject/:id")
+  async subject(@Req() req: AuthedRequest, @Param("id") id: string, @Query("date") date?: string) {
+    return this.reports.subjectTimetable(await this.scopeOf(req), toInt(id, "id"), dateOf(date));
   }
 
   @Get("rooms/:configId")

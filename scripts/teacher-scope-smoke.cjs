@@ -18,6 +18,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZSCP";
@@ -106,7 +107,8 @@ async function call(method, p, token, body) {
     data: { schoolId: SCHOOL, name: `${P} 26-27`, startDate: new Date("2026-04-01"), endDate: new Date("2027-03-31") },
   });
   const config = await prisma.timetableConfig.create({
-    data: { schoolId: SCHOOL, name: `${P} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
+    data: {
+      resourceGroupId: await groupFor(prisma, year.id), schoolId: SCHOOL, name: `${P} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
   });
   const subject = await prisma.subject.create({ data: { schoolId: SCHOOL, name: `${P} English` } });
   const room = await prisma.room.create({ data: { schoolId: SCHOOL, name: `${P} Room`, roomType: "classroom" } });
@@ -115,7 +117,8 @@ async function call(method, p, token, body) {
     const cls = await prisma.schoolClass.create({ data: { schoolId: SCHOOL, name: `${P} ${name}`, sequence: seq } });
     const sec = await prisma.section.create({ data: { classId: cls.id, name: "A", schoolId: SCHOOL } });
     const cs = await prisma.classSection.create({
-      data: { classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
+      data: {
+        resourceGroupId: await groupFor(prisma, year.id), classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
     });
     await prisma.classSubject.create({
       data: { schoolId: SCHOOL, classId: cls.id, academicYearId: year.id, subjectId: subject.id, periodsPerWeek: 20, maxPeriodsPerDay: 4 },

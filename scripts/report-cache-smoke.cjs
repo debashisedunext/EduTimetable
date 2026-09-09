@@ -18,6 +18,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_URL || "http://localhost:3000";
 const P = "ZZRPT";
@@ -59,6 +60,7 @@ async function build(prisma, schoolId) {
   });
   const config = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       schoolId, academicYearId: year.id, name: `${P} Main`,
       workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4,
       periods: {
@@ -73,7 +75,8 @@ async function build(prisma, schoolId) {
   const section = await prisma.section.create({ data: { schoolId, classId: cls.id, name: "A" } });
   const room = await prisma.room.create({ data: { schoolId, name: `${P} Room 1`, roomType: "classroom" } });
   const cs = await prisma.classSection.create({
-    data: { schoolId, classId: cls.id, sectionId: section.id, academicYearId: year.id, timetableConfigId: config.id, homeRoomId: room.id },
+    data: {
+      resourceGroupId: await groupFor(prisma, year.id), schoolId, classId: cls.id, sectionId: section.id, academicYearId: year.id, timetableConfigId: config.id, homeRoomId: room.id },
   });
 
   const built = [];
@@ -123,7 +126,10 @@ async function publishedGrid(prisma, schoolId, classSectionId) {
   );
   const out = {};
   for (const r of rows) {
-    out[`${r.dayOfWeek}:${r.periodNumber}`] =
+    // §10.6 — the grid key names the wing, not just the period. A period NUMBER
+    // stopped being an identity when a card could span two wings (§3.10), and
+    // this helper mirrors the server's `cellKey(day, rowKey(config, period))`.
+    out[`${r.dayOfWeek}:c${r.timetableConfigId}p${r.periodNumber}`] =
       `${subjects.get(r.subjectId) ?? ""}|${teachers.get(r.teacherId) ?? ""}`;
   }
   return out;

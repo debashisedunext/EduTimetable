@@ -1,5 +1,5 @@
 /**
- * §4.7a — Teacher Availability.
+ * §4.7a/§4.7b — Availability: time off for a teacher, a class, a subject or a room.
  *
  * The rule itself was never missing. `teacher_unavailability` has existed since
  * Phase 1, the solver prunes it out of a teacher's domain **before search**
@@ -27,6 +27,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { asMessage, Card, ErrorNote } from "../components";
+import { useSearchParams } from "react-router-dom";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
 
@@ -38,22 +39,70 @@ interface UnavailRow {
   periodNumber: number | null;
   reason: string | null;
 }
-interface Teacher {
+/**
+ * One pickable master, whichever kind is open. The server names them the way
+ * the screen shows them (§4.7b), so this file never has to know that a teacher
+ * has an employee code and a room has a type.
+ */
+interface Entity {
   id: number;
   name: string;
-  employeeCode: string;
-  isActive: boolean;
-  employmentType?: string;
-  unavailability?: UnavailRow[];
+  short: string;
+  blocked: UnavailRow[];
 }
+
+/**
+ * The four kinds, and the words that change with them.
+ *
+ * The GRID is identical for all four — a week with some cells turned off — so
+ * what varies is only what to call the thing and what a blocked cell means for
+ * it. Kept as data rather than four screens, because four screens is four
+ * places for the "a whole blocked day is one row" rule to drift.
+ */
+const KINDS = [
+  {
+    key: "teacher", label: "Teachers", noun: "teacher", search: "Search teacher…",
+    sub: "When a teacher cannot be timetabled. Generate will not place a lesson there, the board refuses a drag into it, and the Substitute Center will not offer them.",
+  },
+  {
+    key: "class", label: "Classes", noun: "class-section", search: "Search class…",
+    sub: "When a class is not in school. This makes its week SMALLER — Readiness counts the remaining slots, so a class with an afternoon off is told at once if its curriculum no longer fits.",
+  },
+  {
+    key: "subject", label: "Subjects", noun: "subject", search: "Search subject…",
+    sub: "When a subject may not be taught, for every class at once — no games in period 1, nothing practical on a half day.",
+  },
+  {
+    key: "room", label: "Rooms", noun: "room", search: "Search room…",
+    sub: "When a room cannot be used. The solver will not send a lesson there, and the room checks count the periods it has left.",
+  },
+] as const;
+
+type KindKey = (typeof KINDS)[number]["key"];
 
 const key = (d: number, p: number) => `${d}-${p}`;
 
 export function Availability() {
   const { current } = useConfigCtx();
-  const { data: teachers, refetch } = useApi<Teacher[]>("/teachers");
+  /*
+    Which kind, and which one of them, live in the URL.
 
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+    So the Masters screen's "Time off" button is a link rather than a second
+    copy of this grid — `?kind=class&id=9` opens exactly the entity somebody
+    was looking at — and so a refresh, a bookmark or a shared link all still
+    mean the same thing.
+  */
+  const [params, setParams] = useSearchParams();
+  const kindQ = params.get("kind") ?? "teacher";
+  const kind: KindKey = (KINDS.find((k) => k.key === kindQ)?.key ?? "teacher");
+  const spec = KINDS.find((k) => k.key === kind)!;
+  const idQ = params.get("id");
+
+  const { data: teachers, refetch } = useApi<Entity[]>(
+    current ? `/availability/${kind}?configId=${current.id}` : null,
+  );
+
+  const [selectedId, setSelectedId] = useState<number | null>(idQ ? Number(idQ) : null);
   const [q, setQ] = useState("");
   const [blocked, setBlocked] = useState<Map<string, string | null>>(new Map());
   const [reason, setReason] = useState("");
@@ -83,7 +132,7 @@ export function Availability() {
   useEffect(() => {
     if (!selected) { setBlocked(new Map()); setDirty(false); return; }
     const m = new Map<string, string | null>();
-    for (const u of selected.unavailability ?? []) {
+    for (const u of selected.blocked ?? []) {
       if (u.periodNumber === null) {
         for (const p of teaching) m.set(key(u.dayOfWeek, p.periodNumber), u.reason);
       } else {
@@ -174,11 +223,11 @@ export function Availability() {
           }
         }
       }
-      await api(`/teachers/${selected.id}/unavailability`, { method: "PUT", body: JSON.stringify({ rows }) });
+      await api(`/availability//`, { method: "PUT", body: JSON.stringify({ rows }) });
       setDirty(false);
       setNote(
         rows.length === 0
-          ? `${selected.name} is now available in every period.`
+          ? ` is now available in every period.`
           : `Saved — ${blocked.size} blocked period${blocked.size === 1 ? "" : "s"} for ${selected.name}.`,
       );
       refetch();
@@ -186,43 +235,68 @@ export function Availability() {
     finally { setSaving(false); }
   };
 
-  /** How many periods each teacher is blocked for, for the list badge. */
-  const blockedCount = (t: Teacher) =>
-    (t.unavailability ?? []).reduce((n, u) => n + (u.periodNumber === null ? Math.max(teaching.length, 1) : 1), 0);
+  /** How many periods each entity is blocked for, for the list badge. */
+  const blockedCount = (t: Entity) =>
+    (t.blocked ?? []).reduce((n, u) => n + (u.periodNumber === null ? Math.max(teaching.length, 1) : 1), 0);
 
   const list = (teachers ?? [])
     .filter((t) => {
       const needle = q.trim().toLowerCase();
-      return !needle || `${t.name} ${t.employeeCode}`.toLowerCase().includes(needle);
+      return !needle || `${t.name} ${t.short}`.toLowerCase().includes(needle);
     })
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
   if (!current) {
     return (
-      <Card title="Teacher Availability">
+      <Card title="Availability">
         <p className="screen-sub">Choose a timetable in the top bar first — the grid is that timetable's own days and periods.</p>
       </Card>
     );
   }
 
   return (
-    <Card
-      title="Teacher Availability"
-      sub="When a teacher cannot be timetabled. A blocked period is a hard rule: Generate will not place a lesson there, the board refuses a drag into it, and the Substitute Center will not offer them."
-    >
+    <Card title="Availability" sub={spec.sub}>
       <ErrorNote message={error} />
       {note && (
         <div style={{ background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)",
           borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 12 }}>{note}</div>
       )}
 
+      {/*
+        §4.7b — the four kinds, as tabs.
+
+        One screen rather than four nav entries: the grid, the quick patterns
+        and the "a whole blocked day is one row" rule are identical, and a
+        school setting up its week wants them in one place. Switching clears the
+        selection, because an id means nothing under a different kind.
+      */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {KINDS.map((k) => (
+          <button key={k.key} className="btn"
+            onClick={() => {
+              if (dirty && !window.confirm("Discard unsaved availability changes?")) return;
+              setSelectedId(null);
+              const next = new URLSearchParams(params);
+              next.set("kind", k.key);
+              next.delete("id");
+              setParams(next, { replace: true });
+            }}
+            style={{
+              padding: "5px 13px", fontSize: 12.5,
+              background: k.key === kind ? "var(--brand)" : "var(--paper)",
+              color: k.key === kind ? "#fff" : "var(--ink)",
+              borderColor: k.key === kind ? "var(--brand)" : "var(--line)",
+            }}>{k.label}</button>
+        ))}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0,1fr)", gap: 18, alignItems: "start" }}>
         {/* ── who ── */}
         <div>
-          <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Search teacher…"
+          <input style={{ ...inputStyle, marginBottom: 8 }} placeholder={spec.search}
             value={q} onChange={(e) => setQ(e.target.value)} />
           <div style={{ border: "1px solid var(--line)", borderRadius: 10, maxHeight: 520, overflowY: "auto" }}>
-            {list.length === 0 && <div style={{ padding: 12, fontSize: 12.5, color: "var(--ink-faint)" }}>No teachers match.</div>}
+            {list.length === 0 && <div style={{ padding: 12, fontSize: 12.5, color: "var(--ink-faint)" }}>Nothing matches.</div>}
             {list.map((t) => {
               const n = blockedCount(t);
               const on = t.id === selectedId;
@@ -239,10 +313,12 @@ export function Availability() {
                   }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "block", fontSize: 13, fontWeight: on ? 700 : 500,
-                      color: t.isActive ? "var(--ink)" : "var(--ink-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {t.name}{!t.isActive && " (inactive)"}
+                      color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {t.name}
                     </span>
-                    <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{t.employeeCode}</span>
+                    {/* Whatever this kind's second line is — an employee code,
+                        a subject code, a room type. The server chose it. */}
+                    <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{t.short}</span>
                   </span>
                   {n > 0 && <span className="chip mono" style={{ fontSize: 10 }}>{n}</span>}
                 </button>
@@ -256,7 +332,7 @@ export function Availability() {
           {!selected ? (
             <div style={{ border: "1px dashed var(--line)", borderRadius: 10, padding: 28, textAlign: "center",
               color: "var(--ink-faint)", fontSize: 13 }}>
-              Pick a teacher to set when they cannot be timetabled.
+              Pick a {spec.noun} to set when it cannot be timetabled.
             </div>
           ) : (
             <>

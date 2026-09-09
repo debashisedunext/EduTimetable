@@ -23,6 +23,7 @@ import {
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { DraftsService } from "../drafts/drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
 import { REDIS } from "../redis/redis.module";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { TenantContextService } from "../tenant/tenant-context.service";
@@ -61,8 +62,26 @@ export class BoardService {
     private readonly keys: CacheKeysService,
     private readonly tenant: TenantContextService,
     private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
+
+  /**
+   * §29.1 — every board edit asks first.
+   *
+   * Guarded in the SERVICE rather than the controller, so the answer holds for
+   * every caller — including anything that reaches these methods without going
+   * through an HTTP route. `context` and the read paths are deliberately not
+   * guarded: looking at a frozen week is exactly what a frozen week is for.
+   *
+   * Board edits touch DRAFT rows, not the published set, which makes it
+   * tempting to leave them alone. That would make the freeze theatre: a draft
+   * edited and then published is the published week changed, by two clicks
+   * instead of one.
+   */
+  private editable(configId: number) {
+    return this.freeze.assertConfigs([configId], "the timetable");
+  }
 
   /**
    * SolverInput for the client-side engine — cached under the slots:* sweep.
@@ -209,6 +228,7 @@ export class BoardService {
   }
 
   async move(configId: number, from: CellRef, expect: CellExpectation, to: { day: number; period: number }) {
+    await this.editable(configId);
     const { engine, rows } = await this.engineFor(configId);
     const sourceRows = this.rowsOfEntry(rows, from);
     if (sourceRows.length === 0) {
@@ -263,6 +283,7 @@ export class BoardService {
    * the same reason the two-card swap does it.
    */
   async swapGroup(configId: number, from: CellRef, expect: CellExpectation, to: { day: number; period: number }) {
+    await this.editable(configId);
     const { engine, rows } = await this.engineFor(configId);
     const sourceRows = this.rowsOfEntry(rows, from);
     if (sourceRows.length === 0) {
@@ -339,6 +360,7 @@ export class BoardService {
     b: CellRef,
     expectB: CellExpectation,
   ) {
+    await this.editable(configId);
     const { engine, rows } = await this.engineFor(configId);
     const rowsA = this.rowsOfEntry(rows, a);
     const rowsB = this.rowsOfEntry(rows, b);
@@ -392,6 +414,7 @@ export class BoardService {
     configId: number,
     body: { classSectionId: number; subjectId: number; teacherId: number; day: number; period: number },
   ) {
+    await this.editable(configId);
     const { engine } = await this.engineFor(configId);
     const verdict = engine.checkPlace(
       {
@@ -437,6 +460,7 @@ export class BoardService {
 
   /** Remove an unlocked card from the draft (back to the unplaced tray). */
   async remove(configId: number, ref: CellRef, expect: CellExpectation) {
+    await this.editable(configId);
     const rows = await this.draftRows(configId);
     const target = this.rowsOfEntry(rows, ref);
     if (target.length === 0) {
@@ -466,6 +490,7 @@ export class BoardService {
 
   /** §7.4 pin/unpin — locked cards are fixed for drags AND solver re-runs. */
   async setLock(configId: number, ref: CellRef, locked: boolean) {
+    await this.editable(configId);
     const rows = await this.draftRows(configId);
     const target = this.rowsOfEntry(rows, ref);
     if (target.length === 0) throw new NotFoundException("No card in that cell");

@@ -254,6 +254,7 @@ export class SubstitutesService {
             ? t.eligibility.map((e) => e.classId)
             : [...new Set(csIds.map((id) => sectionById.get(id)?.classId).filter((x): x is number => x != null))],
         employmentType: t.employmentType,
+        canSubstitute: t.canSubstitute,
         busyPeriods: [...(busyByTeacher.get(t.id) ?? [])],
         unavailablePeriods: unavailByTeacher.get(t.id) ?? [],
         substitutionsToday: subsCountByTeacher.get(t.id) ?? 0,

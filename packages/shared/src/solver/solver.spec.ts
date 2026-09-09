@@ -4,6 +4,12 @@ import { effectiveMinByTeacher, minDayPlan } from "../feasibility/min-day";
 import { cleanSchool, schoolWithElective, teacher } from "../feasibility/fixtures";
 import type { FeasibilitySnapshot } from "../feasibility/types";
 import { solveTimetable } from "./engine";
+import { SolverState } from "./state";
+import { buildVariables } from "./variables";
+
+/** Every teacher a variable occupies — one for a plain lesson, several for an elective. */
+const teachersOfVar = (v: { teacherId?: number; options?: Array<{ teacherId: number }> }): number[] =>
+  v.options?.length ? v.options.map((o) => o.teacherId) : v.teacherId !== undefined ? [v.teacherId] : [];
 import type { Placement, SolverInput, SolverResult } from "./types";
 
 function inputFor(snapshot: FeasibilitySnapshot, over: Partial<SolverInput> = {}): SolverInput {
@@ -133,6 +139,60 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
     const result = solveTimetable(input);
     expect(result.unplaced).toEqual([]);
     assertValid(input, result);
+  });
+
+  it("never gives a teacher a longer back-to-back run than they allow (§15.3)", () => {
+    // The check that makes `max_consecutive_periods_per_day` a rule rather than
+    // a stored preference. Without enforcement this column reads as a promise
+    // the solver quietly breaks.
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.maxConsecutivePeriodsPerDay = 2;
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    // Re-derived from the RESULT, not read back off the solver's own state.
+    const byTeacherDay = new Map<string, number[]>();
+    for (const p of result.placements) {
+      for (let s = 0; s < p.span; s++) {
+        const k = `${p.teacherId}@${p.day}`;
+        byTeacherDay.set(k, [...(byTeacherDay.get(k) ?? []), p.period + s]);
+      }
+    }
+    for (const [k, periods] of byTeacherDay) {
+      const sorted = [...periods].sort((a, b) => a - b);
+      let run = 1;
+      for (let i = 1; i < sorted.length; i++) {
+        run = sorted[i] === sorted[i - 1] + 1 ? run + 1 : 1;
+        expect(run, `${k} ran ${run} periods back to back`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("joining two runs is counted as one run, not as two neighbours (§15.3)", () => {
+    // The subtle half. Checking only the cells either side of a placement calls
+    // P1,P2 _ P4,P5 + P3 legal — it sees one neighbour on each side. It is a
+    // run of five, and that is what a teacher would actually teach.
+    const snap = cleanSchool();
+    for (const t of snap.teachers) t.maxConsecutivePeriodsPerDay = 4;
+    const input = inputFor(snap);
+    const state = new SolverState(input);
+    const vars = buildVariables(input, state.teacherCtx);
+
+    // Four occurrences of one teacher's lessons, placed through the real API.
+    const mine = vars.filter((v) => v.span === 1 && teachersOfVar(v).includes(101));
+    expect(mine.length).toBeGreaterThanOrEqual(5);
+    const at = [1, 2, 4, 5];
+    at.forEach((period, i) => state.place(mine[i], 1, period, null));
+
+    // P3 would join a run of 2 and a run of 2 into a run of 5.
+    const res = state.check(mine[4], 1, 3);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("teacher consecutive limit");
+
+    // ...while a cell that touches nothing is fine.
+    expect(state.check(mine[4], 3, 1).ok).toBe(true);
   });
 
   it("consecutive blocks land contiguously inside one break segment (§4.8)", () => {
@@ -547,6 +607,79 @@ describe("fixed rooms (§19)", () => {
     for (const p of result.placements.filter((x) => x.subjectId === 302)) {
       expect(p.roomId).toBe(902);
     }
+  });
+
+  /**
+   * §19.1 — a subject taught in its own room, which is the ordinary middle case
+   * §19 had no words for: Music happens in the Music Room, for everybody, and
+   * it is not a lab.
+   */
+  it("a subject with its own room is taught THERE, not in the class's home room", () => {
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [905] };
+    snap.roomNames = { ...snap.roomNames, 905: "Music Room" };
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+
+    const own = result.placements.filter((p) => p.subjectId === 302);
+    expect(own.length).toBeGreaterThan(0);
+    expect(own.every((p) => p.roomId === 905), "every lesson of it belongs in its room").toBe(true);
+    // …and nothing else moved: every other lesson still sits at home.
+    for (const p of result.placements.filter((x) => x.subjectId !== 302)) {
+      expect(p.roomId).toBe(snap.homeRoomBySection[p.classSectionIds[0]]);
+    }
+  });
+
+  it("never puts two sections in that room at once — one room, one lesson", () => {
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [905] };
+    const result = solveTimetable(inputFor(snap));
+    const seen = new Set<string>();
+    for (const p of result.placements.filter((x) => x.roomId === 905)) {
+      const cell = `${p.day}:${p.period}`;
+      expect(seen.has(cell), `two lessons in the music room at ${cell}`).toBe(false);
+      seen.add(cell);
+    }
+  });
+
+  /**
+   * The half that keeps the flag safe: ticked with no room named is UNSTATED,
+   * not "anywhere". Treating an empty pool as every room in the school would
+   * scatter the subject through whichever classrooms happened to be free, which
+   * is the opposite of what ticking the box asked for — and a school that has
+   * half-said something must still generate.
+   */
+  it("falls back to the home room when the flag is set but no room is named", () => {
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [] };
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    assertValid(input, result);
+    for (const p of result.placements) {
+      expect(p.roomId).toBe(snap.homeRoomBySection[p.classSectionIds[0]]);
+    }
+  });
+
+  it("prefers the subject's own room over the general lab pool when it is both", () => {
+    // A school that ticks "own room" on a lab subject AND names the room is
+    // being more specific, so the lab fallback must not widen it again.
+    const snap = cleanSchool();
+    snap.labSubjectIds = [302];
+    snap.labRoomsBySubject = { 302: [901, 902] };
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [902] };
+    const input = inputFor(snap, { labRoomIds: [901, 902] });
+    const result = solveTimetable(input);
+    assertValid(input, result);
+    const own = result.placements.filter((p) => p.subjectId === 302);
+    expect(own.length).toBeGreaterThan(0);
+    expect(own.every((p) => p.roomId === 902)).toBe(true);
   });
 });
 

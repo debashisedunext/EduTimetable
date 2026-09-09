@@ -9,6 +9,7 @@ import { REDIS } from "../redis/redis.module";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { DraftsService } from "../drafts/drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
 import { toInt, type AuthedRequest } from "../masters/crud.util";
 
 export const SOLVER_QUEUE = "solver";
@@ -21,6 +22,7 @@ export class SolverController {
     private readonly readiness: ReadinessService,
     private readonly keys: CacheKeysService,
     private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
@@ -30,6 +32,9 @@ export class SolverController {
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
   async generate(@Req() _req: AuthedRequest, @Param("id") id: string, @Body() body?: any) {
     const configId = toInt(id, "id");
+    // §29.1 — asked BEFORE readiness, so a frozen timetable is refused for
+    // being frozen rather than for a blocker somebody would then try to fix.
+    await this.freeze.assertConfigs([configId], "the timetable");
     const readiness = await this.readiness.getReadiness(configId);
     if (!readiness.ready) {
       throw new BadRequestException(
@@ -123,7 +128,22 @@ export class SolverController {
       }),
       this.prisma.timetableConfig.findUnique({
         where: { id: configId },
-        include: { periods: { orderBy: { sortOrder: "asc" } } },
+        include: {
+          periods: {
+            orderBy: { sortOrder: "asc" },
+            // §28.3 — the duty teacher and the room travel with the band, so a
+            // timetable can print "Assembly · 20 min · R.J. · Hall" without a
+            // second round trip per row.
+            include: {
+              activity: {
+                include: {
+                  teacher: { select: { name: true, initials: true } },
+                  room: { select: { name: true } },
+                },
+              },
+            },
+          },
+        },
       }),
     ]);
     if (!config) throw new BadRequestException("Timetable config not found");
@@ -184,6 +204,13 @@ export class SolverController {
         isBreak: p.isBreak, breakName: p.breakName,
         // §18: after the teaching day, rendered as its own band.
         isExtra: p.isExtra,
+        // §28.3/28.4: assembly, dispersal. `breakName` carries the label — the
+        // column is the row's name whether it is a break or an activity — and
+        // these two say who is on duty, which is the whole difference.
+        isActivity: p.isActivity,
+        activityTeacher: p.activity?.teacher?.initials ?? p.activity?.teacher?.name ?? null,
+        activityRoom: p.activity?.room?.name ?? null,
+        activityDays: (p.activity?.days as number[] | undefined) ?? null,
       })),
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),

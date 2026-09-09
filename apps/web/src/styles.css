@@ -25,6 +25,11 @@
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "Inter", -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Courier New", monospace;
+  /* The navy nav. A token rather than a number in two files because the guided
+     setup sizes itself to the pane BESIDE it (.pane-dialog): if the two ever
+     disagreed, the dialog would either overlap the nav or leave a strip of dead
+     page down its left edge. */
+  --sidebar-w: 236px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,16 +39,43 @@ button { font-family: inherit; cursor: pointer; }
 .app { display: flex; min-height: 100vh; }
 
 .sidebar {
-  width: 236px; flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
+  width: var(--sidebar-w); flex-shrink: 0; background: var(--brand-deep); color: var(--steel-light);
   display: flex; flex-direction: column; padding: 22px 14px; position: sticky; top: 0;
   height: 100vh; overflow: hidden;
+  /* `position: sticky` creates a stacking context UNCONDITIONALLY, so
+     `.nav-fly`'s own z-index only competes with the sidebar's other children —
+     the whole rail then paints at `auto` against the page, and the content
+     covered the hover label as it slid out. Raising the rail is the fix; the
+     flyout's z-index inside it was never the problem.
+
+     50 sits above the sticky topbar (5) and below the §24.5d pane overlay
+     (200), which is meant to dim the nav rather than duck under it. */
+  z-index: 50;
 }
 /* the nav list scrolls; brand and user footer stay pinned, so more nav groups
    can never push the footer outside the navy panel */
-.sidebar-nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.sidebar-nav::-webkit-scrollbar { width: 6px; }
-.sidebar-nav::-webkit-scrollbar-thumb { background: #1b3a6b; border-radius: 3px; }
-.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+/* `width: 100%` is not decoration: collapsed, `.sidebar` sets
+   `align-items: center`, which would otherwise size this to its content and
+   leave the chevrons and the rows measuring themselves against each other. */
+.sidebar-scroll { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; }
+/* No scrollbar: at 64px it is a pale bar down the middle of a navy rail beside
+   the icons, and it reads as part of the design rather than as the browser.
+   `nav-scroll.tsx` carries the same information as a chevron at each end —
+   which is a control as well as a sign, and only drawn when there is somewhere
+   to go. The wheel, trackpad and keyboard are untouched. */
+.sidebar-nav {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.sidebar-nav::-webkit-scrollbar { width: 0; height: 0; }
+.nav-arrow {
+  flex-shrink: 0; display: grid; place-items: center; height: 17px; width: 100%;
+  border: none; border-radius: 6px; background: transparent; color: #6b84a8;
+}
+.nav-arrow:hover { color: #fff; background: #12305e; }
+/* At the end of its travel it stays in place and fades — removing it would
+   shift every icon by 17px at the moment somebody was aiming at one. */
+.nav-arrow.spent { opacity: 0.22; cursor: default; background: transparent; }
 .brand { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px; }
 .brand-mark {
   width: 30px; height: 30px; border-radius: 7px; background: var(--accent);
@@ -69,6 +101,67 @@ button { font-family: inherit; cursor: pointer; }
 }
 .nav-item:hover { background: #12305E; }
 .nav-item.active { background: var(--brand); color: #fff; }
+.nav-item .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- §8.1d: the nav collapses to icons ----------------------------------
+   The width itself lives on the root (`--sidebar-w`), set by nav-collapse.tsx,
+   because the §24.5d guided-setup dialog insets by the same token. Everything
+   below is only what changes SHAPE at 64px. */
+.nav-collapse-btn {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 7px 10px; margin-bottom: 4px; border: none; border-radius: 8px;
+  background: transparent; color: #6b84a8; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.nav-collapse-btn:hover { background: #12305e; color: var(--steel-light); }
+.nav-collapse-chevron {
+  display: inline-grid; place-items: center; width: 17px; font-size: 15px; line-height: 1;
+  transition: transform 240ms ease;
+}
+.logout-btn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.logout-icon { display: none; font-size: 13px; line-height: 1; }
+
+.nav-collapsed .sidebar { padding-left: 8px; padding-right: 8px; align-items: center; }
+/* Every label folds away the same way, so one rule covers the nav, the brand,
+   the user's name and the sign-out button. */
+.nav-collapsed .nav-label,
+.nav-collapsed .brand-text { display: none; }
+.nav-collapsed .brand { justify-content: center; padding: 4px 0 18px; }
+.nav-collapsed .nav-item { justify-content: center; padding: 10px 0; gap: 0; }
+.nav-collapsed .nav-collapse-btn { justify-content: center; padding: 7px 0; }
+.nav-collapsed .nav-collapse-chevron { transform: rotate(180deg); }
+.nav-collapsed .who { justify-content: center; }
+.nav-collapsed .sidebar-foot { padding-left: 0; padding-right: 0; }
+.nav-collapsed .logout-btn { padding: 7px 0; }
+.nav-collapsed .logout-icon { display: inline; }
+/* The group name has nowhere to go, so a rule stands in for it — the groups
+   still read as groups rather than one column of twenty icons. */
+.nav-collapsed .nav-group-label {
+  margin: 12px 8px 8px; height: 1px; overflow: hidden; text-indent: -999px;
+  background: #1b3a6b;
+}
+
+/* The label that comes out of the icon, and goes back in.
+   Fixed rather than nested in its row: `.sidebar-nav` scrolls, so a nested
+   flyout is clipped, and CSS cannot be scrollable on one axis and visible on
+   the other. It is always mounted and animates both ways — an element unmounted
+   on mouse-leave has nothing left to slide back in with. */
+.nav-fly {
+  position: fixed; left: calc(var(--sidebar-w) + 6px); z-index: 60;
+  padding: 7px 12px; border-radius: 8px; white-space: nowrap; pointer-events: none;
+  background: var(--brand-deep); color: #fff; font-size: 12.5px; font-weight: 600;
+  box-shadow: 0 8px 22px rgba(11, 31, 68, 0.35);
+  border: 1px solid #1b3a6b;
+  /* The Y half of the transform centres it on its row, so the caller passes the
+     row's middle and needs to know nothing about how tall the label is. */
+  opacity: 0; transform: translate(-10px, -50%);
+  transition: opacity 160ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.nav-fly.on { opacity: 1; transform: translate(0, -50%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-fly, .nav-collapse-chevron { transition: none; }
+}
 .sidebar-foot { flex-shrink: 0; margin-top: 10px; padding: 12px 10px 0; border-top: 1px solid #1b3a6b; background: var(--brand-deep); }
 .who { display: flex; align-items: center; gap: 9px; }
 .avatar {
@@ -79,14 +172,130 @@ button { font-family: inherit; cursor: pointer; }
 .who-role { font-size: 10.5px; color: var(--steel); }
 .logout-btn { margin-top: 10px; width: 100%; font-size: 11px; color: var(--steel-light); background: transparent; border: 1px solid #1b3a6b; border-radius: 7px; padding: 6px; }
 
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* A viewport-tall column: topbar, then a content box that scrolls. Fixing the
+   height here is what gives `.pane-page` something definite to fill (§8.4). */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }
 .topbar {
   display: flex; align-items: center; justify-content: space-between; padding: 16px 28px;
   background: var(--paper); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
 }
 .topbar-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; }
 .topbar-eyebrow { font-size: 11px; color: var(--steel); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 2px; }
-.content { padding: 26px 28px 60px; flex: 1; }
+/* §8.4 — the page's own margin, kept small on purpose.
+   It was 26/28/60, and the 60px of bottom padding was pure dead space: no
+   screen ends at the fold, so it bought nothing and cost four rows of a grid.
+   Enough is left that a card does not touch the chrome; every pixel beyond that
+   belongs to the content.
+
+   `overflow: auto` moves the scrolling from the window into this box, which is
+   what lets a page ask for the height it has been given rather than guessing
+   at `100vh` minus a number somebody measured once. The topbar was already
+   sticky, so nothing about the scrolling LOOKS different. */
+.content { padding: 12px 14px 14px; flex: 1; min-height: 0; overflow: auto; }
+
+/* Pages that are frames in their own right — their own border, their own pinned
+   header and footer, their own scrolling between them. An inset around one of
+   those is a margin inside a margin. */
+.full-bleed { padding: 0; }
+.full-bleed > .pane-page { border-radius: 0; border-left: none; border-right: none; border-top: none; }
+
+/* A modal sized to the working area rather than to a comfortable reading width.
+   The guided setup earned this: eleven steps, two of which are a class × subject
+   matrix and a mapping table, and at a centred 840px both scrolled sideways
+   inside a dialog that left half the screen dimmed and empty. The overlay still
+   covers everything — the nav must not look live while a modal is open — but the
+   panel itself occupies exactly the pane beside the sidebar. */
+.pane-overlay {
+  position: fixed; inset: 0; z-index: 200; background: rgba(11, 31, 68, 0.45);
+  display: flex; padding: 14px 14px 14px calc(var(--sidebar-w) + 14px);
+}
+.pane-dialog {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(11, 31, 68, 0.3);
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+/* Below the point where a 236px sidebar plus a usable panel stop fitting, the
+   dialog takes the whole width instead. Sizing to the pane is about using the
+   room there is; on a narrow screen it would be about giving room away. */
+@media (max-width: 900px) {
+  .pane-overlay { padding: 10px; }
+}
+
+/* §8.3 — the same wizard as an ordinary page.
+   No border, shadow or radius: those say "this is a panel floating above the
+   page", and it no longer is. It still fills the height it is given, because
+   step 9's grid pins its own header and footer and scrolls between them — take
+   the fixed height away and the page grows a second scrollbar under the first,
+   and the row somebody is pointing at moves as they reach it. */
+.pane-page {
+  display: flex; flex-direction: column;
+  /* The room there IS, not the viewport minus a number somebody measured once:
+     `.content` is a flex item of a viewport-tall column, so its height is
+     definite and this resolves against it. Change the padding above and this
+     follows, instead of leaving a gap or a second scrollbar that nobody
+     connects to the edit that caused it. */
+  min-height: 0; height: 100%;
+  background: var(--paper); border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+/*
+  §8.5 — a master is a list you EDIT, so the form belongs beside the list.
+
+  Every master screen was a table with its form stacked underneath it. That is
+  fine for five rows and wrong for the number a real school has: at 32
+  class-sections or 20 rooms, pressing Edit on a row scrolled the form into
+  view and the row out of it, so the one thing you were looking at while typing
+  was the one thing you could no longer see. §8.1c already made this exception
+  for the manual Curriculum step and gave exactly this reason; it simply never
+  reached the other four.
+
+  Two columns, each scrolling inside itself, and the PAGE never scrolls at all.
+  That is what makes the promise keepable: the form is always on screen, the
+  list is always on screen, and reaching either costs nothing.
+*/
+.master-split {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px;
+  /* Fills whatever `.content` has left after the tab bar — a definite height,
+     which is what lets the two panes scroll instead of the page. */
+  flex: 1; min-height: 0;
+}
+.master-col {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+}
+.master-col > header { padding: 10px 14px 9px; border-bottom: 1px solid var(--line); flex: none; }
+.master-col > header h2 { font-family: var(--font-display); font-size: 15.5px; font-weight: 600; }
+.master-col > header p { font-size: 11.5px; color: var(--ink-soft); line-height: 1.45; margin-top: 2px; }
+.master-scroll { overflow: auto; min-height: 0; padding: 10px 14px 14px; }
+
+/*
+  `DataTable` wraps its table in an `overflow-x: auto` div, and that div is what
+  a sticky header would stick to — a container with no height of its own, which
+  never scrolls vertically, so the header would simply never stick. Handing the
+  scrolling to the pane instead makes both axes work in one place: the header
+  sticks to the pane's own scrollport, and a wide table scrolls sideways in the
+  same box rather than in a nested one with its own scrollbar.
+*/
+.master-scroll > div { overflow: visible; }
+.master-scroll table { min-width: 100%; }
+/* The header has to survive the scroll, or a 32-row list is a column of numbers
+   with nothing left to say what they are. `-10px` cancels the pane's own top
+   padding, so the header lands flush with the top of the scrollport rather than
+   after a 10px gap with rows sliding through it. */
+.master-scroll thead th {
+  position: sticky; top: -10px; background: var(--paper); z-index: 1;
+}
+
+/*
+  Below this the two panes stop fitting side by side, and stacking is the honest
+  fallback: a 340px form squeezed next to a six-column table is unreadable in a
+  different way. The page scrolls again there, which is the cost of the width.
+*/
+@media (max-width: 1080px) {
+  .master-split { grid-template-columns: 1fr; overflow: auto; }
+  .master-col { min-height: 220px; }
+}
 
 .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
@@ -200,6 +409,28 @@ button { font-family: inherit; cursor: pointer; }
 .day-toggle.on { background: var(--brand); border-color: var(--brand); color: #fff; }
 .wizard-foot { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
 .btn-secondary { border: 1px solid var(--line); background: var(--paper); }
+
+/* Tinted button variants, so a row of actions says what each one DOES.
+   Five identical grey outlines make "Clone" and "Delete" look like the same
+   kind of thing, which is the one pair on the Timetables card that must not.
+   Each variant is a token pair already in the palette — no new colours, and the
+   meaning is the palette's own: brand = get on with the work, accent = check
+   it, neutral = a benign copy, signal = destructive.
+   The borders are mixed from the same hues rather than picked by eye. */
+.btn-brand-soft { background: var(--steel-pale); color: var(--brand); border: 1px solid #cddcf7; }
+.btn-brand-soft:hover { background: #dae6fb; }
+.btn-accent-soft { background: var(--accent-bg); color: var(--accent); border: 1px solid #b9e4ee; }
+.btn-accent-soft:hover { background: #d2eff5; }
+.btn-danger-soft { background: var(--signal-bg); color: var(--signal); border: 1px solid #f0cdca; }
+.btn-danger-soft:hover { background: #f7dedc; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* One row of actions, all the same height and evenly spaced. `.btn` already
+   fixes the padding; what made the Timetables card ragged was a status badge
+   (3px tall padding, pill radius) standing in the middle of the row, and half
+   the buttons carrying an icon while the other half did not. */
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+.actions .btn { flex: 0 0 auto; }
 
 /* ---- Phase 4: Substitute Center (§8.2) ---- */
 .absence-banner { display: flex; align-items: center; gap: 14px; background: var(--brand); color: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
@@ -363,8 +594,14 @@ button { font-family: inherit; cursor: pointer; }
   }
 
   .app { display: block; }
-  .main { display: block; }
-  .content { padding: 0 !important; }
+  /* §8.4 — undo the viewport-tall scrolling column for paper.
+     On screen `.main` is exactly 100vh and `.content` scrolls inside it, which
+     is what lets a full-height page measure itself. Printed, that would put the
+     whole document inside one viewport-sized box and hand the printer a single
+     clipped page — the rest of a 14-class report simply gone, with nothing on
+     the sheet to say so. */
+  .main { display: block; height: auto; }
+  .content { padding: 0 !important; overflow: visible !important; height: auto !important; }
 
   /* On screen the print sheets are not rendered at all; in print they are the
      only thing rendered. */
@@ -410,3 +647,49 @@ button { font-family: inherit; cursor: pointer; }
 .print-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; font-size: 11.5px; color: var(--ink-soft); }
 .print-meta b { color: var(--ink); font-weight: 600; }
 .print-foot { margin-top: 10px; font-size: 9.5px; color: var(--ink-faint); display: flex; justify-content: space-between; }
+
+/* §15.3 Phase 25.3 — the class ladder's two-handle range.
+   Both inputs are stacked and transparent to pointer events; only the thumbs
+   accept them, which is what lets two ranges share one track. */
+.ladder-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--brand); border: 3px solid var(--paper);
+  box-shadow: 0 1px 4px rgba(11, 31, 68, .35);
+  cursor: grab;
+}
+.ladder-range::-moz-range-thumb {
+  pointer-events: auto;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--brand); border: 3px solid var(--paper);
+  box-shadow: 0 1px 4px rgba(11, 31, 68, .35);
+  cursor: grab;
+}
+.ladder-range:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--brand-deep); outline-offset: 2px; }
+
+/* §24 — the guided setup's current step: lifted and gently pulsing, so "you are
+   here" reads from across a desk. Halted under prefers-reduced-motion, where a
+   ring that never stops moving is the problem rather than the affordance. */
+.step-now {
+  box-shadow: 0 0 0 4px var(--steel-pale);
+  animation: step-pulse 2.2s ease-in-out infinite;
+}
+@keyframes step-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--steel-pale); }
+  50%      { box-shadow: 0 0 0 7px var(--steel-pale); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .step-now { animation: none; }
+}
+
+/* §24 — the line that appears after a step lands. It slides in once rather than
+   drawing attention indefinitely; `key` on the element restarts it per step. */
+.praise { animation: praise-in 420ms cubic-bezier(.22,.68,.36,1) both; }
+@keyframes praise-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .praise { animation: none; }
+}

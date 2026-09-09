@@ -6,10 +6,28 @@
  */
 import type { FeasibilitySnapshot } from "../feasibility/types";
 
+/** §4.7b — one blocked cell, for whichever master `id` refers to. */
+export interface BlockedRow {
+  id: number;
+  dayOfWeek: number;
+  /** null = the whole day (§4.7a) */
+  periodNumber: number | null;
+}
+
 export interface SolverInput {
   snapshot: FeasibilitySnapshot;
   /** full per-slot unavailability (feasibility only needs counts) */
   teacherUnavailability: Array<{ teacherId: number; dayOfWeek: number; periodNumber: number | null }>;
+  /**
+   * §4.7b — the other three kinds of time off, in one shape.
+   *
+   * `id` is the class-section / subject / room, so `blockedCells` reads all
+   * four the same way. Optional so a caller built before this — a fixture, an
+   * older test — still type-checks and behaves as it did: nothing blocked.
+   */
+  classSectionUnavailability?: BlockedRow[];
+  subjectUnavailability?: BlockedRow[];
+  roomUnavailability?: BlockedRow[];
   labRoomIds: number[];
   /** preferred rooms per mapping id (hard when set, §3) */
   preferredRoomByMapping: Record<number, number>;
@@ -69,6 +87,12 @@ export interface SolverVariable {
    * in which case any lab will do — the pre-Phase-12 behaviour.
    */
   labRoomIds: number[];
+  /**
+   * §19.1: the rooms this subject is always taught in, when a school has said
+   * so. Empty means it has not, and the lesson takes the home room — never
+   * "any room", which is what ticking the box was asking to prevent.
+   */
+  ownRoomIds: number[];
   /** §19: the room this class-section sits in, claimed when no lab is needed. */
   homeRoomId: number | null;
   preferredRoomId: number | null;

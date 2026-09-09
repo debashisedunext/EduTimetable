@@ -2,6 +2,7 @@ import { Controller, NotFoundException, Post, Req } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { ResourceGroupService } from "../groups/resource-group.service";
 import type { AuthedRequest } from "../masters/crud.util";
 
 /**
@@ -16,6 +17,7 @@ export class SampleDataController {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly readiness: ReadinessService,
+    private readonly groups: ResourceGroupService,
   ) {}
 
   @Post("sample-data")
@@ -84,10 +86,12 @@ export class SampleDataController {
       teachers[name] = row.id;
     }
 
+    const groupId = await this.groups.defaultFor(year.id);
     const cfg = await this.prisma.timetableConfig.create({
       data: {
         schoolId,
         academicYearId: year.id,
+        resourceGroupId: groupId,
         name: "Middle Wing",
         description: "Classes 5-6 · standard day",
         workingDays: [1, 2, 3, 4, 5],
@@ -155,10 +159,11 @@ export class SampleDataController {
         });
         const cs = await this.prisma.classSection.upsert({
           where: {
-            classId_sectionId_academicYearId: {
+            classId_sectionId_academicYearId_resourceGroupId: {
               classId: klass.id,
               sectionId: section.id,
               academicYearId: year.id,
+              resourceGroupId: groupId,
             },
           },
           create: {
@@ -166,6 +171,7 @@ export class SampleDataController {
             classId: klass.id,
             sectionId: section.id,
             academicYearId: year.id,
+            resourceGroupId: groupId,
             timetableConfigId: cfg.id,
             strength: 32,
           },

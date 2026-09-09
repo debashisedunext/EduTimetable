@@ -98,6 +98,9 @@ export class MeController {
       schools,
       // Renders the nav item only; the guard is the authority (§17.6).
       platformAdmin: await this.platform.isPlatformAdmin(req.user),
+      // `local:` is the marker a password sign-in writes (§15.3). Cosmetic, as
+      // ever: `POST /schools` refuses an ERP account independently.
+      isLocalAccount: user.erpUserId.startsWith("local:"),
       trust:
         school.trustCode && school.trustName
           ? { code: school.trustCode, name: school.trustName }

@@ -1,0 +1,218 @@
+/**
+ * §15.3 Phase 25.2 — the welcome screen's state, and the guided setup's draft.
+ *
+ * Ordinary session-guarded endpoints: by this point somebody is inside a school,
+ * whether they arrived through the ERP or through a password. Everything is
+ * scoped by the ambient tenant context like any other query (§17) — there is no
+ * school id in any path here, because a session belongs to exactly one school
+ * and taking one would invite passing somebody else's.
+ *
+ * `masters.manage` guards the draft but NOT the state: a teacher must be able
+ * to load the app, and `GET /me/onboarding` is read on every page load. It
+ * returns counts about their own school and nothing else.
+ */
+import {
+  BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Req,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { PERMISSIONS } from "@edutimetable/shared";
+import { RequirePermission } from "../auth/decorators";
+import { type AuthedRequest } from "../masters/crud.util";
+import { OnboardingService } from "./onboarding.service";
+import { InterviewService } from "./interview.service";
+import { FreezeService } from "../freeze/freeze.service";
+
+@Controller()
+export class OnboardingController {
+  constructor(
+    private readonly onboarding: OnboardingService,
+    private readonly interviewer: InterviewService,
+    private readonly freeze: FreezeService,
+  ) {}
+
+  /** Is this school new, has this person waved the prompt away, is there a draft? */
+  @Get("me/onboarding")
+  state(@Req() req: AuthedRequest) {
+    return this.onboarding.stateFor(req.user.schoolId, req.user.sub);
+  }
+
+  /** "I'll do this later" — remembered per user, not per school. */
+  @Post("me/onboarding/dismiss")
+  dismiss(@Req() req: AuthedRequest) {
+    return this.onboarding.dismiss(req.user.sub);
+  }
+
+  /**
+   * The half-finished setup — or, failing that, what the school already is.
+   *
+   * §27.12: **a master is entered once and used for ever.** A school that has
+   * run a timetable has its session, classes, subjects, teachers, rooms and
+   * curriculum, and asking for them again because it is starting a second one —
+   * or because somebody deleted the first — is asking it to retype its own
+   * records. The masters were never deleted; the wizard simply opened blank.
+   *
+   * So with no draft this hands back the answers rebuilt from the database,
+   * flagged `prefilled` and **not saved**. Not saved is the point: opening the
+   * guided setup to look at it must not create a draft, or `shouldPrompt` would
+   * offer that school a resume for ever afterwards.
+   */
+  @Get("onboarding/session")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async draft(@Req() req: AuthedRequest) {
+    const draft = await this.onboarding.draftFor(req.user.schoolId, req.user.sub);
+    if (draft) return draft;
+    return this.onboarding.prefillFromSchool(req.user.schoolId);
+  }
+
+  @Put("onboarding/session")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  save(@Req() req: AuthedRequest, @Body() body: Record<string, unknown>) {
+    return this.onboarding.save(req.user.schoolId, req.user.sub, {
+      currentStep: typeof body.currentStep === "number" ? body.currentStep : undefined,
+      answers: (body.answers as Record<string, unknown>) ?? undefined,
+      mode: body.mode === "ai" ? "ai" : body.mode === "wizard" ? "wizard" : undefined,
+    });
+  }
+
+  /**
+   * §3.10a — a timetable that has just been created, entered as a wing.
+   *
+   * Takes the config's id rather than its name: the draft is keyed by name, but
+   * reading that name off the row is what makes another school's id a 404 (§17)
+   * rather than a wing named after somebody else's timetable.
+   *
+   * The id is in the PATH rather than the body deliberately. §17.8's sweep
+   * addresses a route by its path parameters, so a body field would leave this
+   * one merely *classified* — a sentence in a table asserting it is safe —
+   * where a path parameter makes it a controlled experiment the suite actually
+   * runs. Writes nothing outside the draft: the config itself was created a
+   * moment earlier by the endpoint that owns configs.
+   */
+  @Post("onboarding/session/wing/:id")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  recordWing(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const configId = Number(id);
+    if (!Number.isInteger(configId) || configId <= 0) {
+      throw new BadRequestException("A timetable id is required");
+    }
+    return this.onboarding.recordWing(req.user.schoolId, req.user.sub, configId);
+  }
+
+  /** What committing this step would create — same pipeline, dry. */
+  @Get("onboarding/preview/:step")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  preview(@Req() req: AuthedRequest, @Param("step") step: string) {
+    return this.onboarding.preview(req.user.schoolId, req.user.sub, Number(step));
+  }
+
+  /** Commit this step's answers, through the §16 importer and nothing else. */
+  @Post("onboarding/commit/:step")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async commit(@Req() req: AuthedRequest, @Param("step") step: string) {
+    // §29.1 — the guided setup commits through the §16 importer, so it is the
+    // same blunt check for the same reason: a step's answers become rows by
+    // name, not by timetable id. Saving answers and previewing are untouched —
+    // nothing is written until Next.
+    await this.freeze.assertNoneFrozen("master data");
+    return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step));
+  }
+
+  /** Step 11: write the settings and mark the guided setup done. */
+  @Post("onboarding/finish")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  finish(@Req() req: AuthedRequest) {
+    return this.onboarding.finish(req.user.schoolId, req.user.sub);
+  }
+
+  /**
+   * §24.5c — start a guided setup on a school that already has data.
+   *
+   * The way back into the guided flow for a half-built school. It reconstructs
+   * the wizard's answers from what exists and hands back the draft; the wizard
+   * then opens at the first thing still missing, because which step that is has
+   * always been derived from the answers rather than remembered.
+   *
+   * A live draft is returned untouched rather than rebuilt — somebody's
+   * unfinished typing is not ours to throw away.
+   */
+  @Post("onboarding/session/adopt")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  adopt(@Req() req: AuthedRequest) {
+    return this.onboarding.adoptFromSchool(req.user.schoolId, req.user.sub);
+  }
+
+  @Delete("onboarding/session")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  discard(@Req() req: AuthedRequest) {
+    return this.onboarding.discard(req.user.schoolId, req.user.sub);
+  }
+
+  /**
+   * §24.6 — one turn of the conversational setup.
+   *
+   * BOTH permissions, and neither is redundant: `masters.manage` because this
+   * fills in the same draft the wizard does and the conversation is only worth
+   * having if the person can commit it, `ai.chat` because it spends the school's
+   * AI budget. A person with one and not the other is told which is missing.
+   */
+  @Post("onboarding/interview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE, PERMISSIONS.AI_CHAT)
+  interview(@Req() req: AuthedRequest, @Body() body: { message?: unknown }) {
+    const message = typeof body?.message === "string" ? body.message.trim() : "";
+    if (message === "") throw new BadRequestException("Say something for the assistant to answer.");
+    // The conversation id is DERIVED, never taken from the request. It is what
+    // makes the chat resumable — the same person in the same school returns to
+    // the same thread — and a client-chosen one would let somebody read a
+    // colleague's setup conversation by naming their thread.
+    return this.interviewer.turn(
+      req.user.schoolId,
+      req.user.sub,
+      InterviewService.conversationIdFor(req.user.schoolId, req.user.sub),
+      message.slice(0, 4000),
+    );
+  }
+
+  /**
+   * §24.6 — the conversation so far, for redrawing it on the way back in.
+   *
+   * Half a setup is twenty minutes of somebody's afternoon. The answers already
+   * survived a refresh; without this the chat did not, so returning showed a
+   * blank thread beside a panel full of collected facts — which reads as though
+   * the assistant has forgotten a conversation it can in fact still remember.
+   */
+  @Get("onboarding/interview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE, PERMISSIONS.AI_CHAT)
+  interviewTranscript(@Req() req: AuthedRequest) {
+    return this.interviewer.transcript(req.user.schoolId, req.user.sub);
+  }
+}
+
+/**
+ * Dev-only seam for the interview's merge step (§17.8, mirroring `/dev/ai-tool`).
+ *
+ * The property worth testing is *"does a model's report become the same answers
+ * the wizard produces?"*, and that is not a property of the model. Driving it
+ * through a real provider would make a deterministic check depend on an LLM
+ * choosing to cooperate — flaky, paid, and indirect. This runs the same
+ * `applyLearned` the conversation runs, under the same session-derived school,
+ * so it is a faithful seam rather than a shortcut: it cannot be handed a school,
+ * and it cannot write master data, because `applyLearned` only ever touches the
+ * caller's own draft.
+ */
+@Controller("dev")
+export class DevInterviewController {
+  constructor(
+    private readonly interviewer: InterviewService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @Post("interview-turn")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  run(@Req() req: AuthedRequest, @Body() body: { learned?: unknown; replace?: unknown }) {
+    if (this.config.get("NODE_ENV") === "production") throw new NotFoundException();
+    const replace = Array.isArray(body?.replace)
+      ? body.replace.filter((k): k is string => typeof k === "string")
+      : [];
+    return this.interviewer.applyLearned(req.user.schoolId, req.user.sub, body?.learned, replace);
+  }
+}

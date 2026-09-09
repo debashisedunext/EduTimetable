@@ -33,6 +33,7 @@ const { createRequire } = require("node:module");
 const fs = require("node:fs");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZERP";
@@ -302,6 +303,7 @@ async function syncAll(token, name, mode = "refresh") {
   const year = await prisma.academicYear.findFirst({ where: { schoolId: SCHOOL } });
   const cfg = await prisma.timetableConfig.create({
     data: {
+      resourceGroupId: await groupFor(prisma, year.id),
       schoolId: SCHOOL, academicYearId: year.id, name: `${P} Wing`,
       periodsPerDay: 6, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5],
     },

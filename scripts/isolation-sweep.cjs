@@ -40,6 +40,7 @@ const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
 const Redis = req("ioredis");
+const { groupFor } = require("./resource-groups.cjs");
 const ExcelJS = req("exceljs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -126,6 +127,10 @@ const PARAM_RESOURCE = [
   ["/academic-years/:id", "year"],
   ["/admin/roles/:id/permissions", "role"],
   ["/admin/users/:id", "user"],
+  // §24.8 — swept, not merely classified: these take another school's user
+  // id perfectly happily unless somebody checks, and "deactivate that
+  // login" is the one you least want working across a boundary.
+  ["/users/:id", "user"],
   ["/ai/settings/roles/:id", "role"],
   ["/class-sections/:id", "classSection"],
   ["/elective-blocks/:id", "electiveBlock"],
@@ -135,12 +140,31 @@ const PARAM_RESOURCE = [
   ["/mappings/:id", "mapping"],
   ["/merged-groups/:id", "mergedGroup"],
   ["/notifications/:id", "notification"],
+  // §3.10a — "New Timetable" entering the config it just made into the caller's
+  // guided draft. Swept rather than classified: the id names a timetable, and a
+  // route that reads a name off another school's row and writes it into this
+  // school's setup is exactly the shape the sweep exists to catch.
+  ["/onboarding/session/wing/:id", "config"],
   ["/reports/class-section/:id", "classSection"],
   ["/reports/teacher/:id", "teacher"],
+  // §10.6 — the two new week cards. Distinct from `/reports/rooms/:configId`
+  // below, which takes a CONFIG id and reports utilisation; longest-pattern-wins
+  // keeps them apart.
+  ["/reports/room/:id", "room"],
+  ["/reports/subject/:id", "subject"],
   ["/reports/rooms/:configId", "config"],
   ["/reports/teacher-load/:configId", "config"],
   ["/rooms/:id", "room"],
   ["/subjects/:id", "subject"],
+  // §29.2 — a staffing change is addressed by its own id, deliberately not
+  // under its timetable: `/timetable-configs/:id/...` would make `:id` mean the
+  // config on one route and the change on the next.
+  ["/staffing-changes/:changeId", "staffingChange"],
+  // §4.7b — the four routes `/availability/:kind/:id` expands into.
+  ["/availability/teacher/:id", "teacher"],
+  ["/availability/class/:id", "classSection"],
+  ["/availability/subject/:id", "subject"],
+  ["/availability/room/:id", "room"],
   ["/teachers/:id", "teacher"],
   ["/timetable-configs/:id", "config"],
 ];
@@ -159,6 +183,17 @@ const BODY_FOR = (key, n, A) => ({
   "PUT /class-sections/:id": { strength: 31 },
   "PUT /class-sections/:id/class-teacher": { teacherId: null },
   "PUT /class-subjects/:id": { periodsPerWeek: 4 },
+  // §29.2 — a real edit, so the owner gets a 200 and the stranger a 404. An
+  // empty body would 200 for the owner too, but on a route that had decided
+  // nothing, which is a weaker control.
+  "PUT /staffing-changes/:changeId": { note: `${P} renamed ${n}` },
+  // §29.4/§29.5 — both write to a published week, so the stranger must be
+  // stopped at the change id before any of that is reached. A's own 400 ("name
+  // the teacher taking over") is the control: it proves A got as far as its own
+  // validation, which B never does.
+  "POST /staffing-changes/:changeId/apply": { mode: "replace" },
+  "POST /staffing-changes/:changeId/revert": {},
+  "POST /timetable-configs/:id/staffing-changes": { reason: "adjustment", releasing: [A.rows.teacher.id] },
   "PUT /classes/:id": { name: `${P} C${n}`, sequence: 2 },
   "POST /classes/:id/sections": { name: `S${n}`, academicYearId: A.rows.year.id },
   "PUT /mappings/:id": { periodsPerWeek: 3 },
@@ -239,6 +274,40 @@ const NEEDS_FRESH = new Set([
  * assertion covers it — an exemption without a covering check is a hole, and
  * writing the reason down is what stops one being added quietly.
  */
+/**
+ * Routes whose path parameter is NOT a row id.
+ *
+ * The census assumes `:something` addresses a resource, because it almost
+ * always does — and that assumption is what catches a new controller taking an
+ * id it forgot to scope. A step number is the exception: it names a position in
+ * a wizard, not a row, so there is no other school's version of it to reach.
+ * Recorded here rather than given a fake resource mapping, which would have the
+ * sweep call it with a class-section id and prove nothing.
+ */
+/**
+ * §4.7b — a path segment that names a KIND, not a row.
+ *
+ * `/availability/:kind/:id` is one controller over four tables, so the sweep
+ * cannot map `/availability/` to a single resource — and an unmapped
+ * parameterised route is (correctly) reported as unclassified. The answer is
+ * NOT a waiver: `:id` really is another school's row id, and it really must
+ * 404. So the discriminator is expanded into the four routes it actually
+ * serves, each of which then classifies and sweeps exactly like any other.
+ *
+ * Still driven by the app's own route table, which is the rule that matters
+ * here: a fifth kind added to `KINDS` and left out of this list appears as a
+ * new unclassified route and fails the build, rather than passing unswept.
+ */
+const ENUM_PARAMS = {
+  "/availability/:kind": ["teacher", "class", "subject", "room"],
+  "/availability/:kind/:id": ["teacher", "class", "subject", "room"],
+};
+
+const PARAM_NOT_AN_ID = {
+  "POST /onboarding/commit/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; the draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
+  "GET /onboarding/preview/:step": { how: "effect", reason: "§15.3 :step is a wizard step number; reads the caller's own draft and writes nothing" },
+};
+
 const NO_ID = {
   "POST /absences": { how: "body", reason: "takes the other school's teacherId in the body" },
   "POST /class-subjects": { how: "body", reason: "takes the other school's classId in the body" },
@@ -269,6 +338,44 @@ const NO_ID = {
   // tries to apply from the other.
   "POST /ai/data-entry/apply": { how: "effect", reason: "proposal stash is school-keyed — ai-data-entry-smoke.cjs proves B cannot apply A's proposal" },
   "GET /ai/data-entry/common-subjects": { how: "none", reason: "a static catalogue of subject names; carries no school data" },
+
+  // §15.3 Phase 25.2 — the guided setup's saved answers. No id in any of these:
+  // the draft is keyed (school, user) from the SESSION, so there is nothing in
+  // a request that could name somebody else's. onboarding-smoke.cjs drives the
+  // crossing case directly — two schools, two drafts, and a second school of
+  // the SAME owner starting empty, which is the one that would catch scoping by
+  // account instead of by school.
+  // §15.3 — swaps the session you are holding for an account token. Takes no
+  // id: the user comes from the session, and what comes back reaches only the
+  // schools that account already has a `users` row in — the same set the
+  // session token's own `schoolIds` names. Refused outright for an ERP user,
+  // who has no account.
+  "POST /auth/account/token": { how: "effect", reason: "§15.3 mints an account token for the SESSION's own user; grants strictly less than the session already does" },
+
+  "POST /me/onboarding/dismiss": { how: "effect", reason: "stamps the caller's own users row; takes no id — onboarding-smoke.cjs asserts a colleague's is untouched" },
+  "PUT /onboarding/session": { how: "effect", reason: "draft is keyed (school, user) from the session — onboarding-smoke.cjs proves two schools' drafts do not cross" },
+  "DELETE /onboarding/session": { how: "effect", reason: "deletes only the caller's own draft; takes no id" },
+  // §24.5c — rebuilds the caller's own draft from the SESSION's school. Takes
+  // no id, reads and writes only that school, and cannot edit anything: the
+  // draft it produces commits through the §16 importer, which skips rows that
+  // already exist. onboarding-smoke.cjs asserts the school is unchanged after.
+  "POST /onboarding/session/adopt": { how: "effect", reason: "§24.5c reconstructs the caller's own draft from the session's own school; writes no master row" },
+  // Phase 25.4g. Writes settings across the session's own school — the
+  // `updateMany` carries no id from the request, and the school-scope extension
+  // narrows it to the ambient school. guided-setup-smoke.cjs drives it.
+  "POST /onboarding/finish": { how: "effect", reason: "§24.5 writes timetable_config and teacher settings for the session's own school; takes no id" },
+  // Phase 25.5. Takes a sentence, not an id. Everything it writes goes into the
+  // caller's own draft, keyed (school, user) from the session — and the model is
+  // offered ONE tool, which reaches nothing but that draft. interview-smoke.cjs
+  // drives the whole conversation without an LLM in the loop.
+  "POST /onboarding/interview": { how: "effect", reason: "§24.6 one interview turn; writes only the caller's own onboarding draft, and the model has no tool that reaches further" },
+
+  // §24.8 Phase 25.6 — inviting people. Neither takes a row id: the school comes
+  // from the session, and both are refused outright unless the school is
+  // self-serve. users-smoke.cjs drives the whole invite → accept → sign-in →
+  // refused-everything story, including the ERP refusal.
+  "POST /users/invite": { how: "effect", reason: "§24.8 creates a users row in the SESSION's school; roles.manage, and refused for an ERP school" },
+  "POST /users/invite-teachers": { how: "effect", reason: "§24.8 the same, in bulk, over the session school's own teacher master" },
 
   "PUT /school": { how: "effect", reason: "edits the session's own school row" },
   "PUT /ai/settings": { how: "effect", reason: "edits the session's own settings row" },
@@ -415,7 +522,8 @@ const LIST_NO_IDS = {
       data: { schoolId: id, employeeCode: `${P}${tag}T`, name: `${P} ${tag} Teacher`, maxPeriodsPerWeek: 30 },
     });
     const config = await prisma.timetableConfig.create({
-      data: { schoolId: id, name: `${P} ${tag} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
+      data: {
+        resourceGroupId: await groupFor(prisma, year.id), schoolId: id, name: `${P} ${tag} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
     });
     // Real periods, so the board and readiness routes have something to answer
     // about rather than 404-ing for their owner too.
@@ -431,6 +539,7 @@ const LIST_NO_IDS = {
     const section = await prisma.section.create({ data: { classId: cls.id, name: "A", schoolId: id } });
     const classSection = await prisma.classSection.create({
       data: {
+        resourceGroupId: await groupFor(prisma, year.id),
         classId: cls.id, sectionId: section.id, academicYearId: year.id,
         schoolId: id, timetableConfigId: config.id, strength: 30,
       },
@@ -464,6 +573,17 @@ const LIST_NO_IDS = {
         schoolId: id, timetableConfigId: config.id, classSectionId: classSection.id,
         subjectId: subject.id, teacherId: teacher.id, dayOfWeek: 1, periodNumber: 5,
         reason: `${P} ${tag} revision`,
+      },
+    });
+    // §29.2 — an open staffing change, so its three by-id routes have a real
+    // row to be refused. Created directly rather than through the API because
+    // the fixture predates a published week here, and the sweep only needs a
+    // row that belongs to one school and not the other.
+    const staffingChange = await prisma.staffingChange.create({
+      data: {
+        schoolId: id, timetableConfigId: config.id, reason: "resigned",
+        note: `${P} ${tag} staffing`,
+        teachers: { create: [{ teacherId: teacher.id, role: "releasing", schoolId: id }] },
       },
     });
     const absence = await prisma.teacherAbsence.create({
@@ -510,7 +630,7 @@ const LIST_NO_IDS = {
 
     return {
       id, tag, token,
-      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, electiveBlock, absence, notification, role, user },
+      rows: { year, room, subject, teacher, config, class: cls, classSection, curriculum, mapping, mergedGroup, electiveBlock, staffingChange, absence, notification, role, user },
     };
   }
 
@@ -545,13 +665,15 @@ const LIST_NO_IDS = {
         data: { schoolId: id, employeeCode: `${P}${t}T${n}`, name: `${P} ${t} T${n}`, maxPeriodsPerWeek: 30 },
       });
       case "config": return prisma.timetableConfig.create({
-        data: { schoolId: id, name: `${P} ${t} W${n}`, academicYearId: base.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
+        data: {
+          resourceGroupId: await groupFor(prisma, base.year.id), schoolId: id, name: `${P} ${t} W${n}`, academicYearId: base.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 4 },
       });
       case "classSection": {
         const cls = await prisma.schoolClass.create({ data: { schoolId: id, name: `${P} ${t} CS${n}`, sequence: n } });
         const sec = await prisma.section.create({ data: { classId: cls.id, name: "A", schoolId: id } });
         return prisma.classSection.create({
-          data: { classId: cls.id, sectionId: sec.id, academicYearId: base.year.id, schoolId: id, strength: 30 },
+          data: {
+            resourceGroupId: await groupFor(prisma, base.year.id), classId: cls.id, sectionId: sec.id, academicYearId: base.year.id, schoolId: id, strength: 30 },
         });
       }
       case "curriculum": {
@@ -601,6 +723,14 @@ const LIST_NO_IDS = {
         const teacher = await freshRow(school, "teacher");
         return prisma.teacherAbsence.create({ data: { teacherId: teacher.id, date: new Date("2026-10-01"), schoolId: id } });
       }
+      // §29.2 — DELETE discards a plan, so it needs a throwaway one each time.
+      case "staffingChange": return prisma.staffingChange.create({
+        data: {
+          schoolId: id, timetableConfigId: base.config.id, reason: "resigned",
+          note: `${P} ${t} staffing ${n}`,
+          teachers: { create: [{ teacherId: base.teacher.id, role: "releasing", schoolId: id }] },
+        },
+      });
       case "notification": return prisma.notification.create({
         data: { userId: base.user.id, schoolId: id, type: "test", title: `${P} ${t} n${n}`, body: "x" },
       });
@@ -626,7 +756,15 @@ const LIST_NO_IDS = {
   const census = await call("GET", "/dev/routes", A.token);
   check(census.status === 200 && census.json?.count > 0, "the running app reported its route table",
     `${census.json?.count ?? 0} route(s)`);
-  const routes = census.json?.routes ?? [];
+  /*
+    A route whose path carries a discriminator is expanded into the concrete
+    routes it serves BEFORE anything is classified, so each gets a real
+    controlled experiment rather than a note explaining why it has none.
+  */
+  const routes = (census.json?.routes ?? []).flatMap((r) => {
+    const values = ENUM_PARAMS[r.path];
+    return values ? values.map((v) => ({ ...r, path: r.path.replace(/:(\w+)/, v) })) : [r];
+  });
 
   const buckets = { path: [], list: [], body: [], effect: [], stamp: [], none: [], platform: [], public: [], dev: [] };
   const unclassified = [];
@@ -636,6 +774,9 @@ const LIST_NO_IDS = {
     if (r.platform) { buckets.platform.push(r); continue; }
     if (r.path.startsWith("/dev/")) { buckets.dev.push(r); continue; }
     if (r.path.includes(":")) {
+      // A parameter that is not a row id has nothing to cross schools with.
+      const notAnId = PARAM_NOT_AN_ID[key];
+      if (notAnId) { buckets[notAnId.how].push({ ...r, ...notAnId }); continue; }
       const hit = PARAM_RESOURCE.filter(([pat]) => r.path.startsWith(pat)).sort((x, y) => y[0].length - x[0].length)[0];
       if (hit) buckets.path.push({ ...r, resource: hit[1] });
       else unclassified.push(`${key} (parameterised, no resource mapping)`);
@@ -653,6 +794,71 @@ const LIST_NO_IDS = {
   }
   check(unclassified.length === 0, "no route is unclassified",
     unclassified.length ? `\n        ${unclassified.join("\n        ")}` : `${routes.length} classified`);
+
+  // A @Public() route is exempt from every scoping check below, so the set of
+  // them is the application's whole unauthenticated attack surface. Bucketing
+  // them automatically — as the loop above does — means a data endpoint that
+  // someone marks public by mistake passes this sweep in silence, which is the
+  // one thing this file exists not to allow. Every one must be named here, with
+  // the reason it is safe to serve a stranger.
+  const PUBLIC_ALLOWED = {
+    "GET /health": "liveness; reports no school's data",
+    "GET /sso/callback": "§15.1 the ERP door — the signed token IS the credential",
+    "POST /dev/erp-token": "dev-only stub ERP; refused when NODE_ENV=production",
+    "GET /dev/mail": "dev-only captured mail; refused when NODE_ENV=production",
+    "GET /dev/mail/token": "dev-only captured mail; refused when NODE_ENV=production",
+    // §8.1e — which school the sign-in screen's demo personas should open. It
+    // names one school and one teacher, so it IS school data, and it is exposed
+    // on exactly the same terms as the stub ERP beside it: dev only, 404 in
+    // production and without the dev keypair. In a deployment where this
+    // answers at all, the personas below it are already a way into that school.
+    "GET /dev/demo-target": "dev-only demo target; refused when NODE_ENV=production",
+    // §15.3 Phase 25.0 — the local sign-in surface. Public by definition:
+    // whoever calls these has no credential yet. Each answers identically for a
+    // known and an unknown address, so none of them is an existence oracle.
+    "GET /auth/methods": "§15.3 which ways in this deployment offers; no data",
+    "POST /auth/register": "§15.3 create an account; same answer whoever you are",
+    "POST /auth/login": "§15.3 sign in; same body AND time for unknown vs wrong",
+    "POST /auth/forgot": "§15.3 request a reset; same answer whoever you are",
+    "POST /auth/reset": "§15.3 redeem a reset link; the one-shot token is the credential",
+    "POST /auth/verify": "§15.3 redeem a verification link; likewise",
+    "GET /auth/verify": "§15.3 landing hint only; reveals nothing",
+    "GET /auth/account": "§15.3 guarded by AccountAuthGuard, not JwtAuthGuard — @Public() only skips the SESSION guard",
+    // §15.3 Phase 25.1 — the account-level school endpoints. Same story as
+    // /auth/account: `@Public()` here means "not a SCHOOL session", not
+    // "unauthenticated". `AccountAuthGuard` requires an account token, and each
+    // one then scopes to that account: the list is every school it has an
+    // active `users` row in (since 25.6, which is when creating a school and
+    // being able to enter one came apart), and
+    // `enter` mints a session only where the account already has a `users` row
+    // — a school it does not is *not found*, never a refusal that confirms the
+    // school exists.
+    // §24.8 Phase 25.6 — accepting an invitation. The emailed one-shot token IS
+    // the credential, exactly as the verify and reset links are. The GET only
+    // LOOKS: it names who was invited without spending the token, so a mail
+    // scanner that pre-fetches links cannot burn the invitation — and it says
+    // nothing about any school, only the address the invitation was issued to.
+    "GET /auth/invite/:token": "§24.8 shows an invitation without consuming it; the token is the credential",
+    "POST /auth/invite/accept": "§24.8 redeem an invitation; one-shot, and grants nothing beyond the account",
+    "GET /schools": "§15.3 AccountAuthGuard; lists only this account's own schools",
+    "POST /schools": "§15.3 AccountAuthGuard; owners only, verified only, capped — refused server-side",
+    "POST /schools/:id/enter": "§15.3 AccountAuthGuard; mints a session only where this account has a user row",
+  };
+  const unexpectedPublic = buckets.public
+    .map((r) => `${r.method} ${r.path}`)
+    .filter((k) => !(k in PUBLIC_ALLOWED));
+  check(unexpectedPublic.length === 0,
+    "every unauthenticated route is one somebody decided to expose",
+    unexpectedPublic.length
+      ? `\n        UNEXPECTED: ${unexpectedPublic.join("\n        UNEXPECTED: ")}`
+      : `${buckets.public.length} public route(s), all accounted for`);
+
+  // ...and the reverse: a route that stops being public should not leave a
+  // stale entry behind claiming it still is.
+  const goneFromApp = Object.keys(PUBLIC_ALLOWED)
+    .filter((k) => !buckets.public.some((r) => `${r.method} ${r.path}` === k));
+  check(goneFromApp.length === 0, "and the list has no entries for routes that no longer exist",
+    goneFromApp.join(", ") || "none stale");
   info("classified", Object.entries(buckets).map(([k, v]) => `${k} ${v.length}`).join(" · "));
 
   // Print the exemptions rather than only counting them. An exemption that
@@ -682,7 +888,20 @@ const LIST_NO_IDS = {
   // refusal that has nothing to do with who is asking, and both sessions then
   // see the same 400. Order it as a person would use it and each route is
   // exercised in the state it exists for.
-  const BOARD_ORDER = ["context", "place", "lock", "move", "swap", "remove", "publish/preview", "publish", "draft-from-published"];
+  //
+  // §3.14's withdrawal goes LAST, after draft-from-published, and both halves
+  // of that matter. A route missing from this list ranks 0 and therefore runs
+  // BEFORE the board is set up at all — so the first run with `unpublish` in
+  // the app took A's published fixture row down before `place` and `lock` had
+  // anything to work with, and those two then refused both sessions. And it
+  // has to come after `draft-from-published`, which needs something published
+  // to copy: withdraw first and that route answers "nothing published yet" to
+  // owner and stranger alike, which is not evidence of anything.
+  const BOARD_ORDER = [
+    "context", "place", "lock", "move", "swap", "remove",
+    "publish/preview", "publish", "draft-from-published",
+    "publish/unpublish-preview", "publish/unpublish",
+  ];
   const rank = (r) => {
     if (r.method === "DELETE") return 1000;
     const step = BOARD_ORDER.findIndex((b) => r.path.endsWith(`/board/${b}`));
@@ -927,7 +1146,15 @@ const LIST_NO_IDS = {
   //   ai:models:      the provider catalogue, identical for every school
   //   sso:nonce:      replay protection, written while verifying the ERP token —
   //                   before any school is known, which is the point of it
-  const infra = /^(bull:|sched:inflight:|ai:models:|sso:nonce:)/;
+  //   mail:           §15.3 — captured verification and reset messages, keyed by
+  //                   EMAIL ADDRESS. Deliberately school-less: a person
+  //                   registering has no school, and an address is not a
+  //                   school's property. Dev-read-only, short TTL.
+  //   throttle:*:ip:  §15.3 — sign-in budgets, keyed by source address. Also
+  //                   deliberately school-less, and for the same reason: at
+  //                   sign-in nobody has chosen a school, and an IP belongs to
+  //                   no tenant.
+  const infra = /^(bull:|sched:inflight:|ai:models:|sso:nonce:|mail:|throttle:)/;
   const stray = keys.filter((k) => !infra.test(k) && !/^s\d+:/.test(k));
   const aKeys = keys.filter((k) => k.startsWith(`s${SCHOOL_A}:`));
   const bKeys = keys.filter((k) => k.startsWith(`s${SCHOOL_B}:`));

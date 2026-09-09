@@ -203,6 +203,54 @@ describe("Feasibility Engine — golden fixtures (§4, task 1.14)", () => {
     expect(r.warnings.some((i) => i.code === "LAB_TIGHT")).toBe(true);
   });
 
+  // ---- Check 5b — a subject taught in its own room (§19.1) ----
+  //
+  // The failure this exists for looks like the solver's fault: every section
+  // wants Music, Music may only happen in the Music Room, and one room holds
+  // 40 periods a week. Phase A has to say so before Generate, not after.
+  it("a subject's own room that cannot hold its week → blocker naming the room", () => {
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [905] };
+    snap.roomNames = { ...snap.roomNames, 905: "Music Room" };
+    // 6 periods × 2 sections = 12, against one room's 8 slots (2 days × 4).
+    snap.config.workingDays = [1, 2];
+    snap.config.periodsPerDay = 4;
+    const r = runFeasibility(snap);
+    const issue = r.blockers.find((i) => i.code === "SUBJECT_ROOM_OVERFLOW");
+    expect(issue).toBeDefined();
+    // Named, not just counted — §4's whole "tell me what to fix" requirement.
+    expect(issue!.message).toContain("Music Room");
+    expect(issue!.fix).toMatch(/untick/i);
+  });
+
+  it("ticked with no room named is a WARNING, never a blocker", () => {
+    // The school has half-said something. The lesson takes the home room
+    // exactly as before, so the timetable generates — but the tick is doing
+    // nothing, and silence would leave the screen contradicting the result.
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [] };
+    const r = runFeasibility(snap);
+    expect(r.warnings.some((i) => i.code === "SUBJECT_ROOM_UNSET")).toBe(true);
+    expect(r.blockers.some((i) => i.code.startsWith("SUBJECT_ROOM"))).toBe(false);
+  });
+
+  it("a room that comfortably holds the subject says nothing at all", () => {
+    const snap = cleanSchool();
+    snap.ownRoomSubjectIds = [302];
+    snap.ownRoomsBySubject = { 302: [905] };
+    const r = runFeasibility(snap);
+    expect([...r.blockers, ...r.warnings].some((i) => i.code.startsWith("SUBJECT_ROOM"))).toBe(false);
+  });
+
+  it("says nothing about a school that never ticked the box", () => {
+    // The default for every existing school: the field is absent from the
+    // snapshot entirely, and the check must not invent an opinion.
+    const r = runFeasibility(cleanSchool());
+    expect([...r.blockers, ...r.warnings].some((i) => i.code.startsWith("SUBJECT_ROOM"))).toBe(false);
+  });
+
   // ---- Check 6 ----
   it("class-teacher P1 deadlock: one teacher CT of two sections with always_first → blocker", () => {
     const snap = cleanSchool();
@@ -569,5 +617,150 @@ describe("Check 10 — minimum periods per day (§20)", () => {
     const r = runFeasibility(snap);
     expect(r.blockers).toEqual([]);
     expect(r.warnings.filter((w) => w.code.startsWith("MIN_DAY"))).toEqual([]);
+  });
+});
+
+/**
+ * §27.16 — the curriculum against what the subject says about itself.
+ *
+ * The backstop, not the gate: the Subjects screen and the Allocation grid stop
+ * a new contradiction being written, and this names the ones written before the
+ * declaration existed or through a workbook. Every test here is about the two
+ * ways it must stay quiet.
+ */
+describe("Check 13 — curriculum vs a subject's declared classes (§27.16)", () => {
+  it("says nothing at all when no subject has been narrowed", () => {
+    // Every school that predates the table. `subjectClasses` is absent, which
+    // is "not stated" — not "taught to nobody" (invariant 7).
+    const r = runFeasibility(cleanSchool());
+    expect(r.warnings.filter((w) => w.code === "SUBJECT_CLASS_MISMATCH")).toEqual([]);
+  });
+
+  it("says nothing when the declaration and the curriculum agree", () => {
+    const snap = cleanSchool();
+    snap.subjectClasses = Object.fromEntries(
+      snap.subjectRequirements.map((r) => [r.subjectId, [r.classId]]),
+    );
+    const r = runFeasibility(snap);
+    expect(r.warnings.filter((w) => w.code === "SUBJECT_CLASS_MISMATCH")).toEqual([]);
+  });
+
+  it("warns — never blocks — when they disagree, and names the row", () => {
+    const snap = cleanSchool();
+    const row = snap.subjectRequirements[0];
+    // Declared for a class that is not this one.
+    snap.subjectClasses = { [row.subjectId]: [row.classId + 9999] };
+    const r = runFeasibility(snap);
+    const w = r.warnings.find((x) => x.code === "SUBJECT_CLASS_MISMATCH");
+    expect(w).toBeDefined();
+    expect(w!.message).toContain(row.subjectName);
+    /*
+      The load-bearing assertion, and the reason this is not Check 8.
+
+      A teacher outside their scope BLOCKS because generating would put them in
+      front of a class they may not take. This one would generate a lesson
+      somebody typed on a screen that let them; what is wrong is that two
+      statements disagree, and refusing the whole school over that turns a
+      convenience into a trap.
+    */
+    expect(r.blockers.filter((b) => b.code === "SUBJECT_CLASS_MISMATCH")).toEqual([]);
+  });
+
+  it("carries no remedy — neither way out is safe under a standing consent", () => {
+    const snap = cleanSchool();
+    const row = snap.subjectRequirements[0];
+    snap.subjectClasses = { [row.subjectId]: [row.classId + 9999] };
+    const w = runFeasibility(snap).warnings.find((x) => x.code === "SUBJECT_CLASS_MISMATCH");
+    // One is deleting teaching the school may genuinely do; the other is
+    // widening an answer somebody gave on purpose (§21).
+    expect(w!.remedy).toBeUndefined();
+  });
+});
+
+/**
+ * §28.1 — the school's own "getting full" line.
+ *
+ * The point of every test here is that this must NOT behave like the other
+ * checks. It is the one thing in the engine that reports a school which is
+ * completely fine.
+ */
+describe("Check 12 — teacher load alert (§28.1)", () => {
+  /** cleanSchool's teachers sit at 12 of 30 — 40%, comfortably under any line. */
+  const quiet = () => cleanSchool();
+
+  it("says nothing while everybody is under the line", () => {
+    const r = runFeasibility(quiet());
+    expect(r.warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+  });
+
+  it("warns — never blocks — once somebody crosses it", () => {
+    const snap = quiet();
+    // 12 of 30 is 40%. Drop the cap to 15 and they are at 80%.
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const r = runFeasibility(snap);
+    const w = r.warnings.find((x) => x.code === "TEACHER_LOAD_ALERT");
+    expect(w).toBeDefined();
+    // The load-bearing assertion. A teacher at 80% of their limit is a
+    // normally employed teacher; refusing to generate would make most real
+    // schools ungenerable, and the school asked for an alert, not a refusal.
+    expect(r.blockers.filter((b) => b.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+    expect(w!.message).toMatch(/at or above 75% of their weekly limit/);
+  });
+
+  it("is ONE row naming the worst, not one row per teacher", () => {
+    // At 122 staff, a warning each buries every real blocker under thirty rows
+    // of "this is fine, but".
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const rows = runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].message).toMatch(/teacher\(s\) are at or above/);
+  });
+
+  it("follows the school's own number, not ours", () => {
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;   // everybody at 80%
+    snap.config.loadAlertPct = 90;
+    expect(runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toEqual([]);
+    snap.config.loadAlertPct = 60;
+    expect(runFeasibility(snap).warnings.filter((w) => w.code === "TEACHER_LOAD_ALERT")).toHaveLength(1);
+  });
+
+  it("carries no remedy", () => {
+    // Every way to lower the percentage is either a `redistribute` the
+    // Allocation advisor already offers where the work is done, or a `relax`
+    // that raises the very cap the percentage is measured against — a fix
+    // whose only effect is to move the goalposts.
+    const snap = quiet();
+    for (const t of snap.teachers) t.maxPeriodsPerWeek = 15;
+    const w = runFeasibility(snap).warnings.find((x) => x.code === "TEACHER_LOAD_ALERT");
+    expect(w?.remedy).toBeUndefined();
+  });
+});
+
+describe("Check 12 — the alert does not move the readiness score (§28.1)", () => {
+  it("a generable school still reads 100 after somebody asks to be warned", () => {
+    // The product promise: 100% means it will generate. A school that says
+    // "tell me when a teacher passes 60%" has not become less ready by saying
+    // so, and watching its own dashboard drop for answering a question would
+    // read as the setting having broken something.
+    const snap = cleanSchool();
+    const before = runFeasibility(snap);
+    expect(before.score).toBe(100);
+
+    snap.config.loadAlertPct = 30;               // everybody at 12/30 = 40%
+    const after = runFeasibility(snap);
+    expect(after.warnings.some((w) => w.code === "TEACHER_LOAD_ALERT")).toBe(true);
+    expect(after.score).toBe(100);
+    expect(after.ready).toBe(true);
+  });
+
+  it("but a real warning still costs what it always did", () => {
+    // The exemption is for this code alone, not a general softening.
+    const snap = cleanSchool();
+    snap.teachers[0].minPeriodsPerDay = 9;       // §20: load too small — a warning
+    const r = runFeasibility(snap);
+    expect(r.warnings.length).toBeGreaterThan(0);
+    expect(r.score).toBeLessThan(100);
   });
 });

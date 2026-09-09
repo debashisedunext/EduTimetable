@@ -124,10 +124,24 @@ export class RolesAdminController {
     }
     if (body.teacherId !== undefined) {
       if (body.teacherId !== null) {
+        const teacherId = toInt(body.teacherId, "teacherId");
         const t = await this.prisma.teacher.findFirst({
-          where: { id: toInt(body.teacherId, "teacherId"), schoolId: req.user.schoolId },
+          where: { id: teacherId, schoolId: req.user.schoolId },
         });
         if (!t) throw new BadRequestException("Teacher record not found");
+        // §18, one teacher one login (added with Phase 25.6, where creating
+        // logins in bulk made this reachable by accident rather than by
+        // deliberate mis-clicking). Two users linked to the same teacher would
+        // each see "my timetable" and both be right, and one absence would have
+        // two people to notify.
+        const taken = await this.prisma.user.findFirst({
+          where: { schoolId: req.user.schoolId, teacherId, id: { not: userId } },
+        });
+        if (taken) {
+          throw new BadRequestException(
+            `${t.name} is already linked to ${taken.name}'s login. Unlink that one first.`,
+          );
+        }
       }
       data.teacherId = body.teacherId === null ? null : toInt(body.teacherId, "teacherId");
     }

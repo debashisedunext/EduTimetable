@@ -13,10 +13,14 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { toInt } from "../masters/crud.util";
 import { DraftsService } from "./drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
 
 @Controller("timetable-configs/:id/drafts")
 export class DraftsController {
-  constructor(private readonly drafts: DraftsService) {}
+  constructor(
+    private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
+  ) {}
 
   @Get()
   @RequirePermission(PERMISSIONS.TIMETABLE_EDIT)
@@ -26,7 +30,10 @@ export class DraftsController {
 
   @Post()
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
-  create(@Param("id") id: string, @Body() body: any) {
+  async create(@Param("id") id: string, @Body() body: any) {
+    // §29.1 — a draft is the route to publishing a different week (§22), so it
+    // waits for the thaw. Listing and reading drafts are untouched.
+    await this.freeze.assertConfigs([toInt(id, "id")], "the timetable");
     return this.drafts.create(toInt(id, "id"), {
       label: body?.label ?? null,
       copyFromDraftId: body?.copyFromDraftId != null ? toInt(body.copyFromDraftId, "copyFromDraftId") : null,
@@ -45,6 +52,7 @@ export class DraftsController {
   @RequirePermission(PERMISSIONS.TIMETABLE_EDIT)
   async rename(@Param("id") id: string, @Param("draftId") draftId: string, @Body() body: any) {
     const configId = await this.ownConfig(id);
+    await this.freeze.assertConfigs([configId], "the timetable");
     return this.drafts.rename(configId, toInt(draftId, "draftId"), body?.label ?? null);
   }
 
@@ -52,6 +60,7 @@ export class DraftsController {
   @RequirePermission(PERMISSIONS.TIMETABLE_EDIT)
   async archive(@Param("id") id: string, @Param("draftId") draftId: string, @Body() body: any) {
     const configId = await this.ownConfig(id);
+    await this.freeze.assertConfigs([configId], "the timetable");
     return this.drafts.archive(configId, toInt(draftId, "draftId"), body?.archived !== false);
   }
 
@@ -67,6 +76,7 @@ export class DraftsController {
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)
   async discard(@Param("id") id: string, @Param("draftId") draftId: string) {
     const configId = await this.ownConfig(id);
+    await this.freeze.assertConfigs([configId], "the timetable");
     return this.drafts.discard(configId, toInt(draftId, "draftId"));
   }
 

@@ -7,11 +7,19 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "test:isolation": "sh scripts/isolation-suite.sh",
+    "test:freeze": "node scripts/freeze-smoke.cjs",
+    "test:staffing": "node scripts/staffing-smoke.cjs",
+    "test:grids": "node scripts/reports-grid-smoke.cjs",
+    "test:groups": "node scripts/resource-groups-smoke.cjs",
     "lint": "eslint ."
   },
   "devDependencies": {
+    "@eslint/js": "^9.18.0",
     "eslint": "^9.18.0",
-    "typescript-eslint": "^8.20.0",
-    "@eslint/js": "^9.18.0"
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "typescript-eslint": "^8.20.0"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.2.0"
   }
 }

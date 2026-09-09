@@ -37,6 +37,7 @@ import {
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { ResourceGroupService } from "../groups/resource-group.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { cascadeDelete, countImpact, describeImpact, type Impact } from "./dependencies";
 import { ErpSourceService } from "./erp-source.service";
@@ -83,6 +84,7 @@ export class SyncService {
     private readonly erp: ErpSourceService,
     private readonly readiness: ReadinessService,
     private readonly cache: CacheKeysService,
+    private readonly groups: ResourceGroupService,
   ) {}
 
   /** What we already hold, in the same column keys the ERP rows arrive in. */
@@ -507,6 +509,11 @@ export class SyncService {
         await tx.classSection.create({
           data: {
             schoolId, classId: cls.id, sectionId: section.id, academicYearId: year.id,
+            // §30 — the session's shared pool, because the row is created
+            // unassigned. Written explicitly and not by the type checker's
+            // insistence: `tx` here is `any`, so this file is one of the few
+            // where a missing required column compiles and fails at runtime.
+            resourceGroupId: await this.groups.defaultFor(year.id),
             strength: row.strength === null ? null : Number(row.strength) || null,
             // Deliberately unassigned: which timetable a section belongs to is
             // a §3.10 decision the ERP knows nothing about.

@@ -42,7 +42,7 @@ export function ExtraClasses() {
   const { data: window } = useApi<{ days: number[]; periods: { periodNumber: number; startTime: string; endTime: string }[] }>(
     current ? `/extra-classes/window?configId=${current.id}` : null,
   );
-  const { data: sections } = useApi<any[]>("/class-sections");
+  const { data: sections } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
   const { data: subjects } = useApi<any[]>("/subjects");
   const { data: teachers } = useApi<any[]>("/teachers");
   const { data: rooms } = useApi<any[]>("/rooms");

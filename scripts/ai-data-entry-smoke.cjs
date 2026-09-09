@@ -29,6 +29,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZAI";
@@ -102,6 +103,7 @@ const draft = (token, sheets) =>
     });
     const config = await prisma.timetableConfig.create({
       data: {
+        resourceGroupId: await groupFor(prisma, year.id),
         schoolId: id, academicYearId: year.id, name: `${P} ${tag} Wing`,
         periodsPerDay: 8, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5],
       },

@@ -276,6 +276,23 @@ The academic-year qualifier is load-bearing (§3.11): a teacher's periods in *ne
 
 **Solver scope:** Phase B (§5) solves one `timetable_config` at a time — its variable set is exactly the class-sections scoped to that config — so Middle Wing can be regenerated, edited, and published independently of Senior Wing without touching its slots. `timetable_slots.timetable_config_id` (already the leading column in every unique key in §3) is what makes this safe: two configs' slots never collide in the uniqueness checks even if, coincidentally, they'd otherwise land on the same `(day, period)` — because their teachers, rooms, and class-sections are typically disjoint by wing, and where they aren't (the cross-wing teacher case above), the load-sum check in §4.2 is what catches it, not the slot-uniqueness constraint.
 
+### 3.10a New Timetable *is* New Wing (Phase 41)
+
+The Timetables screen's **New Timetable** button created a `timetable_config` and then handed the admin the step-by-step Setup Wizard, which asked them to build a school around it master by master. That was a leftover from before the guided setup existed, and by §8.2 it had become the odd one out: the thing the button had just made — a named week that some classes belong to — is exactly what the guided setup's **step 3 (Wings)** makes, and the very next question in either flow is *which classes does it teach*.
+
+So the button now finishes step 3 and opens **step 4 (Classes)**. Nothing new is modelled: a wing has always been a `timetable_config` (§3.10), and this is the second door onto the same row.
+
+**`POST /onboarding/session/wing/:id`** (`masters.manage`) records a config that already exists as a wing in the caller's guided draft, and returns the draft — whose `currentStep` is where the client opens. Four details, each of which was a way to get it wrong:
+
+1. **The id is in the path, not the body.** §17.8's sweep addresses a route by its path parameters, so a body field would have left this one merely *classified* — a sentence in a table asserting it is safe — where a path parameter makes it a controlled experiment the suite actually runs (it does: `A 201 · B 404 on the same config`). The wing's *name* is read off the row rather than taken from the request, which is what makes another school's id a 404 instead of a wing named after somebody else's timetable.
+2. **With no draft, the school's own answers are rebuilt first.** `prefillFromSchool` deliberately does not save (§27.12), so a draft holding only the new wing would be the *first* row for that person — and every subject, teacher and room already entered would be gone from the guided setup for good.
+3. **A wing already in the draft is not added twice.** Names are the natural key throughout this flow — `commitWings` skips by name, the §16 importer skips by name — so a duplicate row would be silently ignored later while showing twice on screen now.
+4. **The draft's session is aligned to the config's own year.** Step 4 writes class-sections through the importer with an `Academic Year` column taken from `answers.session.name`; naming a different year files them against the wrong session (§3.11) and the wing looks empty afterwards. The client picks the year the same way `commitWings` does, so a wing created here and a wing created there land in the same session.
+
+**Which wing step 4 opens on travels in the URL** (`/guided-setup?at=4&wing=…`), not in the draft. It is where somebody is being *sent*, not something they have said: stored as an answer it would keep forcing that tab on every later visit; in the URL it is spent as soon as they navigate. On a school already running three wings, landing on the first one's ladder read as the button having done nothing.
+
+The default range and section count for a brand-new wing (**Class 1 – Class 6, two sections**, or the matching entry in `WING_SUGGESTIONS` if the name is one of the three suggested ones) now live in `packages/shared` as `wingRangeFor` / `DEFAULT_WING_SECTIONS`. There are three doors that create a wing — step 3's *+ Add wing*, `answersFromSchool` rebuilding a wing that has no classes yet, and this button — and all three carried their own copy of `4`, `9` and `2`.
+
 ### 3.11 The Academic Year is Part of the Curriculum (Phase 19)
 
 `class_subjects` is keyed **(class_id, subject_id, academic_year_id)**. It was originally keyed on class and subject alone, with no year dimension at all — so a single row served every session the school had ever run, and editing Class 5's periods/week for 2026-27 silently rewrote what 2025-26's readiness report said about the same class. No school hit it, because every school shipped so far runs one academic year.
@@ -313,6 +330,38 @@ Also deliberately not copied, each for its own reason: **extra classes** (§18 �
 The clone always arrives with `status = 'draft'`: it has not been generated, let alone checked, so it must not wear the source's `active` badge.
 
 **Sessions must be visibly apart afterwards.** Cloning is what makes duplicate-looking rows normal, so the three list screens that would otherwise show two sessions at once take an optional `academicYearId`: `GET /class-subjects` (§3.11), `GET /mappings`, and `GET /elective-blocks`. Each screen supplies it from the timetable already chosen in the top bar. Without this the Teacher Mapping screen shows "Class 5-A · English · Mrs Rao" twice with nothing to tell the rows apart, and the Electives screen shows "Class 5 Third Language" twice — a feature that breaks the screens it feeds is not finished.
+
+### 3.13 Deleting a Timetable
+
+A school that builds the wrong wing needs a way to remove it, and `DELETE /timetable-configs/:id` was one line: detach the class-sections, delete the row. It returned 200 and the card disappeared, which is exactly why it went unnoticed — **`timetable_slots` and `timetable_publications` have no foreign key to `timetable_config`.** Every generated row survived, pointing at a timetable that no longer existed: on no screen, in no count, unreachable forever. MySQL raised nothing, and never would.
+
+So the cascade is hand-written, in `masters/config-deletion.ts`, and each step declares its **count and its delete in one object** — the §23.7 rule, for the same reason: two lists are free to disagree, and the day they do, a confirmation dialog under-reports a destructive write.
+
+**What goes:** every draft's slots (including the §18 `source='extra'` rows, which sit outside every draft and which a per-draft delete misses), the `timetable_drafts` registry, the extra-class rows, the periods and breaks, the auto-resolve history, the publication log, and the config. Slots must go *before* drafts — `draft_id` is the base column of the generated `draft_scope`, so its FK is RESTRICT and MySQL refuses to remove a draft that still has rows. The cascading tables are deleted explicitly rather than left to MySQL, because the confirmation has to be able to say "and its 40 periods"; a silent cascade is a destructive write nobody was shown.
+
+**What stays:** class-sections are *detached*, never deleted, and they keep their strength, home room, class teacher and curriculum — the state a newly created section is in anyway. Classes, subjects, teachers and rooms are untouched. **Deleting a wing must not delete the children in it**, and that line is what a person pressing Delete is expecting.
+
+**A published timetable is refused, by name.** A school may be teaching from it, and `substitution_log` points into its rows with no FK of its own — substitutes are only ever assigned against published slots, so this refusal is also what keeps that table from being orphaned. The refusal names what to do instead rather than greying out a button that explains nothing, and it is enforced when the DELETE arrives: the plan is recomputed server-side, never taken from the request, so a preview held open for five minutes is never the list of writes.
+
+**On the screens.** The Timetables card gains a Delete button that opens the counted plan and asks for the timetable's name to be typed — the list above it is long, the action cannot be undone, and the cards are three lines apart. And the guided setup's wings step (§24.2a) loses "Remove" for a wing that has already been **created**: it only ever removed the wing from the draft, leaving the `timetable_config` standing, so the admin met it again on the Timetables screen wondering what the button had done. A wing that has *not* been created keeps its Remove, and must — otherwise a mistyped name is created on Next, deleted from the Timetables screen, and proposed again by the draft on the next Next.
+
+`scripts/delete-timetable-smoke.cjs` counts rows rather than reading responses, which is the only way this feature can be tested: the bug it exists for returned 200.
+
+### 3.14 Withdrawing a Published Timetable
+
+The lifecycle had no way back. A school could publish, and publish again, and that was all — and two other screens told them otherwise: §27.11's allocation reset and §27.15's cell delete both refuse published work with "unpublish it first", which was advice about a button that did not exist. `POST /timetable-configs/:id/board/publish/unpublish` is that button.
+
+**The rows are flipped, not copied and deleted**, and that is the load-bearing choice rather than an optimisation. `substitution_log` refers to slots by id and has no foreign key of its own, so a copy-and-delete would leave every recorded cover pointing at a row that no longer exists, and republishing would mint a new set of ids that no substitution matches. Flipping keeps every id, which makes the whole operation reversible by pressing Publish again — the smoke asserts exactly that: the same 160 rows, the same ids, back as v2.
+
+**Back into the draft it came from, when that draft is still empty.** Publishing flips a draft's rows in place and leaves the registry row behind as provenance, so the ordinary case is one `draft_id` shared by every published row pointing at a draft with nothing in it; flipping them home is the exact inverse, with the same draft number and label. Anything else — rows from before §22 with no draft id, or a draft since filled again — goes into a new draft. That is not caution for its own sake: `draft_scope` is in all three unique keys, so flipping a week into a draft that already holds one would collide on the first cell and roll back with a database error instead of an explanation.
+
+**The version is kept and marked withdrawn** (`withdrawn_at`, `withdrawn_by_id`). Deleting the publication row would make v3 disappear and renumber the next publish back to v3, quietly rewriting the school's own record of what was on the wall in September.
+
+**What it does not touch:** §18 extra classes, which live in both statuses and are no part of the publish lifecycle; the drafts a previous publish archived, since nothing records which they were and guessing would resurrect work a school had moved on from; and the substitutions, which are counted and named in the confirmation instead — they vanish from the Substitute Center while the timetable is a draft and line up again on republish, which is a consequence worth being told before pressing the button rather than discovering afterwards.
+
+**Everyone who was told it went live is told it came down.** The publish notification says "v3 is now live — view yours"; without the other half a teacher opens My Timetable to an empty week with no way to tell whether the school changed something or the app broke.
+
+It asks for `timetable.publish`, the same authority that put it there — `timetable.edit`, which is enough for "draft from published" because that only *adds* a working copy, is deliberately not enough to take the school's timetable down. The isolation gate caught the first version answering a stranger `200` with an empty plan: every query in it is school-scoped, so another school's config id matched nothing and produced a plausible "nothing published" answer instead of a 404 (§17.8, "another school's id is 404, never a successful no-op").
 
 ---
 
@@ -468,6 +517,29 @@ What was missing was any way to **enter** it: the Excel importer's "Teacher Unav
 The last two are computed from the config's real period times, which is why the grid shows them. One representation whichever way it was typed: the solver cannot tell a pattern from hand-clicked cells, and neither can the next person to edit it.
 
 Two rules the screen holds to. A day with **every** teaching period blocked is saved as one whole-day row rather than N rows — that is what the NULL means, and it keeps meaning it if the timetable later gains a period. And availability belongs to the **teacher, not to a timetable**: the grid is drawn from the current config's day, but the rule applies wherever that teacher is timetabled, which the screen says plainly rather than letting somebody assume otherwise.
+
+### 4.7b Time off for a class, a subject and a room
+
+§4.7a gave a teacher an availability grid. Three other things in a school have exactly the same kind of fact and could not say it: a **class** is not in school on a half-day, a **subject** may not be taught in a given slot ("no games in period 1"), a **room** cannot be used while it is being cleaned. `class_section_unavailability`, `subject_unavailability` and `room_unavailability` are the teachers' table three more times, and one **Availability** screen edits all four — a tab per kind, the same week grid, the same quick patterns.
+
+**Three tables, not one polymorphic one.** An `entity_type`/`entity_id` pair would have saved two migrations and cost the foreign key, and a blocked cell pointing at a teacher who has been deleted is a constraint nobody can find. It would also leave the §23 sync cascades unable to name what they delete, which §23.7 requires. The sameness lives in the code that reads them — `blockedCells` in `feasibility/time-off.ts` is the one definition of **"`period_number` NULL means the whole day"**, used by the solver, the board and the engine — rather than in a column that erases what a row is about.
+
+**Where each one binds:**
+
+| Kind | Solver | Feasibility |
+|---|---|---|
+| Teacher | domain pruning (§4.7a) | Check 2 subtracts it from weekly capacity |
+| Class-section | domain pruning — the cell is gone for every variable of that section | **Check 1 makes the week smaller** |
+| Subject | domain pruning — gone for every variable of that subject, in every class | **Check 1b**: does the subject still fit in the cells it is allowed? |
+| Room | the cells are written into the occupancy map at construction | the §19/§19.1 room supply counts what is left |
+
+**The class one is the load-bearing one, and it is a capacity fact, not a preference.** Check 1 computes `available = days × periods`; without subtracting the blocked cells a class with Friday off still reads as having 40 slots, Readiness says 100%, and the solver then fails to place a curriculum that no longer fits — which reads as the solver's fault. The message says so in full: *"Class 2-A needs 40 periods/week but only 32 slots exist (5 days × 8 periods, less 8 blocked)"*, and the fix names the Availability screen, because time off is the newest of the three reasons and the one somebody may not remember setting. Days outside the working week cost nothing: a school that blocks Saturday and then drops Saturday from its week has said the same thing twice, and the second saying must not shrink the week again.
+
+**A blocked room is a room that is already taken.** Its cells go into `SolverState`'s occupancy map at construction, with the same sentinel §7.4's locked cells use, rather than becoming a fourth condition in each of the five places that pick a room — the home room, the lab pool, §19.1's own-room pool, a mapping's preferred room and each §4.9 option's fixed room. All five become correct at once, and no future room-picking branch can forget it. The two branches that name a specific room say *"the room is not available then"* rather than *"occupied"*, because the second is a fact about the timetable and the first is a fact somebody can go and change.
+
+**A multi-section or multi-subject variable needs every one of them free** — a §4.10 merged group where any member class is out, a §4.9 block where any option's subject is blocked, cannot run. The same intersection rule the option *teachers* already followed, for the same reason: the lesson happens once, in one cell, for all of them.
+
+Two states, not three. The screens this pattern comes from offer a middle "conditional — use only if necessary", which is a **soft** preference and therefore a scoring term in the §5.6 objective rather than a pruning rule. That is a different mechanism from everything above and is deliberately not built: available or not available, hard, like every other §4.7 rule.
 
 ### 4.8 Class-Subject-Level Consecutive Period Configuration
 
@@ -743,7 +815,7 @@ Manually placed/approved cells can be pinned (`is_locked = true`) so a future re
 ## 8. Screens (Full List + Sample HTML for the 3 highest-complexity ones)
 
 ### 8.1 Full screen list
-0. **Timetables** — the landing screen: every timetable_config the school runs (Primary Wing, Middle Wing, Senior Wing, …), each with its classes covered, periods/day, timing, and status. "+ New Timetable" starts a fresh wizard without disturbing the others; "Edit" re-opens an existing one directly at its config step.
+0. **Timetables** — the landing screen: every timetable_config the school runs (Primary Wing, Middle Wing, Senior Wing, …), each with its classes covered, periods/day, timing, and status. "+ New Timetable" starts a fresh wizard without disturbing the others; "Edit" re-opens an existing one directly at its config step. **Each card carries five actions, coloured by what they do**: ✎ Edit and ⚡ Guided are the two ways to get on with the work (filled brand, and brand-tinted — siblings, not neighbours), ◎ Readiness checks it (accent), ⧉ Clone copies it (neutral), 🗑 Delete destroys it (signal). Five identical grey outlines made Clone and Delete look like the same kind of thing, which is the one pair here that must not. The status pill moved up beside the timetable's name, where it describes rather than acts — standing in the action row it was also what made the row ragged, being a pill 12px shorter than every button beside it.
 1. **Setup Wizard** (multi-step, scoped to one timetable_config at a time): Academic Year → Classes/Sections → Rooms → Subjects → **Teachers** (list + add/edit — see 8.1a) → Timetable Configuration (name, description, classes covered, days, periods, start time, breaks, zero period, computed end time) → Curriculum mapping (class↔subject) → **Teacher Mapping** (Class-Teacher Assignments + Subject Mapping, both list + add/edit — see 8.1b). *Capacity-first ordering:* the config step fixes the week's period count (periods/day × working days), and every later periods/week field (curriculum rows, subject mappings, merged groups) is hard-validated server-side against that capacity at entry — a value above it is rejected with a message naming the config and its cap.
 2. **Readiness / Feasibility Dashboard** — the live blocker/warning panel from §4
 3. **Full Allocation Matrix** — the 2,000-slot grid view (§8.3 below)
@@ -808,6 +880,18 @@ This is the missing link the earlier draft of this spec left implicit: `teachers
   </table>
 </div>
 ```
+
+### 8.1d The nav collapses to icons
+
+Twenty-four entries in seven groups is a lot of navy down the left of every screen, and the screens that need width most — the allocation matrix, the draft board, the curriculum grid — are the ones looking at it. So the sidebar collapses from 236px to **64px of icons**, remembered per browser in `localStorage`: which way somebody likes their nav is a preference, not a fact about the school, and it never goes to the server.
+
+**The width is a root token, not a width on the sidebar.** `--sidebar-w` is what the §24.5d guided-setup dialog insets itself by, so collapsing sets it on `document.documentElement`. Setting it locally would shrink the nav while the dialog kept a 236px gap down its left edge — a strip of dead page that would be very hard to trace back to a nav toggle. It is read before the first paint, so the nav does not flash open and snap shut on every page load.
+
+**The icons are inline SVG, not emoji**, and the reasons are all about the collapsed state. They inherit `currentColor`, so an icon goes white on the active row exactly as its label does — twenty multicoloured emoji in a navy panel would be the loudest thing on screen, and the nav is the one part of the app that should never compete with the timetable. They render identically on every platform, which matters when the icon is the *only* thing identifying a screen. And `icon` is a **required** field on a nav entry, so a new screen cannot be added without choosing one.
+
+**The label slides out of the icon and back in.** One flyout element for the whole nav, `position: fixed`, its top measured from the hovered row. Two things about that are load-bearing: a label nested in its own row cannot work, because `.sidebar-nav` scrolls and therefore clips, and CSS has no way to be scrollable on one axis and visible on the other; and the flyout **stays mounted**, fading and sliding in both directions, because an element removed on mouse-leave has nothing left to animate — "and then go inside" needs the thing to still be there on the way back. Keyboard focus opens it too, and `prefers-reduced-motion` turns the movement off.
+
+What is left when the labels go: the group headings become 1px rules, so seven groups still read as seven groups rather than one column of twenty-four icons; the school's name, the user's name and the sign-out text fold away by the same rule; and every row keeps `title` and `aria-label`, so the name reaches a screen reader and a native tooltip whatever the animation is doing.
 
 ### 8.2 Substitute Teacher Center (sample HTML)
 ```html
@@ -1143,6 +1227,74 @@ The endpoints (`status`, `probe`, `preview`, `apply`, `reload`, `logs` — all `
 `preview` writes nothing. `apply` recomputes the plan from the ERP and our own tables, so a stale preview can never become the list of writes (§16's rule, and §21's) — the request carries the master, the mode and the confirmation, never the rows. `erp_sync_runs` is scoped like every other table, so a school's history is its own.\n\nThe route family's §17.8 exemption is earned by `erp-sync-smoke.cjs` step 13: two schools against one stand-in ERP, each asserting it sees, writes and logs only its own rows.
 
 ---
+
+### 10.6 The Timetable Wall (Phase 42)
+
+A canvas of small week cards, each pinned to one **teacher, class-section, room or subject**, picked from an empty cell. Routed at `/wall`, under **Reference** beside Reports, gated on `reports.view`. It reads and never writes.
+
+Most of it already existed: `WeekGrid`, the two grid endpoints, `/reports/options` and the §10.5 colour scheme. What did not, and what building it turned up, is below.
+
+#### 10.6a A period number stopped being an identity — and a defect that came from that
+
+`teacherTimetable` took its day shape from `slots[0].timetableConfigId` — whichever row the database happened to return first — and the renderer then walked *that* wing's periods. §3.10 makes a cross-wing teacher ordinary (the art teacher who also covers Class 6), and for every one of them the grid was wrong twice over:
+
+- a lesson at a period number the chosen wing does not have **was never drawn**, because the renderer had no row to draw it in;
+- and the grid map is keyed `day:periodNumber`, so Junior's Monday P3 and Senior's Monday P3 **collided and one silently won**.
+
+Measured on a two-wing fixture (6 periods from 08:00 against 8 from 07:30, one teacher in both): **3 of 20 lessons vanished**, and Senior's P7 and P8 had no row at all. `scripts/reports-grid-smoke.cjs` drives exactly that fixture, and the pre-fix behaviour was restored once to confirm it fails.
+
+The fix is a row **key**:
+
+```ts
+rowKey = (configId, periodNumber) => `c${configId}p${periodNumber}`
+cellKey = (day, key) => `${day}:${key}`
+```
+
+Uniformly, never "sometimes the number and sometimes this" — a two-mode key is a bug waiting for the first school with two wings. `GridRow` carries `key`, `configId`, `wing`, and the card carries `wings[]`. `shapeFor(configIds)` returns the **union** of every involved wing's rows, ordered by clock, so two wings interleave exactly as the morning does. A single-wing card — every class-section card, and most teacher cards — keeps precisely the shape it had.
+
+Rows are deliberately **not merged** across wings even when the times match: a card is true of one entity, and merging would have to pick one of two period numbers and be wrong about the other. Aligning cards to one clock is a property of a *wall of cards*, so it lives on the client, where the collection is known.
+
+#### 10.6b Two new cards, and one correction to the plan
+
+**Room** (`GET /reports/room/:id`) — cells headline the class-section, subtitled subject and teacher. It must include §4.9 **option rows** (`class_section_id = NULL`); a query by section would find none of them and a room running three language options would read as free. That is invariant 9 one level out.
+
+**Subject** (`GET /reports/subject/:id`) — a subject is not one lesson. Maths runs in eight sections at Monday P1, so a cell drawn like a teacher's would name one and discard seven. The cell is a **count plus its sections**, heat-tinted against a `busiest` scale the server sends, so two subject cards are comparable. It answers what the other three cannot: *is this subject stacked where the school said it should be* — §26's priority and lunch rules, audited after the fact.
+
+**Both need `view.all`**, and this corrects the plan. Scope elsewhere in this module is a row-level *filter* — a class-scoped teacher sees their own sections. Filtering a room's occupancy produces a grid saying **"Lab 2 is free on Monday P3"** when another class is in it: a wrong answer, not a smaller one. `roomUtilization` already required `view.all` for the same reason. `/reports/options` therefore offers rooms and subjects only to `view.all`, rather than listing a picker whose every entry 403s.
+
+#### 10.6c One request for the whole wall
+
+`GET /reports/wall?cards=t:1,cs:44,r:7,sub:3&date=…` — the compact `type:id,…` form §29.3's `units=` already uses, so a heterogeneous id list has one shape in this codebase rather than two.
+
+- **Capped at 24 and the cap is reported** (`max`, `dropped`). A truncation nobody is told about reads as "that is everything".
+- **A refused card is data, not an error**: `{ kind, id, denied, reason }` in its own place on the wall, so a shared wall degrades per viewer instead of blanking. Only `Forbidden` and `NotFound` are caught — anything else still 500s, or the wall becomes the one screen where a real fault renders as a tidy grey card.
+- **An unknown or malformed entry is skipped, not refused** (§21's "the screen may be stale"): a saved wall outlives the things on it, and one deleted teacher must not make the other eleven unreachable.
+- Each card still goes through its own function, so a card on the wall and the same card on the Reports screen are byte-identical — the saving is round trips and shared Redis reads, not a second query path. Measured on Second Branch (122 teachers, 2,360 published slots): **179 ms cold, 8 ms warm** for 24 cards, against the §14 budget of 300 ms.
+
+#### 10.6d The screen
+
+- **One clock down the left.** The axis is the union of every card's start times, so cards from different wings line up by real time. Period numbering is a toggle — a timetable clerk thinks in period numbers, a head of department in minutes. A card with nothing at an axis time gets a hatched row rather than being skipped, or the rows below would slide up and the alignment would silently be a lie. **This is only truthful because of §28.5** (one period duration per config); if that is ever revisited, this axis must be revisited with it.
+- **Cross-highlight.** Hovering a lesson lights it in every card showing it, because the payload carries `slotIds` per cell — three cards showing one `timetable_slot` is a fact the server states, not something the screen infers by matching names. The highlight is an inset ring, not a border: a border would resize the cell and nudge every card as the pointer moved.
+- **One date for the whole wall**, pushed into every card — the morning briefing, with substitutions in cyan.
+- **A search, not four menus.** One box over all four kinds; the reference school has 122 teachers, and §8.5's rule is that a long list gets a filter before it gets a better menu.
+- **Three densities.** `full` reuses `WeekGrid`; `compact` and `dots` use the wall's own renderer — `WeekGrid` is right for one printed sheet and wrong for twelve at once. They share the payload and the §10.5 colour rules, which is where agreement matters.
+- **Who is free at this moment.** Pinning a lesson reports which teachers *on this wall* are free then — and says exactly that, because it is a far weaker claim than the Substitute Centre's and presenting it as more would be the wrong-answer failure again. A card whose wing does not run at that time is counted as neither free nor busy.
+- **Resizing preserves position.** The cells are a flat array; growing the columns without remapping moves every card one place left and reads as the wall shuffling itself.
+- **Only the next free cell offers the search box**; the rest are a thin `＋` until clicked. A 4×3 wall holding four cards otherwise draws eight identical full-height invitations — most of the screen given over to asking a question nobody asked, eight times.
+
+**The wall is a column of flex rows, not one CSS grid — and that is the fix for a real bug, not a preference.** Every card was painting on top of the card below it. The mechanism is worth stating because it is not obvious: **a grid item taller than its track is not clipped by the track, it is painted over the next row**. So any disagreement between a card's height and its track's height becomes an *overlap* rather than a scrollbar, and `overflow: hidden` on the card cannot help — the card's box *is* its content height, so nothing overflows the card; what overflows is the track.
+
+Two fixes were tried against the track sizing and neither worked: `grid-auto-rows: minmax(0, auto)` → `auto` (a `0` minimum does remove the automatic minimum track size, and it was wrong to have there, but it was not the cause), then `align-content: start`. The third attempt would have been another guess at a subtlety.
+
+Stacked flex rows cannot express the problem at all: a flex row is as tall as its tallest child by construction, and the next row begins after it because that is what block flow does. There is no track to disagree with. The row also became a real element, which is what lets `align-items: stretch` give every card in a row the same height — and an empty cell `align-self: flex-start`, so one tall card does not give its row a full-height `＋`.
+
+The lesson generalises: **when a layout's correctness depends on two independently-computed heights agreeing, choose the structure where only one height exists.**
+
+#### 10.6e Deliberately not built
+
+- **Editing on the wall.** Drag-and-drop belongs on the Board, where the rules engine, the legality highlighting and the §29.1 freeze guard live. A second editor over the same rows is how two answers to "may this move?" come into existence.
+- **A free-form canvas.** A grid is what makes the shared clock axis mean anything.
+- **Per-card dates.** The wall's whole claim is that its cards are one week seen from several sides; different dates per card would make cross-highlight quietly untrue.
 
 ## 11. Rule-Based Intelligence vs AI — Summary Table
 
@@ -1753,6 +1905,26 @@ Check 5 asks whether there are enough lab periods in total; Check 9 asks whether
 
 Merged groups fall back to the first member's room when they have none of their own; elective options already carry their own rooms, and the member sections' rooms stay free because those students are in the option rooms.
 
+### 19.1 A subject taught in its own room
+
+§19 gave the solver three ways to choose a room: a mapping's `preferred_room` (one class's one subject), a lab subject's mapped labs, and otherwise the class-section's home room. What no school could say was the **ordinary middle case**: Music happens in the Music Room, for everybody, and it is not a lab. `subjects.taught_in_own_room` is that sentence.
+
+**One column, and deliberately no room id beside it.** Which rooms a subject uses is already recorded — `room_subjects` has meant "this room serves these subjects" since §19, and it is what stops a biology period being sent to the physics lab. A `subjects.room_id` column next to it would be a *second* answer to "where does Music happen?", free to disagree with the first, with both feeding the same solver; and it would be a worse answer, since a school with two music rooms cannot say so in a single foreign key. **The flag says WHETHER, `room_subjects` says WHERE.** The Subjects screen edits both — which is what was asked for — while the database keeps one source of truth.
+
+**The room ladder, in order.** `preferred_room` (most specific: one class, one subject, one named room) → **the subject's own rooms** → the lab pool → the home room. Own-room sits *above* the lab branch on purpose: a school that ticks the box on Biology and names the Bio Lab is being narrower, and the lab branch would widen it again by falling back to every general lab — precisely the "it went somewhere else because that was free" the tick exists to prevent.
+
+**Ticked with no room named is UNSTATED, not "anywhere"** (invariant 7). Treating an empty pool as every room in the school would scatter Music through whichever classrooms happened to be free. The lesson takes the home room exactly as before, and Check 5b says the tick is doing nothing — silence there would leave the screen contradicting the timetable.
+
+**Check 5b** is the Phase A half, and it is per **subject**, unlike the lab aggregate: two music rooms and a pottery room are not interchangeable capacity, so a total would hide the shortage. `SUBJECT_ROOM_OVERFLOW` is a blocker naming the room ("Music needs 112 periods/week in 1 room (Music Room), which holds 40"); `SUBJECT_ROOM_TIGHT` warns at 90% — tighter than the labs' 80% because a lab pool is interchangeable and a subject room is one place; `SUBJECT_ROOM_UNSET` is the half-said case above. Without this, ticking the box on a school of 56 sections asks for something arithmetic forbids and the failure surfaces as the solver's fault.
+
+**The board gets the same rule for free** (one rules engine, three call sites) — with one addition: a card whose subject has *several* rooms may re-home between them on a drop, exactly as a lab card re-homes to a free lab. A card sitting in some other room — dragged there before the flag was ticked — keeps that room as a hard constraint rather than being silently moved.
+
+**A bug found on the way.** `roomSheets` never wrote the `Lab For Subjects` column. `suggestRooms` computes those subjects with some care — its own note says a lab proposed without them "does not create a science lab, it creates a second general-purpose room with a misleading name, and the solver will happily put Hindi in it" — and the sheet dropped them on the floor, so **every lab the guided setup has ever proposed arrived general**. Harmless while only labs read the table (a general lab serves everything) and load-bearing now, since this is the column §19.1 learns WHERE from. The header is not renamed, because it is the key in every workbook already downloaded; only the help text widened.
+
+That gap had a workaround: the guided setup ran a second pass (`attachLabSubjects`) after each step-8 commit, upserting the same rows, under a comment claiming "the Rooms SHEET has no column for" the mapping — which was not true even when it was written. So one fact had two writers on one path. Filling the column in retires the workaround, and it is gone: the sheet is the writer, as it is for every other master fact, and the importer's Rooms loop runs for every row rather than only new ones, so re-committing the step still updates the mapping. The guided smoke proves it with the second writer removed — every proposed lab still carries its subject.
+
+On the doors: the manual Subjects master gets the checkbox and a room picker (the rooms exist there, with ids); the guided setup's Subjects step gets the checkbox only, since which subjects a room serves is a fact about the *room* and the Rooms step already says it; the Subjects sheet gains `Own Room`, while `room_subjects` keeps its single importer writer on the Rooms sheet — a room name typed on the Subjects sheet would have to exist by the time Subjects is read, and Subjects is read first.
+
 ### 17.8 Verification (9.10, implemented)
 
 **The isolation suite is one gate, and it is self-maintaining.** `pnpm test:isolation` (`scripts/isolation-suite.sh`, run inside the stack) executes every check below in one command with one exit code, so "is tenancy still sound?" has a single answer rather than nine scripts somebody has to remember. CI fails on it the way it fails on a unit test.
@@ -1963,3 +2135,1059 @@ Nothing in the writer needed changing: `writeDraftSlots` already scopes its dele
 **Regenerating a *published* draft is allowed, and is not the trap it looks like.** Publish flips the draft's rows in place, so a published draft has no `status='draft'` rows left — which is why the Board renders it empty. Generating into it refills that working copy and cannot touch the published set, which lives at `draft_scope = 0`. "Revise what we published" is a real workflow, so it is offered rather than blocked, and the picker says exactly that instead of leaving the admin to infer it.
 
 **RBAC:** drafts stay behind `timetable.edit`/`timetable.generate` (§15.3); draft CRUD wants `timetable.generate`; Publish keeps `timetable.publish`. All new routes are swept or classified by the §17.8 isolation gate like any other.
+
+---
+
+## 24. Guided Setup — the wizard that fills an empty school (Phase 25)
+
+A new school arrives at an empty app, and §16's spreadsheet import only helps a school that already keeps its data in a spreadsheet shaped the way we want. §24 adds the other door: **eleven steps that ask what a school looks like and derive everything else.** The welcome screen offers three of them — Manual entry (the existing Setup Wizard), this guided wizard, and (§24.6) the same questions in conversation.
+
+### 24.1a When the welcome screen opens by itself
+
+Two independent reasons, OR'd: **an unfinished draft**, and **a school with no `timetable_config` at all**. The second one is not once-ever — it holds on *every* sign-in until a timetable exists. A school that has not built one has not started using the product, and the only thing between it and a timetable is knowing where to begin; an offer that appears once and never returns leaves the app's whole job behind a button nobody has a reason to look for.
+
+What stops that being a nag is a **split of authority, not a weaker rule**. The server answers *is there anything to offer* (`shouldPrompt`) — a question about data, which the client has none of, and which a second definition in the browser would drift from. The browser answers *has this sitting been asked*, in `sessionStorage`, so the welcome screen opens once and closing it quiets the rest of the day. `setToken` clears that flag, because sign-in, the SSO callback, entering a school, creating one and switching schools all pass through it — a fresh session is a fresh offer even in a tab that has been open since breakfast, and putting it at the five call sites instead guarantees a sixth arrives without it.
+
+So **"I'll do this later" means later, not never.** `users.onboarding_dismissed_at` is still written, per user, and a colleague's is deliberately independent — but it no longer suppresses the offer, and the code says so where it is written rather than leaving a field that looks like a gate. `onboarding-smoke.cjs` asserts the reversal directly: after a dismissal, `shouldPrompt` is still `true` while the school has no timetable.
+
+Two things this does not do. It never opens for somebody without `masters.manage` — an offer to set up the school is noise to a teacher who could not act on it. And it stops entirely once a timetable exists: a modal in front of the app on the three-hundredth sign-in of a working school is a thing people learn to dismiss without reading, which would waste the one screen that gets to explain the three doors.
+
+### 24.1 The wizard is a face, not a fourth committer
+
+Nothing in the wizard writes a master row. Every step builds the **§16 importer's own sheets** and hands them to `commitSheets`, which is what the Excel upload, the ERP sync and the AI assistant already use. Two properties fall out of that and both are load-bearing:
+
+- **Idempotency is free.** The importer skips rows that already exist by natural key, so pressing Next twice, resuming a draft or re-running a step creates nothing extra. The alternative — the wizard keeping its own "have I made these yet?" bookkeeping — is precisely where duplicate classes come from.
+- **Validation is identical.** An over-long name, a class-section naming a year that does not exist, a section already claimed by another timetable: all refused by the code an upload meets, with the same messages.
+
+Two things are deliberately outside it. Period and break structure is not master data, so wings and the week go through `POST /timetable-configs` and `PUT /:id/structure`, which already own that shape; and the §24.5 settings live on `timetable_config`, written directly by `finish`.
+
+### 24.2 Answers are a draft, not data
+
+`onboarding_sessions` holds one row per person per school: current step, mode, and an `answers` JSON. Answers are **merged** on save, never replaced — a step sends only its own keys, and a client that sent the whole object would blank a step it never rendered, which is exactly how a Back button loses work. An abandoned wizard therefore leaves nothing in `classes`, `rooms` or `teachers`; a completed one is marked `completed_at` rather than deleted, so "did this school come through the guided setup?" stays answerable.
+
+### 24.2a Step 3 opens with the usual three wings
+
+A wing is a word the admin meets for the first time on step 3, and the step used to answer it with an empty text box — asking them to invent a name for something they have just been introduced to, which is the slowest possible first move in the whole setup. It now opens with **Primary Wing (Class 1–5), Secondary Wing (Class 6–10) and Higher Secondary (Class 11–12)**, each one tap to add, with *Add all 3* for the school that has all three.
+
+Three details make them suggestions rather than a menu. The **name is editable before it is added**, because a school that calls it "Junior School" should not have to delete ours and retype; the **range comes with them**, so tapping *Primary Wing* opens the next step's slider on Class 1–5 instead of the generic default; and **nothing is stored until it is tapped** — an untouched suggestion is not an answer, so it lives in screen state and never reaches `answers`.
+
+The list is `WING_SUGGESTIONS` in `packages/shared`, beside `CLASS_LADDER`, for two reasons. The ranges are *ladder indices*, so they are only as correct as the ladder they were written against — inserting a rung in the middle would silently turn "Primary Wing" into Class 2–6, a wrong school created by tapping a button that says the right thing; the unit tests therefore assert the class **names** each suggestion resolves to, and that the three tile Class 1–12 without overlapping (`planClasses` reports a class claimed by two wings as an error, so an overlap would make the fastest path through the screen the one that produces an error message). And the §24.6 interviewer offers the same three by name from the same constant, so the two doors into the setup cannot start naming the same thing differently.
+
+### 24.3 The suggesters, and what they are not allowed to propose
+
+Steps 8–10 propose rather than ask: rooms from the classes and subjects, a curriculum from a per-band weight table, and mappings from what each teacher said they teach. The rule governing all three is that **a proposal that cannot generate is worse than no proposal, because it looks like an answer.** Every one of the following was a real defect caught by the Feasibility Engine refusing a school the wizard had just built:
+
+- A curriculum is **scaled to the wing's real weekly capacity**, in *both* directions — a fixed table hands an 8-period week a 40-period curriculum, and rounding that only ever trims leaves eight subjects each a fraction short and two unallocated periods per class.
+- `maxPerDay` is floored at `ceil(periods / days)`. Six periods a week at one a day needs six days; in a five-day week that pair is impossible however it is staffed, because it is a property of the curriculum row rather than of who teaches it.
+- A teacher's real weekly ceiling is their **daily reach** (Σ of their subjects' per-day caps) × working days, not `max_periods_per_week`. Assigning to the weekly cap alone produces a school that looks fully staffed and cannot be timetabled.
+- Labs are **sized to demand**, not one per subject: at ten sections a single lab supplies 40 periods a week against 50 required. Every proposed lab carries its `room_subjects` mapping, because a lab with no subjects listed is general and serves everything (§19).
+- Home rooms are **linked**, not merely created. `class_sections.home_room_id` is written from the Rooms sheet's `Home Room For` column; without it every ordinary lesson shows no room, and generation still succeeds, so nothing but Readiness notices.
+- `min_periods_per_day` is written as **0**, not the application default of 3. That default is right for a school that chose it and hostile as a silent imposition — a one-subject teacher with 13 periods a week and a floor *and* ceiling of 3 has no whole number of days that works. §24.5 offers it as a decision.
+
+Anything a suggester cannot cover is **named, with its reason**, never silently left out — the same "tell me what to fix" contract the Feasibility Engine holds to.
+
+### 24.4 The correction wins
+
+Each suggested step stores its edits under its own key in `answers`. The server reads that key if it is there and re-proposes if it is not, so going back to add a teacher changes the proposal while an edit made here survives. Three rules keep that honest:
+
+- **The halves fall back independently.** `mappings` and `classTeachers` are two tables on one screen; treating them as one edited object means reassigning a single lesson wipes every class teacher in the school.
+- **Periods/week is quoted, not stored.** Who teaches a class is step 10's decision; how many periods it runs for is step 9's. A stored quote goes stale the moment the curriculum is edited, and Readiness then reports *"only 7 of 8 periods/week mapped"* — a blocker whose cause is two screens from where it is named. `withCurriculumPeriods` refreshes the quote at every use.
+- **Coverage is stated once.** `coverageGaps` is the function the mapping screen shows live *and* the commit uses for its issue list, because a proposal's own `uncovered` list stops describing reality the moment a row is edited. Load and capacity are deliberately *not* re-checked in the browser: the importer runs `assertWithinWeek` on every row it writes, and a second opinion the server contradicts is worse than none.
+
+### 24.5 Settings, and the one that is not a flag
+
+Step 11 writes `class_teacher_gets_first_period`, `allow_consecutive_periods` and `min_periods_per_day`. **Inter-wing teaching is not a setting** — turning it on clears the `teacher_class_eligibility` rows step 7 wrote, because an empty scope means "not stated" rather than "no classes" (§18). An existing, already-enforced mechanism, rather than a new flag nothing reads.
+
+### 24.6 The third door — the assistant as interviewer (Phase 25.5)
+
+The same eleven questions, asked in conversation. The design is a refusal to build a second setup: the interviewer fills in the **same** `onboarding_sessions.answers` and commits through the **same** `POST /onboarding/commit/:step`, so switching between chat and wizard mid-setup loses nothing and there is exactly one definition of what a school is.
+
+**The model is offered one tool, `recordSetupAnswers`, and none of the §13.1 registry.** It cannot read the school, draft master data or place a slot; it gains no authority the conversation did not already have. What that tool writes is a *draft* — the same JSON a person produces by typing, which becomes rows only when somebody presses Next, at which point the §16 importer validates all of it again. So `interview.answers.ts` is not the safety net; it is what keeps the draft **coherent**, and it holds to three rules:
+
+- **An unknown key is dropped, and said.** Every refusal is handed back as the tool result. Silently ignoring a field the model believed it recorded produces a conversation where the assistant confirms something that never happened.
+- **Classes are named, never indexed.** The ladder position is an implementation detail of a slider; asking a model for `fromIndex: 4` is asking it to hallucinate an integer. It says "Class 1" — or "class 5", "Grade 5", "std 5", "LKG" — and an unknown name is refused *with the vocabulary attached*, because a guess here is a wing quietly covering the wrong classes.
+- **Progress is derived, never taken from the model**, which will happily announce step 5 while three of step 3's answers are missing.
+
+**A turn accumulates; it does not replace.** The draft's own merge is per top-level key, which is right for a wizard screen holding a whole list and catastrophic for a conversation adding to one: "and we also have three part-time teachers" would *delete* every teacher named before it, and the setup would shrink as the conversation went on — the worst possible failure, because it looks like progress. So collections merge by the thing that identifies them (employee code, else name), restating one is a **correction** rather than a duplicate, and `replace: ["subjects"]` is the only way to remove something — the model declaring a list complete.
+
+**The conversation covers steps 1–8 and stops.** The curriculum is a matrix, the mapping a table and the settings three toggles: read at a glance, painful to hear dictated one cell at a time. At the handover the wizard opens at step 8 on the same draft. *(The plan said "Setup Wizard → Curriculum"; that was written before 25.4e gave the guided wizard its own curriculum matrix, which is the better destination.)*
+
+**Every question offers ready-made answers.** The tool returns two to four `options` beside its `nextQuestion` — the ordinary answers, commonest first — and the screen renders them as chips with **"Something else…"** always last. Tapping one *sends it as the message*, deliberately the same path a typed answer takes, so it is recorded, confirmed and moved past identically; a second route into the draft is a second place for the two to disagree. Options are cleared the instant anything is sent, or chips from "which working days?" would sit under a question about periods a day looking answerable. The model is told to leave them empty for a genuinely open question — the school's name, its subjects, its staff — because an option there is a guess at something only the school knows, and "Something else…" is what makes an incomplete list honest rather than a dead end.
+
+**The prompt carries today's date, and this is why.** Asked for session options without it, the model proposed *2024–25* from memory — plausible, tappable, and a whole year of timetable filed against the wrong session. It now receives the date and the April–March convention, and proposes the same session the wizard's own `defaultSession()` would, so the two doors cannot differ about what year it is.
+
+**Opening the door is not walking through it.** The run begins on the first *message*, server-side, where `chat_since` is stamped before anything is logged — not when the screen mounts. Starting it on mount meant a draft was created merely by looking, and a draft makes the welcome screen re-offer itself: somebody who opened the conversational setup and closed it again then met a modal on every page load afterwards. Relatedly, the welcome screen auto-opens **once per sitting** rather than on every page load — see §24.1a for the full rule and why the per-sitting flag is what makes a permanently-true `shouldPrompt` bearable.
+
+**The conversation is resumable, and the transcript is the audit log.** Coming back reloads both the answers and the thread — the answers always survived a refresh, and a blank chat beside a panel full of collected facts reads as though the assistant has forgotten a conversation it can still remember. The transcript is read from `ai_chat_log` rather than copied into a second store, because two transcripts would eventually disagree and the one on screen would be the one nobody could check.
+
+That log is **never deleted**: the monthly AI token budget is summed from it, so clearing a conversation would refund what it cost and spend-discard-repeat would make the cap meaningless. A fresh setup therefore moves a boundary instead — `onboarding_sessions.chat_since` — and both the screen and the model's replayed history read only rows after it. A finished setup shows no live conversation at all.
+
+Two things had to be fixed to make any of this work. The conversation id is now **derived** (`setup-{schoolId}-{userId}`) and no longer accepted from the client, which is both what makes the thread resumable and what stops somebody reading a colleague's setup by naming their thread. And the assistant's turn is logged **as the person saw it** — `reply` holds only streamed prose, and a model that answers entirely through the tool call streams none, so every assistant row was being written empty while the question the user actually read lived in `nextQuestion`.
+
+**Testing it does not require a provider key.** `POST /dev/interview-turn` is the same dev-gated seam as `/dev/ai-tool` (§17.8), for the same reason: the property under test — *does a model's report become the draft the wizard would have produced?* — is not a property of the model, and a test that needed a key would be a test nobody runs.
+
+### 24.7 Users and teacher logins (Phase 25.6)
+
+A self-serve school has to be able to create its own logins, and the shape of the feature follows from one distinction that is easy to blur: **an account is a person; a `users` row is a membership.** Credentials live once in the control plane, `users` is one row per school per person and carries the role and the teacher link, and every scope filter in §15 and §17 reads the membership. So inviting somebody is two writes in two databases meaning two different things — the account may already exist and belong to someone with schools of their own, while the membership is always new and always this school's business.
+
+**`roles.manage`, not `masters.manage`.** Deciding who signs in is the same authority as deciding what a role may do. Anything less would let whoever maintains the teacher list mint logins.
+
+**Refused outright for an ERP school.** There the ERP owns identity and provisions on login (§15.1); a user created here would be overwritten on the next sign-in, or would survive as a second way in the ERP cannot revoke. The screen is read-only behind a banner that says which, and the server refuses independently.
+
+**An invitation is not a way to take over an account.** Where the address already exists, the invitation attaches to that account and changes nothing else about it — not its password, not its `kind`, not its verification. An invite that could downgrade an owner to a member would let any administrator strip school-creation from anyone whose email address they can guess.
+
+**The `users` row is created at invite time, not at acceptance**, and that is not a hole: until they accept, the account holds an unguessable password and `status: pending`, so there is nothing to sign in with. What it buys is that revoking an un-accepted invitation is the same action as revoking a live login, and that the list can distinguish **invited** from **active** — which looks identical in a list of names and is the commonest thing an administrator needs to see. Acceptance is therefore purely control-plane work: `POST /schools/:id/enter` already refuses an account with no active `users` row, and an invitation revoked between sending and accepting should be refused at the door rather than remembered.
+
+**Looking at an invitation is not accepting it.** `GET /auth/invite/:token` names who was invited without spending the token, because a mail client that pre-fetches links would otherwise burn it before anybody clicked. Accepting is a POST, once, and the link is dead afterwards.
+
+**Deactivate, never delete.** A user named in `audit_log` must stay resolvable, and the row is what resolves them. The last login that can manage roles cannot deactivate itself — counted on the *permissions* of the remaining roles rather than on the name "Super Admin", since a school may rename it or build its own.
+
+**Bulk invite reports rather than counts.** Teachers who already have a login, teachers with no email address, and `guest` teachers (§18 keeps them off the regular timetable, so there is nothing for them to look at) are each named, because each has a different fix. A count that quietly excluded them would say "invited 40 of 40" while eight people got nothing. The preview and the write run the same server-side arithmetic, so the confirmation cannot describe something the write does not do.
+
+**The prompt to invite lives on the publish screen**, because publishing is the first moment there is anything for a teacher to look at; before it, an invitation lands somebody in an empty app. It renders from the same dry run the Users & Access screen uses — so the two cannot disagree about who is missing a login — and renders nothing at all when the answer is not usable: a teacher gets a 403, an ERP school gets a 403, a fully-invited school gets an empty list.
+
+**One change this phase forced elsewhere.** `schoolsFor` was keyed on `schools.created_by_account_id`, which was the same set as "schools I can enter" until an invited teacher created nothing — and `POST /schools/:id/enter` had always stated the real rule in words: *an account may enter a school exactly when it has a user row there.* The list is now keyed on membership; the school cap still counts what the account created, so being a teacher in six schools does not exhaust an allowance to run one's own.
+
+### 24.5a Knowing how far you are
+
+Eleven steps is a long way, and what carries somebody to the end of a long form is knowing the last bit worked. So each committed step is marked, and the marking is built to be information rather than applause.
+
+**The message says what actually happened.** *"14 sections — the shape of the school is in"* rather than *"Nice work!"*, because a compliment after every step is noise somebody reads past by the third one, while the count is the thing they would otherwise scroll back to check. The numbers come from the §16 importer's own tally, so they cannot drift from what the database got.
+
+**Percentage counts steps completed, not the step on screen.** Showing 9% for having opened the first question is the kind of progress bar people stop believing.
+
+**Celebrated only when the advance is real** — the commit landed *and* the new position saved. A flourish for something that then failed to save is worse than none.
+
+The burst is canvas and the sound is two oscillators: a confetti library and an audio file is weight on every page load for a flourish most people see eleven times, ever. `prefers-reduced-motion` turns both off — somebody who has told their operating system that motion makes them unwell has answered this already, and offering our own toggle instead would be ignoring the answer. Sound is additionally **opt-in and remembered**, because a school office is a shared room.
+
+**Progress appears on the Timetables page as its own card, not on each timetable's.** A card is one `timetable_config`; the guided setup is one draft per person per *school*, and it is what creates those configs. Drawn per card it would be the same number repeated against the wrong thing — and would be invisible on a school with no timetables yet, which is exactly when somebody most needs it. It disappears once the setup is finished: a permanent "11 of 11" is clutter on every visit forever.
+
+### 24.5b Carrying on, and moving about
+
+**"Carry on" reopens the setup itself, not the welcome screen.** Somebody pressing it has already chosen a door and walked through it; showing them the three doors again asks a question they answered twenty minutes ago. Which door reopens comes from the draft's own `mode`, so a conversation resumes as a conversation. The wizard and the chat each resume from the saved draft on their own, so nothing has to carry the step.
+
+**The rail is navigable, as far as the answers reach.** A step is open when every step before it is complete — derived from the answers by asking the *same* validator the Next button asks, eleven times, rather than by a second set of rules that would drift from it. Derived rather than remembered as a high-water mark, which means it survives a refresh and a different machine, and it tells the truth in the other direction too: empty the teacher list and the steps after it stop being reachable. A step that is not open says which one to finish first rather than merely greying out.
+
+**The progress card names the wings the setup is building**, because a guided setup is one draft for the *whole school*: step 3 names every wing at once and everything after it covers all of them. So "which wing is this progress for?" answers "all of them", and the useful form of that answer is the list — a bar per wing would be the same number drawn several times. `weekReady` is the one genuinely per-wing fact worth surfacing: step 5 is filled in wing by wing, so a two-wing school can be half-way through a single step, and nothing else on the screen would show it.
+
+Moving **backwards is free** — those rows are already written, and going back to look at something must never be a write. Moving **forwards commits each step it passes over**, in order, because steps 2–10 create real rows and skipping one would land somebody on a screen whose data does not exist yet. Every commit is idempotent, so re-crossing ground already covered costs a round trip and changes nothing.
+
+### 24.5c Carrying on with a school that already exists
+
+*Edit* on a timetable card has always meant the step-by-step Setup Wizard, which is the wrong tool for somebody who built the school through the guided steps and wants to carry on there. **⚡ Guided** beside it reconstructs a guided draft from what the school already has — wings as ranges on the ladder, each wing's week from its periods, the subject list, the staff and the subjects they are already mapped to — and opens the wizard on it. Which step it opens at needs no storing: that has always been derived from the answers, so it lands on the first thing still missing.
+
+**This is a narrowing of something the plan put out of scope**, and the narrowing is the whole argument. "Editing an existing school through the wizard" was ruled out because pointing a first-run flow at a published timetable needs a diff-and-merge story of its own — which is still true. What is safe is the subset that **fills gaps and never edits**: every wizard commit goes through the §16 importer, which *skips* rows that already exist by natural key. It cannot update one and cannot delete one. So re-walking the steps over an existing school adds what is missing and leaves the rest untouched; renaming a subject or removing a teacher stays on the master screens, where it belongs. `onboarding-smoke.cjs` tests that claim rather than repeating it — the school's class, section and config counts are identical before and after a re-commit.
+
+Two refusals worth stating. **A live draft is returned, not rebuilt**: somebody's unfinished typing is not ours to throw away. And **a wing whose classes are not on the fixed ladder is left out and named**, because a wing is expressed as a range and a school that named its classes something else cannot be described that way — guessing a range would quietly create the wrong classes, which is far worse than saying which wing to use the Setup Wizard for.
+
+### 24.5d The guided setup is as wide as the pane
+
+The wizard opened as a centred 840px card. That is a good width for reading a paragraph and a bad one for a class × subject matrix: steps 4, 7, 8, 9 and 10 are the widest content in the app, and all five scrolled sideways inside a dialog with half the screen dimmed and empty beside them. So the dialog is now sized to the **working pane** — everything to the right of the navy nav — via `.pane-overlay` / `.pane-dialog`.
+
+Three details make it behave rather than merely fill:
+
+- **The overlay still covers everything.** Only the panel is inset; the nav is dimmed with the rest, because a modal whose nav still looks live is an invitation to click it.
+- **`--sidebar-w` is a token**, used by `.sidebar` and by the overlay's left padding. Two hard-coded 236s in two files would eventually disagree, and the dialog would either overlap the nav or leave a strip of dead page down its left edge.
+- **The dialog is wide; the content is not always.** `WIDE_STEPS` names the five table-shaped steps, which fill; the six form-shaped ones keep an 880px measure and centre. A 1600px-wide "what is your school called?" box is not more usable than a 700px one, only harder to read across — and stating which steps are which, beside the list they refer to, makes a new step choose rather than inherit.
+
+Below 900px the padding drops and the dialog takes the whole width: sizing to the pane is about using the room there is, and on a narrow screen it would be about giving room away.
+
+**The step rail spans the strip too**, which it did not when the dialog grew: eleven dots stayed bunched at the left with fixed 10px connectors, packed tight while most of the bar was empty — a cluster rather than a route. The connectors are the flexible part now, so the dots space themselves to whatever width the pane has. And with the room to show them, **every step is named** rather than only the current one; the labels sit *under* their dots because eleven labels in a row spaced the dots unevenly ("Curriculum" is three times "Wings"), and under them they cost the strip no width and truncate rather than collide when the pane is narrow.
+
+The welcome screen keeps its centred card deliberately — three doors spread across 1700px would read as three things lost on a page rather than a choice — and the conversational setup is already full-screen, which is more room than the pane, not less.
+
+### 24.6a Outgoing mail
+
+Four flows are a one-shot link in an inbox — verification, password reset, teacher invitation, bulk invite — so a deployment that cannot send is a deployment that cannot onboard anybody. There are **two transports**: `smtp`, which is the real one and speaks the protocol every provider offers, so choosing between SES, Postmark, Mailgun or a school's own server is a matter of credentials rather than code; and `log`, the default, which writes the link to the application log so an unconfigured deployment is *obviously* unconfigured rather than quietly failing to deliver.
+
+**Verified at startup, not at the first send.** A missing `MAIL_HOST` discovered when somebody registers is a broken sign-up; the same mistake discovered when the container boots is a line in the log before anybody has tried. A pooled connection, because the bulk teacher invite sends one message per teacher and a TLS handshake each is how a fifty-teacher school times out. A server that is down at boot is logged, not fatal — refusing to start the API over it would take the application down with the mail server.
+
+**A failure to send does not always mean the same thing.** `register` and `forgot` swallow it, loudly logged: those endpoints answer identically for a known and an unknown address, and letting a mail failure become a 500 would break that in the most useful direction for an attacker — known address errors, unknown one succeeds, and the difference is a customer list. They also have another way through (since 25.7 registration signs the person straight in, and a reset can be asked for again). An **invitation** is only a link, so it surfaces: the membership is created *first* and the mail sent last, so a failure leaves an invitation that still shows as "invited" and a Resend button, rather than an account with no membership to attach it to.
+
+**Dev speaks SMTP too**, to a Mailpit container. That is not a convenience: for a long time `log` was the only implementation, which meant the path production would use had never run while four flows were exercised through it daily. Every message is readable at `http://localhost:8026` — 8026 rather than Mailpit's own 8025, which is taken on the primary dev machine, exactly as 3000 and 5173 are.
+
+`scripts/mail-smoke.cjs` asserts against the **inbox**, not the capture. Every other suite reads its links out of the Redis capture, which runs for every transport — so those suites pass just as happily when nothing is being delivered. This one registers, resets, invites, follows each link, and checks that an unknown address is sent nothing while still receiving the same answer a real one gets.
+
+### 24.7b The school name is the way back to My Schools
+
+Clicking the school in the top bar takes a self-serve admin to *My Schools*, where they can switch or **add another** — the screen that owns schools, rather than a dropdown that can only choose between the ones that already exist. For an ERP user it stays exactly what it was: a switcher over what the token granted, because their schools come from the ERP (§15.1) and creating one here is not theirs to do. `MeResponse.isLocalAccount` decides which, and — as ever — it is cosmetic: `POST /schools` refuses an ERP account independently.
+
+*My Schools* is declared **outside** the authenticated branch of the router, with the other account-level screens. It was inside it, so somebody already in a school who followed the school name fell through to the app shell's catch-all and landed back where they started — which from the outside looked exactly like the button doing nothing. The screen is about the account, not about any school, so holding a session must not hide it.
+
+**`POST /auth/account/token` exists because the two credentials expire independently.** The session token lasts eight hours and the account token was minted at sign-in; somebody deep into an afternoon would otherwise be bounced to a login form while holding a perfectly good session, losing the school they were in to reach the screen that lists it. The exchange grants strictly **less** than the session already does — an account token reaches `/schools`, which lists the schools that account has a `users` row in, the same set the session token's own `schoolIds` names — so it is the same authority expressed against the other credential, not an escalation. Refused for an ERP user, who has no account and never will.
+
+### 24.7a Getting in without a detour (Phase 25.7)
+
+Verification originally gated sign-in and every school. A new customer therefore filled in the form and was sent to their inbox before seeing anything at all — the highest-friction moment in the product, spent on a round trip. It now gates the **second** school: an unverified account may sign in and create one. That preserves what the gate was for — an unverified address must not be able to fill the registry with rows nobody can reach, and registration is already per-IP throttled — while letting somebody start on the thing they signed up to build. The email still goes out, and *My Schools* carries a banner saying what confirming is for.
+
+**The anti-enumeration property in §15.3 is unchanged, and it shaped how this was done.** `POST /auth/register` still answers identically whether or not the address exists; returning a token for a new account and a message for an existing one would say which, in a single response. So the client signs in afterwards with the credentials it already holds — if the address was new that works, and if it belonged to somebody else, login refuses it in the same words it refuses any wrong password, which is a check it already performs.
+
+`AccountService.byId`, which every account-token request passes through, had to move with `login`: it also required `active`, and left alone would have issued a token that every subsequent request rejected.
+
+**The demo roles live on the sign-in screen**, where somebody trying to get in can see them. They render only where the dev ERP stub is live, and the screen asks the server that question rather than guessing from a hostname — `/auth/methods` reports the same condition `POST /dev/erp-token` gates itself on, so the two cannot drift into offering four buttons that all 404. Each one walks the real `/sso/callback`; it is the production hand-off with a stand-in ERP, not a route around it.
+
+### 24.8 Exit criteria
+
+`scripts/guided-setup-smoke.cjs` drives the whole story against the live stack: a stranger registers, verifies, creates a school, and walks steps 1–11. It asserts **100% Readiness with zero blockers in every wing, and a generation with nothing unplaced** — plus that an edited curriculum row and an edited assignment are what reach the database. If that path cannot produce a solvable school, the phase has not worked however good the screens look.
+
+`scripts/interview-smoke.cjs` does the same for the third door: eight scripted turns, then the assertion that matters — the answers equal the wizard's, the staff list accumulated across two turns rather than being replaced, a hallucinated class and an unknown field were both refused *by name*, and the resulting draft commits through the same endpoints to a school at 100% Readiness.
+
+`scripts/users-smoke.cjs` covers §24.7, and its assertions are deliberately mostly negatives — a teacher who can reach a write endpoint is the whole feature failing quietly. Invite, accept once (and the link is dead the second time), sign in, land in the one school they were invited into, read their own timetable but **not** another teacher's, and be refused by the server with a 403 on every write endpoint and on `POST /schools`. Then: the bulk preview names the guest and the emailless rather than counting them, deactivation shuts the door while keeping the row, the last remaining administrator cannot deactivate themselves, and an ERP school refuses the lot.
+
+---
+
+## 30. Individual and Grouped Timetables (Phase 43)
+
+A timetable can be **grouped** — sharing cohorts and staff capacity with the other timetables in its pool, which is today's behaviour — or **individual**: its own cohorts, calculated alone, so several timetables can cover Class 1 without seeing each other.
+
+Reading the code first turned up two things that shaped the design:
+
+- **Almost nothing is shared today.** Exactly two couplings exist between two timetables: a class-section belongs to one `timetable_config` (invariant 11) and teacher *weekly load* is summed across configs in the same year (Check 2). Room contention, home rooms and per-period occupancy are already per-timetable.
+- **Two timetables can already put the same teacher in Monday P3.** `timetable_config_id` is the leading column of `uq_teacher_slot` and the solver never loads another timetable's slots. §3.10 records this as deliberate — but a weekly total does not stop Mrs Rao being in two places at 09:14. It cannot simply be switched on, because occupancy is keyed by period *number* while Junior's P3 and Senior's P2 both start 09:14; §28.5 already names tick-based occupancy as the real answer.
+
+### 30.1 The resource group
+
+The thing that exists is the **pool**, not a flag. A flag has to be interpreted at every call site; a pool is a narrower `WHERE`.
+
+```
+timetable_groups        id, school_id, academic_year_id, name, mode('grouped'|'individual')
+timetable_config        + resource_group_id NOT NULL
+class_sections          + resource_group_id NOT NULL
+                        unique (class_id, section_id, academic_year_id, resource_group_id)
+```
+
+**Invariant 11 is generalised, not broken.** *Before:* a class-section belongs to exactly one `timetable_config`. *After:* **within a resource group**, a class-section belongs to exactly one `timetable_config`. With one pool per school-year — which is exactly what the migration creates — those sentences say the same thing, and every existing school behaves identically.
+
+The pool **owns** the cohort row; `timetable_config_id` keeps meaning "which timetable in this pool teaches it", and `NULL` still means "not attached yet" — available to the pool, not to the school. A pool is per session because everything it scopes already is (§3.11).
+
+`individual` is a pool holding exactly one timetable and refusing a second. That refusal *is* "an individual timetable cannot have more than one wing", expressed where it is checkable rather than as a rule the Wings step has to remember.
+
+### 30.2 One writer, because the database cannot be one
+
+`class_sections.resource_group_id` and `timetable_config.resource_group_id` are the same fact stored twice, and MySQL cannot tie them together: a generated column may only read its own row, and this value lives in another table. §22's `draft_scope` had the database to compute it; this does not.
+
+So `ResourceGroupService` (`@Global`, like `FreezeService`, and for the same reason — **the failure mode is a new write path that never asks**) is the single resolver, and it states the rule once: *a class-section attached to a timetable takes that timetable's pool; an unattached one takes its session's.* Seven write paths use it — the masters screens, the §16 importer, the ERP sync, cloning, the dev seed and the two guided-setup doors that reach the importer.
+
+One of those was found by hand rather than by the compiler: `sync.service.ts` types its transaction client as `any`, so a missing required column compiles and fails at runtime. Worth remembering as the file where the type checker is not the safety net.
+
+`pnpm test:groups` is the guard, and its central assertion runs across the **whole database** rather than its own fixture — the write path that forgot is by definition the one not under test. It also asserts both halves of the key change: a second Class 1-A in the *same* pool is still refused, and one in a *different* pool is now accepted.
+
+### 30.3 Every cross-timetable question asks the pool
+
+There is exactly **one** cross-timetable calculation in the codebase, so stage 2 is one query. `crossConfigTeacherLoad` in `solver/input.ts` filtered by `academicYearId`; it now filters by `resourceGroupId`, and the argument is Phase 19's one level in: next year's teaching does not consume this year's capacity, and *an individual timetable's teaching does not consume the main one's* — otherwise a school could not sketch an alternative without its real timetable reporting everybody overloaded. A pool belongs to exactly one session, so the pool filter **subsumes** the year filter rather than sitting beside it; two filters that must agree are two filters that can come to disagree.
+
+§29.3's reassignment engine reads the very same `crossConfigTeacherLoad` field off the very same snapshot, so it is corrected by that one line rather than by anything near the restaff code.
+
+**`capacityForClass` deliberately stays year-wide**, and that is worth recording because narrowing it to the pool is the obvious change and it is wrong. A curriculum row is keyed `(class, subject, year)` and is *shared* across pools — what Class 1 studies is a fact about the class and the session. A shared row therefore has to fit in every pool that teaches that class, so the tightest week across the session is exactly the right cap. Scoping it to one pool would let somebody enter 40 periods against an 8-period individual timetable and hand the 6-period grouped wing a Readiness blocker instead of a form error — a worse place to find out, and a rule the person who typed it never saw.
+
+Two guards are written now although neither can fire until stage 4 creates a second pool, for the reason that a guard added at the same time as the thing it guards is a guard nobody has yet had a chance to need:
+
+- **`PUT /:id/class-sections` refuses a cohort row from another pool.** The existing check only catches a section another *timetable* holds; one sitting unattached in a different pool has `timetable_config_id` NULL and sailed straight through it, which would have put a row in a pool its own timetable is not in — the exact drift `ResourceGroupService` exists to prevent, arrived at through a legitimate screen.
+- **`GET /class-sections?timetableConfigId=` narrows to that timetable's pool.** Optional, and unfiltered still means the whole school; it is the hook the screens use once "Class 1-A" would otherwise appear twice in every picker. An id naming nothing in this school leaves the list unfiltered rather than empty — the alternative tells a stranger "that timetable has no classes", a fact about a school they cannot see.
+
+### 30.5 When a timetable applies
+
+A timetable carries `effective_from` / `effective_to` (DATE, both nullable), and **two published timetables whose windows overlap may not share a class**. Null at both ends means the whole session — every school before this feature — which is why the rule cannot fire on existing data: two configs could not share a class at all before §30.1.
+
+    Timetable 1 · Class 1-3 · 01 Apr – 30 Jun   ┐ both publishable,
+    Timetable 2 · Class 1-4 · 01 Jul – 31 Aug   ┘ the windows are disjoint
+
+    Timetable 1 · Class 1-3 · 01 Apr – 31 Aug   ┐ refused, naming Class 1, 2 and 3
+    Timetable 2 · Class 1-4 · 01 Jul – 31 Aug   ┘ and the timetable already live
+
+**This is what makes individual timetables safe rather than a hole.** Pools let two timetables cover Class 1; this stops both being live for those children at once.
+
+Three details of `ValidityService` are load-bearing:
+
+- **By CLASS, not by class-section.** With pools, "Class 1-A" is a different row in each pool for the same children. Comparing rows would find no overlap and the rule would never fire.
+- **Against currently *live* publications** (`withdrawn_at IS NULL`). §3.14 keeps a withdrawn publication row and marks it, so withdrawing genuinely frees the window — which is what makes "withdraw this one, publish that one" an ordinary Tuesday.
+- **Never retroactive.** A window ending unpublishes nothing. Publication is a decision (§3.14), not a lease; a timetable that went dark overnight is what §29.2 refused when it made a staffing change a record rather than a mode.
+
+Checked at **publish** and at **re-dating**, because re-dating is the other way to create the overlap publishing prevents. Re-dating passes the *proposed* window to `assertPublishable` so the question is asked before anything is written — the alternative is store, ask, roll back: three writes to answer a question, with a window briefly applied that the school is about to be told it cannot have.
+
+`timetable_publications` has `timetable_config_id` and **no Prisma relation** to the config, exactly as §23 records for `timetable_slots` and the masters, so "which configs are live" is its own query rather than a `publications: { some }` filter. Here the type checker catches it; that is the lucky version of the trap.
+
+**Not reusing §25's terms**, though they are also dated spans. §25 states that *"a session is term-wise if and only if it has term rows"*, so creating terms to date a timetable would flip that school's whole app into term-wise mode — term selectors, per-term publishing, the Board loading one term at a time. They also answer different questions at different levels, which is what stops them competing: the **session** is the year, the **window** says *which* timetable is live for these children, and a **term** says *which shape of week* that timetable uses within itself.
+
+`currentFor(classId, date)` resolves which timetable is live for a class on a day, in §25.2's shape — asked-for id, else the window containing the date, else the undated one. Nothing reads it yet, because until stage 4 there is only ever one candidate and every caller already knows it. It is written here because the rule and its resolver are one idea, and splitting them across two stages is how they come to disagree.
+
+**Showing the period everywhere** costs one field on `TimetableConfigSummary`, which already reaches eighteen screens through `ConfigContext`: the top-bar selector, the Timetables cards, the printed sheet's masthead and the §10.6 wall card. `windowLabel` (in `packages/shared`, so the server's refusal prose and the client's chrome cannot drift) returns **null** for an undated timetable, and every caller then falls back to the session's own name — printing dates for a school that never uses this would put a number on every screen that means nothing. On the wall the window rides on each **wing** rather than on the card, because a card can span two wings whose windows differ.
+
+### 30.6 Creating an individual timetable
+
+`POST /timetable-configs` takes `mode: 'grouped' | 'individual'` — grouped by default, which is what every timetable was before this. An individual one gets a pool of its own (`createIndividual`, named after the timetable and suffixed on collision, since a pool's name is a label while a timetable's is the real identity). `resourceGroupId` names a pool to *join*, verified to belong to this session first — a pool id is not a capability, the same rule §25.2 states for a term id.
+
+**"An individual timetable cannot have more than one wing" is `assertAdmits`**, a property of the pool rather than a rule the Wings step has to remember — so every door that creates a timetable is covered by writing it once, including the ones that do not exist yet.
+
+#### The importer's existence key had to learn about pools
+
+This is the change the whole of stages 1–3 was for. The §16 importer decided a class-section already existed by its **label alone** (`has(existing.classSections, "Class 1-A")`). With pools that is wrong in the one direction that matters: an individual timetable importing Class 1-A would find the main wing's, call the row existing, skip it — and open with **no classes and no error**.
+
+So the check reads a separate, pool-qualified list. Separate, and not the existing one, because `existing.classSections` is also what every other sheet's `Class Section` column is validated against and what the template offers as a reference list; qualifying those labels would fail every one of those lookups. The row's own pool is resolved from its `Timetable` column, falling back to its session's — the same rule `ResourceGroupService.forSection` applies on the write, stated in the validator so the dry run and the commit cannot disagree about what already exists.
+
+Both maps are optional. The AI drafting path (§13.5) builds `ExistingData` by hand and data that predates §30 has none, and in that case the key collapses to the label — exactly the old behaviour.
+
+#### Filter, do not qualify — except where the qualifier already exists
+
+Per §5.3 of the plan, the top-bar selector is the scope: `GET /class-sections?timetableConfigId=` narrows to that timetable's pool, and the pickers on **Electives**, **Extra Classes**, **Subject Mapping** and the advanced setup pass the id they already hold.
+
+The **Classes master deliberately does not filter.** It is where cohort rows are *managed*, including ones attached to no timetable at all, and filtering would make those unreachable from the one screen that exists to reach them. It can afford to show every pool because it already distinguishes them — its table has a Timetable column, which is the qualifier decision §30 asks for wherever several are legitimately in view.
+
+### 30.7 Clashes between live timetables
+
+§30.5 makes the case that matters impossible — a class cannot be in two live timetables at once. What is left is two timetables over *different* classes that share a teacher or a room: Primary and Senior, all year, both with Mrs Rao. That is a real-world collision the app has never reported, and it exists in schools' data today with nothing to do with individual timetables.
+
+**Compared by wall clock, never by period number.** Occupancy everywhere else is keyed by period number — that is what `uq_teacher_slot` and `uq_room_slot` compare, and within one timetable it is exactly right. Across two it is not: Junior's P3 starts 09:14 and Senior's P2 starts 09:14, so comparing numbers would refuse a pair that does not overlap and allow a pair that does. §28.5 already names tick-based occupancy as the real answer and records it as the reason per-class period lengths are refused; this is that arithmetic applied to the one question that can be answered without it — not *preventing* a clash while placing, but *reporting* one that already exists.
+
+`findClashes` is pure and lives in `packages/shared`, indexed by key and day rather than compared pairwise: each side of the reference school is ~2,400 engagements, and the quadratic version is six million comparisons on a screen with a 300 ms budget (§14). Touching is not overlapping, or every back-to-back pair in the school is a clash.
+
+Two things the occupancy builder must get right, both §4.9 and §4.10 one level out: **elective option rows carry a teacher and a room and no class-section**, so a query by section would miss a language teacher taken by two wings entirely; and **a merged group is one occupancy however many sections attend**, so without deduplication one clash is reported once per member section.
+
+#### It is not a feasibility Check, and that is the point
+
+The engine is Phase A: it reads a snapshot of *demand* and answers "can a solution exist?", with no placements in it at all. This compares two weeks that are already *placed*. Putting it in the engine would mean handing the pre-flight engine the output of the thing it is supposed to run before — so `ValidityService.clashesFor` computes it and `ReadinessService` appends the issues **after** `runFeasibility`.
+
+After the **score**, too, and for §28.1's reason: a clash with another timetable does not make this one less able to generate, and a dashboard falling for answering reads as the warning having broken something. `pnpm test:groups` asserts the score is identical with the clash and without it, on a fixture scoring **82%** rather than the floor, so the assertion could actually fail.
+
+Always a **warning with no remedy**. Whether two timetables genuinely run at the same time is a fact only the school has — and if they do not, narrowing one window (§30.5) is the fix.
+
+#### The cache rule that had to change with it
+
+`invalidateTimetable` now sweeps **readiness** as well as slots and reports, by pattern rather than by config id. A readiness answer used to be about one timetable alone, which is why an existing test asserted the opposite and was right to; it now carries the clashes with the other live timetables, so publishing B genuinely changes what A says — and the answer that went stale belongs to a *different* config from the one being published, which is exactly what a per-config sweep cannot reach. This is the third entry in the comment that already reads *"every write that changes a published slot belongs here"*.
+
+### 30.8 What stages 1 and 2 deliberately do not do
+
+Nothing is choosable yet. Every timetable joins the pool it would have been in anyway, and no screen mentions pools. The exit criterion for both stages was that **every existing suite passes with no assertion changed** — isolation, freeze, staffing, grids, guided setup, clone, drafts, electives, ERP sync, report cache, year scope, teacher scope, auto-fix, room assignment, AI data entry, shared 498 and api 215.
+
+The thirteen smoke scripts that write rows with a raw `PrismaClient` did change, because they bypass the app and therefore carry the schema's shape. They share one helper (`scripts/resource-groups.cjs`) for the reason the service exists: a value written in thirteen places is written differently in one of them.
+
+## 25. Term-wise Timetables (Phase 26)
+
+A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
+
+§25 lets a session run **year-wise** (exactly as before) or **term-wise**: two or more named spans of dates, each with its own timetable, all of them live at once.
+
+Four decisions bound the feature, and the first is what makes the rest cheap:
+
+1. **Placements only.** Every term shares one curriculum, one set of teacher mappings and one Readiness score. Terms differ in *where lessons sit* and *who takes a given cell* — never in what is taught or how much.
+2. **Each term publishes separately**, with its own version history.
+3. **Generate acts on the selected term only**; copying one term over the others is a separate, explicit action.
+4. **Read-only screens open on today's term**, falling back to the first when today is in the holidays.
+
+### 25.1 A term is a scope, not a second timetable
+
+`term_id` on `timetable_slots`, with a stored generated `term_scope = COALESCE(term_id, 0)` inside all three unique keys — the §22 device exactly, for the same reason. `uq_class_slot` already carried `(config, status, draft_scope, section, day, period)`, so Term 1 and Term 2 both placing 5-A on Monday P1 collide and **a second term cannot physically exist**. That is invariant 1 doing its job, which is why this needs a new dimension in the key rather than a new screen.
+
+Two alternatives were rejected on invariants the schema already holds. *One `timetable_config` per term* breaks §3.10 — a class-section belongs to exactly one config, so 5-A cannot be in both terms'. *One named draft per term* breaks §22 — `draft_scope` collapses every published row to `0`, so two terms could never be live at once, which is the whole feature.
+
+`COALESCE` rather than a bare `term_id` for the reason `draft_scope` has it: a NULL inside a unique key is treated as distinct, so year-wide rows would stop guarding each other — silently undoing invariant 1 for every school that never uses terms. The FK is `RESTRICT`, which MySQL would insist on anyway for the base column of a stored generated column, and which is right on the merits: `SET NULL` would push a deleted term's rows to scope 0 to collide with the year-wide set.
+
+What falls out of this is the whole argument for the design:
+
+- **A year-wise school is untouched.** `term_id IS NULL` → `term_scope = 0` → byte-identical behaviour, and the migration rewrites **no existing row** — which is what makes it safe to run on every school's database (§17.3) rather than only where terms were asked for.
+- **The solver and the six feasibility checks do not change at all.** Terms share a curriculum, so `runFeasibility` and `SolverState` see what they already saw; generation solves once and the writer stamps a term.
+- **`BoardEngine` does not change either.** The board loads one term's rows and checks against them, so "no double-booking" is per-term because the row set is.
+
+`term_id` also goes on `timetable_drafts` (a draft spanning every term would make its §22.3 stats a number about several timetables at once, which is not a number — and the five-live limit is per term), on `timetable_publications` (each term has its own version 1; publishing Term 3 in November must not renumber Term 1), and on `extra_classes` (a Saturday revision class runs in the term it was arranged for).
+
+**No column says which mode a session is in.** A session is term-wise **if and only if it has term rows** — one source of truth, which cannot come to disagree with the rows the way a flag can. The same reasoning as "an empty eligibility scope means *not stated*" (§18).
+
+### 25.2 One resolver, and the date decides
+
+The sharpest risk here is not the schema, it is the **missing filter**. `substitutes.service.ts` counts published slots by teacher and day-of-week; `reports.service.ts` filters on `status: 'published'` alone. With three terms, marking a teacher absent once would report 3× the affected periods and every load summary would treble. Nothing would error — the numbers would just be wrong.
+
+So the filter has one owner, `TermsService`, exported like `DraftsService` and for the same reason. It resolves in order: an id the caller asked for, **verified to belong to this config's own session** because a term id is not a capability; otherwise the term containing the date in question, defaulting to today; otherwise the first term, for a date in the holidays, which belong to no term at all; otherwise `null` — a year-wise session.
+
+That date rule is what makes the term selector a default rather than a chore: a teacher opening their timetable in November is shown November's.
+
+`GET /timetable-configs/:id/terms` is **session-only, with no permission** — the §10.5 `/me/colors` argument exactly. Every role needs the list (an admin on the Board, a teacher on My Timetable, Front Office in the Substitute Center), no single permission is common to them (a Principal holds `timetable.view.all`, a Teacher `.own` and `.class`, and the guard is AND), and a role that could not read it would show the wrong term's timetable with no way to tell. Writing the calendar is `masters.manage`: a term boundary decides which timetable a Tuesday in October belongs to.
+
+`GET /academic-years/:id/terms` checks the **session exists** before listing, and that is not ceremony. Scoped by the tenant context, a query for another school's year returns zero rows — and `[]` is indistinguishable from "this session runs as a whole year", so a stranger would be told a fact about a school they cannot see in the same words its owner gets. The §17.8 gate caught exactly this, on a check whose own assertion had been written loosely enough to tolerate it.
+
+### 25.3 Splitting a session, and the screen that asks
+
+`splitSession` in `packages/shared` answers "where would N boundaries fall?" — by **whole months** when that is meaningful (the session starts on the 1st and divides evenly), which is what a school recognises: 1 Apr–30 Sep and 1 Oct–31 Mar, not 1 Apr–1 Oct and 2 Oct–31 Mar. Anything else — a session starting on the 15th, a 40-day summer school, five terms in twelve months — splits by days. That narrowing is deliberate: "six months each" has no obvious meaning for a session running 15 Apr to 14 Apr, and a rule that guessed one would put a boundary somewhere nobody chose. Month ends are asked for as *day 0 of the following month*, so a leap February needs no special case and cannot acquire a wrong one.
+
+There is deliberately **no endpoint** that proposes a split. The guided setup asks the question before the academic year exists, so a server call could not answer it there; the shared function runs unchanged on both sides, as the feasibility and board engines already do.
+
+`validateTerms` is the same function on both sides too, so the message on screen is the message that would come back — not a second and kinder set of rules. It reports per row with a fix, the Feasibility Engine's contract: an overlap names **both** terms and the date to start at, since a day cannot belong to two terms or the timetable for that day is two timetables. Gaps between terms are legal — the holidays are not in a term.
+
+The controls live in one component with two containers. `TermsEditor` loads and saves (the Academic Years screen and the Setup Wizard); `DraftTerms` only collects (the guided setup's session step, where there is no year yet — step 2's commit writes the terms straight after the importer creates the year, matched **by name** so pressing Next twice re-dates the same terms rather than replacing them and orphaning a term's timetable).
+
+The whole set is saved in one PUT: no-overlaps and at-least-two-terms are rules about the *set*, and saving a row at a time would walk through illegal states and could stop in one. Rows carrying an id are updated in place, which matters more than it looks — every slot, draft and publication points at a term id, so re-dating Term 2 must move the term the timetable is filed under. A term with rows in it cannot be removed by a Save button; the refusal names the term and how much is in it.
+
+### 25.4 Verification
+
+`scripts/terms-smoke.cjs` runs the calendar end to end: a year-wise session reports no terms and no current term (which is how the selector knows to hide); a split is proposed, saved, renamed and grown while keeping its ids; overlaps, terms outside the session and a lone term are each refused by name with the saved calendar left exactly as it was; today's term is what a request with no term gets; another school's session is a 404 both ways; a teacher may read the list and not write it; and the guided setup's step 2 writes the terms once and creates nothing on a second press.
+
+`packages/shared/src/terms/terms.spec.ts` covers the arithmetic away from any database — the two-, three- and four-term splits, contiguity and exact coverage, the leap February, the day-split fallbacks, every validation rule, and `termForDate` including a date in a gap.
+
+---
+
+## 26. Subject Placement Rules (Phase 27)
+
+A school knows things about its subjects that the app had no way to hear. Maths in the morning while children are fresh; Games after lunch but never *immediately* after it; Art and Library late. Until §26 all of it was expressed by dragging cards on the Board after every generation.
+
+### 26.1 The Teachers step shows what a teacher teaches
+
+The guided setup's Teachers step rendered **every** subject in the school as a toggle chip in **every** teacher row — 22 × 122 at the reference school. A wall of grey, most of it about subjects the teacher does not teach, with the one fact the cell exists to show buried inside it. Past about eight subjects the step stopped being usable, which is most secondary schools.
+
+The cell now shows only the chosen subjects, as removable chips, plus a **＋** that opens a searchable picker ordered by §26.2 priority. The cell's size no longer depends on the school's subject count, and Enter takes the top match.
+
+The panel is `position: fixed`, measured from the button, and that is forced rather than chosen: the step's table lives in a `Scroll` (`overflow: auto`), so an absolutely-positioned panel is clipped by it and scrolls away with the rows — the same trap the §8.1d nav flyout hit, with the same answer. `useAnchored` was extracted the second time it was needed.
+
+### 26.2 What a subject is: category and priority
+
+Four columns on `subjects`, because these are facts about the *subject*: "Games is not taught straight after lunch" is true of Games, not of Class 5's Games. `category` (scholastic / co-scholastic), `priority` (1–5), `lunch_rule` and `gap_after_lunch`. **Every default reproduces the previous behaviour exactly** — priority 3 is the neutral middle, `any` restricts nothing, the gap is off — so a school that upgrades and changes nothing generates precisely what it generated before.
+
+**The intelligent defaults come from the classifier that already existed.** `WEIGHTS` in `suggest.ts` already sorted subject names into families for the curriculum suggester, so it gained a defaults field per family rather than acquiring a second table beside it: two tables would eventually disagree about whether Games is co-scholastic, and only a school would find out. `defaultsFor(name)` is the one way anything in the product guesses — the guided setup, the Subjects master, the §16 importer and the ERP sync all ask it. **An unrecognised name gets the neutral answer rather than a guess**, because a wrong guess quietly constrains the solver on behalf of a school that never said so.
+
+Blanks are filled from the name **at the point of commit**, not when a row is created, so renaming "Sports" to "Games" picks up the Games rules where a value baked in at creation would keep Sports'. An explicit value always wins, and an update changes only the fields it sends.
+
+**Priority is deliberately soft, and that is the correct call.** "Maths must be in period 1" cannot hold for twenty sections at once, so as a hard rule it would make every real school infeasible. It is a fourth term in `optimize/objective.ts` — the module that already is the single definition of "nice" — scored as `Σ (priority − 3) × (period − 1)`. Lower is better, like every other term, and the sign falls out directly: a priority-5 subject scores 0 in period 1 and +10 in period 6, so sitting late costs it, while a priority-1 subject scores the mirror image, so pushing Library late is as much of a gain as pulling Maths early. Priority 3 contributes exactly nothing, which is what makes the term invisible to a school that never sets it.
+
+That one definition buys three things: the CSP's value ordering prefers earlier periods for high-priority subjects, CP-SAT minimises the same term, and `scoreTimetable` keeps "optimised mode is measurably better" provable. An earlier draft negated the term on the reasoning that "high priority early" ought to be the low number — it already is, and negating pushed Maths to last period and called it an improvement. The unit test is what said so.
+
+### 26.3 Where a subject sits: the lunch rules
+
+`lunch_rule` (`any` / `before` / `after`) and `gap_after_lunch` are **hard**, and hard means pruned before search (invariant 2). `domainFor` in `solver/variables.ts` is the single place a domain is built, and they join the alternate-day, blocked-cell, P1 and break-straddling rules already there. `lunchAllows` is checked over **every period of a block**, not just its start: a double period beginning before lunch would otherwise reach into the afternoon while claiming to be a morning slot.
+
+That needs one new fact, `lunchAfterPeriod`. `daySegments` collapses breaks into run lengths and loses which one was lunch, so it is derived separately — a break named for lunch, else the longest, else the one nearest the middle of the day — and is `null` when the day has no break at all, which switches both rules off rather than attaching them to a guess.
+
+A split elective applies **every option's** rules, since the options run at once: one Games option drags the whole block after lunch, which is correct and is precisely why the check below has to see it first.
+
+**Check 11 — lunch-side capacity.** A hard constraint with no feasibility check is a generation that fails, which is the one thing the two-phase split exists to prevent. So per class-section, the periods a rule confines a subject to must fit the cells that rule leaves — counted with **the same `lunchAllows` the solver prunes with**, so Readiness can never promise a cell the search will refuse.
+
+Grouped by the exact `(rule, gap)` pair rather than by side, and the reason is a bug its own smoke caught: a subject with only the gap rule — *any time, but not straight after lunch* — has the whole week minus one cell a day, and an earlier draft filed it under "after lunch" and refused a school that was perfectly fine. Groups still overlap in the cells they compete for, so the check **under-detects rather than over-detects**: that is the right direction to be wrong in, since a false blocker stops a school that could have generated, where a missed one leaves the solver to report what it could not place — which it already does well.
+
+There is deliberately **no auto-remedy** (§21). Every way out of this loosens a rule somebody set for a physical reason, and `relax` is only ever applied with explicit consent.
+
+### 26.5 A teacher's instruction, in plain English
+
+A school knows things it has no field for: *"Mrs Rao leaves at 1pm on Fridays."* Until now that had to be translated by hand into `teacher_unavailability` rows, by somebody who knew that screen existed. §26.5 lets them type the sentence.
+
+**The whole design is one rule: the model translates, it never schedules.** Invariant 14 is not bent here and is not merely respected by convention — the model's *entire vocabulary* is a closed set, every member of which is a constraint the solver already enforced long before any AI was involved: unavailability, the daily and weekly ceilings, the §20 floor, the back-to-back limit, the first-period rule, the §4.7 pattern, §18 class eligibility, and whether they may be offered as a substitute. There is no term for "put her in period 3 on Tuesday", so there is no way to ask for one.
+
+That is what makes the green tick mean something. It does not mean *the AI understood*; it means **this compiled to constraint X, and constraint X is enforced whether the assistant is switched on or not**. Turn the school's key off tomorrow and its timetables do not change, because by then the instruction is ordinary rows. The compiled result is read back in words on the row — *"not available on Friday"* — so the tick is auditable rather than trusted.
+
+Five refusals worth stating, each of which was a decision:
+
+- **Anything outside the vocabulary is denied, by name.** "Put her with the nicer classes" comes back as a sentence a person can read, not a silent no-op.
+- **A partially understood instruction is refused whole.** Accepting the half that compiled and showing a tick would tell the school the other half is being honoured — the one lie this feature must not tell.
+- **A refused instruction is kept.** It is what somebody typed; discarding it to teach them about phrasing is not our call.
+- **A day the school does not teach on is refused**, because a constraint that never binds reads on screen as a rule being honoured.
+- **A `onlyClasses` list that resolves to nothing is refused**, because §18 reads an empty scope as *not stated* — so an instruction meant to narrow a teacher's classes would silently widen them to every class in the school.
+
+The rows an instruction owns are marked (`AI: …` on the reason) so re-evaluating an edit **replaces** them rather than accumulating a teacher into unavailability nobody asked for, one edit at a time — while never touching a block an admin set by hand on the §4.7a screen.
+
+**The guided setup and the importer collect but do not evaluate.** Neither has teacher rows at the moment the text arrives, and evaluating at commit would be one model call per teacher — 122 for the reference school, to answer a question nobody has asked yet. It arrives as `pending`, and the Teachers screen turns it into rules one deliberate press at a time.
+
+### 26.4 Verification
+
+`scripts/subject-rules-smoke.cjs` reads the generated slots rather than an API response — a 201 from Generate says nothing about where Games landed. It asserts that a rule which cannot fit is refused *before* generation with both numbers in the message, that widening it clears the blocker, that the generated week puts **no** Games before lunch and **none** in the period straight after it, and that priority-5 subjects sit measurably earlier than priority-1 ones (a mean over the week, since priority is a preference and an assertion about one lesson would be flaky by construction).
+
+Its own setup is loud: a fixture step that fails exits naming the call. The first run built no class-sections and reported "Readiness refuses it — score 0", because a school with no data scores 0 and raises no blockers — six checks failed describing a feature that had never been exercised.
+
+`guided-setup-smoke.cjs` is the regression that matters most: the guided setup now classifies Games as after-lunch-with-a-gap automatically, and the school it builds must still reach 100% readiness and generate with nothing unplaced.
+
+`scripts/teacher-instructions-smoke.cjs` does the same job for §26.5, and its last section is the only one that proves the feature rather than the UI: it generates a real timetable and asserts the teacher is **never** scheduled on the day her instruction ruled out. It also checks that a refusal writes nothing, that a refused instruction is still stored, and that an edit replaces the previous rows rather than adding to them. Where no key is configured it **skips and says so** — a green tick from a deployment that cannot evaluate would be worth less than no test. Where a school in the same database has one, it borrows the *encrypted* blob (the encryption key is deployment-wide), so the test runs without the secret ever being read or printed.
+
+`instruction.compile.spec.ts` is the boundary itself, tested without a model in the loop — including the case that caught a real defect: an instruction naming a period outside the school day used to collapse to "unavailable all day", silently a far stronger rule than anybody asked for.
+
+---
+
+## 27. One Allocation Grid (Phase 28)
+
+The guided setup asked the same question across two steps. **Curriculum** was a class × subject grid of periods a week; **Mapping** was a flat list of who teaches each row, plus a second table for class teachers. They share a data model, and the split was arbitrary — the proof was already in the codebase: `withCurriculumPeriods` exists for no reason except to stop step 10 quoting a number step 9 had since changed.
+
+§28 merges them into one **Allocation** step, and the wizard drops from eleven steps to ten.
+
+### 27.1 One grid, three facts per cell
+
+Rows are **class-sections**, grouped by class; columns are **subjects**. Every cell carries periods a week, the teacher's initials, and the room — coloured by the §10.5 palette module, so Maths is the same colour here, on the Board and on the Matrix.
+
+The one thing the merge must not hide: **periods are a class fact; the teacher and the room are section facts.** `class_subjects` is keyed `(class_id, subject_id, academic_year_id)`, so changing 6 to 5 in Class 5-A's Maths changes all four sections of Class 5. Rather than paper over that, the grid is shaped by it — rows group by class and the **Load column spans the group** with `rowSpan`, so the table's own shape says which facts are shared. The cell dialog says it in words as well.
+
+Class-teacher assignment stops being a second table: the ring on a cell marks it, set where that person actually teaches. A class teacher who takes none of the section's lessons was never useful to the §4.7 first-period rule anyway.
+
+### 27.2 The load rail, and one rule this phase reverses
+
+`Syllabus.tsx` carried a rule that was right when it was written:
+
+> **Load and capacity limits** are deliberately not re-implemented in the browser. The §16 importer runs `assertWithinWeek` on every row it writes. A second opinion here that the server then contradicts would be worse than no opinion at all.
+
+A live load rail cannot ask the server after every keystroke, so this screen needs the opinion. The resolution is not to break the rule but to **remove the second opinion**: the arithmetic moved into `packages/shared/src/onboarding/load.ts`, and the server calls the same function. One answer, computed twice.
+
+Two pieces of that arithmetic are owned there rather than at any call site:
+
+- **A merged group costs its teacher one lesson, not one per section** (§4.10). Several sections taught together are a single occupancy event — which is exactly why merging relieves a load without taking a subject away from anybody. Multiplying by `classSections.length` regardless would make the advisor's own merge suggestion appear to change nothing.
+- **Daily reach is a ceiling separate from the weekly cap.** A teacher whose subjects all run one period a day per class can teach at most `reach × days` however generous their weekly limit is — Check 3's other half. It is reported *beside* the weekly figure, never folded into it: two limits with two different fixes, and a blended percentage would name neither.
+
+**Bands.** Under 75% is quiet; 75–99% is amber; **exactly full is its own colour, not red**, because a teacher at their limit is the outcome the screen steers towards; over is red. Collapsing `full` and `over` would leave the rail unable to say which teacher must be acted on — and at a real school most staff sit above 75%, so a single warning threshold paints everything red and stops being a signal.
+
+**Refusal at the limit** is a refusal to *exceed* it: an edit that would take a class past its weekly capacity, or a teacher past their cap, is blocked with the arithmetic shown. A class exactly at capacity is correct and stays green.
+
+### 27.3 Easing a load speaks three verbs
+
+`relieveLoad` uses the **§21 remedy vocabulary the Feasibility Engine already speaks**, which is what keeps it a product decision rather than a new invention:
+
+- `redistribute` — move a class to a lighter eligible colleague, or **merge sections into one teaching group**. Nothing about the school changes except who stands in front of whom.
+- `complete` — name a lesson nobody has been given, and who could take it.
+- `relax` — raise a limit. Always **last, in its own group, and priced in plain words**; never applied by a standing consent (invariant 19), because a resolver free to loosen limits can take any school to a clean board without changing one real thing.
+
+**Merging is offered only for co-scholastic subjects**, read from the §26.2 `category` (falling back to the same `defaultsFor` classifier, never a second guess beside it). Four sections of Games on the field is ordinary; four sections of Maths in one room is a decision about children, not about load, and this module must not make it. A subject the list does not mention is treated as core — the safe direction.
+
+The unit test that matters asserts **convergence**: applying only the `redistribute` and `complete` remedies clears an over-loaded school completely. Without that, `relax` would be the real answer wearing a warning label.
+
+### 27.4 Reading without opening
+
+A cell abbreviates three facts into about 58 pixels, so **hovering opens the full record** — five different cards, because five different things are being pointed at: a cell (periods, the teacher's real name and load, whether they listed this subject, the room *and why that room*, the class teacher), a teacher chip (their whole week, per class, plus the reach warning where it binds), the Load column (the class total broken down subject by subject), the ring in the row header, and a subject heading (demand against the staff behind it). The rule is that **nobody should have to open a cell to understand it**; opening is for changing.
+
+Everything that is not the grid is collapsed by default — the load rail to a single row of slivers, the explanation behind `? Help`, and the step rail behind **Focus**. Nothing but the grid scrolls, so the page never grows a second scrollbar that moves what somebody is pointing at.
+
+### 27.5 Period length
+
+A period's length is `timetable_config.period_duration_mins` — a **wing** fact, because the solver places into period numbers on one shared grid and two classes in a wing cannot have different period lengths. It is *shown* here (`6 × 40 = 240 minutes a week`, and the class's weekly total) because minutes are the unit a head teacher is accountable for, and *changed* here because this is the screen somebody is looking at when they ask.
+
+It cannot ride through the §16 importer with the rest of the step — it is not a master row. So the dialog writes it into step 5's own draft key and Next re-runs step 5's committer, **narrowed to the wings that actually differ** (`commitWeeks(answers, { changedOnly: true })`): `PUT /:id/structure` rewrites the period rows wholesale, and re-pushing an unchanged week would rebuild a grid for nothing. The smoke asserts the risky half — that rebuilding the week after the curriculum and mappings are already committed disturbs neither.
+
+### 27.6 The renumbering, which is the only thing that can hurt
+
+Eleven steps became ten, and the collision is exact: **old step 10 was Mapping, new step 10 is Settings.** A stored `currentStep` alone cannot say which is meant, and a resumed draft that lands on the last screen with every allocation unset reads as the wizard having lost twenty minutes of work.
+
+So a draft records the scheme it was written under (`__stepScheme`, stamped by the server on every save — including `adoptFromSchool`, because a marker only half the writers set is worse than none). `migrateStep` shifts anything without it down one from step 10. `step-scheme.spec.ts` covers the collision directly.
+
+### 27.7 Verification
+
+`guided-setup-smoke.cjs` is the regression that matters: one commit now writes both sheets, so both corrections — an edited curriculum row and a reassigned teacher — have to be in the answers before that single commit, which is exactly what the screen does. It still ends where it always did: 100% readiness in both wings and a generation with nothing unplaced.
+
+`load.spec.ts` covers the arithmetic, including the merged-group cost, the band split at `full`/`over`, a mapping naming an unknown teacher (a coverage problem, not a load one — adding a phantom to the rail would answer a different question badly), and the convergence claim above.
+
+---
+
+## 28. Generation Settings (Phase 29)
+
+Three settings a school checks before it generates. A fourth — **per-class period duration** — was asked for at the same time and is deliberately absent; §28.5 says why.
+
+### 28.1 The load alert line
+
+`timetable_config.load_alert_pct`, default 75. It replaces `LOAD_WARN_AT`, which was a constant in `packages/shared/src/onboarding/load.ts`, and it feeds three places that already existed: `loadBand()`, the §27 Allocation rail, and **Feasibility Check 12**.
+
+**It is a warning and never a blocker.** A teacher at 80% of their weekly limit is a normally employed teacher; refusing to generate at a number a school picked for its own reporting would make most real schools ungenerable, and what was asked for was an alert, not a refusal.
+
+**It does not move the readiness score**, and that exemption is the part worth remembering. Readiness answers one question — *can this school generate?* — so a school where everybody is inside their limit reads 100, and must keep reading 100 after somebody asks to be told when a teacher passes 75%. The first school to try the setting would otherwise watch its dashboard fall to 98% for saying yes to a report and reasonably conclude the setting had broken something. `finalize` therefore excludes this one code from the arithmetic; it remains a `warning` for every other consumer, because the dashboard, the AI tools and the auto-fix screen all already know what to do with two levels and a third would make each of them decide again.
+
+**One grouped row, not one per teacher.** At 122 staff a warning each buries every real blocker under thirty rows of "this is fine, but". And **no remedy**: every way to lower the percentage is either a `redistribute` the §27 advisor already offers on the screen where the work is done, or a `relax` that raises the very cap the percentage is measured against — a fix whose only effect is to move the goalposts.
+
+### 28.2 Activities either side of the day (§28.3, §28.4 as requested)
+
+Assembly, attendance, bus dispersal. **One table, `daily_activities`, for both ends** — an assembly and a dispersal differ only in `placement`, and two tables would duplicate every rule about duration, days and staffing so the two could eventually disagree.
+
+An activity produces a **third kind of band** in `periods`, beside `is_break` and `is_extra`. Not a flavour of break: a break is unstaffed by definition, and the whole point of an activity is that somebody is on duty and the timetable should say who. `days` is per activity, because assembly on Monday only is the ordinary case; `teacher_id` and `room_id` are nullable, and null means *not stated* rather than *nobody* — the reading §18 gives an empty scope.
+
+**The load-bearing property is what is absent: an activity has no period number.** `domainFor` builds cells only for `1..periodsPerDay`, so the solver cannot reach one — exactly as it cannot reach the §18 extra window. That is what lets this whole feature exist without teaching the solver a new kind of constraint. Widening the domain to include activities would put a teacher on assembly duty into a slot `uq_teacher_slot` cannot check, because that key compares period *numbers*.
+
+Two decisions inside `buildPeriodRows`:
+
+- **A before-first activity runs earlier; it does not push period 1 later.** `startTime` is what a school means by "when does teaching begin", and it is printed on the wall. An assembly written down for the first time is a fact that was already true — nobody had recorded it — so recording it must not make every published period time twenty minutes late. The day grows earlier at the front and `endTime` is untouched.
+- **An after-last activity sits after the §18 extra window too.** A school running revision classes disperses after those; putting the dispersal before them would print a bus departure in the middle of a lesson.
+
+`daySegmentsFromRows` and `lunchAfterPeriodFromRows` both exclude activity rows, and that filter is not cosmetic: an activity row is not a break, so without it the run counter reads an assembly as a *teaching* period — telling the solver the day has a longer unbroken run than it has, and letting a double period straddle a boundary that does not exist.
+
+`PUT /:id/activities` replaces the set and **rebuilds the day**, because `periods` is a projection of the config plus its activities; an activity saved without the rebuild would exist in the database and appear on no timetable, which reads as the save having failed. `PUT /:id/structure` reads the activities back for the same reason in reverse — it rewrites period rows wholesale, so a structure save that ignored them would silently delete every assembly band a school had set up.
+
+### 28.5 What is deliberately absent: per-class period duration
+
+A school asked for Class 1–10 at 30 minutes and Class 11–12 at 40, inside one timetable. It is not built, and the reason is invariant 1.
+
+```
+Class  9 @30:  P1 08:00–08:30   P2 08:30–09:00   P3 09:00–09:30
+Class 11 @40:  P1 08:00–08:40   P2 08:40–09:20   P3 09:20–10:00
+```
+
+A teacher in **Class 9 P3** and **Class 11 P2** overlaps from 09:00 to 09:20 — and `uq_teacher_slot` cannot see it, because it compares `period_number` and those are 3 and 2. The database-level guard against double-booking silently stops guarding.
+
+The same hole already exists across wings, documented at §5: `uq_teacher_slot` is scoped to `timetable_config_id`, so a shared teacher can be placed in two wings' Monday P3, and *"the load-sum check in §4.2 is what catches it, not the slot-uniqueness constraint"*. Per-class durations bring that collision inside a single wing, where nothing mitigates it.
+
+The design that works is **tick-based occupancy**: a `period_grids` table, a companion `slot_occupancy` keyed on `(teacher, day, 5-minute tick)` with a unique index, and `SolverState` holding tick sets rather than `busy[teacher][day][period]`. It keeps the guarantee in the database — the property that matters — and dropping `timetable_config_id` from that key closes the cross-wing hole as well. It also means the Matrix and the Board can no longer have a single column header row, which is an information-design problem rather than a styling one.
+
+Until then the supported answer is the one the product already has: **a different period length is a different wing.** `periods_per_day`, `period_duration_mins` and `start_time` all belong to the config, and "Higher Secondary" is one of the three suggested wings.
+
+
+### 28.6 The request that was too large
+
+Pressing **Next** on the Subjects step of a real school failed with a raw `request entity too large`. Two things were wrong, and only one of them was the limit.
+
+**The wizard sent the whole draft on every save.** `persist` carried a comment reading *"Only this step's keys go up; the server merges"* — and sent the entire `answers` object. That was harmless while drafts were a few kilobytes; §27 put the curriculum and every subject mapping into the draft, and Second Branch (16 classes, 64 sections, 122 teachers, 20 subjects, **957 mappings**) reached **145kb** against Express's 100kb default. A step that had changed three kilobytes of subjects was uploading a hundred and forty-five.
+
+The wizard now tracks which answer keys were actually edited and sends only those, which is what the server has always been built for — `save` merges rather than replaces. That also closes the bug the original comment was written to prevent: a step could previously overwrite a key it never showed. The touched set is cleared only after a **successful** save, so one failed request cannot lose somebody's typing.
+
+**And the limit was too low for an honest school.** The `mappings` key alone is 98kb here; a larger school exceeds 100kb sending one key, so the delta fix on its own would only move the cliff. `BODY_LIMIT` is now 2mb — room for roughly a thousand-section school — and Nest is created with `bodyParser: false` so ours replaces its 100kb default rather than sitting behind it.
+
+`scripts/body-size-smoke.cjs` proves both halves at the size that broke: a 147kb draft is accepted and lands in the database, a 1kb delta does **not** wipe the 957 mappings it never mentioned, and a 3mb body is still refused with 413.
+
+One adjacent bug surfaced while fixing it: `finish()` called `patch({ settings })` and then `persist()` on the next line, which reads state from the render that scheduled the update and cannot see it. A school that pressed Finish without opening the Settings step therefore stored **no settings at all** — the first-period rule, the §20 floor and the §28.1 alert line all silently kept their database defaults. `persistWith` now takes the value the caller decided rather than whatever React has got round to.
+
+
+### 27.8 Initials in the cell, and a narrower picker
+
+Two changes to the same control, from the same cause: a cell has room for about six characters and a real school has 122 teachers.
+
+**The cell shows initials, not the employee code.** `EDX-1041` spends every character it has on a prefix every teacher in the school shares. Initials are what a staff room says.
+
+Second Branch's teachers have no `initials` in the database, so the grid has to derive them — and the derivation is the interesting part. Uniqueness is a property of the **list**, not of a row: two Yadavs both propose `AY`, and `teachers.initials` is unique per school. `assignInitials` is therefore shared with `teacherSheets`, which mints them at commit. One function, so the initials somebody is **shown** are the initials the database **gets** — a display-only derivation would show `AY` for a teacher the importer then stored as `AY2`, a lie that only surfaces when a school goes looking for somebody by the initials it was given. `suggest.spec.ts` asserts the two agree directly. `adoptFromSchool` now carries `initials` through as well: a school that already uses them has them printed on cover lists, and deriving fresh ones would show it somebody else's shorthand for its own teachers.
+
+**The teacher dropdown offers the people who teach the subject**, with a one-click *Show all*. It previously listed everybody and marked the ones who had not listed the subject — which is the filter's job, done somewhere nobody can act on it. The escape hatch remains because the original reasoning was sound: a school reassigning in a hurry knows something the subject list does not, and §18 scope is checked at commit either way; it is one click away rather than the default. **Guests are excluded from the default list** rather than merely labelled — §18 refuses them the regular curriculum, so offering one as an ordinary choice offers something the commit will reject.
+
+Two things the filter must never do, both of which are silent when got wrong: **hide the teacher already in the cell** (a `<select>` whose value matches no option renders blank and reassigns on save), and **show an empty list** (when nobody has listed the subject it shows everybody and says why, rather than a dropdown containing one dash).
+
+
+### 27.9 Which classes a teacher takes
+
+The Teachers step asked which *subjects* somebody teaches and, where a school has more than one wing, which wing they belong to. The Allocation grid then staffed the curriculum from those two facts — so a Maths teacher pinned to Primary was a candidate for every Primary class, and correcting that meant reassigning cells one at a time on the next step.
+
+`TeacherAnswer.classes` names them directly, and the §18 `teacher_class_eligibility` rows follow from it: the "Teaching Scope" column of the Teachers sheet is the declared classes where there are any, and the wing's classes where there are not.
+
+**The cell starts with every class ticked and you remove what does not apply.** Blank would have meant the same thing to the importer — invariant 7 reads an empty scope as *not stated*, which falls back to the wing — but it says nothing on screen, and "which classes does she take?" would have had an empty box for an answer.
+
+What is **stored** stays empty while nothing has been removed, and that is deliberate three times over: it keeps "not stated" meaning what invariant 7 says; it keeps a draft from carrying sixteen strings per teacher that convey no information; and it means a teacher whose wing changes later follows the new wing instead of silently keeping the old one's class list.
+
+Two refusals in the cell, both of which would otherwise be silent:
+
+- **The last class cannot be removed.** Doing so would store `[]`, which means *all* — so taking one class away would hand the teacher every class in the wing. Refused rather than reinterpreted: a control that does the opposite of what the click said is worse than a click that does nothing.
+- **Changing the wing clears the list.** A narrowing belongs to the wing it was made in; carrying "Class 1, Class 2" into Senior would leave the screen showing every Senior class while the commit wrote two Primary ones.
+
+The scope is honoured in three places, not one, because a rule enforced in only some of them is a rule a school finds by being contradicted:
+
+- `suggestMappings` staffs only the declared classes, so the Allocation grid arrives filled in accordingly — and when nobody is scoped to a class it says exactly that (*"Nobody who teaches Maths is scoped to Class 3"*) rather than the older, misleading *"Nobody in Junior teaches Maths"*. Being told to hire when the fix is a tick box wastes a morning.
+- The Allocation cell's **teacher dropdown** offers only teachers scoped to that class, under the §27.8 *Show all* escape hatch.
+- `relieveLoad` checks it on every proposal. A remedy that moved Class 5 Maths to somebody scoped to Class 9–10 would be applied by a click and then refused by the importer — the advisor looks wrong *and* the school still has the overload.
+
+`adoptFromSchool` reads the existing eligibility rows into the draft rather than re-deriving them, for the same reason it now carries `initials`: a school that has already said Mrs Rao takes Class 1 and 2 has said it, and an adopted draft that quietly widened her to the whole wing would re-staff the school against a scope nobody chose.
+
+`SubjectPicker` became `ChipPicker`: the classes cell has the same shape as the subjects cell — a few chosen out of many, in a table cell, where "many" is twenty subjects or sixteen classes — so it is one control with a `noun` rather than two that drift. It gained `keepOrder`, because classes have one right order and Pre-Nursery through Class 12 sorted alphabetically puts "Class 10" before "Class 2".
+
+
+### 27.10 The way back to the proposal
+
+The Allocation grid staffs itself from the Teachers step — what each teacher teaches and which classes they take — and stores the result the moment anything is edited. From then on the stored plan wins, which is right: an edit somebody made must not be undone by a suggester re-running.
+
+**Merging Curriculum and Mapping dropped the control that made that survivable.** Both old steps carried *"Start again from the suggestion"*; the merged step carried neither. Without it the stored plan wins for ever — somebody adds a teacher, or changes who teaches what on step 7, comes back and nothing has moved. From the outside that is the Allocation page ignoring the Teachers step, because from the outside it is exactly what it is doing.
+
+Two controls, because two situations:
+
+- **A quiet ↺ Start again**, present whenever the page holds an edit. It confirms first and says what it will not touch, since throwing away a re-staffed school by accident is expensive.
+- **A banner when the disagreement is real** — an assignment naming somebody who no longer teaches that subject or is no longer scoped to that class (§27.9), or cells a fresh proposal would cover and this one leaves unstaffed. A quiet link is right for *"I would like to start over"*; it is not enough for *"what is on your screen contradicts what you just typed"*, so the mismatch is named and counted.
+
+**The reset sends `null`, not `undefined`**, and that is not a style choice. Since §28.6 the wizard sends only the keys a step touched, and `JSON.stringify` drops an undefined one — so the server would merge nothing and the stored plan would survive a reset that appeared to work. `edited()` reads any non-array as "not stated" and re-proposes, so `null` clears it. The smoke asserts both halves: that the stored edit really is gone, and that the dry run then comes back with a complete staffing rather than nothing.
+
+**One limitation, stated rather than hidden:** the §16 importer skips rows that already exist by natural key — it does not update them. So re-staffing changes the draft and the grid, and a mapping already committed for `(subject, class-section)` keeps the teacher it was committed with. Before the first commit of that step, which is where a school setting itself up actually is, the reset does what it says. Changing a committed assignment is the Subject Mapping screen's job.
+
+
+### 27.11 Clearing the allocation
+
+§27.10 gives the page a way back to the *suggestion*: it rebuilds the draft and leaves the database alone. That is the right tool while a school is still setting itself up, and the wrong one afterwards — the §16 importer skips rows that already exist by natural key, so a mapping already committed for `(subject, class-section)` keeps the teacher it was committed with however many times the draft is re-proposed. Somebody who has pressed Next once and wants to start the allocation over needs the rows gone.
+
+So there are **two controls, and the difference between them is the point**: *↺ Start again* is a rethink, *⌫ Clear saved data* is a demolition. One button meaning both would be the last thing anybody read before losing an afternoon.
+
+`allocation-reset.ts` is built the way §3.13's config deletion is, for the same three reasons:
+
+- **Every step declares its count and its delete in one object**, so the confirmation can never under-report the write (the §23 rule). A count and a delete written apart drift, and the drift is only ever found by a school that agreed to something else.
+- **The plan is recomputed server-side before the write**, never taken from the request: a preview held for five minutes is not what is true now, and it is never the list of writes.
+- **A published timetable refuses it**, on the write as well as in the preview. Its slots name subjects and teachers whose *reasons* this would delete — the grid on the wall would keep working while Readiness reported a school that teaches nothing, and two answers to "what is Class 5 taught?" is worse than either.
+
+What it removes: merged teaching groups, subject mappings, curriculum rows, class teachers (cleared, not deleted — the section keeps everything else), and the **draft timetable rows generated from them**. That last is the reason it is worth doing: a draft built from a curriculum that no longer exists is a timetable of lessons the school does not teach, and leaving it puts a stale grid on the Board beside a Readiness score of zero.
+
+Three scoping rules that are easy to get wrong and silent when wrong:
+
+- **Curriculum is deleted by class AND academic year** (§3.11). `class_subjects` is keyed `(class_id, subject_id, academic_year_id)` and a class has rows in every session it has ever run; clearing this timetable must not take next year's planning with it.
+- **A merged group belongs to this timetable only when every member does.** `merged_teaching_groups` has no FK to a config — it is scoped through its members' class-sections — so one straddling two wings belongs to neither alone, and deleting it while clearing one would silently take teaching out of the other. §4.9 elective blocks are scoped the same way, which is why they are *counted and named* rather than removed: they are the Electives screen's.
+- **Another school's config is 404**, on both the plan and the write, through the one `ownConfigOr404` §27.8 added.
+
+The confirmation is a **typed word**, not a second OK. Every count on the card is a row somebody entered, and "are you sure?" is a question people learn to answer without reading. The card lists what will go with its counts, and — equally important — what will not: subjects, teachers, rooms, classes, sections, the week, and any elective blocks.
+
+The smoke covers both halves in the order that matters: it publishes a wing, asserts the reset is refused *and* that the refusal is enforced on the write; then clears the other wing and asserts the mappings, class teachers and 400 draft rows are gone while 64 teachers, 8 subjects and 10 sections stand, and the published wing is untouched.
+
+
+### 27.12 A master is entered once, and used for ever
+
+A school that has run a timetable has its session, its classes and sections, its subjects, its teachers, its rooms and its curriculum. Asking for them again because it is starting a second timetable — or because somebody deleted the first — is asking it to retype its own records.
+
+**Two things were true, and only one of them was obvious.**
+
+Deleting a timetable has never deleted a master. `config-deletion.ts` removes slots, drafts, extra classes, periods, auto-fix runs and publications, and **detaches** class-sections; subjects, teachers, rooms, classes and the academic year are untouched, and the smoke now asserts every one of those counts across a delete rather than leaving it to be believed.
+
+What was wrong is what happened *next*: the guided setup opened blank. `adoptFromSchool` — which rebuilds the wizard's answers from the database — existed and was reachable only from a **⚡ Guided** button on an existing timetable's card. Delete the timetable and that card is gone with it, so the one route to the machinery disappeared exactly when it was needed. From a school's point of view the masters had been deleted, because the app asked for them again.
+
+**`GET /onboarding/session` now falls back to the school itself.** With no draft it returns the rebuilt answers flagged `prefilled`, and **does not save them**. Not saving is the point: opening the guided setup to look at it must not create a draft, or `shouldPrompt` would offer that school a resume for ever afterwards. The client marks every prefilled key as *touched* so the first Next writes them — without that, a step whose answers only ever existed in the browser would commit nothing and report *"There is nothing to create yet"*, which is §28.6's failure one level up.
+
+`answersFromSchool` was split out of `adoptFromSchool` for exactly that reason — one derivation, read by a path that persists and a path that does not.
+
+**It now carries the plan as well as the masters.** Rooms, curriculum, mappings and class teachers were missing, and the omission was visible: adopting a school with 957 mappings produced an Allocation grid that re-staffed all of them from scratch and reported hundreds of unstaffed cells. A plan somebody has already made is an answer, not a blank. Curriculum is read for the **active year only** (§3.11) — a class has rows in every session it has ever run, and two sessions' rows would collapse into whichever loaded last.
+
+A genuinely new school still gets question one and an empty form, which is right: §27.12 is about not asking a school that has already answered.
+
+
+### 8.1d (revised) — the nav starts collapsed
+
+The collapsible nav shipped defaulting to *expanded*, with the choice remembered per browser. It now starts **collapsed on every load**, and expanding lasts the visit rather than being persisted.
+
+The reasoning is that the collapsed state is the designed one: every item is an icon whose name slides out of the rail on hover, so nothing is hidden, only folded — and the screens behind it are the 50×40 allocation matrix, the drag board and a guided-setup dialog that insets itself by `--sidebar-w`. All three want the 172px more than a standing list of twenty-four labels is worth.
+
+The trade-off is real and is stated in the module rather than left to be discovered: somebody who genuinely prefers the labels re-opens it each time. Making it sticky again is one line — read `localStorage` in the `useState` initialiser and write it in `toggle`.
+
+**One implementation detail decides whether this reads as a default or as a fault.** `--sidebar-w` defaults to 236px in the stylesheet, so until the root is stamped the nav renders open. `apply` therefore runs in a **`useLayoutEffect`**, which fires before the browser paints; as a passive `useEffect` it fired after, which showed every user an expanded nav snapping shut on every single page load. That was survivable while collapsing was a minority choice and became everybody's first impression the moment it was the default.
+
+
+### 27.13 What a teacher teaches, recorded about the teacher
+
+A school set up its first wing, told the Teachers step that Ajit D teaches Maths, generated a timetable — and then started a second wing to find every "Teaches" cell empty and the line *"16 teachers have no subject yet."*
+
+**It was never stored.** The guided setup asked the question, used the answer to propose mappings, and threw it away. The only surviving trace of "Ajit D teaches Maths" was whatever `teacher_subject_class_section` rows happened to exist, so a teacher created but not yet allocated taught nothing as far as the app was concerned — and neither did one whose allocation had since been cleared. The `Teachers` sheet had no Subjects column at all, which is why an Excel round-trip lost it too.
+
+Derived-from-mappings is the mistake §18 already corrected once. `teacher_class_eligibility` is **declared, not derived**, precisely because a scope read back from existing mappings can only ever describe what somebody has *already* been given and can never constrain what they are given next. A teacher's subjects are the same kind of fact, so `teacher_subjects` is the same shape of table, written by the same importer step, from a new `Subjects` column on the same sheet.
+
+Three rules carried over verbatim, because each one is a way this could quietly go wrong:
+
+- **Absent means "not stated", never "teaches nothing"** (invariant 7). The importer writes the table only for rows that named subjects; a commit that cleared it would empty a teacher's subjects the first time anybody uploaded a sheet with the column blank — which is every sheet exported before this existed.
+- **Readers take the union of declared and mapped.** Declared is the fact and survives having no mappings yet, which is the case that was broken; the mappings are still read because every school predating the table has no declarations, and reading only the new one would empty the column for all of them.
+- **The migration backfills from the record**, so the declaration starts out agreeing with what the school has been doing rather than contradicting it — from mappings, from §4.10 merged groups, and from §4.9 elective options. That last matters: a French teacher whose only teaching is inside a split block would otherwise read as teaching nothing, the same bug that once made nine of the reference school's teachers look unscheduled.
+
+The §23 sync cascades were extended to name it. The foreign key cascades either way, which is exactly why the step has to exist: a silent cascade is a destructive write nobody was shown, and §23's contract is that the confirmation cannot under-report.
+
+**What the fix cannot do is recover what was already lost.** A school whose teachers were created before this has no declarations and no mappings to backfill from — the information was genuinely discarded. Those subjects have to be entered once more, and this time they stay.
+
+### 27.14 Turning the hover card off
+
+The Allocation grid's hover card is the fastest way to read a cell: four facts about a 58px button without opening anything. It is also a panel that follows the pointer across a grid somebody may be *scanning* rather than reading — running an eye down a column of periods, the card is in the way of the next cell. Both of those are true at once, which makes it a preference rather than a decision to take on everybody's behalf. **Hover detail** in the toolbar is a checkbox, ticked by default.
+
+Three things about it are decisions:
+
+**The switch is on the handlers, not on the card's render.** Gating the `<Tip>` at the bottom of the component is the one-line version and it is the wrong one: `onMouseMove` sets state on every pixel the pointer travels, so on a 50-section × 22-subject grid each mouse move re-renders the whole table. Hiding the card at the end of that chain leaves every one of those renders happening for nothing — somebody who turned the card off to make the page calmer would get the same page, doing the same work, with the answer thrown away. `peek()` returns `{}` when the setting is off, so React attaches no listener at all. It also collapsed six pairs of duplicated `onMouseEnter`/`onMouseMove` handlers into one call site each.
+
+**The preference is remembered across visits**, unlike the §8.1d nav collapse, and the difference is not an inconsistency. The nav's collapsed default is the shape the school wants everyone to start in; someone who turns hover cards *off* has told us something about how they work, and making them say it again every visit is precisely the annoyance they were switching off. Storage that throws — a browser with site data blocked — falls back to the default and a working page rather than an error.
+
+**The label says what the state is, not what pressing it does.** "☑ Hover detail" over "Turn hover detail off": half the readers of the second form take it as a description of the current setting. The Help text switches with it too — telling somebody who has turned the card off to hover a cell for the detail describes a page they are not looking at, so it points at the click instead. Clicking a cell always opened the full dialog; with the card off, that is the way in, and it is the same way in it always was.
+
+
+### 27.15 A class does not take a subject
+
+Two halves of one complaint: **"Biology in Pre-Nursery"**. The Allocation grid proposed every subject in the school's list to every class in it, and there was no way to say that a particular class simply does not take one.
+
+**The ladder (`suggest.ts`).** The classifier knew Biology is a 4-6 period laboratory science and had no opinion at all about who is old enough to take it. Each `WEIGHTS` family now carries an optional `from`/`to` — inclusive positions on `CLASS_LADDER` — and a subject off its rung is not proposed for that class: Physics, Chemistry and Biology from Class 9 (below that a school teaches "Science", which is a row of its own from Class 1); Economics, Accountancy, Business Studies, Psychology, Sociology from Class 11; a third language — Sanskrit, French, German, Spanish, Urdu — from Class 5, while Hindi and a regional second language run the whole ladder.
+
+Three limits on that, each of which is the difference between help and interference:
+
+- **It shapes the proposal, never a rule.** A school that teaches French from Nursery clicks the empty cell and types a number. Nothing argues.
+- **An unrecognised name has no range** and is offered everywhere. A missing proposal costs one click; a wrong one is corrected only if somebody notices.
+- **It stands aside rather than leaving a class with nothing.** A pre-primary wing whose school listed only Physics and Accountancy gets them: the school's own list is better evidence than the ladder in that case, and an empty week is a Readiness score complaining about 40 free slots per class.
+
+An empty cell now says why it is empty — *"Biology usually starts at Class 9 — type a number to teach it here anyway"* — because a blank the page produced on purpose is otherwise indistinguishable from one it lost.
+
+**The deletion (`allocation-cell.ts`, `RemoveSubject`).** The ladder cannot know that this school drops Computer Science in Class 12, so there is also a way to say so: ✕ **Not taught in {class}** in the cell dialog, and Delete on the keyboard cursor. It is not the same as setting the periods to zero, which leaves the teacher mapped to a subject nobody is taught; it removes the curriculum row, the mappings across every section of the class, the §4.10 merged groups that taught it there, and the draft lessons already placed for it.
+
+**Why the wizard calls the server here, when it is otherwise draft-only.** Clearing the draft is the whole of the change right up until the step has been committed once. From then on the §16 importer skips by natural key and removes nothing, so a curriculum row that has reached the database survives every re-import: the cell would empty on screen while Readiness went on demanding four periods of Biology a week for a class of four-year-olds. **An empty cell that does not mean "not taught" is worse than no delete button, because it is believed.**
+
+Built like §27.11's reset — count and delete declared in one object, the plan recomputed server-side before the write, never taken from the request — with two deliberate differences. The refusal is **narrow**: §27.11 blocks on any published slot because it deletes everything, while this asks only whether the wall chart teaches *that subject to that class*. And there is **no typed word**: this removes one class's one subject and putting it back is clicking the same cell and typing a number, where the reset destroys a timetable's whole planning. The counts are still shown in full. Asking twice is a clean `{ok: true, total: 0}` rather than a 404 — "there was nothing to delete" is a successful outcome of asking for a deletion — while a class or subject that does not exist at all is still a 404, because that is a request about something else.
+
+**The fallback is per WING, not all-or-nothing.** `answers.curriculum ?? proposal` reads fine until a school with one planned wing adds a second: the stored array is not empty, so it won for the whole school and every class in the new wing arrived with no subjects at all. §27.12 makes that the ordinary path rather than an edge case — an existing school's answers are prefilled from its master data, so the array is populated before anybody has touched the page. The proposal now fills wings the plan has never covered, for the curriculum, the staffing and the class teachers alike. A **wing** is the unit that decides, and not a class, because absence has to keep meaning something inside a wing that has been planned: a class somebody emptied on purpose — which this phase makes a normal thing to do — must stay empty, and a class-level fallback would put it straight back.
+
+### 8.1d (revised) — the flyout was painting under the page
+
+With the nav collapsed, hovering an icon slides its name out of the rail. It was sliding out *behind* the content: the label appeared, crossed the rail's edge, and vanished under the white panel.
+
+The cause is a rule that is easy to forget. **`position: sticky` creates a stacking context unconditionally** — unlike `relative`, which needs a `z-index` to do so. `.sidebar` is sticky, so `.nav-fly`'s `z-index: 60` was only ever competing with the sidebar's *other children*; the rail as a whole took part in the root stacking context at `auto`, and the page content painted over it.
+
+So the fix is on the rail, not the flyout: `.sidebar` now carries `z-index: 50` — above the sticky topbar (5), below the §24.5d pane overlay (200), which is supposed to dim the nav rather than duck beneath it. The flyout's own z-index was never the problem, and raising it further would not have helped.
+
+Fixing it exposed a second thing. Nav items carried both `aria-label` and `title`; while the flyout was hidden, only the browser's grey tooltip was visible, so the duplication never showed. With the flyout painting correctly the two arrive together — the label slides out of the rail and a tooltip drops on top of it a moment later saying the same word. `title` is gone; `aria-label` stays, because that is the part a screen reader needs when the visible label is folded away.
+
+### 8.1d (revised) — scrolling the rail without a scrollbar (`nav-scroll.tsx`)
+
+The nav list scrolls when the groups do not fit, and it did so with a styled 6px scrollbar. That was designed for the 236px nav, where a scrollbar is a thin edge detail. Collapsed, the rail is 64px with the icons centred in it, so the same 6px bar runs the full height of a navy panel a few pixels from the icons — it stops reading as a browser affordance and starts reading as a design element nobody chose.
+
+So the scrollbar is hidden (`scrollbar-width: none` plus the WebKit pseudo-element) and the information it carried — *there is more this way* — is carried instead by a small chevron at each end of the list. A chevron says the same thing and is also a control: pressing one scrolls 60% of a screenful, smoothly, with enough overlap that the row being read is still on screen afterwards. Wheel, trackpad and keyboard scrolling are untouched.
+
+Three details are the design rather than decoration:
+
+- **Both chevrons are drawn only when the list actually overflows.** On a tall screen the whole nav fits and neither exists. A permanently dimmed pair would be two rows of dead space in the one column the collapse exists to make room in.
+- **When it does overflow, both slots stay mounted** and the one at the end you have reached fades to 22%. Unmounting the spent one would shift every icon by 17px at the moment somebody was aiming at one.
+- **They are `aria-hidden` and out of the tab order.** Scrolling this list from the keyboard already works — tabbing through the nav scrolls the focused item into view — so these are a pointer affordance, and putting them in the tab order would add two stops in front of every nav item on every page to duplicate something that already happens.
+
+The `ResizeObserver` watches **both** the scroller and an inner content wrapper, because either can change without the other: the viewport changes on a window resize, and the *content* changes when the nav collapses — every label folds away, the rows shorten, and a list that overflowed a moment ago now fits. Watching only the scroller leaves the chevrons showing on a nav that no longer needs them.
+
+The chevrons are drawn as SVG paths matching `icons.tsx`'s stroke, not typed as `⌃`/`⌄`: those are typographic marks, not arrows — off the optical centre, differently sized in every font, and on some systems falling back to a face with nothing to do with the nav.
+
+### 8.2 The masters, on top — and the wizard that stopped being one
+
+The five master screens were the first five steps of a nine-step Setup Wizard. That is the right shape exactly once: the day a school is set up. Afterwards "add a teacher" is not step 5 of anything, and reaching it meant walking a stepper past four screens that were already done. **A wizard is a sequence; masters are a set.**
+
+So `/masters` is a row of entity buttons — Subjects, Classes, Classrooms, Teachers, Academic Years — over the same lists and forms the wizard used, moved rather than rewritten. A second form over the same rows is how two screens start disagreeing about what a subject has. Selecting Classes also shows **Lessons**: what that class-section is taught, by whom, how often, and where.
+
+**Lessons is read-only, deliberately.** The Allocation grid (§27) writes curriculum and mappings, and it is the only thing that does — a curriculum row and the mapping that teaches it are one decision. This answers the other question, "what does 5-A actually do all week?", which the matrix shape of the Allocation page makes you read column by column. It has to include §4.9 elective options: a block's member row carries no subject (invariant 9), so a class's week rendered from mappings alone shows the period as free — the exact bug `ReportsService.classSectionTimetable` exists to avoid.
+
+**What the wizard became.** Its five master steps are the Masters screen; Curriculum and Teacher Mapping are the Allocation page, which was already the better answer to both; Electives keep their own screen. What is left at `/setup` is the timetable's own week — the period grid, its breaks, its §28 activities and which class-sections a wing covers. Those are facts about **one timetable**, not about the school, so they belong beside the timetable and not among the masters. The welcome screen now offers two doors rather than three: guided, or describe it to the assistant. Manual entry was a third way to set up the same rows, and a third writer over data two paths already own.
+
+**The Allocation nav entry is a door, not a screen.** It opens the guided setup at its Allocation step rather than porting the grid to a second component, because the grid works on the draft answers and commits through the §16 importer — the one path that writes those rows. §27.12 is what makes opening it directly sensible: `GET /onboarding/session` falls back to answers rebuilt from the school, so a school that finished its setup months ago opens it and sees its own curriculum rather than an empty draft.
+
+### 8.3 The guided setup is a page, not a popup
+
+It opened as a modal, and §24.5d had already grown it to exactly the size and position of the pane beside the nav — a dialog filling the whole content area while dimming a strip of navigation nobody was reading. At that point the overlay costs things and buys nothing: focus is trapped, the URL does not say where you are, the browser's Back button does not close it, and two of the things behind it (the setup itself and the §27 Allocation grid) are screens a school works inside for an hour rather than questions it answers and dismisses.
+
+So `OnboardingWizard` takes an `inline` prop and the same component renders either way. `/guided-setup` opens at the saved step, `/allocation` opens it at step 9, and the dialog form is kept for the one case that is genuinely modal: the welcome flow, where arriving IS a hand-over from something else and closing has to give it back.
+
+**Opening it is now navigation, and that lives in one place.** The welcome screen's door, the "carry on" button and the §24.6 chat hand-over all mean "open the guided setup", so `Onboarding` turns its own `view === "wizard"` into a `nav("/guided-setup?at=…")` rather than each caller learning the route. The `openOnboardingAt` event that predated this is **removed** rather than left beside it: two mechanisms for opening the same screen is exactly the divergence this codebase spends its comments avoiding. The redirect runs in an effect, not during render — setting state while rendering in order to return a redirect is the shape that produces a render loop somebody has to debug later.
+
+`.pane-page` drops the border-shadow-radius of a floating panel, because it no longer is one, but keeps the **fixed height**: step 9's grid pins its own header and footer and scrolls between them, and a page that grows instead would put a second scrollbar under the first and move the row somebody is reaching for.
+
+### 8.4 Giving the height back to the grid
+
+The Allocation grid had about 320px of chrome above its first row: the app topbar, 26px of page padding, the wizard's step line, a praise banner, a serif heading, and a bordered load rail. On the one screen in the app that is genuinely short of vertical room — 50 class-sections down, 22 subjects across — that is eight rows of school spent on saying where you are.
+
+Six changes, each removing something that was not carrying information:
+
+- **The page's own margin was 26/28/60.** The 60px of bottom padding was pure dead space: no screen ends at the fold. Now 12/14/14, which is enough that a card does not touch the chrome.
+- **`.content` scrolls instead of the window**, which is what lets a full-height page ask for the height it has *been given* rather than `100vh` minus a number somebody measured once. `.main` is a viewport-tall column, `.content` is a flex item of it, and `.pane-page` is `height: 100%` — change the padding and everything follows. The print block undoes it (`height: auto`, `overflow: visible`), because a document inside a viewport-sized scroller prints as one clipped page with nothing on the sheet to say the rest is missing.
+- **The guided setup and the Allocation page are full-bleed.** Both are frames in their own right — their own border, their own pinned header and footer, their own scrolling — and an inset around one of those is a margin inside a margin. Listed in `Shell`, because it is a fact about the layout: a page cannot remove padding its parent applied.
+- **The praise banner floats on a tall step.** "Wonderful! Your rooms are ready" is worth saying and worth nothing once read; it was holding a permanent 60px band to say it. It now sits over the top-right corner on step 9 and stays a banner everywhere else, where there is room to spare.
+- **The "Who teaches what" heading went.** The step line two rows above already says *Allocation*, and nobody looking at a class × subject matrix wonders what it is.
+- **The load rail is a strip, not a card.** A border, a radius and 6/11 padding drawing a box around one row of chips cost ~20px; a rule underneath separates it from the table just as well.
+
+Together that is roughly 150px, or four more class-sections visible without scrolling. The step header, body padding and footer all tighten on a *tall* step (`TALL_STEPS`) and keep their breathing room on the form steps, where readability is what matters and there is height to spare.
+
+### 16.1 A commit is not only a create
+
+Reported as *"I defined the classes in the guided setup, why is Readiness 0%?"* — a school with every class entered, both wings created, and `timetable_config_id` NULL on all 32 class-sections.
+
+**The sheet was right and the importer was reading it.** `classSheets` puts the wing in the Class Sections sheet's `Timetable` column, and the importer sets `timetable_config_id` from it. What went wrong is what happens the *second* time: the natural key for a class-section is `(class, section, year)` and the timetable is not in it, so a section created before its wing existed was skipped for ever after. The link is not part of any key, so nothing would ever fill it in.
+
+Two changes, and the second is the more important one.
+
+**An existing section that belongs to no timetable is attached.** Deliberately the §21 `complete` shape rather than an update: only a NULL is filled. A section already assigned to another wing is left alone — a class-section belongs to exactly one timetable (invariant 11), and moving it between wings is a decision somebody makes on purpose, not something a re-import does on their behalf. Every other field keeps the "the importer does not change existing rows" contract exactly.
+
+**`commit` no longer returns early when there is nothing new to create.** It used to answer *"everything here already exists — nothing to add"* the moment `create === 0` and skip the transaction entirely. But creating is not the only thing a commit does: it also **links rows that already exist** — a section to its timetable, a lab to its subjects (§19.1), a teacher to what they teach (§27.13) — and none of those links are part of a natural key. So "nothing new" was silently being read as "nothing to do", and the one action a person could take to repair the school did nothing at all, twice as invisibly because the message said everything was fine.
+
+The pass is safe to run with nothing new: every create loop filters on `isNew`, and the linking steps are idempotent because they already ran on every commit that had *any* create. The message now distinguishes the three real outcomes — rows added, nothing added but something repaired, or genuinely nothing to do — because they are different things to somebody who has just pressed Next.
+
+### 27.16 Which classes a subject is taught to (Phase 38)
+
+Asked for as *"in subject master provide the option where I can choose the classes for which the subject is applicable, and this should be automatically picked in Allocation."*
+
+The setup already had an opinion about this. §27.15 gave each `WEIGHTS` family an optional `from`/`to` on `CLASS_LADDER`, so Biology is not proposed to Pre-Nursery. But that opinion is **read off the subject's name**, and a guess is all it can ever be: a school that calls it "Bio-Science" gets no opinion at all, and one that teaches French from Nursery is simply contradicted. So the ladder shapes a proposal and is deliberately never a rule.
+
+`subject_classes` is the school saying it instead — the same promotion §18 made when it replaced a teaching band *derived* from existing mappings with a **declared** one, and for the same reason: a fact read back from what somebody has already been given can describe the data but can never constrain what they are given next.
+
+**A row per class, not a range.** A range is only expressible on the ladder, so a school with its own class names could not use one; and it cannot say "Class 5 and Class 8 but not 6 or 7", which is an ordinary thing for an elective to be. At this size a row costs nothing and can say anything.
+
+**Empty means "not stated", never "no classes"** (invariant 7). That single reading is what leaves every school built before this behaving exactly as it does today — the ladder proposes, nothing refuses anything — and it is why there is no backfill in the migration: backfilling from existing curriculum rows would recreate precisely the derived fact this table exists to replace.
+
+**Where it wins, and where the ladder still speaks.** They are two filters that look alike and are not, and collapsing them into one is the mistake worth naming. The declaration is applied first and never reconsidered; the ladder applies only to subjects nobody declared, and it may **stand aside** when it would leave a class with nothing. That fallback runs over the subjects the declaration allows, not over every subject — otherwise a class whose only candidate was excluded would be quietly handed it back, which is the proposal arguing with the answer rather than with a guess. A class left empty because the school excluded everything stays empty, and Readiness reports the free slots, which is the truth.
+
+**Three doors, one field.** The Subjects master (a `ChipPicker` beside the subject's name), the guided setup's Subjects step (the same control, offering the classes the wings define), and the workbook's new `Classes` column on the Subjects sheet — which gives the Excel template, the export, the ERP sync and §13.5's AI drafting the field for free. The importer writes it only for rows that named classes, exactly as `Teaching Scope` and `Subjects` on the Teachers sheet do: a blank column is "not decided yet", and clearing on blank would wipe a school's declarations the first time anybody re-uploaded a sheet exported before the column existed.
+
+**Enforcement is where §18 puts it.** `assertSubjectApplies` refuses a curriculum row at the point of the mistake, naming both halves — *"ZZGS Physical Education is not taught in Class 5. It is set for Class 1 on the Subjects screen."* The Allocation grid refuses the same edit client-side rather than writing into the draft what the commit will throw out, and names the screen that owns the statement, because that is where it is changed. The empty cell explains itself differently from §27.15's: a rung ends *"…type a number to teach it here anyway"*, a declaration says where it was said. One writer per fact.
+
+**Check 13 is the backstop, and it is a WARNING.** Rows written before a declaration existed, or through a workbook, never passed the guard, and there is no other way to find them — a curriculum row and a subject's class list live on two different screens. It reports as one grouped row naming the first three. It is not a blocker, and the distinction from Check 8 is worth stating: a teacher outside their scope blocks because generating would *enact* the wrong thing, putting them in front of a class they may not take. This one would generate a lesson somebody typed on a screen that let them. What is wrong is that two statements disagree — and refusing to generate the whole school over a disagreement turns a convenience into a trap. No remedy, for the §21 reason: one way out is deleting teaching the school may genuinely do, the other is widening an answer somebody gave on purpose, and neither is safe under a standing consent.
+
+**A long selection is summarised, not listed.** §27.9's "All 14 classes" chip covered only half the problem, and the half that shows up second: remove one class and the cell went from a single chip to thirteen — the same wall §26.1 pulled down, arriving the moment somebody uses the control. `ChipPicker` now summarises above three (*"11 of 14 classes"*), keeps the names in the `title` so a hover still answers "which ones?", and the summary chip is itself the opener, since a second control beside it would be two buttons doing one thing.
+
+**A chip never wraps mid-name, and Teaches is not the leftover column.** "Computer Science" was breaking *inside* its own pill — two lines of white text in a rounded blue box, with the ＋ pushed onto a third, and every row in the table grown to match. Two causes: chips had no `white-space: nowrap`, and Teaches was the one column with no width, which sounds flexible and is not — every other column takes a fixed width, so "flexible" meant "whatever is left", and what was left fitted "Computer" but not "Computer Science". It now takes a `min-width` rather than a fixed width, so a school of one-word subjects is not made to look at 190px of white space. The classes columns went the other way: since they summarise into one chip they no longer need 18%.
+
+**The picker follows its row instead of closing** (`ui/anchored.tsx`). A `position: fixed` panel does not travel with the row it belongs to, and the first version paid for that by closing on any scroll. Once the panel held fourteen classes that was wrong twice over: the scroll listener is in the **capture** phase — a table's own scroller does not bubble — so the panel's own scrollbar closed the panel, making a long list impossible to scroll at all. And closing was never the right answer anyway: the panel is not stale when the page moves, only misplaced. It now ignores scrolls that originate inside itself, re-measures against its anchor for everything else, and closes only when the anchor has genuinely left the viewport. The list's own `min-height: 0` is load-bearing beside it — a flex item defaults to `min-height: auto` and refuses to shrink below its content, so without it the list ignores the panel's `max-height` and grows down the page instead of scrolling inside it.
+
+**The isolation gate learned a new shape.** `/availability/:kind/:id` (§4.7b) was sitting unclassified: one controller over four tables, so the sweep could not map `/availability/` to a single resource. The answer was not a waiver — `:id` really is another school's row id and really must 404 — so the sweep now expands a discriminating path segment into the concrete routes it serves, and each sweeps like any other. It is still driven by the app's own route table: a fifth kind added to `KINDS` and left out of the expansion appears as a new unclassified route and fails the build.
+
+## 29. Staffing changes on a settled timetable (Phase 39)
+
+Asked for as *"once the timetable is published and frozen, no changes in allocation are permitted at any level"*, with a scoped release for the case that makes it necessary: a teacher resigns, goes on maternity leave, or a new one joins, and their classes have to go somewhere without disturbing anybody else's week.
+
+### 29.0 The load-bearing decision: reassign, never regenerate
+
+The requirement is *"no other timetable will get impacted; the rest of the timetable will be the same."* There are two ways to attempt that and only one of them keeps the promise.
+
+A **scoped re-solve** — release some teachers, lock everything else, run the solver — cannot. The solver is a search: if a freed lesson does not fit, it wants to move something else, and the only way to stop it is to make the run fail instead. "No impact elsewhere" would hold by luck rather than by construction.
+
+So: **the cells never move; only the teacher standing in front of them changes.** Class 5-A still has Maths on Monday P3, and who teaches it is the only question being answered. `uq_class_slot` and `uq_room_slot` are untouched because neither the class nor the room moves; only `teacher_occupancy_key` changes, which is precisely what is validated. Every other teacher's week is byte-identical because no row of theirs is written.
+
+That makes this a **weighted bipartite matching** rather than a CSP — the shape §6's substitute engine already solves, but over a week instead of a day and permanently instead of as an overlay. The consequence is stated rather than hidden: if no available teacher can cover a vacated class, it is **named and left uncovered**; nothing starts moving other classes' periods to make room. That is Phase A's promise applied to staffing — prove it, or name the exact row.
+
+**The unit of reallocation is a mapping, not a period.** `teacher_subject_class_section` is unique on `(subject, class_section)`: one teacher owns Class 5-A Maths, all six periods, and that is what a school means. Five sections of a leaver's Maths may go to five different teachers; one section's Maths is never split between two. Assignment happens at mapping granularity, **validation at slot granularity** — a candidate must be free at every one of those six cells or they do not qualify. Four things carry "who teaches" and all four are in scope: mappings, merged teaching groups (§4.10), elective options (§4.9), and `class_sections.class_teacher_id`.
+
+### 29.1 Freeze
+
+`timetable_config.frozen_at` / `frozen_by_id`. Two columns rather than a `status` value, because `status` already means draft/active/archived and a second meaning on one column is how a field ends up unable to say "archived AND frozen" — and because a timestamp answers *when*, which is the first thing anybody asks of a change they did not make.
+
+**Freezing is a deliberate act, never a side effect of publishing.** `POST /timetable-configs/:id/freeze` requires a live publication and says which of the two is missing rather than refusing flatly; NULL is every timetable that exists today, so nothing changes until a school presses the button. It is idempotent, and pressing it twice keeps the original timestamp: the answer to "when was this settled?" must not be rewritten by a double-click. `POST .../unfreeze` is the wide escape hatch and is logged as such — §29.2's scoped thaw is the narrow tool.
+
+Both take **`timetable.publish`**, not a permission of their own: whoever may put a week on the wall may declare it settled. A new permission would need a §15.2 registry entry and a per-role decision for every school that already exists, bought for a distinction nobody has asked for.
+
+**What it refuses.** Anything that could contradict the printed copy in every classroom: curriculum, mappings, merged groups, elective blocks, class teachers, class-section edits and deletion, the week's structure, §28 activities, which classes the wing covers, allocation reset, §27.15's cell delete, generation, every board edit, draft creation and editing, publishing, withdrawing, and deleting the timetable. Board edits touch *draft* rows rather than the published set, which makes them tempting to leave alone — that would make the freeze theatre, since a draft edited and then published is the published week changed by two clicks instead of one.
+
+**What it deliberately does not refuse.** Adding a teacher, a room or a subject; creating next year's session; cloning this timetable into a new one (the source is only read); and every read, preview and dry-run — seeing what a change would cost is not making one. A freeze that blocked hiring would be a freeze people work around.
+
+**Availability (§4.7a/§4.7b) is also not frozen, and that is a decision rather than an omission.** "Mrs Rao now leaves at 1pm on Fridays" is a fact about a person, not an allocation, and it is exactly the fact a school records *before* re-staffing; refusing it would leave them unable to write down the thing that prompted the change. Accepted, it makes Readiness report a published week that no longer satisfies a hard constraint — which is true, and is the school being told there is something to fix.
+
+**The importer and the guided setup are the blunt exception.** Both resolve names to rows deep inside one transaction and cannot say up front which timetables they will touch, so they refuse while *any* wing is frozen. The narrow version would have to re-derive the importer's own name resolution, and a second copy of that is how the two would drift.
+
+### 29.1a One definition, and the test that makes it safe
+
+`FreezeService` is the shape §18's `assertCanTeach` and §27.16's `assertSubjectApplies` already use: one definition of the rule and its message, called at every attachment point. Four resolvers, because a write identifies its timetable in four ways — by config id, by class-section (mappings, groups, blocks, class teacher), by class and year (the curriculum, which is class-keyed under §3.11 and so may reach several published weeks at once), and "any in the school" for the bulk committers.
+
+§17's Prisma-extension approach was considered and rejected: school scoping reads an ambient context and needs no query, whereas "is this row's timetable frozen?" needs a lookup per write for models that reach a config through two joins, and the §14 budget is not the place to pay for that on every insert.
+
+The cost of the call-site shape is that a **new** write path can simply not ask. `scripts/freeze-smoke.cjs` (`pnpm test:freeze`) is what stops a school discovering that: it drives all 28 guarded routes against a frozen timetable and requires each to refuse by name. It also asserts the two things a refusal test usually omits — that **every one of them works again after unfreezing** (a guard that refused permanently would pass the first half and have broken the product), and that reading, previews, hiring and next year's session are untouched.
+
+The message is worded once, in the service, and each call site passes only *what* it was about to change. That is why the second half of the sentence — which will name staffing changes once §29.2 lands — is one string rather than twenty.
+
+### 29.2 The staffing change: a record, not a mode
+
+The scoped release of §29.1, and deliberately a **record** rather than a mode. A mode that is switched on and off cannot answer *"who taught Class 5-A Maths before September, and why did it move?"*, which is the question the whole thing exists to make answerable.
+
+Three tables. `staffing_changes` is the plan — its timetable, the reason, an optional effective date, a note, and a status of `planning` / `applied` / `reverted`. `staffing_change_teachers` names the teachers on each side. `staffing_change_items` is what actually moved, written by §29.4's apply, and is the undo record.
+
+**`reason` is an enum, not free text**, because it chooses the default *shape* of the change: a resignation releases everything a teacher holds, an adjustment releases what somebody picks. `note` is where the school's own sentence goes.
+
+**`effective_from` is recorded and never acted on.** A change takes effect when somebody applies it. A timetable that rewrote itself overnight on a stored date — against a week that may have moved since the plan was made — is exactly the behaviour §29 was asked not to have.
+
+**A teacher is `releasing` or `receiving`, never both**, which the composite primary key enforces. Both at once is not a shape the engine can score: a candidate must have a settled load before anything is offered to them, and a teacher simultaneously losing and gaining has two answers to "how full are they?". The refusal says so and suggests two changes.
+
+**One open change per teacher.** Two plans that both intend to move Class 5-A Maths would each look valid alone and collide at apply — and the second would be applied against a week the first had already changed, so its own preview described a school that no longer exists. The refusal names the change that already holds them.
+
+`staffing_change_items` is a real table rather than `auto_fix_runs`-style JSON, and that precedent is close enough to answer: an auto-fix change is a heterogeneous field-set replayed only as a unit, whereas every row here is the same fact — this unit moved from X to Y — and answers a standing question JSON cannot index. Its `unit_id` is polymorphic with **no foreign key**, which §4.7b argues against for live rows and which is right for this one: an FK would delete the record when its mapping is deleted, and a mapping being deleted is exactly the case you most want the record for. `label` is denormalised for the same reason — the row has to survive its subject, and a join cannot.
+
+**A change may be opened on a timetable that is not frozen.** Freezing is what makes this *necessary*, not what makes it useful; a school that never freezes still has teachers resign, and the plan, the validation and the record are worth the same to them.
+
+### 29.2a Four things carry "who teaches"
+
+`staffing-units.ts` enumerates the vacancy, and a release covering only the first would leave a resigned teacher still running a merged group and still named as somebody's class teacher:
+
+1. **mappings** — the ordinary case;
+2. **merged groups** (§4.10) — one teacher, several sections at once, and **one occupancy event however many attend**, so its cells are deduplicated by day/period rather than counted per member;
+3. **elective options** (§4.9) — the one that is easy to miss, because an option row carries `class_section_id = NULL` by design, so anything looking for a teacher's work *by section* finds none of it;
+4. **class teacher** — not a lesson at all, which is why it has no cells, and exactly why it must be listed: it drives `always_first_period`, and it is the thing a school notices first.
+
+Everything is scoped to the config throughout: a teacher may work in two wings, and releasing them from Primary must not silently vacate their Secondary classes. Only **published** rows are counted — draft rows belong to a working copy nobody is teaching from, and counting them would report a leaver as carrying lessons that do not exist.
+
+Zero lessons means two different things and is never left to stand alone. A class-teacher role has none by nature; a mapping added since the last publish has none *yet*. Both still have to be reassigned, so the unit carries an explicit `unpublished` flag and the screen says which it is.
+
+### 29.2b The assertion this step exists for
+
+`scripts/staffing-smoke.cjs` (`pnpm test:staffing`) builds a school where one teacher holds all four kinds of unit, publishes and freezes it, then opens a change, reads everything the leaver carries, edits it twice and discards it — and requires that **the entire published week, every mapping, every merged group, every elective option and every class teacher are byte-identical afterwards**, by hashing them before and after. Step 2 writes no allocation at all, and that is the cheapest place to build the device §29.4 will use to prove "no other teacher's week moved".
+
+### 29.3 The engine: who can take a class whose teacher has gone
+
+**The plan for §29 said this module would reuse `SolverState.check()`. Building it made clear that would have been the wrong reuse**, and naming the difference is the whole design:
+
+- `SolverState.check()` answers **"can this lesson go in this cell?"**
+- This engine answers **"can this teacher take this lesson where it already is?"**
+
+In a reassignment the cell does not move (§29.0). The class-section slot, the room, the subject, the period and the span are all unchanged by construction, so re-checking them re-derives facts that were true before anybody pressed anything — and forcing the question through `check()` would mean building a `SolverVariable` that lies about span, `dayKey`, `samePeriodKey` and the room pools, then discarding most of the answer.
+
+So what is re-checked is exactly the **teacher-side** half, and it draws its data from the same places the solver does rather than deriving its own: `buildTeacherCtx` for §4.7a availability, the alternate-day set and the P1 rule; `effectiveMinByTeacher` for §20; `buildFeasibilitySnapshot` for caps, §18 scopes, §27.16 declarations and cross-config load. Deliberately **not** re-checked, because the cell is not moving: `uq_class_slot`, `uq_room_slot`, room availability, a subject's per-day cap, §4.6's same-period rule, §4.8 contiguity and §26.3's lunch rules.
+
+**Hard filters**, every one of which produces a named reason rather than a silent rejection: §18 guest and teaching scope, §27.13 declared-or-mapped subjects, §27.16 subject classes, §4.7a availability, alternate-day, occupancy at *every* cell (three of four is a refusal — this is a permanent handover, not a day's cover), the daily and weekly caps, `max_consecutive_periods_per_day`, `alternate_period` as a hard rule (invariant 2), and the class-teacher P1 rule. Empty scope, empty subject list and empty subject-classes all mean "not stated" (invariant 7), never "nothing".
+
+**Soft scoring**, in the order that matters: continuity by a wide margin (a class-section keeping a teacher it already has is worth more than every tie-break put together), then declared subject specialism, then *fractional* spare capacity — a raw count would always prefer the part-timer with the smallest cap simply because they teach fewest periods — then §20's week shape, which is **scored and never enforced**: refusing an otherwise legal assignment because it left a short day would trade a covered class for a tidier week, and completeness outranks shape.
+
+**Two things that only show up across a whole week**, and are the reason a substitute lookup is not enough here:
+
+1. **A teacher's week is mutated as the plan fills it.** Three units that each fit somebody alone will together break their weekly cap; scored independently all three would go to the same person.
+2. **The hardest unit is settled first** — fewest legal candidates, then most periods — because a greedy pass in list order spends its only qualified teacher on an easy unit and then has nobody for the hard one. The assignments are re-sorted into the school's own order before returning, so the screen reads as the vacancy does rather than as the algorithm's queue.
+
+**Replace** validates unit by unit rather than as a whole. A flat yes/no would be useless: what a school needs to hear is *"four of these five fit; Class 9-B Maths clashes with their Thursday P2"*.
+
+`GET /staffing-changes/:id/plan?mode=replace|redistribute` is a **GET**, because it is a question — nothing written, nothing stashed, and asking twice answers against whatever the week says now. The mode is chosen by the caller rather than derived from `reason`: a school that hires one teacher for half a leaver's classes and spreads the rest is doing both, and guessing would take that choice away.
+
+The one difficult thing in the API layer is that **the occupancy handed to the engine must be the published week with the released units already taken out**, and it is subtracted **by slot id**, never by teacher: a change that releases only part of somebody's work would otherwise free lessons they are still teaching. Merged-group rows are deduplicated to one occupancy event per cell (§4.10), or a group's teacher looks doubly busy at the same period.
+
+### 29.3a Redistribute: the ejection pass, and how it was justified
+
+Hardest-first ordering — fewest legal candidates, then most periods — turns out to be strong. Every case I could *construct* by hand for the depth-1 ejection pass the plan called for was already handled by the ordering, which is a good sign about the ordering and a bad sign about shipping the pass on faith.
+
+So it was justified by search instead: a random sweep over 4,000 small instances (3 teachers, 2–5 units, random cells and random subject competence) had the pass fire **58 times** — about 1.5%. One of those cases is now a deterministic unit test, and it is worth reading because it shows exactly what the ordering cannot see:
+
+> Three units all wanting Wed P3. Teacher A teaches all three subjects, B teaches two of them, C only one. Every unit therefore has exactly **two** legal candidates, so hardest-first cannot separate them and falls back to "most cells first" — which hands the two-cell unit to A. B then takes the second, and the third has nobody: A and B are both standing in Wed P3. The pass takes the two-cell unit back off A, sees that C can hold it, and gives Wed P3 to the third.
+
+The count of legal candidates is a **prediction made before anything is assigned**, and it only ever goes stale downward. The pass is where the plan gets a second look at the cases the prediction missed.
+
+**Depth 1, deliberately.** Chaining turns a bounded pass into a search, and the failure mode of a search here is not a worse plan but a slow screen. **Both halves must succeed** — the displaced unit finds a new home *and* the stuck one becomes legal — or a rescue would swap one uncovered class for another and report progress. And it may only move units **this plan gave somebody**: the school's standing week is not ours to rearrange, and moving it would be §29.0's promise broken from the inside.
+
+A 500-instance property sweep (deterministic xorshift seed, so a failure reproduces) asserts the three things a post-hoc rearrangement is most likely to break: no teacher is given two units in the same cell, no teacher ends over their weekly cap, and every uncovered unit has candidates that all failed *with reasons* — an unexplained vacancy is the one outcome §4's "tell me what to fix" promise cannot survive.
+
+### 29.3b The load report, and moving only part of a teacher's work
+
+**`loads` carries a §28.1 `alert` flag**, measured against the teacher's **whole** week rather than this timetable's share of it: somebody at 20 of 30 here and 6 in another wing is at 87%, and a line drawn round one wing would say 67% and be comfortably wrong. It is a warning and never a refusal — exactly Check 12's rule — while going *over* the cap is a refusal that names the limit. What a school is really deciding here is whose week gets heavier and by how much, so the report sits above the assignment table rather than under it.
+
+**`units=` narrows the release.** A resignation moves everything a teacher holds; an **adjustment** moves what somebody picks, and without a subset filter the two reasons would differ only in the word printed on the record. A key naming something not in the release is ignored rather than refused — the list comes from a screen that may be a moment out of date — but a selection that matches *nothing* is refused, because silently planning the whole release when somebody asked for one piece of it is the worst of both.
+
+**An uncovered unit lists every candidate's reason, not the best one's.** The single-best version read as one person's problem and sent people to fix the wrong thing; *"Rekha is busy Thursday P2 · Anil does not teach Maths · Priya would be over 30 a week"* is three different remedies, and only one of them is usually worth doing.
+
+### 29.4 Applying it
+
+The one place in §29 that touches a published week. Three rules shape all of it.
+
+**1. The plan is recomputed server-side, never taken from the request.** The same rule §21's auto-resolve follows: a preview an admin held for five minutes is not what is true now, and it is never the list of writes. The request carries the *choice* — replace or redistribute, who, which units, whether gaps are accepted — and the server works out the consequences again from the live database.
+
+**2. Slots are UPDATED in place, never deleted and recreated.** `substitution_log` points at slot ids with no foreign key (the fact that made §3.14's withdraw *flip* rows rather than copy them), so recreating would orphan every recorded cover. It also means the three unique keys are never transited through a bad state: the class and the room are not moving, so only `teacher_occupancy_key` changes, and it changes to a cell the engine has already proved free.
+
+**3. The carrier moves too, not only the lessons.** A mapping, a merged group, an elective option or a class-teacher pointer is what the next Generate reads. Move the lessons and leave the mapping, and the leaver is quietly back the first time anybody presses Generate, with nothing to connect the two events.
+
+**Every write is compare-and-set**, scoped by `teacherId: from` as well as by the unit. That single extra predicate is what makes apply safe against a week that has moved since the preview: a row somebody else has already changed is simply not matched, rather than being overwritten with an answer computed from a school that no longer exists.
+
+**A gap is chosen, never discovered.** Apply refuses while anything is uncovered unless `acceptGaps` is explicitly true, and the refusal names what it is refusing over. Refusing outright would be safer and is wrong — a school losing a teacher mid-term may genuinely have no cover for one class and still needs the other nine moved today.
+
+**An accepted gap leaves its unit exactly as it is**, and records an item with no destination. Not nulled: nulling the slots would destroy the only surviving statement of what that class needs, and §29.0's promise is that nothing is damaged to make a change look complete. The record says "this one did not move", and the school deals with it deliberately.
+
+Applying twice is refused, and an applied change can no longer be edited or discarded — a record that can be rewritten afterwards is not one (§3.14's rule for a withdrawn publication). The teachers who *gained* classes are notified; the leaver deliberately is not, and a notification that cannot be delivered never rolls back a timetable that has already been written.
+
+### 29.5 Putting it back
+
+Built from `staffing_change_items`, not by re-planning: a revert is not a decision, it is the reversal of a recorded one. Every write is **compare-and-set on what the change actually did** — a carrier that no longer points at the teacher this change gave it to has been moved again by somebody else, and quietly overwriting that would make revert a way of losing work rather than of undoing it. Those units are **skipped and named**: *"Class 5-A Maths has been moved again since"* is the sentence that tells somebody where to look; "3 could not be put back" is a number nobody can act on.
+
+The change row is **kept and marked `reverted`**, with `applied_at` still on it, and its items are kept — §3.14's rule again: deleting it would rewrite the school's own record of what happened.
+
+### 29.6 The proof
+
+`pnpm test:staffing` — 68 assertions. The four that are the design:
+
+1. **Every other teacher's published week is byte-identical** after a real apply (sha256 over every row not belonging to the two teachers in the change).
+2. **No cell moved at all** — same rows, same class-section, same period, same room, compared field by field before and after. That is §29.0 reassign-don't-regenerate, verified rather than asserted.
+3. **The same slot ids changed hands** (16 of 16), so nothing recorded against them is orphaned.
+4. **All four carriers moved** — mappings, merged group, elective option and class-teacher — and the leaver's work in the *other* wing is untouched.
+
+Then the round trip: after revert, the whole published week hashes identical to before the change. And with `acceptGaps`, one unit moves, four are recorded with no destination, and the uncovered lessons keep their teacher rather than being emptied.
+
+### 29.7 A regression worth remembering: the colours that vanished
+
+Reported as *"subject colours are not displaying, earlier it was working"* — and every part of the feature was working. `/me/colors` returned the right names, the palette assigned them, the grid read them.
+
+`colors.tsx` exported the React context **and** the provider component from one module. React Fast Refresh preserves a module's state only when it exports components and nothing else, so Vite could not fast-refresh that file and **invalidated** it instead — which it does whenever anything it imports changes, `hooks.ts` most of all. Each invalidation re-evaluated the module and minted a **new** `createContext` object, while grids that had not been re-evaluated went on reading the old one. `useContext` then found no matching provider and returned the default — which for colours is *"no colour at all"*, so every cell quietly went white with nothing anywhere reporting an error.
+
+The fix is the split: `colors-context.ts` (no JSX, therefore not a Fast Refresh boundary) owns the context, the hook and `classOfLabel`; `colors.tsx` exports only `ColorProvider`. Confirmed at the mechanism level — the dev server now reports `hmr update /src/colors.tsx` where it used to report `hmr invalidate`.
+
+**The general lesson is about the default, not about Vite.** A context whose default means "switched off" fails silently by construction: a consumer that has lost its provider is indistinguishable from a feature nobody turned on. Colour genuinely is optional here (§10.5: a role that cannot read the lists gets none, and the grid still works), so a throwing default would be wrong — which makes the module boundary the only place left to get it right. Vite's own warnings say the same thing about several other files in this app ("Could not Fast Refresh — `inputStyle` export is incompatible"); none of the others hold a context, which is why this one is the only one that has bitten.
+
+### 8.5 The masters edit beside the list, not below it
+
+Reported as *"for every edit I have to scroll down; everything should be visible on the first screen"* — and the reasoning was already written down. §8.1c made exactly this observation for the manual Curriculum step: *"at 14 classes × 8 subjects a form below the table means pressing Edit scrolls the row off the screen."* It drew the right conclusion there and edited in the row; it simply never reached Subjects, Class-Sections, Rooms or Academic Years, which kept the table-then-form arrangement that only works while the table is short.
+
+The symptom is precise: pressing Edit scrolled the form into view and the row **out** of it, so while you typed you could no longer see the thing you were editing.
+
+In-row editing is not available here — a subject has eight fields, a room five — so the answer is the other half of the same idea: **put the form where scrolling cannot take it away.** Two columns, each scrolling inside itself, and the page never scrolls at all. The list is always on screen; so is the form.
+
+**One component, not four.** `masters/MasterPane.tsx` owns the shape. The four masters had four copies of the same arrangement, which is why the fix had to be made four times over and why it will not drift now that it is made once. The list takes the remaining width and the form is a fixed 340px, rather than a percentage split: a form's width is set by its widest control and gains nothing from more room, while a six-column table always does.
+
+**The form's heading is the state indicator** — "Editing Class 5-A" against "Add a class-section". Before this, *am I adding or editing?* was answered only by the label on a button that was usually below the fold, which is how somebody renames a class they meant to create.
+
+Three screens needed more than a re-layout:
+
+- **Classes** was two stacked cards, and the second — class-sections — was the one that matters, because it is where *"belongs to no timetable"* is visible at all. Class-sections became the list (they are the scheduling unit, §3.10) and classes moved into the form column, where a school touches them once a year. Class-sections keep editing **in the row**, as they already did: three fields fit, and it means the row being changed never moves.
+- **Academic Years** opened its §25 term calendar *below* the table, which put a three-term editor between the list and the form and created the very scroll being removed. It opens in the form column, beside the session it belongs to.
+- **Lessons** (the read-only curriculum) was stacked under the class-sections table, which guaranteed a page scrollbar however the panes above were arranged. It is a toggle in the tab bar now — a second view of the same tab.
+
+**Teachers is deliberately untouched**: it already swaps the whole pane for its form, so it never had the problem.
+
+Two implementation notes worth keeping:
+
+- **`DataTable` wraps its table in an `overflow-x: auto` div**, and that div is what a sticky header sticks to — a container with no height of its own, which never scrolls vertically, so the header would never have stuck. The scrolling is handed to the pane instead (`.master-scroll > div { overflow: visible }`), which makes both axes work in one place.
+- **Below 1080px the panes stack and the page scrolls again.** That is the honest cost of the width: a 340px form squeezed beside a six-column table is unreadable in a different way.

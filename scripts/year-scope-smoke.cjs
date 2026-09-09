@@ -20,6 +20,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZYSC";
@@ -113,10 +114,12 @@ async function call(method, p, token, body) {
       data: { schoolId: SCHOOL, name: `${P} ${name}`, startDate: new Date(from), endDate: new Date(to), isActive: name === "26-27" },
     });
     const config = await prisma.timetableConfig.create({
-      data: { schoolId: SCHOOL, name: `${P} Wing ${name}`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay },
+      data: {
+        resourceGroupId: await groupFor(prisma, year.id), schoolId: SCHOOL, name: `${P} Wing ${name}`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay },
     });
     const cs = await prisma.classSection.create({
-      data: { classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
+      data: {
+        resourceGroupId: await groupFor(prisma, year.id), classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL, timetableConfigId: config.id, strength: 30 },
     });
     return { year, config, cs };
   };
@@ -180,12 +183,14 @@ async function call(method, p, token, body) {
 
   // ...and the same teacher in a second timetable of the SAME session still is.
   const sibling = await prisma.timetableConfig.create({
-    data: { schoolId: SCHOOL, name: `${P} Wing 26-27 B`, academicYearId: newYr.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 8 },
+    data: {
+      resourceGroupId: await groupFor(prisma, newYr.year.id), schoolId: SCHOOL, name: `${P} Wing 26-27 B`, academicYearId: newYr.year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 8 },
   });
   const cls2 = await prisma.schoolClass.create({ data: { schoolId: SCHOOL, name: `${P} Class 6`, sequence: 6 } });
   const sec2 = await prisma.section.create({ data: { classId: cls2.id, name: "A", schoolId: SCHOOL } });
   const cs2 = await prisma.classSection.create({
-    data: { classId: cls2.id, sectionId: sec2.id, academicYearId: newYr.year.id, schoolId: SCHOOL, timetableConfigId: sibling.id, strength: 30 },
+    data: {
+      resourceGroupId: await groupFor(prisma, newYr.year.id), classId: cls2.id, sectionId: sec2.id, academicYearId: newYr.year.id, schoolId: SCHOOL, timetableConfigId: sibling.id, strength: 30 },
   });
   await prisma.teacherSubjectClassSection.create({
     data: { schoolId: SCHOOL, teacherId: teacher.id, subjectId: subject.id, classSectionId: cs2.id, periodsPerWeek: 7 },

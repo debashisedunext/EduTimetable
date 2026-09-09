@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../api";
+import { ActivitiesEditor } from "../timetable/Activities";
 import { asMessage, Card, confirmDelete, DataTable, ErrorNote, Field, RowActions } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 import { inputStyle } from "./Timetables";
+import { TeacherInstruction, useInstructionsAvailable } from "../teachers/Instruction";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -46,7 +48,7 @@ export function StepCurriculum() {
   const { data, refetch } = useApi<any[]>(yearId ? `/class-subjects?academicYearId=${yearId}` : "/class-subjects");
   const { data: classes } = useApi<any[]>("/classes");
   const { data: subjects } = useApi<any[]>("/subjects");
-  const { data: sectionRows } = useApi<any[]>("/class-sections");
+  const { data: sectionRows } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
 
   const blank: CurriculumDraft = {
     classId: "", subjectId: "", periodsPerWeek: "5", maxPeriodsPerDay: "1",
@@ -398,7 +400,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
@@ -412,6 +414,9 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
         // §18: which classes this teacher may take, and how they are engaged.
         employmentType: form.employmentType,
         classIds: form.classIds ?? [],
+        // §27.13 — declared subjects. Always sent, so clearing every chip really
+        // clears them rather than being read as "not mentioned".
+        subjectIds: form.subjectIds ?? [],
       };
       if (form.id) await api(`/teachers/${form.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/teachers", { method: "POST", body: JSON.stringify(body) });
@@ -419,7 +424,7 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
       return true;
     } catch (e) { setError(asMessage(e)); return false; }
   };
-  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [], classIds: t.classIds ?? [], employmentType: t.employmentType ?? "permanent" }); };
+  const openEdit = (t: any) => { setError(null); setEditing({ ...t, alternateDaySet: t.alternateDaySet ?? [], classIds: t.classIds ?? [], subjectIds: t.subjectIds ?? [], employmentType: t.employmentType ?? "permanent" }); };
 
   if (editing) {
     return (
@@ -499,6 +504,53 @@ function scopeSummary(names: string[]): string {
  * teacher covers Nursery and Class 12 and a range cannot say that — with
  * presets, so the ordinary case is still two clicks.
  */
+/**
+ * §27.13 — which subjects a teacher teaches, as chips.
+ *
+ * The same shape as `ScopePicker` next to it and deliberately not the same
+ * component: classes have presets that mean something ("Primary 1–5"), and
+ * subjects have no such families — a preset row of one button per subject would
+ * be the list twice over.
+ *
+ * Empty means "not stated", never "teaches nothing" (invariant 7). The Subjects
+ * column falls back to what the teacher has been mapped to, so a school that
+ * never fills this in loses nothing.
+ */
+function SubjectPicker({ value, onChange }: { value: number[]; onChange: (ids: number[]) => void }) {
+  const { data: subjects } = useApi<any[]>("/subjects");
+  const all = subjects ?? [];
+  const selected = new Set(value);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {all.length === 0 && (
+          <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+            No subjects yet — add them on the Subjects tab first.
+          </span>
+        )}
+        {all.map((s) => (
+          <label key={s.id} className={`chip${selected.has(s.id) ? " chip-on" : ""}`}
+            style={{ cursor: "pointer", userSelect: "none",
+              background: selected.has(s.id) ? "var(--brand)" : undefined,
+              color: selected.has(s.id) ? "#fff" : undefined }}>
+            <input type="checkbox" style={{ display: "none" }} checked={selected.has(s.id)}
+              onChange={() => onChange(
+                selected.has(s.id) ? value.filter((x) => x !== s.id) : [...value, s.id],
+              )} />
+            {s.name}
+          </label>
+        ))}
+      </div>
+      {value.length === 0 && all.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 6 }}>
+          Nothing chosen means “not stated” — the Subjects column then shows whatever they have been
+          given on the Allocation page.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScopePicker({ value, onChange }: { value: number[]; onChange: (ids: number[]) => void }) {
   const { data: classes } = useApi<any[]>("/classes");
   const all = classes ?? [];
@@ -556,6 +608,7 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
 }) {
   const [form, setForm] = useState(initial);
   useEffect(() => setForm(initial), [initial]);
+  const aiOn = useInstructionsAvailable();
   const first = (form.name || "This teacher").split(" ")[0];
   const toggleDay = (d: number) => {
     const set = new Set<number>(form.alternateDaySet);
@@ -601,6 +654,20 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
       <div className="field" style={{ marginBottom: 18 }}>
         <label>Which classes does {first} teach?</label>
         <ScopePicker value={form.classIds ?? []} onChange={(classIds) => setForm({ ...form, classIds })} />
+      </div>
+      {/*
+        §27.13 — WHICH SUBJECTS, declared about the teacher.
+
+        The table has existed since Phase 30 and only the importer and the
+        guided setup could write it, so a school that entered its staff here saw
+        the Subjects column read "—" with nowhere to fix it. Declared rather
+        than derived, for the reason §18 gives about teaching scope: what
+        somebody has already been given can never constrain what they are given
+        next, and it is what the Allocation grid proposes from.
+      */}
+      <div className="field" style={{ marginBottom: 18 }}>
+        <label>Which subjects does {first} teach?</label>
+        <SubjectPicker value={form.subjectIds ?? []} onChange={(subjectIds) => setForm({ ...form, subjectIds })} />
       </div>
       <div className="field" style={{ marginBottom: 22 }}>
         <label>Engagement</label>
@@ -666,6 +733,19 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
           </div>
         </div>
       </div>
+
+      {/*
+        §26.5 — the same rules, said in a sentence instead of set field by
+        field. Shown only where the school has an assistant configured: a box
+        that silently never evaluates invites rules that will never apply.
+      */}
+      {aiOn && (
+        <TeacherInstruction
+          teacherId={form.id ?? null}
+          value={form}
+          onSaved={(next) => setForm({ ...form, ...next })}
+        />
+      )}
 
       <div className="wizard-foot">
         <button className="btn btn-secondary" onClick={onBack}>← Back to Teacher List</button>
@@ -950,7 +1030,7 @@ function MappingForm({
 /** Step 8 — Timetable Configuration (§3.10): grid structure + class scoping. */
 export function StepConfig() {
   const { current, refetch: refetchConfigs } = useConfigCtx();
-  const { data: sections, refetch: refetchSections } = useApi<any[]>("/class-sections");
+  const { data: sections, refetch: refetchSections } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
   const [error, setError] = useState<string | null>(null);
   const [computedEnd, setComputedEnd] = useState<string | null>(current?.endTime ?? null);
   const [extraEnd, setExtraEnd] = useState<string | null>(null);
@@ -962,6 +1042,7 @@ export function StepConfig() {
         workingDays: current.workingDays,
         periodsPerDay: current.periodsPerDay,
         periodDurationMins: current.periodDurationMins,
+        loadAlertPct: current.loadAlertPct ?? 75,
         startTime: current.startTime,
         hasZeroPeriod: current.hasZeroPeriod,
         zeroPeriodDurationMins: current.zeroPeriodDurationMins ?? 30,
@@ -1013,6 +1094,13 @@ export function StepConfig() {
         method: "PUT",
         body: JSON.stringify({ classSectionIds: [...form.selected] }),
       });
+      // §28.1 — a plain config field rather than part of the structure, because
+      // it changes no period row. Sent on the same Save so the screen has one
+      // button, as it always did.
+      await api(`/timetable-configs/${current.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ loadAlertPct: Number(form.loadAlertPct) }),
+      });
       setComputedEnd(res.endTime); setExtraEnd(res.extraEndTime ?? null); setError(null); refetchConfigs(); refetchSections();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -1056,6 +1144,24 @@ export function StepConfig() {
           <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setForm({ ...form, breaks: [...form.breaks, { afterPeriod: 3, name: "Break", durationMins: 20 }] })}>＋ Add break</button>
         </Field>
 
+        {/*
+          §28.1 — the line at which the app says a teacher is getting full.
+          A REPORTING preference, not a constraint: nothing refuses to generate
+          because of it, which is why it sits here rather than among the rules.
+        */}
+        <Field label="Warn when a teacher passes">
+          <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="number" min={50} max={100} style={{ ...inputStyle, width: 80 }}
+              value={form.loadAlertPct}
+              onChange={(e) => setForm({ ...form, loadAlertPct: e.target.value })} />
+            <span style={{ fontSize: 12.5 }}>% of their weekly limit</span>
+            <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+              Readiness reports them; it never refuses to generate. A teacher at 80% of their limit
+              is a normally employed teacher.
+            </span>
+          </div>
+        </Field>
+
         <Field label="Extra-class window (§18)">
           <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
             <input type="number" min={0} max={6} style={{ ...inputStyle, width: 70 }}
@@ -1090,6 +1196,19 @@ export function StepConfig() {
             )}
           </span>
         </div>
+      </Card>
+
+      {/*
+        §28.3/28.4 — its own card, and its own Save.
+
+        It is not part of the structure PUT: that endpoint rebuilds the period
+        rows from the config plus whatever activities the table holds, so
+        sending both together would mean one save doing two rebuilds and the
+        second silently deciding the answer.
+      */}
+      <Card title="Before and after the day (§28)"
+        sub="Assembly, attendance, bus dispersal. Each shows on the timetable with its duration and whoever is on duty — the solver never places a lesson in them.">
+        <ActivitiesEditor configId={current.id} workingDays={form.workingDays} />
       </Card>
 
       <Card title="Classes covered by this timetable" sub="A class-section belongs to exactly one timetable — sections claimed by another are locked (§3.10).">

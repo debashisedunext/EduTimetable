@@ -48,6 +48,17 @@ export interface SubstituteTeacher {
   classIds: number[];
   /** §18: guests are not on site for cover; permanent is preferred over adhoc. */
   employmentType?: "permanent" | "adhoc" | "guest";
+  /**
+   * §15.3 Phase 25.4 — whether this teacher covers at all.
+   *
+   * A hard filter, not a penalty, and the distinction is the whole point:
+   * scoring them down still puts them on the screen, at the bottom, where
+   * somebody assigns them anyway on a bad morning. "I don't cover" means they
+   * do not appear. Same treatment §4.7a unavailability gets.
+   *
+   * Optional so a caller that predates the column behaves exactly as before.
+   */
+  canSubstitute?: boolean;
   /** periods already occupied on this day: own published slots + substitutions already confirmed */
   busyPeriods: number[];
   /** periods blocked by teacher_unavailability for this day (full-day = all) */
@@ -105,6 +116,8 @@ function eligible(t: SubstituteTeacher, slot: AffectedSlot, ctx: Ctx): boolean {
   if (input.absentTeacherIds.includes(t.id)) return false;
   // §18: a guest is engaged for a specific extra class, not kept on hand.
   if (t.employmentType === "guest") return false;
+  // §15.3: opted out of cover entirely. Refused rather than ranked last.
+  if (t.canSubstitute === false) return false;
 
   const classId = slot.classSectionId === null ? undefined : input.classIdBySection[slot.classSectionId];
   // §18: scope is a hard gate — a primary teacher does not cover Class 12 just

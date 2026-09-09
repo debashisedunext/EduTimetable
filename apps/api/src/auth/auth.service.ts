@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
@@ -231,6 +232,66 @@ export class AuthService {
   }
 
   /**
+   * §15.3 Phase 25.1 — switching for a session that came from a password.
+   *
+   * Kept apart from the ERP path rather than folded into it, because the two
+   * resolve a role in genuinely different ways: the ERP path maps an `erpRole`
+   * through `erp_role_mappings` on every switch, since a person can be an
+   * Admin in one school and a Teacher in another and the ERP is the authority
+   * on which. A local account's role is whatever its `users` row in that
+   * school already says — there is no external authority to consult, and
+   * inventing a mapping would be inventing an answer.
+   *
+   * The grant is still the signed token's `schoolIds`, so a request cannot
+   * reach a school the account was not already given.
+   */
+  private async switchLocalSchool(
+    session: SessionTokenPayload,
+    target: { tenantId?: number; schoolId?: number },
+  ): Promise<{ sessionToken: string }> {
+    const granted = session.schoolIds ?? [session.schoolId];
+    let schoolId = target.schoolId;
+    if (schoolId === undefined && target.tenantId !== undefined) {
+      const tenant = await this.registry.byId(target.tenantId);
+      if (!tenant) throw new ForbiddenException("That school is no longer registered");
+      schoolId = tenant.schoolId;
+    }
+    if (schoolId === undefined) throw new BadRequestException("tenantId or schoolId is required");
+    if (!granted.includes(schoolId)) {
+      throw new ForbiddenException("You do not have access to that school");
+    }
+
+    const tenantId = (await this.registry.byIds(session.grants ?? []))
+      .find((t) => t.schoolId === schoolId)?.tenantId ?? null;
+    const client = await this.connections.clientFor(tenantId);
+
+    return this.tenant.runAs(
+      { schoolId, tenantId, client, origin: "switch" },
+      async () => {
+        const user = await this.prisma.user.findUnique({
+          where: { schoolId_erpUserId: { schoolId, erpUserId: session.erpUserId! } },
+        });
+        // Not found rather than refused: from outside, a school this account
+        // has no row in is indistinguishable from one that does not exist, and
+        // that is the answer §17 wants.
+        if (!user || !user.isActive) throw new NotFoundException("School not found");
+        await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+        const next: SessionTokenPayload = {
+          sub: user.id,
+          schoolId,
+          roleId: user.roleId,
+          tenantId,
+          erpUserId: session.erpUserId,
+          grants: session.grants ?? [],
+          schoolIds: granted,
+        };
+        return { sessionToken: await this.jwtService.signAsync(next, { expiresIn: "8h" }) };
+      },
+    );
+  }
+
+  /**
    * Switch the session to another of the user's schools (§17.4).
    *
    * The grant comes from the signed session token, which came from the signed
@@ -250,6 +311,15 @@ export class AuthService {
     session: SessionTokenPayload,
     target: { tenantId?: number; schoolId?: number },
   ): Promise<{ sessionToken: string }> {
+    // §15.3 Phase 25.1 — a locally-created session has an identity
+    // (`local:{accountId}`) but no ERP role, because there is no ERP. Its user
+    // row in the target school already exists, created when the school was, so
+    // there is nothing to map and nothing to re-provision: find the row and
+    // mint. Checked before the guard below, which is about a *missing*
+    // identity rather than a differently-sourced one.
+    if (session.erpUserId?.startsWith("local:")) {
+      return this.switchLocalSchool(session, target);
+    }
     if (!session.erpUserId || !session.erpRole) {
       // Pre-9.5 sessions carry no ERP identity, so the target school's role
       // cannot be resolved. Signing in again through the ERP fixes it.

@@ -5,9 +5,11 @@
  * version number. Draft and published live in one table, so the §3 unique
  * keys guard both sides throughout.
  */
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { DraftsService } from "../drafts/drafts.service";
+import { FreezeService } from "../freeze/freeze.service";
+import { ValidityService } from "../validity/validity.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { TenantContextService } from "../tenant/tenant-context.service";
 import { EventsGateway } from "../events/events.gateway";
@@ -35,6 +37,8 @@ export class PublishService {
     private readonly keys: CacheKeysService,
     private readonly tenant: TenantContextService,
     private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
+    private readonly validity: ValidityService,
   ) {}
 
   private async computeDiff(configId: number, draftId?: number | null) {
@@ -173,6 +177,20 @@ export class PublishService {
    * per config however many drafts it was chosen from.
    */
   async publish(configId: number, userId: number | null, draftId?: number | null) {
+    // §29.1 — publishing over a frozen week replaces the very thing the freeze
+    // was protecting, and would do it without a single guarded write.
+    await this.freeze.assertConfigs([configId], "the published timetable");
+    /*
+      §30.5 — a class can only be in one LIVE timetable at a time.
+
+      Before the diff, not after: this refuses the whole operation, and
+      computing what would change first would be work thrown away. It fires
+      only when another timetable with a live publication teaches one of this
+      one's classes over overlapping dates — which no school can currently
+      reach, because a class-section belongs to one config and pools are not
+      choosable until stage 4.
+    */
+    await this.validity.assertPublishable(configId);
     const draft = draftId != null ? await this.drafts.assertOwned(configId, draftId) : null;
     const scope = draft?.id ?? (await this.drafts.currentId(configId));
     const diff = await this.computeDiff(configId, scope);
@@ -249,6 +267,219 @@ export class PublishService {
     return { ok: true, version: pub.version, slotCount: diff.draftCount };
   }
 
+  // ───────────────────────────────────────── §3.14 withdrawing a publication
+
+  /**
+   * Where a withdrawal would put the live rows, and what else it touches.
+   *
+   * Shared by the preview and the write, so the confirmation cannot describe
+   * one thing while the transaction does another — the §27.11 rule, applied to
+   * an operation that is every bit as consequential.
+   */
+  private async unpublishPlan(configId: number) {
+    /*
+      Another school's timetable is a 404, never a plan that happens to be
+      empty (§17.8).
+
+      Every query below is school-scoped, so a stranger's config id simply
+      matches nothing and the plan comes back saying "0 lessons, nothing
+      published" — which is indistinguishable from a real answer about a real
+      timetable of their own, and is exactly the successful no-op the isolation
+      gate exists to refuse. It caught this one.
+    */
+    const cfg = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true },
+    });
+    if (!cfg) throw new NotFoundException(`No timetable with id ${configId}`);
+
+    const live = await this.prisma.timetableSlot.findMany({
+      // §18 extras are held in BOTH statuses and belong to neither side of the
+      // publish lifecycle. Publishing does not create them and withdrawing must
+      // not take them away: next week's revision class is not part of this.
+      where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
+      select: { id: true, draftId: true },
+    });
+    const pub = await this.prisma.timetablePublication.findFirst({
+      where: { timetableConfigId: configId, withdrawnAt: null },
+      orderBy: { version: "desc" },
+    });
+
+    /*
+      Back into the draft it came FROM, when that draft is still empty.
+
+      Publishing flips a draft's rows in place and leaves the registry row
+      behind as provenance, so the ordinary case is one `draft_id` shared by
+      every published row, pointing at a draft with nothing in it. Flipping them
+      home is then the exact inverse of the publish: same draft number, same
+      label, same rows, same ids.
+
+      Anything else — rows from before §22 with no draft id, two drafts' rows
+      somehow both published, or a draft that has since been filled again —
+      goes into a NEW draft. Not caution for its own sake: `draft_scope` is in
+      all three unique keys, so flipping 400 rows into a draft that already
+      holds a week would collide on the first cell and roll the whole thing
+      back with a database error instead of an explanation.
+    */
+    const draftIds = [...new Set(live.map((s) => s.draftId).filter((d): d is number => d !== null))];
+    let reuse: { id: number; draftNo: number; label: string | null } | null = null;
+    if (draftIds.length === 1 && live.every((s) => s.draftId !== null)) {
+      const candidate = await this.prisma.timetableDraft.findFirst({
+        where: { id: draftIds[0], timetableConfigId: configId },
+        select: { id: true, draftNo: true, label: true, _count: { select: { slots: true } } },
+      });
+      // `slots` on the registry row counts everything stamped with this draft
+      // id, and the rows about to come home are stamped with it too — so the
+      // question is whether anything ELSE is already there.
+      if (candidate && candidate._count.slots === live.length) {
+        reuse = { id: candidate.id, draftNo: candidate.draftNo, label: candidate.label };
+      }
+    }
+
+    /*
+      Substitutions are counted and NAMED, never touched.
+
+      `substitution_log` rows point at slot ids by number, and this flips those
+      rows in place rather than copying and deleting — so the covers survive the
+      withdrawal and line up again the moment the same draft is republished.
+      They do disappear from the Substitute Center while the timetable is a
+      draft, which is a consequence somebody should be told about before they
+      press the button rather than discover afterwards.
+    */
+    const substitutions = live.length === 0 ? 0 : await this.prisma.substitutionLog.count({
+      where: { timetableSlotId: { in: live.map((s) => BigInt(s.id)) } },
+    });
+    const extras = await this.prisma.timetableSlot.count({
+      where: { timetableConfigId: configId, status: "published", source: "extra" },
+    });
+
+    return { live, count: live.length, publication: pub, reuse, substitutions, extras };
+  }
+
+  /** §3.14 — what withdrawing the live timetable would do. */
+  async unpublishPreview(configId: number) {
+    const plan = await this.unpublishPlan(configId);
+    return {
+      slotCount: plan.count,
+      version: plan.publication?.version ?? null,
+      publishedAt: plan.publication?.publishedAt ?? null,
+      into: plan.reuse
+        ? { kind: "existing" as const, draftNo: plan.reuse.draftNo, label: plan.reuse.label }
+        : { kind: "new" as const, draftNo: null, label: null },
+      substitutions: plan.substitutions,
+      extras: plan.extras,
+    };
+  }
+
+  /**
+   * §3.14 — take the published timetable off the wall and back into a draft.
+   *
+   * The missing half of the lifecycle. A school could publish and publish
+   * again, and nothing else: two screens told them to "unpublish first"
+   * (§27.11's reset and §27.15's cell delete both refuse published work) about
+   * a button that did not exist.
+   *
+   * The rows are FLIPPED, not copied and deleted, and that is the load-bearing
+   * choice. `substitution_log` refers to slots by id; a copy-and-delete would
+   * leave every recorded cover pointing at a row that no longer exists, and
+   * republishing would give the school a new set of ids that no substitution
+   * matches. Flipping keeps every id, so the whole thing is reversible by
+   * pressing Publish again.
+   *
+   * What it deliberately does not do: un-archive the drafts that this
+   * publication archived (nothing records which they were, and guessing would
+   * resurrect work a school had moved on from), and touch §18 extra classes.
+   */
+  async unpublish(configId: number, userId: number | null) {
+    // Withdrawal is the largest change of all, so a frozen timetable refuses it
+    // too — and says which button comes first.
+    await this.freeze.assertConfigs([configId], "the published timetable");
+    const plan = await this.unpublishPlan(configId);
+    if (plan.count === 0) {
+      throw new BadRequestException(
+        "Nothing is published for this timetable, so there is nothing to withdraw.",
+      );
+    }
+
+    // Created BEFORE the transaction, deliberately: `DraftsService.create`
+    // enforces the §22.2 five-draft limit and refuses with an explanation, and
+    // that refusal has to arrive before anything has been changed.
+    let target = plan.reuse;
+    if (!target) {
+      const made = await this.drafts.create(configId, {
+        label: plan.publication ? `Withdrawn from v${plan.publication.version}` : "Withdrawn from the published week",
+      });
+      target = { id: made.id, draftNo: made.draftNo, label: made.label };
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.timetableSlot.updateMany({
+        where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
+        // `draftId` is written even on the reuse path, where it is already
+        // right: invariant 3 says never build a slot row without one, and a
+        // row arriving here from before §22 has none.
+        data: { status: "draft", draftId: target.id },
+      }),
+      this.prisma.timetableDraft.update({
+        where: { id: target.id },
+        // Editable again, and no longer claiming to be the published one.
+        data: { status: "draft", publishedAt: null, publishedById: null },
+      }),
+      ...(plan.publication
+        ? [this.prisma.timetablePublication.update({
+            where: { id: plan.publication.id },
+            data: { withdrawnAt: new Date(), withdrawnById: userId },
+          })]
+        : []),
+    ]);
+
+    // The registry's §22.3 stats describe a draft that has just changed size.
+    await this.drafts.recompute(configId, target.id);
+    await this.keys.invalidateTimetable(configId);
+    this.events.emitToCurrentSchool("slots:changed", { configId });
+    this.events.emitToCurrentSchool("timetable:unpublished", {
+      configId,
+      version: plan.publication?.version ?? null,
+    });
+
+    /*
+      Everybody who was told it was published is told it is not.
+
+      The publish notification says "v3 is now live — view yours", and without
+      the other half a teacher opens My Timetable to an empty week and has no
+      way to know whether the school changed something or the app broke.
+    */
+    const cfg = await this.prisma.timetableConfig.findUnique({ where: { id: configId } });
+    const teacherIds = [...new Set(
+      (await this.prisma.timetableSlot.findMany({
+        where: { timetableConfigId: configId, status: "draft", draftId: target.id, teacherId: { not: null } },
+        select: { teacherId: true },
+        distinct: ["teacherId"],
+      })).map((s) => s.teacherId!).filter(Boolean),
+    )];
+    const note = {
+      type: "published",
+      title: plan.publication
+        ? `Timetable withdrawn — v${plan.publication.version}`
+        : "Timetable withdrawn",
+      body: `${cfg?.name ?? "The timetable"} is back in draft while it is revised. `
+        + `Your published week is not available until it is published again.`,
+      link: "/my-timetable",
+    };
+    await this.notifications.notifyTeachers(teacherIds, note);
+    if (cfg) await this.notifications.notifyAdmins(cfg.schoolId, { ...note, link: "/publish" });
+
+    return {
+      ok: true,
+      slotCount: plan.count,
+      version: plan.publication?.version ?? null,
+      draftId: target.id,
+      draftNo: target.draftNo,
+      reused: plan.reuse !== null,
+      substitutions: plan.substitutions,
+    };
+  }
+
   /** Start the next editing cycle: copy the live timetable back into a draft. */
   /**
    * §22.4 — start a NEW named draft from the published timetable.
@@ -266,6 +497,9 @@ export class PublishService {
    * from the published week silently lost every §4.9 split elective.
    */
   async draftFromPublished(configId: number) {
+    // Only ADDS a working copy, but that copy is the route to publishing a
+    // different week, so it waits for the thaw like every other edit.
+    await this.freeze.assertConfigs([configId], "the timetable");
     const published = await this.prisma.timetableSlot.count({
       where: { timetableConfigId: configId, status: "published", source: { not: "extra" } },
     });

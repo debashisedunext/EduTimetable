@@ -48,8 +48,55 @@ export interface SheetDef {
 }
 
 export const YES_NO = ["Yes", "No"] as const;
+/** §15.3 — recorded for staff lists; never used to authorise or to schedule. */
+const GENDERS = ["male", "female", "other"] as const;
 export const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 export const DAY_VALUES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+/**
+ * §26.2 — the Subjects sheet's placement columns, in a person's words.
+ *
+ * The labels are what a school reads and types; the enum values are what the
+ * database stores. Both directions live here so a spreadsheet, a screen and the
+ * database cannot come to disagree about what "Any time" means.
+ */
+export const CATEGORY_VALUES = ["Scholastic", "Co-scholastic"] as const;
+export const LUNCH_VALUES = ["Any time", "Before lunch", "After lunch"] as const;
+
+const CATEGORY_BY_LABEL: Record<string, "scholastic" | "co_scholastic"> = {
+  scholastic: "scholastic",
+  "co-scholastic": "co_scholastic",
+  "co scholastic": "co_scholastic",
+  coscholastic: "co_scholastic",
+};
+const LUNCH_BY_LABEL: Record<string, "any" | "before" | "after"> = {
+  "any time": "any",
+  any: "any",
+  "before lunch": "before",
+  before: "before",
+  "after lunch": "after",
+  after: "after",
+};
+export const LUNCH_LABEL: Record<"any" | "before" | "after", string> = {
+  any: "Any time",
+  before: "Before lunch",
+  after: "After lunch",
+};
+
+/**
+ * Workbook text → the stored value, or `null` for blank and unrecognised.
+ *
+ * `null` rather than a default, deliberately: the committer fills a blank from
+ * the subject's NAME (`defaultsFor`), which is a better answer than "any" for a
+ * school that simply did not fill the column in. A guess at a stricter rule is
+ * never made here.
+ */
+export const categoryFromLabel = (v: unknown): "scholastic" | "co_scholastic" | null =>
+  CATEGORY_BY_LABEL[String(v ?? "").trim().toLowerCase()] ?? null;
+export const lunchRuleFromLabel = (v: unknown): "any" | "before" | "after" | null =>
+  LUNCH_BY_LABEL[String(v ?? "").trim().toLowerCase()] ?? null;
+export const categoryToLabel = (v: string): string =>
+  v === "co_scholastic" ? "Co-scholastic" : "Scholastic";
 
 /** §4.9 Phase 15 — the Electives sheet's `When` column, in a person's words. */
 export const PLACEMENT_VALUES = ["Solver chooses", "Same period every day", "Fixed slots"] as const;
@@ -127,7 +174,11 @@ export const SHEETS: SheetDef[] = [
       { header: "Capacity", key: "capacity", type: "int", min: 1, max: 500, width: 11, help: "Seats (optional)", sample: [40] },
       { header: "Shared", key: "isShared", type: "enum", values: YES_NO, width: 10, help: "Shared between classes? Labs default to Yes", sample: ["No"] },
       { header: "Home Room For", key: "homeFor", type: "string", maxLength: 40, refSheet: "Class Sections", width: 18, help: "The class-section that sits here all week, e.g. Class 1-A. One only", sample: [""] },
-      { header: "Lab For Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 26, help: "Which subjects this lab is set up for. Leave blank for a general lab that serves any of them", sample: [""] },
+      // The header is not renamed on purpose: it is the column's key in every
+      // workbook a school has already downloaded, and a rename would make those
+      // files import a room with no subjects. The HELP says what it now covers
+      // — §19.1 uses these same rows for a music room or a computer room.
+      { header: "Lab For Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 26, help: "Which subjects this room is set up for — a lab's own subjects, or the room a subject marked 'Own Room' is taught in. Leave blank for a general lab that serves any lab subject", sample: [""] },
     ],
   },
   {
@@ -139,7 +190,25 @@ export const SHEETS: SheetDef[] = [
     columns: [
       { header: "Subject Name", key: "name", type: "string", required: true, maxLength: 50, width: 20, help: "e.g. Mathematics", sample: ["e.g. Mathematics"] },
       { header: "Code", key: "code", type: "string", maxLength: 10, width: 10, help: "Short code (optional)", sample: ["MATH"] },
+      // §26.2 — all four blank-friendly. A school uploading last year's sheet
+      // has none of these columns filled, and every blank is filled from the
+      // subject's name by the same classifier the screens use.
+      { header: "Category", key: "category", type: "enum", values: CATEGORY_VALUES, width: 15, help: "Scholastic subjects are examined; co-scholastic ones (art, music, games) are not. Left blank, it is worked out from the name", sample: ["Scholastic"] },
+      { header: "Priority", key: "priority", type: "int", min: 1, max: 5, width: 10, help: "1-5, higher is placed earlier in the day. A preference, not a rule — 5 does not guarantee period 1. Blank = worked out from the name", sample: [3] },
+      { header: "Lunch Rule", key: "lunchRule", type: "enum", values: LUNCH_VALUES, width: 16, help: "Which side of lunch this may be taught. HARD — Readiness refuses a school that cannot fit it", sample: ["Any time"] },
+      { header: "Gap After Lunch", key: "gapAfterLunch", type: "enum", values: YES_NO, width: 16, help: "Yes = never in the period immediately after lunch. For games and dance, which cannot be held on a full stomach", sample: ["No"] },
       { header: "Is Lab", key: "isLab", type: "enum", values: YES_NO, width: 10, help: "Needs a lab room?", sample: ["No"] },
+      // §19.1 — WHETHER, here; WHERE stays on the Rooms sheet's own Subjects
+      // column, which has written `room_subjects` since §19. One writer for
+      // that table keeps the workbook free of sheet-order coupling: a room name
+      // typed here would have to exist by the time Subjects is read, and
+      // Subjects is read first.
+      { header: "Own Room", key: "taughtInOwnRoom", type: "enum", values: YES_NO, width: 12, help: "Yes = always taught in its own room (a music room, a computer room), never the class's home room. Name the room on the Rooms sheet by listing this subject against it", sample: ["No"] },
+      // §27.16 — the classes this subject is taught to. Blank is "not decided
+      // yet", exactly as the Teachers sheet's Teaching Scope is, and for the
+      // same reason: an old workbook uploaded with the column absent must not
+      // read as "this subject is taught to nobody".
+      { header: "Classes", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes take this subject, comma separated. The Allocation page then proposes it only there. Leave blank for every class", sample: [""] },
       { header: "Requires Double Period", key: "requiresDoublePeriod", type: "enum", values: YES_NO, width: 20, help: "Usually taught as a double period?", sample: ["No"] },
     ],
   },
@@ -155,10 +224,26 @@ export const SHEETS: SheetDef[] = [
       { header: "Max Periods/Day", key: "maxPeriodsPerDay", type: "int", min: 1, max: 12, width: 15, help: "Defaults to 6", sample: [6] },
       { header: "Min Periods/Day", key: "minPeriodsPerDay", type: "int", min: 0, max: 12, width: 15, help: "Defaults to 3. A working day carries at least this many periods — the teacher is either in for a proper day or not in at all. Set 0 or 1 to switch the rule off for this teacher", sample: [3] },
       { header: "Max Periods/Week", key: "maxPeriodsPerWeek", type: "int", min: 1, max: 60, width: 16, help: "Defaults to 30", sample: [30] },
+      // §26.5 — stored, never evaluated on import. It arrives as "not checked
+      // yet" and is turned into rules from the Teachers screen, deliberately:
+      // a spreadsheet upload is not the moment to spend a model call per row.
+      { header: "Special Instruction", key: "specialInstruction", type: "string", maxLength: 600, width: 34, help: "Anything about WHEN they can teach or WHICH classes, in plain English. Checked and turned into rules from the Teachers screen", sample: [""] },
       { header: "Class-Teacher Rule", key: "classTeacherPeriodRule", type: "enum", values: CT_RULES, aliases: { "always first period": "always_first_period" }, width: 20, help: "always_first_period = takes P1 of their own class every day, and never P1 elsewhere", sample: ["none"] },
       { header: "Period Pattern", key: "periodPattern", type: "enum", values: PATTERNS, aliases: { "alternate period": "alternate_period", "alternate day": "alternate_day", "every period": "every_period" }, width: 18, help: "alternate_period = never two periods in a row", sample: ["every_period"] },
       { header: "Alternate Days", key: "alternateDaySet", type: "list", separator: ",", width: 18, help: "Only for alternate_day, e.g. Mon,Wed,Fri", sample: [""] },
       { header: "Teaching Scope", key: "classNames", type: "list", separator: ",", refSheet: "Classes", width: 30, help: "Which classes this teacher may take, comma separated. Leave blank if you have not decided yet", sample: ["Class 1, Class 2, Class 3"] },
+      // §27.13 — recorded ABOUT the teacher, not inferred from whatever they
+      // happen to have been mapped to. Blank means "not stated": it never
+      // clears what a teacher already teaches.
+      { header: "Subjects", key: "subjectNames", type: "list", separator: ",", refSheet: "Subjects", width: 30, help: "Which subjects this teacher teaches, comma separated. Used to propose who teaches what, and kept for every timetable afterwards", sample: ["Mathematics, Science"] },
+      // §15.3 Phase 25.4 — the guided setup's teacher grid writes these, and so
+      // does an uploaded workbook: one contract, so the template, the export
+      // and the wizard cannot disagree about what a teacher has.
+      { header: "Initials", key: "initials", type: "string", maxLength: 6, width: 10, help: "Short form for grids and printed timetables. Proposed from the name if left blank", sample: ["AY"] },
+      { header: "Gender", key: "gender", type: "enum", values: GENDERS, width: 10, help: "Optional; recorded for staff lists only", sample: [""] },
+      { header: "Email", key: "email", type: "string", maxLength: 120, width: 24, help: "Where a login invitation would be sent (optional)", sample: [""] },
+      { header: "Max Consecutive/Day", key: "maxConsecutivePeriodsPerDay", type: "int", min: 1, max: 12, width: 18, help: "Longest run of back-to-back periods. Blank = no limit. ENFORCED by the solver", sample: [""] },
+      { header: "Takes Substitutions", key: "canSubstitute", type: "enum", values: YES_NO, width: 16, help: "No removes them from cover suggestions entirely. Defaults to Yes", sample: ["Yes"] },
       { header: "Engagement", key: "employmentType", type: "enum", values: ENGAGEMENTS, aliases: { "full time": "permanent", "full-time": "permanent", contract: "adhoc", visiting: "guest" }, width: 14, help: "permanent, adhoc or guest. A guest teacher takes extra classes only", sample: ["permanent"] },
       { header: "Active", key: "isActive", type: "enum", values: YES_NO, width: 10, help: "Defaults to Yes", sample: ["Yes"] },
     ],

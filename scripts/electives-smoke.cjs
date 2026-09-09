@@ -26,6 +26,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
 const P = "ZZELE";
@@ -133,7 +134,8 @@ async function call(method, path, token, body) {
     data: { schoolId: SCHOOL, name: `${P} 26-27`, startDate: new Date("2026-04-01"), endDate: new Date("2027-03-31") },
   });
   const config = await prisma.timetableConfig.create({
-    data: { schoolId: SCHOOL, name: `${P} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 5 },
+    data: {
+      resourceGroupId: await groupFor(prisma, year.id), schoolId: SCHOOL, name: `${P} Wing`, academicYearId: year.id, workingDays: [1, 2, 3, 4, 5], periodsPerDay: 5 },
   });
   await prisma.period.createMany({
     data: [1, 2, 3, 4, 5].map((n) => ({
@@ -152,6 +154,7 @@ async function call(method, path, token, body) {
     });
     sections.push(await prisma.classSection.create({
       data: {
+        resourceGroupId: await groupFor(prisma, year.id),
         classId: cls.id, sectionId: sec.id, academicYearId: year.id, schoolId: SCHOOL,
         timetableConfigId: config.id, strength: 30, homeRoomId: home.id,
       },

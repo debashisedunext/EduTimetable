@@ -23,7 +23,7 @@ import {
 } from "@edutimetable/shared";
 import { api, getToken } from "../api";
 import { useApi, useConfigCtx } from "../hooks";
-import { useColors } from "../colors";
+import { useColors } from "../colors-context";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 

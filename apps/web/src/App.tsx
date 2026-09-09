@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { AcceptInvite, Forgot, Home, ResetPassword, MySchools, SignIn, SignUp, Verify } from "./pages/PublicAuth";
 import { PERMISSIONS, type MeResponse } from "@edutimetable/shared";
 import { api, getToken, setToken } from "./api";
 import { ConfigContext, type TimetableConfigSummary } from "./hooks";
@@ -9,15 +10,21 @@ import { Dashboard } from "./pages/Dashboard";
 import { DevLogin } from "./pages/DevLogin";
 import { Timetables } from "./pages/Timetables";
 import { Setup } from "./pages/Setup";
+import { Masters } from "./pages/Masters";
+import { AllocationEntry } from "./pages/AllocationEntry";
+import { GuidedSetup } from "./pages/GuidedSetup";
 import { Readiness } from "./pages/Readiness";
 import { Roles } from "./pages/Roles";
+import { Users } from "./pages/Users";
 import { Generate } from "./pages/Generate";
 import { Matrix } from "./pages/Matrix";
 import { Board } from "./pages/Board";
 import { Publish } from "./pages/Publish";
 import { Substitutes } from "./pages/Substitutes";
 import { ExtraClasses } from "./pages/ExtraClasses";
+import { Staffing } from "./pages/Staffing";
 import { Reports } from "./pages/Reports";
+import { Wall } from "./pages/Wall";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
@@ -27,6 +34,7 @@ import { SyncErp } from "./pages/SyncErp";
 import { Electives } from "./pages/Electives";
 import { Availability } from "./pages/Availability";
 import { AiDock } from "./ai/AiDock";
+import { Onboarding } from "./onboarding/Onboarding";
 import { SchoolProfile } from "./pages/SchoolProfile";
 import { Platform } from "./pages/Platform";
 
@@ -105,8 +113,35 @@ export default function App() {
     <Routes>
       <Route path="/sso" element={<SsoCapture />} />
       <Route path="/sso-error" element={<SsoError />} />
+      {/* §15.3 Phase 25.0 — the second way in. These sit OUTSIDE the
+          authenticated shell on purpose: whoever is on them may have no
+          account at all, so anything reading `me` would crash. They are
+          declared before the authed branch so they resolve whether or not a
+          session exists — a signed-in user opening /login should still see the
+          form rather than being bounced by the catch-all. */}
+      <Route path="/signup" element={<SignUp />} />
+      <Route path="/login" element={<SignIn />} />
+      <Route path="/forgot" element={<Forgot />} />
+      <Route path="/verify" element={<Verify />} />
+      <Route path="/reset" element={<ResetPassword />} />
+      {/* §24.8 — the token is in the PATH, not a query string: an invitation
+          link is pasted into chat as often as it is clicked in a mail client,
+          and a path survives that intact. */}
+      <Route path="/invite/:token" element={<AcceptInvite />} />
+      {/* Declared OUTSIDE the authed branch, with the other account-level
+          screens. It was inside it, so somebody already in a school who
+          followed the top bar's school name fell through to the app shell's
+          catch-all and landed back where they started — looking, from the
+          outside, exactly like the button did nothing. My Schools is about the
+          ACCOUNT, not about any school, so having a session must not hide it. */}
+      <Route path="/schools" element={<MySchools />} />
       {!authed || !me ? (
-        <Route path="*" element={<DevLogin />} />
+        <>
+          <Route path="/" element={<Home />} />
+          {/* the dev SSO shortcut stays reachable, but is no longer what a
+              stranger meets at the front door */}
+          <Route path="*" element={<DevLogin />} />
+        </>
       ) : (
         <Route
           element={
@@ -120,6 +155,16 @@ export default function App() {
                     appear only with masters.manage — enforced on the server,
                     not here. */}
                 <AiDock permissions={me.permissions} />
+                {/* §15.3 Phase 25.2 — the welcome screen and the guided setup.
+                    Opens by itself for a school with no timetable — every
+                    sign-in, once per sitting (§24.1a) — and only for somebody
+                    who could act on it. The server decides whether there is
+                    anything to offer; a second definition of "new" here would
+                    drift from it. */}
+                <Onboarding
+                  userName={me.name}
+                  canManage={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE)}
+                />
               </ColorProvider>
             </ConfigContext.Provider>
           }
@@ -129,6 +174,11 @@ export default function App() {
             : me.permissions.includes(PERMISSIONS.TIMETABLE_VIEW_OWN) ? <MyTimetable />
             : <Dashboard me={me} />
           } />
+          <Route path="/masters" element={<Masters />} />
+          <Route path="/allocation" element={<AllocationEntry />} />
+          {/* §8.3 — the guided setup is a page, not a dialog over one. */}
+          <Route path="/guided-setup" element={<GuidedSetup />} />
+          {/* §8.2 — what is left of the wizard: the timetable's own week. */}
           <Route path="/setup" element={<Setup />} />
           <Route path="/import" element={<ImportMasters />} />
           <Route path="/sync" element={<SyncErp />} />
@@ -141,7 +191,9 @@ export default function App() {
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
           <Route path="/extra-classes" element={<ExtraClasses />} />
+          <Route path="/staffing" element={<Staffing />} />
           <Route path="/reports" element={<Reports me={me} />} />
+          <Route path="/wall" element={<Wall />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />
@@ -150,6 +202,7 @@ export default function App() {
           <Route path="/school" element={<SchoolProfile me={me} />} />
           <Route path="/platform" element={<Platform />} />
           <Route path="/roles" element={<Roles />} />
+          <Route path="/users" element={<Users />} />
           <Route path="/system" element={<Dashboard me={me} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

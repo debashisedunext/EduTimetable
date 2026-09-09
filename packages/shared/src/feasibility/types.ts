@@ -26,10 +26,18 @@ export type IssueCode =
   | "LAB_NONE"
   | "LAB_OVERFLOW"
   | "LAB_TIGHT"
+  // Check 1b — a subject blocked out of a class's week (§4.7b)
+  | "SUBJECT_TIME_OFF_TIGHT"
+  // Check 5b — a subject taught in its own room (§19.1)
+  | "SUBJECT_ROOM_UNSET"
+  | "SUBJECT_ROOM_OVERFLOW"
+  | "SUBJECT_ROOM_TIGHT"
   // Check 9 — fixed room assignment (§19)
   | "LAB_SUBJECT_UNSERVED"
   | "LAB_SUBJECT_OVERFLOW"
   | "HOME_ROOM_SHARED"
+  /** §26.3 — a lunch-side rule confines more periods than that side holds. */
+  | "LUNCH_SIDE_CAPACITY"
   | "HOME_ROOM_UNSET"
   // Check 6 — structural conflicts (§4.6, §8.1b)
   | "CT_P1_DEADLOCK"
@@ -56,6 +64,17 @@ export type IssueCode =
   | "ELECTIVE_SAME_PERIOD_TIGHT"
   // Check 10 — minimum periods per day (§20)
   | "MIN_DAY_IMPOSSIBLE"
+  /** §28.1 — a teacher is past the school's own "getting full" line. */
+  | "TEACHER_LOAD_ALERT"
+  /** §27.16 — a curriculum row for a class the subject is not declared for. */
+  | "SUBJECT_CLASS_MISMATCH"
+  /**
+   * §30.7 — a teacher or a room engaged by two LIVE timetables at the same
+   * moment. Not produced by the engine: the engine is Phase A and reads a
+   * snapshot of demand, while this compares two weeks that are already placed.
+   * Appended by `ReadinessService` after the score, and always a warning.
+   */
+  | "CROSS_TIMETABLE_CLASH"
   | "MIN_DAY_RELAXED"
   // Check 8 — teaching scope and engagement (§18)
   | "TEACHER_NOT_ELIGIBLE"
@@ -73,7 +92,9 @@ export interface EntityRef {
     | "room"
     | "config"
     | "merged_group"
-    | "elective_block";
+    | "elective_block"
+    /** §19.1 — the Subjects screen, where a subject's own room is set. */
+    | "subject";
   id: number;
   label: string;
 }
@@ -174,6 +195,26 @@ export interface SnapshotConfig {
    * P1-P3, break, P4-P7 → [3,4]. Empty means layout not yet built.
    */
   daySegments: number[];
+  /**
+   * §26.3 — the last teaching period BEFORE lunch, or null when the day has no
+   * break at all.
+   *
+   * `daySegments` collapses the breaks into run lengths and loses which one was
+   * lunch, so this is derived separately and deliberately: the subject rules
+   * "before lunch", "after lunch" and "not straight after lunch" all mean
+   * nothing without it. Null switches those rules off rather than guessing a
+   * boundary — a school with no break has no side of lunch to be on.
+   */
+  lunchAfterPeriod: number | null;
+  /**
+   * §28.1 — the percentage of a teacher's weekly limit at which the school
+   * wants to be told, 50–100.
+   *
+   * A WARNING line, never a blocker. A teacher at 80% is a normally employed
+   * teacher, and refusing to generate at a number a school chose for its own
+   * reporting would make most real schools ungenerable.
+   */
+  loadAlertPct: number;
 }
 
 export interface SnapshotClassSection {
@@ -181,6 +222,25 @@ export interface SnapshotClassSection {
   label: string; // "5-A"
   classId: number;
   classTeacherId: number | null;
+}
+
+/**
+ * §26.2/§26.3 — where a subject belongs in the day.
+ *
+ * On the SUBJECT, not the curriculum row: "Games is not taught straight after
+ * lunch" is true of Games, not of Class 5's Games. Keyed by subject id in
+ * `subjectPlacement` so the solver, the objective and Check 10 all read one
+ * definition.
+ */
+export interface SnapshotSubjectPlacement {
+  subjectName: string;
+  category: "scholastic" | "co_scholastic";
+  /** 1..5, higher is earlier in the day. A preference — see §26.2. */
+  priority: number;
+  /** HARD: pruned out of the domain before search. */
+  lunchRule: "any" | "before" | "after";
+  /** HARD: may not occupy the period immediately after lunch. */
+  gapAfterLunch: boolean;
 }
 
 /** One class_subjects row (applies to every section of that class). */
@@ -202,6 +262,16 @@ export interface SnapshotTeacher {
   maxPeriodsPerDay: number;
   /** §20: a day is either free or carries at least this many periods. */
   minPeriodsPerDay: number;
+  /**
+   * §15.3 Phase 25.4 — the longest back-to-back run allowed in one day.
+   *
+   * Null means no limit, which is what every teacher had before this existed.
+   * Enforced in `SolverState.check()` rather than scored, so the board and the
+   * legal-destination highlighting honour it for free.
+   */
+  maxConsecutivePeriodsPerDay: number | null;
+  /** §9: whether this teacher may be OFFERED as a substitute at all. */
+  canSubstitute: boolean;
   maxPeriodsPerWeek: number;
   classTeacherPeriodRule: "none" | "always_first_period" | "random";
   periodPattern: "every_period" | "alternate_period" | "alternate_day";
@@ -294,11 +364,52 @@ export interface FeasibilitySnapshot {
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
   labRoomCount: number;
   labSubjectIds: number[];
+  /** §26 — placement rules per subject id. A subject missing from here has none. */
+  subjectPlacement: Record<number, SnapshotSubjectPlacement>;
+  /**
+   * §27.16 — the classes each subject is DECLARED for, by class id.
+   *
+   * Optional, and a subject missing from it — or present with an empty list —
+   * is "not stated" rather than "taught to nobody" (invariant 7). Every school
+   * built before the declaration existed reads exactly that way, which is what
+   * keeps Check 13 silent for all of them.
+   */
+  subjectClasses?: Record<number, number[]>;
   /** §19: the fixed room each class-section sits in, when one is recorded. */
   homeRoomBySection: Record<number, number | null>;
+  /**
+   * §4.7b — the cells each class-section is NOT in school, `id` being the
+   * section. Optional: absent means nothing is blocked, which is every school
+   * that has never opened the Availability screen.
+   *
+   * The engine needs only the counts (Check 1 subtracts them from the week);
+   * the solver needs the cells themselves and gets them from `SolverInput`.
+   */
+  classSectionTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /** §4.7b — the same, per subject: the cells it may not be taught in. */
+  subjectTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /** §4.7b — the same, per room: the cells it cannot be used in. */
+  roomTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
   /** §19: which lab rooms serve each lab subject. A lab with no subjects
    *  listed is general and appears under every lab subject. */
   labRoomsBySubject: Record<number, number[]>;
+  /**
+   * §19.1 — subjects marked "always taught in its own room".
+   *
+   * Optional so a snapshot built by an older caller (a fixture, a test) still
+   * type-checks and behaves exactly as before: no subject has the flag, so
+   * every lesson takes the home room.
+   */
+  ownRoomSubjectIds?: number[];
+  /**
+   * §19.1 — the rooms each of those subjects may use, from `room_subjects`.
+   *
+   * An EMPTY list means the flag was ticked and no room was ever named. That is
+   * "unstated", not "anywhere" (invariant 7): the lesson falls back to the home
+   * room and Check 5b says the flag is doing nothing, rather than the solver
+   * scattering Music through whichever classrooms happened to be free.
+   */
+  ownRoomsBySubject?: Record<number, number[]>;
   /** Room names, for messages that have to name one. */
   roomNames: Record<number, string>;
   /**

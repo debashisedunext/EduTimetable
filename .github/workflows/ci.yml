@@ -25,6 +25,12 @@ jobs:
             pnpm install &&
             pnpm --filter @edutimetable/shared build &&
             pnpm --filter @edutimetable/api exec prisma generate &&
+            # §17.3 — TWO Prisma schemas, two generated clients. The control
+            # plane's is git-ignored, so CI has to generate it as well; without
+            # this every file that imports `prisma/generated/control-client`
+            # fails to resolve and typecheck reports fourteen errors in code
+            # nobody touched.
+            pnpm --filter @edutimetable/api run generate:control &&
             pnpm lint &&
             pnpm typecheck &&
             pnpm --filter @edutimetable/api test"

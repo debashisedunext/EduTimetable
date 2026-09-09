@@ -177,14 +177,19 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           },
         ),
         step(
-          "unavailability and class eligibility",
+          // §27.13 added the third: the FK cascades, so the rows go either
+          // way — and a cascade nobody was shown is a destructive write
+          // nobody agreed to, which is the one thing §23's contract forbids.
+          "unavailability, class eligibility and declared subjects",
           "deleted",
           async (tx, ids) =>
             (await tx.teacherUnavailability.count({ where: { teacherId: { in: ids } } })) +
-            (await tx.teacherClassEligibility.count({ where: { teacherId: { in: ids } } })),
+            (await tx.teacherClassEligibility.count({ where: { teacherId: { in: ids } } })) +
+            (await tx.teacherSubject.count({ where: { teacherId: { in: ids } } })),
           async (tx, ids) => {
             await tx.teacherUnavailability.deleteMany({ where: { teacherId: { in: ids } } });
             await tx.teacherClassEligibility.deleteMany({ where: { teacherId: { in: ids } } });
+            await tx.teacherSubject.deleteMany({ where: { teacherId: { in: ids } } });
           },
         ),
       ];
@@ -209,6 +214,30 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           "deleted",
           (tx, ids) => tx.teacherSubjectClassSection.count({ where: { subjectId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherSubjectClassSection.deleteMany({ where: { subjectId: { in: ids } } }); },
+        ),
+        /**
+         * §27.13 — declared "this teacher teaches X".
+         *
+         * The FK cascades, so the rows would go whether or not this step
+         * existed — which is exactly why it has to: a silent cascade is a
+         * destructive write nobody was shown, and §23's whole contract is that
+         * the confirmation cannot under-report.
+         */
+        step(
+          "teachers' declared subjects",
+          "deleted",
+          (tx, ids) => tx.teacherSubject.count({ where: { subjectId: { in: ids } } }),
+          async (tx, ids) => { await tx.teacherSubject.deleteMany({ where: { subjectId: { in: ids } } }); },
+        ),
+        // §27.16 — declared "this subject is taught to class X". Named for the
+        // same reason as the row above it: the FK cascades either way, and a
+        // cascade nobody was shown is exactly what §23's confirmation exists to
+        // prevent.
+        step(
+          "subjects' declared classes",
+          "deleted",
+          (tx, ids) => tx.subjectClass.count({ where: { subjectId: { in: ids } } }),
+          async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { subjectId: { in: ids } } }); },
         ),
         step(
           "merged teaching groups",
@@ -321,6 +350,14 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           "deleted",
           (tx, ids) => tx.teacherClassEligibility.count({ where: { classId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherClassEligibility.deleteMany({ where: { classId: { in: ids } } }); },
+        ),
+        // §27.16 — the other end of the same table: a class going away takes
+        // its name off every subject that named it.
+        step(
+          "subjects' declared classes",
+          "deleted",
+          (tx, ids) => tx.subjectClass.count({ where: { classId: { in: ids } } }),
+          async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { classId: { in: ids } } }); },
         ),
       ];
 

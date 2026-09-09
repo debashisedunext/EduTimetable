@@ -3,6 +3,9 @@
  * here as domain pruning — illegal slots never exist for the search to try.
  */
 import type { SnapshotTeacher } from "../feasibility/types";
+// §4.7b — the one definition of "null period means the whole day". It lives in
+// feasibility/ because the engine needs it too and must not import the solver.
+import { blockedCells } from "../feasibility/time-off";
 import type { SolverInput, SolverVariable } from "./types";
 
 export interface TeacherCtx {
@@ -74,12 +77,63 @@ export function segmentOfPeriod(daySegments: number[], perDay: number): number[]
   return seg;
 }
 
+/**
+ * §26.3 — may a block of `span` periods starting at `p` satisfy these subjects'
+ * lunch rules?
+ *
+ * Pure, and hoisted out of `domainFor` so the feasibility check can ask exactly
+ * the same question when counting how many cells a subject has left. Two
+ * implementations of "after lunch" would be two different timetables: one the
+ * engine builds and one Readiness promised.
+ */
+export function lunchAllows(
+  placements: Array<{ lunchRule: "any" | "before" | "after"; gapAfterLunch: boolean }>,
+  start: number,
+  span: number,
+  lunchAfterPeriod: number | null,
+): boolean {
+  // No break in the day means no side of lunch to be on, so the rules do not
+  // apply rather than applying to a guessed boundary.
+  if (lunchAfterPeriod === null) return true;
+  for (const pl of placements) {
+    for (let s = 0; s < span; s++) {
+      const period = start + s;
+      if (pl.lunchRule === "before" && period > lunchAfterPeriod) return false;
+      if (pl.lunchRule === "after" && period <= lunchAfterPeriod) return false;
+      if (pl.gapAfterLunch && period === lunchAfterPeriod + 1) return false;
+    }
+  }
+  return true;
+}
+
 export function buildVariables(input: SolverInput, teacherCtx: Map<number, TeacherCtx>): SolverVariable[] {
   const { snapshot } = input;
   const perDay = snapshot.config.periodsPerDay;
   const days = snapshot.config.workingDays;
   const seg = segmentOfPeriod(snapshot.config.daySegments, perDay);
+  const lunchAfterPeriod = snapshot.config.lunchAfterPeriod ?? null;
   const labSubjects = new Set(snapshot.labSubjectIds);
+  /**
+   * §4.7b — the blocked cells of every class-section and every subject.
+   *
+   * Built by the same helper the teachers use, from the same row shape, so
+   * "NULL period means the whole day" is decided once rather than three times.
+   */
+  const sectionBlocked = blockedCells(input.classSectionUnavailability ?? [], perDay);
+  const subjectBlocked = blockedCells(input.subjectUnavailability ?? [], perDay);
+  /**
+   * §19.1 — the rooms a subject is always taught in, or none.
+   *
+   * Both halves have to agree before this constrains anything: the flag says
+   * WHETHER and `room_subjects` says WHERE, so a subject ticked with no room
+   * named returns an empty list and the lesson takes its home room exactly as
+   * before. Check 5b is what tells the school the tick is doing nothing —
+   * silently ignoring it here would be the timetable disagreeing with the
+   * screen.
+   */
+  const ownRoomSubjects = new Set(snapshot.ownRoomSubjectIds ?? []);
+  const ownRoomsOf = (subjectId: number): number[] =>
+    (ownRoomSubjects.has(subjectId) ? snapshot.ownRoomsBySubject?.[subjectId] ?? [] : []);
   const sectionById = new Map(snapshot.classSections.map((cs) => [cs.id, cs]));
   const reqByClassSubject = new Map(
     snapshot.subjectRequirements.map((r) => [`${r.classId}:${r.subjectId}`, r]),
@@ -108,13 +162,43 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     teacherIds: number[],
     span: number,
     sectionIds: number[],
+    /**
+     * §26.3 — whose lunch rules apply. A list for the same reason `teacherIds`
+     * is: a split elective runs several subjects at once, so the block may only
+     * sit where EVERY option's rules allow. One Games option therefore drags
+     * the whole block after lunch, which is correct and is exactly why the
+     * feasibility check has to see it before the search starts.
+     */
+    subjectIds: number[],
   ): Array<{ day: number; period: number }> => {
     const ctxs = teacherIds.map((id) => teacherCtx.get(id)).filter((x): x is TeacherCtx => !!x);
+    const placements = subjectIds
+      .map((id) => snapshot.subjectPlacement?.[id])
+      .filter((x): x is NonNullable<typeof x> => !!x);
+    /**
+     * §26.3 — which start periods the lunch rules leave, worked out ONCE.
+     *
+     * The rules are the same on every day, and this runs inside a days ×
+     * periods loop for every variable in the school (§14). Computed per period
+     * it was the same answer recalculated five times over.
+     *
+     * Checked over EVERY period of the block rather than its start: a double
+     * period beginning before lunch would otherwise reach across into the
+     * afternoon while claiming to be a morning slot.
+     */
+    const lunchOk: boolean[] = new Array(perDay + 2).fill(true);
+    if (placements.length > 0) {
+      for (let p = 1; p + span - 1 <= perDay; p++) {
+        lunchOk[p] = lunchAllows(placements, p, span, lunchAfterPeriod);
+      }
+    }
+
     const domain: Array<{ day: number; period: number }> = [];
     for (const day of days) {
       if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
       for (let p = 1; p + span - 1 <= perDay; p++) {
         if (seg[p] !== seg[p + span - 1]) continue; // block cannot straddle a break (§4.8)
+        if (!lunchOk[p]) continue;
         // always_first_period: such a teacher never takes P1 in any OTHER section
         const p1Blocked = ctxs.some(
           (tc) => tc.hasP1Rule && p === 1 && !sectionIds.every((id) => tc.p1OwnSections.has(id)),
@@ -122,7 +206,24 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         if (p1Blocked) continue;
         let blockedCell = false;
         for (let s = 0; s < span && !blockedCell; s++) {
-          if (ctxs.some((tc) => tc.blocked.has(cellKey(day, p + s)))) blockedCell = true;
+          const cell = cellKey(day, p + s);
+          /*
+            §4.7b — three kinds of time off, checked the same way.
+
+            The teacher cannot teach then; the CLASS is not in school then; the
+            SUBJECT may not be taught then. Any one of them removes the cell,
+            and for a multi-section or multi-subject variable (a merged group, a
+            §4.9 block) EVERY section and EVERY subject has to be free — the
+            same intersection rule the teachers above already follow, and for
+            the same reason: the lesson happens once, in one cell, for all of
+            them.
+
+            Pruned here rather than scored, because these are hard (invariant
+            2): the solver must never be able to consider the cell at all.
+          */
+          if (ctxs.some((tc) => tc.blocked.has(cell))) blockedCell = true;
+          else if (sectionIds.some((id) => sectionBlocked.get(id)?.has(cell))) blockedCell = true;
+          else if (subjectIds.some((id) => subjectBlocked.get(id)?.has(cell))) blockedCell = true;
         }
         if (!blockedCell) domain.push({ day, period: p });
       }
@@ -163,16 +264,17 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       mappingId: m.id,
       needsLabRoom: labSubjects.has(m.subjectId),
       labRoomIds: snapshot.labRoomsBySubject[m.subjectId] ?? [],
+      ownRoomIds: ownRoomsOf(m.subjectId),
       homeRoomId: snapshot.homeRoomBySection[m.classSectionId] ?? null,
       preferredRoomId: input.preferredRoomByMapping[m.id] ?? null,
       samePeriodKey,
       maxPerDay,
     };
     for (let i = 0; i < blocks; i++) {
-      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds, [m.subjectId]) });
     }
     for (let i = 0; i < singles; i++) {
-      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds) });
+      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]) });
     }
   }
 
@@ -206,6 +308,7 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         span: 1,
         needsLabRoom: labSubjects.has(g.subjectId),
         labRoomIds: snapshot.labRoomsBySubject[g.subjectId] ?? [],
+        ownRoomIds: ownRoomsOf(g.subjectId),
         // A merged lesson happens in one place. With no room of its own it
         // falls back to the first member's room, which is where a school would
         // in practice hold it.
@@ -213,7 +316,7 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         preferredRoomId: input.mergedGroupRooms[g.id] ?? null,
         samePeriodKey: null,
         maxPerDay: Math.min(anyReq?.maxPeriodsPerDay ?? 1, perDay),
-        domain: domainFor([g.teacherId], 1, g.memberClassSectionIds),
+        domain: domainFor([g.teacherId], 1, g.memberClassSectionIds, [g.subjectId]),
       });
     }
   }
@@ -229,7 +332,8 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       roomId: o.roomId,
     }));
     const teacherIds = options.map((o) => o.teacherId);
-    const free = domainFor(teacherIds, 1, b.memberClassSectionIds);
+    // Every option's subject: the block may only sit where all of them may.
+    const free = domainFor(teacherIds, 1, b.memberClassSectionIds, b.options.map((o) => o.subjectId));
     // §4.9 Phase 15 — placement is DOMAIN PRUNING, never a preference score
     // (invariant 2). A pinned occurrence is handed exactly the cell the school
     // named, intersected with what its option teachers can actually work: if
@@ -260,6 +364,9 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         // pool and the member sections' own rooms stay free.
         needsLabRoom: false,
         labRoomIds: [],
+        // §19.1 does not reach an elective: each option already carries its own
+        // room, chosen on the Electives screen, and that is more specific.
+        ownRoomIds: [],
         homeRoomId: null,
         preferredRoomId: null,
         // `same_period` reuses the §4.6 same-period-across-week machinery: the
