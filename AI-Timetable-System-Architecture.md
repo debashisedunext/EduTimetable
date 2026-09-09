@@ -2476,6 +2476,79 @@ Nothing is choosable yet. Every timetable joins the pool it would have been in a
 
 The thirteen smoke scripts that write rows with a raw `PrismaClient` did change, because they bypass the app and therefore carry the schema's shape. They share one helper (`scripts/resource-groups.cjs`) for the reason the service exists: a value written in thirteen places is written differently in one of them.
 
+## 31. The Master Grid (Phase 44)
+
+One screen, five pivots, no horizontal scroll: the whole school's week at once, read-only. Stage 1 is the grid; the strip that explains a clicked cell is stage 2.
+
+### 31.1 Twenty-seven pixels decides the design
+
+Five working days x eleven periods is **55 columns**. On a 1,920px screen, less the nav and the page inset, the grid gets about 1,600px; less a row header, that is **27 pixels a column** — measured, not estimated: the reference school's `Main Timetable 2026-27` really is 5 days x 11 columns.
+
+Twenty-seven pixels holds two or three characters, and every other decision on the screen follows from that:
+
+- **Initials, not names** — hence `teachers.initials` reaching the payload, and the Teachers master finally gaining a box to enter one (§31.3).
+- **Colour carries the second fact.** §10.5 already gives every subject and class a stable colour, so a cell showing three characters and a hue is showing two things rather than one.
+- **The tab rail is vertical.** Horizontal tabs cost a row of school; vertical ones cost 34px of width the row header wanted anyway.
+- **Breaks get a hairline column.** They carry no cell, so they are 0.6% of the width and their name lives on the tooltip, giving the real periods their width back.
+- **No emoji markers in a cell.** A lock or a link glyph is about eleven pixels — 40% of the cell — so a pin becomes a dark left border and a substitution keeps its cyan (§10.5: an existing meaning outranks a new one).
+- **Column widths are percentages**, so "no horizontal scroll" is a property of the layout rather than a hope about the viewport. A `minWidth` below which the table scrolls sideways is the honest limit: a grid that shrinks a cell below what a character fits in is lying about what it shows.
+
+### 31.2 Four pivots are one function
+
+`GET /timetable-configs/:id/slots` already serves flat tuples (§14). Four of the five tabs — Whole, Teachers, Classrooms, Subjects — differ only in **which field of the tuple names the row**, so `pivotSlots` in `packages/shared` is one function and `PIVOT_FIELD` is one table. Four grouping functions is how three of them end up handling §4.9 correctly and the fourth does not; the same argument §10.6 made for exporting `rowKey`/`cellKey`.
+
+**Which rows fall out of which pivot IS invariant 9**, and is the load-bearing part:
+
+| pivot | keyed on | what is skipped, and why |
+|---|---|---|
+| `section` | `class_section_id` | option rows — they are not a cell in anybody's grid |
+| `teacher` | `teacher_id` | member rows; the **option rows are kept**, which is what stops a school's third-language teachers reading as unscheduled |
+| `subject` | `subject_id` | member rows — a block's point is that the children are doing different subjects |
+| `room` | `room_id` | nothing; a room used only by an elective option is occupied, and reporting it free is a wrong answer rather than a smaller one |
+
+**A cell holds a list, and "how many things are in it" has two right answers.** `cellEvents(entries, pivot)` owns that: on the **teacher** pivot a §4.10 merged group is **one occupancy event** — drawing "4" would claim four lessons where the school ran one — while on the **subject** pivot those same four rows are four sections doing the subject, which is exactly what §10.6's subject card counts. It is not an edge case: on the reference school **every one** of the 30 teacher cells holding more than one row is a merged group, and none is anything else, which is `uq_teacher_slot` doing its job through `teacher_occupancy_key`.
+
+A cell with more than one event draws the **count**. On the reference school 386 of the Subjects tab's 548 cells hold more than one lesson and the busiest holds 16 — so the count is not a fallback, it is what that tab mostly shows, and naming one arbitrary section's teacher would be a smaller answer that reads like the whole one.
+
+### 31.3 A teacher's initials are the school's answer, not ours
+
+`initialsOf(name, stored)` in `packages/shared` returns a stored value **untouched** and derives one only when the school has never given any: a school writing `S.-PE` on its own wall chart is describing a person, not a name, and deriving `SP` would quietly overrule them. Three characters when derived, not two — on a staff of 122, "R. K. Sharma" and "R. K. Singh" have to be tellable apart and both fit.
+
+There were already two derivations at call sites (`Board.tsx` took three letters, `Substitutes.tsx` took two), so the same person was `RKS` on one screen and `RK` on the next. Survivable while initials are decoration beside a full name; not survivable when they are the only thing identifying the teacher.
+
+`teachers.initials` could be written by the §16 importer and the guided setup but **not by the Teachers master** — so a school that entered its staff on that screen had no way to say. §31 adds the field there, and normalises blank to NULL: empty means "not stated" (invariant 7), which is permission to derive; an empty string would be a stored answer of "nothing", and a blank 27-pixel cell reads as a free period.
+
+### 31.4 The Lesson grid is the odd tab out
+
+Class-sections down, **subjects** across, periods per week in the cell, with a per-row total — the same shape as §27's Allocation grid, read-only and at grid density. It is not a pivot of the slots at all: it reads the **curriculum**, so a cell reading 6 means Class 1-A is *meant* to have six periods of English whether or not a timetable has been generated.
+
+`GET /timetable-configs/:id/lessons`, deliberately **not** `/class-subjects`, which serves the same rows: that controller is `masters.manage` and this screen is `timetable.view.all`, so a principal who may look at the whole school's week would have met a 403 on one tab out of five. Same controller and same permission as `/slots` means the screen answers to exactly one authority.
+
+Three things it has to say out loud:
+
+- **Cells are keyed by CLASS, not by class-section.** `class_subjects` is keyed by class (§27), so 5-A and 5-B are two rows showing one curriculum. A per-section payload would look like two answers that merely happen to agree.
+- **The year filter is required** (§3.11): a class that has run three sessions would otherwise contribute three curricula to one grid, and the cell would show whichever loaded last.
+- **`weekCapacity` is this WING's week**, deliberately not `capacityForClass` — which is year-wide across every pool the class sits in because it guards a *write* (§30). Here it only labels a row total, and the honest denominator for "does this class's week fit" is the week this timetable offers.
+
+A §4.9 block carries its own periods/week and is not a curriculum row, so an elective's options are **not** columns here — a grid showing French and German would be claiming Class 5 is taught both.
+
+### 31.5 Read-only, and three things deliberately not built
+
+The reference product edits from this screen. This one does not:
+
+- **No curriculum or mapping edits.** §27 makes the Allocation grid the **one writer** for those, and a second editor over the same rows is how two answers to "how many periods does 1-A get?" come into existence.
+- **No drag-and-drop.** Placement edits belong on the Board, where the rules engine, the legality highlighting and the §29.1 freeze guard live — and a 27px cell is the worst drag target in the app. Same answer §10.6 gave.
+- **It does not replace the Allocation Matrix.** They read the same payload and answer different questions: the Matrix has wide cells naming subject *and* teacher, for reading one class's week; this has narrow cells showing the shape of the whole school's. Adding pivots to the Matrix would have made its cells too small for what it is for.
+- **One wing at a time.** The top-bar selector picks the timetable, and §3.10 wings keep different hours — two wings in one grid would need §10.6's wall-clock axis and would still leave most cells blank.
+
+### 31.6 What is left
+
+Stage 2 is the strip: click a cell, read a sentence — the cell, its class, its teacher's load, and what else that class studies. It costs no request, because everything it needs is already in the browser. On a Lesson grid cell it shows a different vocabulary — the subject, its period count, and every class-section, teacher and room sharing the lesson, which is the only place on the screen where a §4.9 block or a §4.10 merged group becomes visible.
+
+Stage 3 puts placed against required, and only when they differ. Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today.
+
+Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse, `/lessons`, and §17.8), `pivot.spec.ts` (15 unit tests over every §4.9 and §4.10 shape), and the §17.8 sweep, which classified the new route with no help — A gets a grid, B gets 404.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.

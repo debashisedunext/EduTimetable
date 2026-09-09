@@ -10,6 +10,21 @@ const RULES = ["none", "always_first_period", "random"];
 const PATTERNS = ["every_period", "alternate_period", "alternate_day"];
 const ENGAGEMENTS = ["permanent", "adhoc", "guest"];
 
+/**
+ * §31 — `teachers.initials`, normalised on the way in.
+ *
+ * `VarChar(6)`, so it is truncated here rather than rejected by MySQL with a
+ * message about a column nobody typed the name of. **Blank stores NULL**, not
+ * an empty string: empty means "not stated" (invariant 7), and `initialsOf`
+ * reads NULL as permission to derive one — an empty string would be a stored
+ * answer of "nothing", which paints a blank cell in a 27-pixel grid and reads
+ * as a free period.
+ */
+const initialsField = (v: unknown): string | null => {
+  const s = typeof v === "string" ? v.trim().slice(0, 6) : "";
+  return s.length ? s : null;
+};
+
 @Controller("teachers")
 @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
 export class TeachersController {
@@ -39,6 +54,15 @@ export class TeachersController {
       id: t.id,
       employeeCode: t.employeeCode,
       name: t.name,
+      /**
+       * §31 — how this person is named where there is no room for a name.
+       *
+       * The Master Grid gives a cell 27 pixels, so a school that writes
+       * "S.-PE" on its own wall chart has to be able to say so. It always
+       * could through the §16 importer and the guided setup; this screen is
+       * the third door, and until §31 it was the one that could not.
+       */
+      initials: t.initials,
       maxPeriodsPerDay: t.maxPeriodsPerDay,
       minPeriodsPerDay: t.minPeriodsPerDay,
       maxPeriodsPerWeek: t.maxPeriodsPerWeek,
@@ -92,6 +116,9 @@ export class TeachersController {
             schoolId: req.user.schoolId,
             name: String(body.name),
             employeeCode: String(body.employeeCode),
+            // §31 — empty means "not stated", which is what makes `initialsOf`
+            // fall back to deriving one rather than printing a blank cell.
+            initials: initialsField(body.initials),
             maxPeriodsPerDay: body.maxPeriodsPerDay != null ? toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") : 6,
             minPeriodsPerDay: body.minPeriodsPerDay != null ? toInt(body.minPeriodsPerDay, "minPeriodsPerDay") : 3,
             maxPeriodsPerWeek: body.maxPeriodsPerWeek != null ? toInt(body.maxPeriodsPerWeek, "maxPeriodsPerWeek") : 30,
@@ -121,6 +148,7 @@ export class TeachersController {
           data: {
             ...(body.name !== undefined ? { name: String(body.name) } : {}),
             ...(body.employeeCode !== undefined ? { employeeCode: String(body.employeeCode) } : {}),
+            ...(body.initials !== undefined ? { initials: initialsField(body.initials) } : {}),
             ...(body.maxPeriodsPerDay !== undefined ? { maxPeriodsPerDay: toInt(body.maxPeriodsPerDay, "maxPeriodsPerDay") } : {}),
             ...(body.minPeriodsPerDay !== undefined ? { minPeriodsPerDay: toInt(body.minPeriodsPerDay, "minPeriodsPerDay") } : {}),
             ...(body.maxPeriodsPerWeek !== undefined ? { maxPeriodsPerWeek: toInt(body.maxPeriodsPerWeek, "maxPeriodsPerWeek") } : {}),

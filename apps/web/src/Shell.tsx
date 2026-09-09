@@ -50,6 +50,9 @@ const NAV: NavGroup[] = [
     label: "Manage",
     items: [
       { icon: "grid", label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
+      // §31 — beside the Matrix, because it is the same week read the same way;
+      // what differs is that this one fits the whole school on one screen.
+      { icon: "master", label: "Master Grid", to: "/master-grid", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
       { icon: "board", label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
       { icon: "publish", label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
       { icon: "swap", label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
@@ -124,6 +127,7 @@ const TITLES: Record<string, [string, string]> = {
   "/readiness": ["Build", "Readiness Dashboard"],
   "/generate": ["Build", "Generate Timetable"],
   "/matrix": ["Manage", "Full Allocation Matrix"],
+  "/master-grid": ["Manage", "Master Grid"],
   "/board": ["Manage", "Draft Board"],
   "/publish": ["Manage", "Publish Confirmation"],
   "/substitutes": ["Manage", "Substitute Teacher Center"],

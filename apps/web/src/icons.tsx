@@ -23,7 +23,7 @@
 /** Every screen in the nav has one, and the name says what the screen IS. */
 export type IconName =
   | "calendar" | "wand" | "book" | "import" | "sync" | "split" | "clock" | "checklist" | "bolt"
-  | "grid" | "board" | "publish" | "swap" | "plus"
+  | "grid" | "master" | "board" | "publish" | "swap" | "plus"
   | "user" | "users"
   | "chart" | "bell"
   | "chat" | "sliders"
@@ -46,6 +46,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // Manage
   grid: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18M15 3v18" /></>,
   board: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M15 4v16" /></>,
+  // §31 — the vertical tab rail down the left, and a dense grid beside it.
+  master: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 3v18" /><path d="M8 9h13M8 15h13M14 3v18" /><path d="M5.2 7h1.6M5.2 11h1.6M5.2 15h1.6" /></>,
   publish: <><path d="M12 20V5M6 11l6-6 6 6" /><path d="M4 3h16" /></>,
   swap: <><path d="M16 3h5v5" /><path d="M21 3l-7 7" /><path d="M8 21H3v-5" /><path d="M3 21l7-7" /></>,
   plus: <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></>,

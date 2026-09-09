@@ -2622,3 +2622,68 @@ classified**, both new routes swept as controlled experiments (`A 201/200 · B 4
 unchanged: freeze, staffing, grids, guided setup, import, clone, drafts, electives, report cache,
 year scope, delete, room assignment, teacher scope, auto-fix, ERP sync, onboarding, AI data-entry,
 shared 505, api 216, lint, typecheck.
+
+---
+
+# Phase 44 — The Master Grid (§31)
+
+The whole school's week on one screen, pivoted five ways, with no horizontal scroll. Four stages;
+stage 1 is the grid and is useful on its own.
+
+## Phase 44 stage 1 — the grid
+
+**Landed.** Five tabs, read-only, and almost no new server code — which was the point of the plan:
+the payload already carried everything but one field.
+
+Server (both on `SolverController`, same permission as `/slots`, so the screen answers to one
+authority):
+- `teacherInitials` added to `GET /timetable-configs/:id/slots`. A second map rather than a wider
+  `teachers` value, because every existing consumer indexes that one as `id → name`. The payload is
+  Redis-cached for an hour, so a school mid-cache is served one that predates the field — the client
+  falls back to `initialsOf(name)`, the same function, so the stale answer and the fresh one agree.
+- `GET /timetable-configs/:id/lessons` — the Lesson grid's curriculum. Deliberately not
+  `/class-subjects`, which is `masters.manage`: a principal would have met a 403 on one tab of five.
+  Cells keyed by **class** (§27), filtered to the config's own year (§3.11), `weekCapacity` from the
+  wing's own week and deliberately not `capacityForClass` (§30 — that one is year-wide because it
+  guards a write).
+- `teachers.initials` on the Teachers master's POST/PUT and in its list payload. It could already be
+  written by the §16 importer and the guided setup but not by the screen, so a school that entered
+  its staff there had no way to say. Blank stores NULL, not `""` — empty means "not stated"
+  (invariant 7), which is permission to derive; a stored "nothing" paints a blank 27px cell that
+  reads as a free period.
+
+Shared (`packages/shared/src/timetable/`):
+- `initials.ts` — one derivation, replacing two that disagreed (`Board.tsx` took three letters,
+  `Substitutes.tsx` two, so the same person was `RKS` on one screen and `RK` on the next).
+- `pivot.ts` — `SLOT` (the tuple layout named once), `PIVOT_FIELD`, `pivotCellKey`, `pivotSlots`,
+  `cellEvents`. Four pivots differ by a single array index; four functions is how three handle §4.9
+  correctly and the fourth does not.
+
+Client: `pages/MasterGrid.tsx`, route `/master-grid`, nav under Manage beside the Matrix.
+
+Three things the reference school settled that a fixture could not:
+- **55 columns, exactly as predicted** — 5 days × 11, ≈27px each.
+- **Every one of the 30 teacher cells holding more than one row is a merged group**, and none is
+  anything else. So `cellEvents` collapsing §4.10 on the teacher pivot is what that tab shows, not
+  an edge case; drawing "4" there would claim four lessons where the school ran one.
+- **386 of the Subjects tab's 548 cells hold more than one lesson, busiest 16.** The count is what
+  that tab mostly draws, which is why naming one arbitrary section's teacher was never an option.
+- 122 teachers × 55 columns = **6,710 cells**, which is stage 4's case, confirmed rather than
+  assumed. Pivoting the whole reference school takes ~2ms, so the cost is rendering, not arithmetic.
+
+Verified: `pnpm test:mastergrid` — **26 assertions** live (initials read not derived, the pivots
+reproducing the database, the §4.10 collapse both ways, `/lessons` keyed by class, §17.8);
+`pivot.spec.ts` **15 unit tests**; isolation gate **211 routes classified**, the new route swept
+with no help (`A 200 · B 404`); shared **520**, lint, typecheck, `vite build`.
+
+## Phase 44 stages 2–4 — not started
+
+- **Stage 2, the strip.** Click a cell, read a sentence: the cell, its class, its teacher's load,
+  what else that class studies. No request — it is arithmetic over the payload already in the
+  browser. On a Lesson grid cell a different vocabulary: subject, period count, and every
+  class-section, teacher and room sharing the lesson, which is the only place on the screen where a
+  §4.9 block or §4.10 group becomes visible. Arrow keys move the selection.
+- **Stage 3, placed against required** — and only when they differ; a number that is always two
+  numbers is a number nobody reads.
+- **Stage 4, virtualisation.** `react-window`/AG Grid, measured against §14's 600ms
+  render-to-usable before and after rather than assumed.

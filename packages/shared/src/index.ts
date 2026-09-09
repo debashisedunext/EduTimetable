@@ -187,6 +187,8 @@ export * from "./terms/terms";
 export * from "./onboarding/wizard";
 export * from "./timetable/window";
 export * from "./timetable/clash";
+export * from "./timetable/initials";
+export * from "./timetable/pivot";
 export * from "./onboarding/suggest";
 export * from "./onboarding/load";
 export * from "./ai/data-entry";

@@ -400,13 +400,16 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", initials: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
     try {
       const body = {
         name: form.name, employeeCode: form.employeeCode,
+        // §31 — always sent, so clearing the box really clears it rather
+        // than being read as "not mentioned" and leaving the old value.
+        initials: form.initials ?? "",
         maxPeriodsPerDay: Number(form.maxPeriodsPerDay), minPeriodsPerDay: Number(form.minPeriodsPerDay),
         maxPeriodsPerWeek: Number(form.maxPeriodsPerWeek),
         classTeacherPeriodRule: form.classTeacherPeriodRule, periodPattern: form.periodPattern,
@@ -634,6 +637,17 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
       <div className="form-grid">
         <Field label="Full name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Employee code"><input style={inputStyle} value={form.employeeCode} onChange={(e) => setForm({ ...form, employeeCode: e.target.value })} /></Field>
+        {/* §31 — how this person is named in a 27-pixel cell. Optional: left
+            blank, the Master Grid derives one from the name, and a school that
+            writes "S.-PE" on its own wall chart says so here. */}
+        <Field label="Initials">
+          <input style={inputStyle} maxLength={6} placeholder="derived from the name"
+            value={form.initials ?? ""} onChange={(e) => setForm({ ...form, initials: e.target.value })} />
+          <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 5, lineHeight: 1.5 }}>
+            Shown where there is no room for a name — the Master Grid and the printed wall charts.
+            Leave it blank and one is worked out from the name.
+          </div>
+        </Field>
         <Field label="Max periods / day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Max periods / week"><input type="number" style={inputStyle} value={form.maxPeriodsPerWeek} onChange={(e) => setForm({ ...form, maxPeriodsPerWeek: e.target.value })} /></Field>
         {/* §20: the floor to go with the cap above. */}

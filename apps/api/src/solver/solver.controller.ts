@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, 
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import type Redis from "ioredis";
-import { DEFAULT_WEIGHTS, PERMISSIONS } from "@edutimetable/shared";
+import { DEFAULT_WEIGHTS, PERMISSIONS, initialsOf } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
@@ -215,6 +215,21 @@ export class SolverController {
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),
       teachers: Object.fromEntries(teachers.map((t) => [t.id, t.name])),
+      /**
+       * §31 — the same people, in the width a Master Grid cell actually has.
+       *
+       * A 27-pixel cell holds two or three characters, so the full-name map
+       * above cannot serve it; `teachers.initials` is the school's own answer
+       * and `initialsOf` falls back to deriving one only when they have never
+       * given it. A *second* map rather than a wider `teachers` value because
+       * every existing consumer of this payload indexes it as `id → name`.
+       *
+       * This payload is Redis-cached for an hour, so a school mid-cache will
+       * be served one that predates this field. The client derives from the
+       * name when the map has nothing for an id — the same function, so the
+       * stale answer and the fresh one agree.
+       */
+      teacherInitials: Object.fromEntries(teachers.map((t) => [t.id, initialsOf(t.name, t.initials)])),
       rooms: Object.fromEntries(rooms.map((r) => [r.id, r.name])),
       date,
       /** §4.9 blocks referenced by the tuples below: name + its parallel options. */
@@ -242,6 +257,95 @@ export class SolverController {
     };
     await this.redis.set(cacheKey, JSON.stringify(payload), "EX", 3600);
     return payload;
+  }
+
+  /**
+   * §31 — the Master Grid's **Lesson grid** tab: class-sections down, subjects
+   * across, periods per week in the cell.
+   *
+   * The odd one out among the five tabs. The other four are a pivot of the
+   * `/slots` tuples above — an entity against day-and-period — and this one is
+   * not a pivot of anything in that payload: it reads the **curriculum**, which
+   * is what the school says a class is *meant* to be taught, whether or not a
+   * timetable has been generated yet. A cell reading 6 means Class 1-A is owed
+   * six periods of English.
+   *
+   * Deliberately here rather than on `/class-subjects`, which serves the same
+   * rows: that controller is `masters.manage`, and this screen is
+   * `timetable.view.all`. A principal who may look at the whole school's week
+   * would have met a 403 on one tab out of five. Same controller and same
+   * permission as `/slots` means the screen answers to exactly one authority.
+   *
+   * Not cached: it is two indexed reads and it is the one tab whose numbers a
+   * person may have changed on the Allocation grid a moment ago — a stale
+   * curriculum is precisely the thing they came here to check.
+   */
+  @Get("lessons")
+  @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
+  async lessons(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: {
+        id: true, academicYearId: true, workingDays: true,
+        periods: { select: { periodNumber: true, isBreak: true, isExtra: true, isActivity: true } },
+      },
+    });
+    // §17.8 — another school's id is a 404, never an empty grid that reads as
+    // "this timetable teaches nothing".
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { timetableConfigId: configId },
+      include: { class: true, section: true },
+      orderBy: [{ class: { sequence: "asc" } }, { section: { name: "asc" } }],
+    });
+    const classIds = [...new Set(sections.map((cs) => cs.classId))];
+    const rows = classIds.length
+      ? await this.prisma.classSubject.findMany({
+          // §3.11 — by class AND by the config's own year. Without the year a
+          // class that has run for three sessions contributes three curricula
+          // to one grid, and the cell would show whichever loaded last.
+          where: { classId: { in: classIds }, academicYearId: config.academicYearId },
+          include: { subject: true },
+        })
+      : [];
+
+    const subjects = [...new Map(rows.map((r) => [r.subjectId, r.subject])).values()].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    // §18: the extra window is teaching, but it is not what the timetable has
+    // to fill — the same exclusion the Matrix's fill rate makes, so the row
+    // total and the fill percentage are measured against the same week.
+    const teaching = config.periods.filter(
+      (p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== 0 && p.periodNumber !== null,
+    );
+
+    return {
+      /**
+       * `classId` travels with each row because **periods are a class fact**
+       * (§27): `class_subjects` is keyed by class, so 5-A and 5-B are two rows
+       * showing one curriculum. Emitting the cells per class rather than per
+       * section is what says so — a per-section payload would look like two
+       * answers that merely happen to agree.
+       */
+      sections: sections.map((cs) => ({
+        id: cs.id,
+        classId: cs.classId,
+        label: `${cs.class.name}-${cs.section.name}`,
+      })),
+      subjects: subjects.map((s) => ({ id: s.id, name: s.name })),
+      /** [classId, subjectId, periodsPerWeek] */
+      cells: rows.map((r) => [r.classId, r.subjectId, r.periodsPerWeek]),
+      /**
+       * This WING's week, and deliberately not `capacityForClass` — which is
+       * year-wide across every pool the class sits in because it guards a
+       * *write* (§30). Here it only labels a row total, and the honest
+       * denominator for "does this class's week fit" is the week this
+       * timetable actually offers.
+       */
+      weekCapacity: teaching.length * (config.workingDays as number[]).length,
+    };
   }
 
   /** Latest solver job summary for the Generate screen's result panel. */
