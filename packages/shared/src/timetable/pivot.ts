@@ -89,6 +89,30 @@ export const pivotCellKey = (row: number, day: number | null, period: number | n
  * note above; that is the behaviour, not an edge case.
  */
 /**
+ * The class-sections attending a §4.9 split-elective block.
+ *
+ * Derived from the tuples rather than carried alongside the block's name and
+ * options, because it is already in them: a block's **member** rows are exactly
+ * the rows that carry both the block and a class-section, and its **option**
+ * rows carry the block and `classSectionId = NULL` (invariant 9). So the option
+ * rows contribute nothing here without needing a rule of their own.
+ *
+ * §31.6's strip needs it for the one group it could otherwise not fill. An
+ * option row belongs to no class-section, so "The class" would read "—" for a
+ * lesson forty children are sitting in — and the honest answer is the block's
+ * members.
+ */
+export function blockSections(slots: SlotTuple[], blockId: number): number[] {
+  const out = new Set<number>();
+  for (const s of slots) {
+    if (s[SLOT.electiveBlockId] !== blockId) continue;
+    const cs = s[SLOT.classSectionId];
+    if (cs !== null && cs !== undefined) out.add(cs);
+  }
+  return [...out];
+}
+
+/**
  * The events in one pivoted cell — §4.10 collapsed where §4.10 applies.
  *
  * A merged teaching group is one teacher taking several sections at once. Which

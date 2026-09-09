@@ -2522,12 +2522,12 @@ There were already two derivations at call sites (`Board.tsx` took three letters
 
 Class-sections down, **subjects** across, periods per week in the cell, with a per-row total — the same shape as §27's Allocation grid, read-only and at grid density. It is not a pivot of the slots at all: it reads the **curriculum**, so a cell reading 6 means Class 1-A is *meant* to have six periods of English whether or not a timetable has been generated.
 
-`GET /timetable-configs/:id/lessons`, deliberately **not** `/class-subjects`, which serves the same rows: that controller is `masters.manage` and this screen is `timetable.view.all`, so a principal who may look at the whole school's week would have met a 403 on one tab out of five. Same controller and same permission as `/slots` means the screen answers to exactly one authority.
+`GET /timetable-configs/:id/context`, deliberately **not** `/class-subjects`, which serves the same rows: that controller is `masters.manage` and this screen is `timetable.view.all`, so a principal who may look at the whole school's week would have met a 403 on one tab out of five. Same controller and same permission as `/slots` means the screen answers to exactly one authority.
 
 Three things it has to say out loud:
 
 - **Cells are keyed by CLASS, not by class-section.** `class_subjects` is keyed by class (§27), so 5-A and 5-B are two rows showing one curriculum. A per-section payload would look like two answers that merely happen to agree.
-- **The year filter is required** (§3.11): a class that has run three sessions would otherwise contribute three curricula to one grid, and the cell would show whichever loaded last.
+- **The year filter is required** (§3.11): a class that has run three sessions would otherwise contribute three curricula to one grid, and the cell would show whichever loaded last. It comes free, because the payload reads `buildFeasibilitySnapshot`, which already applies it.
 - **`weekCapacity` is this WING's week**, deliberately not `capacityForClass` — which is year-wide across every pool the class sits in because it guards a *write* (§30). Here it only labels a row total, and the honest denominator for "does this class's week fit" is the week this timetable offers.
 
 A §4.9 block carries its own periods/week and is not a curriculum row, so an elective's options are **not** columns here — a grid showing French and German would be claiming Class 5 is taught both.
@@ -2541,13 +2541,37 @@ The reference product edits from this screen. This one does not:
 - **It does not replace the Allocation Matrix.** They read the same payload and answer different questions: the Matrix has wide cells naming subject *and* teacher, for reading one class's week; this has narrow cells showing the shape of the whole school's. Adding pivots to the Matrix would have made its cells too small for what it is for.
 - **One wing at a time.** The top-bar selector picks the timetable, and §3.10 wings keep different hours — two wings in one grid would need §10.6's wall-clock axis and would still leave most cells blank.
 
-### 31.6 What is left
+### 31.6 The strip
 
-Stage 2 is the strip: click a cell, read a sentence — the cell, its class, its teacher's load, and what else that class studies. It costs no request, because everything it needs is already in the browser. On a Lesson grid cell it shows a different vocabulary — the subject, its period count, and every class-section, teacher and room sharing the lesson, which is the only place on the screen where a §4.9 block or a §4.10 merged group becomes visible.
+One row along the bottom that never moves and never covers the grid. Clicking a cell fills it; clicking another replaces it. It is what makes 27 pixels survivable: the grid is the map and the strip is the legend, and neither is much use alone.
 
-Stage 3 puts placed against required, and only when they differ. Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today.
+**A strip and not a popover.** A popover over a 27-pixel cell covers the neighbours you are comparing it with, and comparing is almost always why the cell was clicked — the same argument §8.5 made for putting a master's form beside its list rather than below it. It is **always rendered**, at a fixed height, even with nothing selected: appearing on the first click would shorten the grid under the pointer at the exact moment somebody is reading it, and the row they clicked would move.
 
-Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse, `/lessons`, and §17.8), `pivot.spec.ts` (15 unit tests over every §4.9 and §4.10 shape), and the §17.8 sweep, which classified the new route with no help — A gets a grid, B gets 404.
+Four groups widening outwards from the cell to its context — what the cell is, whose class, whose lesson, and what else that class studies. **Arrow keys move the selection**, because the useful reading is *across* a row (this teacher's Monday, then their Tuesday) and reaching for the mouse fifty-five times is not reading. Left and right skip break and activity columns, which hold no cell. An **empty** cell is selectable too: a free period is a fact, and the strip is the only place with room to say whose it is.
+
+#### One endpoint, because clicking has to stay cheap
+
+Four facts the strip needs are not in a placement: a class-section's home room and class teacher, a teacher's weekly cap, and the curriculum. `GET /timetable-configs/:id/context` carries all four — one payload fetched once beside `/slots`, never a request per click, because clicking idly is how this screen is meant to be used.
+
+The curriculum, the caps and the cross-pool loads are **read off `buildFeasibilitySnapshot`**, the same builder the solver and Readiness use, so the strip cannot disagree with them. It is cached under the config's own slot prefix, which `invalidateTimetable` already sweeps and a master-data edit takes with the school — without that, every page load would pay for a full snapshot.
+
+#### The number that is easy to get wrong
+
+"How full is this teacher's week" has a trap CLAUDE.md already records: **a line round one wing reads 67% where the truth is 87%.** So the strip states the wing's own count against the cap, and then *names* the pool's other timetables and their periods rather than folding them in — two limits with two different fixes, never one blended figure. The figure it names is `crossConfigTeacherLoad`, which CLAUDE.md calls "the only cross-timetable calculation in the codebase"; a strip quoting a different number from the one Check 2 enforces would be worse than a strip quoting none.
+
+#### Two vocabularies, because the tabs ask different questions
+
+On a **timetable** cell the four groups are the cell (subject, clock, room, pin/substitute), the class (label, home room, class teacher), the teacher (name, initials, load, sections) and the class's curriculum. A §4.9 cell also lists **every option** with its teacher and room, because that cell genuinely is several lessons and the grid has room for none of them; a §4.10 group names every section attending. A cell holding several *events* — a subject taught to sixteen sections at once — is listed rather than described as one lesson: that is the case the grid draws as a bare count, and the whole reason the count needs somewhere to expand.
+
+On a **Lesson grid** cell there is no clock at all. It shows the subject, its period count, that the count is a *class* fact, and then **who shares the lesson** — every class-section, every teacher, every room. That list is not decoration: several sections on one lesson is a §4.9 block or a §4.10 merged group, and it is the only place on the screen where that becomes visible. When nothing is placed yet it says so, because "not generated" and "nobody teaches it" are different facts.
+
+Two derivations are pure and therefore live in `packages/shared` beside the pivot, where they are unit-tested: `blockSections` (a block's attending sections, from the member rows — invariant 9 again, since option rows carry no section and contribute none) and `cellEvents`.
+
+### 31.7 What is left
+
+Stage 3 puts placed against required, and only when they differ — a number that is always two numbers is a number nobody reads. Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today.
+
+Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, and §17.8), `pivot.spec.ts` (18 unit tests over every §4.9 and §4.10 shape), and the §17.8 sweep, which classified the new route with no help — A gets a payload, B gets 404.
 
 ## 25. Term-wise Timetables (Phase 26)
 

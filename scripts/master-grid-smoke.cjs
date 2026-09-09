@@ -22,10 +22,17 @@
  *     non-empty week, because dropping option rows is the exact regression
  *     invariant 9 exists to prevent and it is invisible on a small fixture.
  *
- *  3. **`/lessons` is the curriculum, keyed by CLASS.** Two sections of one
- *     class must show identical rows — periods are a class fact (§27) — and
- *     another school's config id must 404 rather than return an empty grid,
- *     which would read as "this timetable teaches nothing" (§17.8).
+ *  3. **`/context` is the curriculum keyed by CLASS, plus what the strip needs.**
+ *     Two sections of one class must show identical rows — periods are a class
+ *     fact (§27) — and another school's config id must 404 rather than return
+ *     an empty grid, which would read as "this timetable teaches nothing".
+ *
+ *  4. **A teacher's load in the pool's OTHER timetables is reported, never
+ *     folded in.** The fixture puts one teacher in two wings on purpose.
+ *     CLAUDE.md records exactly what a single blended figure costs — "a line
+ *     round one wing reads 67% where the truth is 87%" — so the strip states
+ *     the wing's number and names the rest, and the number it names comes off
+ *     `crossConfigTeacherLoad`, the codebase's one cross-timetable calculation.
  *
  * Everything it creates uses @zzmg.test / "ZZMG " and is removed at the end.
  */
@@ -33,7 +40,7 @@ const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
 const { PrismaClient: ControlClient } = req("/app/apps/api/prisma/generated/control-client");
-const { cellEvents, initialsOf, pivotSlots, pivotCellKey, SLOT } = req("@edutimetable/shared");
+const { blockSections, cellEvents, initialsOf, pivotSlots, pivotCellKey, SLOT } = req("@edutimetable/shared");
 const Redis = req("ioredis");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -277,36 +284,102 @@ async function main() {
   check(slots.slots.every((t) => t[SLOT.day] !== null && t[SLOT.period] !== null),
     "the tuple layout the pivot indexes into is the one the controller builds");
 
-  // ───────────────────────── 3. THE LESSON GRID
+  // ───────────────────────── 3. THE CONTEXT PAYLOAD
   console.log("\nThe Lesson grid is the curriculum, keyed by class:");
-  const lessons = (await call("GET", `/timetable-configs/${cfg.id}/lessons`, S)).json;
-  check((lessons?.sections ?? []).length === 2, "it lists the wing's class-sections", `${lessons?.sections?.length}`);
-  check(lessons.sections.every((s) => s.classId === c5.id),
+  const ctx = (await call("GET", `/timetable-configs/${cfg.id}/context`, S)).json;
+  check((ctx?.sections ?? []).length === 2, "it lists the wing's class-sections", `${ctx?.sections?.length}`);
+  check(ctx.sections.every((x) => x.classId === c5.id),
     "each carrying its CLASS — because periods are a class fact (§27), not a section one");
-  check((lessons.subjects ?? []).length === 3,
-    "and only the subjects the curriculum actually names", (lessons.subjects ?? []).map((s) => s.name).join(", "));
+  check((ctx.subjects ?? []).length === 3,
+    "and only the subjects the curriculum actually names", (ctx.subjects ?? []).map((x) => x.name).join(", "));
   // §4.9 blocks carry their own periods/week and are not curriculum rows, so
   // French and German must NOT appear here — a grid that showed them would be
   // claiming Class 5 is taught both.
-  check(!lessons.subjects.some((s) => s.id === subj.French.id || s.id === subj.German.id),
+  check(!ctx.subjects.some((x) => x.id === subj.French.id || x.id === subj.German.id),
     "an elective's options are not curriculum rows and do not appear as columns");
 
-  const cell = (cls, sub) => (lessons.cells.find(([c, s]) => c === cls && s === sub) ?? [])[2] ?? 0;
+  const cell = (cls, sub) => (ctx.cells.find(([c, x]) => c === cls && x === sub) ?? [])[2] ?? 0;
   check(cell(c5.id, subj.Maths.id) === 6 && cell(c5.id, subj.Music.id) === 4,
     "the numbers are what the school entered", `Maths ${cell(c5.id, subj.Maths.id)} · Music ${cell(c5.id, subj.Music.id)}`);
-  const total = lessons.cells.reduce((n, [, , p]) => n + p, 0);
+  const total = ctx.cells.reduce((n, [, , p]) => n + p, 0);
   check(total === 16, "and a class's row totals its whole curriculum", `${total} periods a week`);
-  check(lessons.weekCapacity === 30,
-    "the row total is measured against THIS wing's week — 6 periods × 5 days", `${lessons.weekCapacity}`);
+  check(ctx.weekCapacity === 30,
+    "the row total is measured against THIS wing's week — 6 periods × 5 days", `${ctx.weekCapacity}`);
 
   // Two sections of one class must be two rows showing ONE curriculum. If the
   // payload ever keys its cells by section, this is where the two would be free
   // to disagree.
-  const perSection = lessons.sections.map((s) =>
-    lessons.subjects.map((sub) => cell(s.classId, sub.id)).join(","));
+  const perSection = ctx.sections.map((x) =>
+    ctx.subjects.map((sub) => cell(x.classId, sub.id)).join(","));
   check(perSection[0] === perSection[1],
     "5-A and 5-B show identical rows, because they are one class's curriculum shown twice",
     perSection.join("  |  "));
+
+  // ───────────────────────── 3b. WHAT THE STRIP READS
+  console.log("\nAnd it carries the four facts a placement does not (§31.6):");
+  const secA = ctx.sections.find((x) => x.id === a.id);
+  check(secA?.homeRoom === "ZZMG 5-A", "a class-section names its home room (§19)", secA?.homeRoom ?? "(none)");
+  await call("PUT", `/class-sections/${a.id}/class-teacher`, S, { teacherId: T.maths.id });
+  const ctx2 = (await call("GET", `/timetable-configs/${cfg.id}/context`, S)).json;
+  check(ctx2.sections.find((x) => x.id === a.id)?.classTeacher === "ZZMG Maths",
+    "and its class teacher — and the cached payload was swept when the teacher was set",
+    ctx2.sections.find((x) => x.id === a.id)?.classTeacher ?? "(none)");
+  check(ctx2.teachers[String(T.maths.id)]?.cap === 40,
+    "every teacher's weekly cap is there, so the strip's '22 of 30' has a denominator",
+    `${ctx2.teachers[String(T.maths.id)]?.cap}`);
+  check((ctx2.teachers[String(T.maths.id)]?.elsewhere ?? -1) === 0,
+    "and a single-wing school reports nothing elsewhere",
+    `${ctx2.teachers[String(T.maths.id)]?.elsewhere}`);
+
+  // The §4.9 group the strip could otherwise not fill: an option row belongs to
+  // no class-section, so "The class" would read "—" for a lesson forty children
+  // are sitting in.
+  const blockId = (await prisma.electiveBlock.findFirst({ where: { schoolId, name: "ZZMG Third Language" } }))?.id;
+  check(blockSections(slots.slots, blockId).sort((x, y) => x - y).join(",") === [a.id, b.id].sort((x, y) => x - y).join(","),
+    "a block's attending sections are derivable from the tuples alone — the option rows contribute none",
+    blockSections(slots.slots, blockId).join(","));
+
+  // ───────────────────────── 3c. THE SECOND WING
+  console.log("\nA teacher in two wings of one pool (§29.3's 67%-vs-87% trap):");
+  const cfg2 = (await call("POST", "/timetable-configs", S, { name: "ZZMG Wing 2", academicYearId: year.id })).json;
+  await call("PUT", `/timetable-configs/${cfg2.id}/structure`, S, {
+    startTime: "08:00", periodsPerDay: 6, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5], breaks: [],
+  });
+  const c9 = (await call("POST", "/classes", S, { name: "Class 9", sequence: 13 })).json;
+  const n9 = (await call("POST", `/classes/${c9.id}/sections`, S, { name: "A", academicYearId: year.id })).json.classSection;
+  await call("PUT", `/timetable-configs/${cfg2.id}/class-sections`, S, { classSectionIds: [n9.id] });
+  await call("POST", "/class-subjects", S, {
+    classId: c9.id, academicYearId: year.id, subjectId: subj.Maths.id, periodsPerWeek: 8, maxPeriodsPerDay: 2,
+  });
+  const cross = await call("POST", "/mappings", S, {
+    teacherId: T.maths.id, subjectId: subj.Maths.id, classSectionIds: [n9.id], periodsPerWeek: 8,
+  });
+  check(cross.status < 300, "the maths teacher is given Class 9 in the second wing", `${cross.status}`);
+
+  const ctx3 = (await call("GET", `/timetable-configs/${cfg.id}/context`, S)).json;
+  check(ctx3.teachers[String(T.maths.id)]?.elsewhere === 8,
+    "the FIRST wing's payload now reports their 8 periods in the other timetable — the number the strip names rather than folds in",
+    `${ctx3.teachers[String(T.maths.id)]?.elsewhere}`);
+  check((ctx3.teachers[String(T.maths.id)]?.elsewhereIn ?? []).includes("ZZMG Wing 2"),
+    "and names which timetable they are in, so the reader knows what the wing's own number leaves out",
+    (ctx3.teachers[String(T.maths.id)]?.elsewhereIn ?? []).join(", "));
+  check((ctx3.teachers[String(T.games.id)]?.elsewhere ?? -1) === 0,
+    "while a teacher who works in one wing still reports nothing elsewhere",
+    `${ctx3.teachers[String(T.games.id)]?.elsewhere}`);
+  // The cells above must be unchanged by any of it: the second wing teaches
+  // Class 9, and Class 9 must not appear in this wing's Lesson grid.
+  check(ctx3.cells.every(([c]) => c === c5.id) && ctx3.cells.length === 3,
+    "and the Lesson grid still shows only THIS wing's classes",
+    `${new Set(ctx3.cells.map(([c]) => c)).size} class(es), ${ctx3.cells.length} rows`);
+
+  // The payload is built from a full feasibility snapshot, which is not cheap.
+  // Caching it is what makes that acceptable, so the cache is asserted rather
+  // than assumed — and it lives under the config's own slot prefix, which is
+  // what `invalidateTimetable` sweeps.
+  const cacheKeys = await redis.keys(`s${schoolId}:slots:${cfg.id}:context`);
+  check(cacheKeys.length === 1,
+    "the payload is cached under the config's slot prefix, so invalidateTimetable sweeps it",
+    cacheKeys.join(", ") || "(not cached)");
 
   // ───────────────────────── 4. §17.8
   console.log("\nAnother school cannot read either of them:");
@@ -315,10 +388,10 @@ async function main() {
   const acct2 = (await call("POST", "/auth/verify", null, { token: await mailToken(email2, "verify") })).json.accountToken;
   const other = await call("POST", "/schools", acct2, { name: "ZZMG Second" });
   const S2 = other.json.sessionToken;
-  const mine = await call("GET", `/timetable-configs/${cfg.id}/lessons`, S);
-  const theirs = await call("GET", `/timetable-configs/${cfg.id}/lessons`, S2);
+  const mine = await call("GET", `/timetable-configs/${cfg.id}/context`, S);
+  const theirs = await call("GET", `/timetable-configs/${cfg.id}/context`, S2);
   check(mine.status === 200 && theirs.status === 404,
-    "/lessons — the owner gets a grid and a stranger gets 404, never an empty one that reads as 'teaches nothing'",
+    "/context — the owner gets a payload and a stranger gets 404, never an empty one that reads as 'teaches nothing'",
     `owner ${mine.status} · stranger ${theirs.status}`);
   const strangerSlots = await call("GET", `/timetable-configs/${cfg.id}/slots`, S2);
   check(strangerSlots.status >= 400, "/slots refuses them too", `${strangerSlots.status}`);

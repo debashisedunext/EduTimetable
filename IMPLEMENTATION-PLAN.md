@@ -2641,8 +2641,8 @@ authority):
   `teachers` value, because every existing consumer indexes that one as `id → name`. The payload is
   Redis-cached for an hour, so a school mid-cache is served one that predates the field — the client
   falls back to `initialsOf(name)`, the same function, so the stale answer and the fresh one agree.
-- `GET /timetable-configs/:id/lessons` — the Lesson grid's curriculum. Deliberately not
-  `/class-subjects`, which is `masters.manage`: a principal would have met a 403 on one tab of five.
+- `GET /timetable-configs/:id/lessons` — the Lesson grid's curriculum (renamed `/context` in
+  stage 2, when the strip needed three more facts from it). Deliberately not `/class-subjects`, which is `masters.manage`: a principal would have met a 403 on one tab of five.
   Cells keyed by **class** (§27), filtered to the config's own year (§3.11), `weekCapacity` from the
   wing's own week and deliberately not `capacityForClass` (§30 — that one is year-wide because it
   guards a write).
@@ -2676,13 +2676,55 @@ reproducing the database, the §4.10 collapse both ways, `/lessons` keyed by cla
 `pivot.spec.ts` **15 unit tests**; isolation gate **211 routes classified**, the new route swept
 with no help (`A 200 · B 404`); shared **520**, lint, typecheck, `vite build`.
 
-## Phase 44 stages 2–4 — not started
+## Phase 44 stage 2 — the strip
 
-- **Stage 2, the strip.** Click a cell, read a sentence: the cell, its class, its teacher's load,
-  what else that class studies. No request — it is arithmetic over the payload already in the
-  browser. On a Lesson grid cell a different vocabulary: subject, period count, and every
-  class-section, teacher and room sharing the lesson, which is the only place on the screen where a
-  §4.9 block or §4.10 group becomes visible. Arrow keys move the selection.
+**Landed.** One fixed row along the bottom of the grid box that explains whatever cell is clicked. It
+is the half that makes 27 pixels survivable — the grid is the map and the strip is the legend.
+
+Server: `GET /timetable-configs/:id/lessons` became `GET /timetable-configs/:id/context` and grew the
+three facts a *placement* does not carry — each class-section's home room and class teacher, and each
+teacher's weekly cap plus what they carry in the pool's other timetables. One payload rather than
+four, because a strip that fetched per click would make clicking expensive and clicking idly is how
+this screen is used.
+
+- The curriculum, the caps and `crossConfigTeacherLoad` are **read off `buildFeasibilitySnapshot`**,
+  the builder the solver and Readiness already use. That is what makes the §3.11 year filter free,
+  and it is why the strip cannot quote a different number from the one Check 2 enforces.
+- Cached under the config's own slot prefix, so `invalidateTimetable` sweeps it and a master-data
+  edit takes it with the school. Without the cache every page load would pay for a full snapshot —
+  asserted in the smoke rather than assumed.
+- **A teacher's load names the other wings, never folds them in.** CLAUDE.md records what a single
+  blended figure costs — "a line round one wing reads 67% where the truth is 87%" — so the strip
+  states the wing's own count against the cap and then names the rest. The fixture puts one teacher
+  in two wings of one pool specifically to test it.
+
+Client:
+- Always rendered at a fixed height. Appearing on the first click would shorten the grid under the
+  pointer at the moment somebody is reading it, and the row they clicked would move.
+- A strip and not a popover: a popover over a 27px cell covers the neighbours you clicked in order to
+  compare (§8.5's argument, again).
+- **Arrow keys move the selection**, skipping break and activity columns, which hold no cell. An
+  empty cell is selectable — a free period is a fact and this is the only place with room to say
+  whose it is. The selection is cleared on a change of tab, status or draft, because the row it
+  named belongs to a different question.
+- Two vocabularies (§31.4). A timetable cell gives cell / class / teacher / curriculum, listing every
+  §4.9 option and every §4.10 member; a cell holding several *events* is listed rather than described
+  as one lesson, which is what the grid's bare count needed somewhere to expand into. A Lesson grid
+  cell has no clock and instead names who **shares** the lesson — the only place on the screen where
+  a block or a merged group is visible — and says "not yet" rather than "no teacher" when nothing is
+  placed.
+- `blockSections` moved to `packages/shared` beside the pivot: deriving a block's attending sections
+  from its member rows is invariant 9 again, and it is pure, so it is unit-tested rather than
+  trusted.
+
+Verified: `pnpm test:mastergrid` — **44 assertions** (18 new: the strip's four facts, the cross-wing
+load naming its timetable, the cache key, and a block's members from the tuples alone);
+`pivot.spec.ts` **18 unit tests**; isolation gate **211 routes classified**, `/context` swept unaided
+(`A 200 · B 404`). Regression: shared **523**, api **216**, grids, groups, freeze, staffing, drafts,
+electives, lint, typecheck, `vite build`.
+
+## Phase 44 stages 3–4 — not started
+
 - **Stage 3, placed against required** — and only when they differ; a number that is always two
   numbers is a number nobody reads.
 - **Stage 4, virtualisation.** `react-window`/AG Grid, measured against §14's 600ms

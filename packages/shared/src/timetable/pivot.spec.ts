@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cellEvents, PIVOT_FIELD, pivotCellKey, pivotSlots, SLOT, type SlotTuple } from "./pivot";
+import { blockSections, cellEvents, PIVOT_FIELD, pivotCellKey, pivotSlots, SLOT, type SlotTuple } from "./pivot";
 import { initialsOf } from "./initials";
 
 /**
@@ -115,6 +115,31 @@ describe("§31 pivoting the slot payload", () => {
 
   it("returns an empty map for an empty week", () => {
     expect(pivotSlots([], "teacher").size).toBe(0);
+  });
+});
+
+describe("§4.9 who is inside a block", () => {
+  it("finds the member sections and ignores the options", () => {
+    // Block 7 has two member rows (5-A, 5-B) and three option rows carrying no
+    // section at all. The members are the answer; the options contribute
+    // nothing without needing a rule of their own.
+    expect(blockSections(week, 7).sort()).toEqual([1, 2]);
+  });
+
+  it("is empty for a block nobody attends, and for a week with no blocks", () => {
+    expect(blockSections(week, 99)).toEqual([]);
+    expect(blockSections([slot(1, 1, 1, 10, 100, 900)], 7)).toEqual([]);
+  });
+
+  it("does not report a section twice for a block that runs all week", () => {
+    // Five occurrences of one block is still two sections, and a strip saying
+    // "10 sections" would be counting periods.
+    const allWeek: SlotTuple[] = [1, 2, 3, 4, 5].flatMap((d) => [
+      slot(1, d, 2, null, null, null, { block: 7 }),
+      slot(2, d, 2, null, null, null, { block: 7 }),
+      slot(null, d, 2, 20, 200, 910, { block: 7 }),
+    ]);
+    expect(blockSections(allWeek, 7).sort()).toEqual([1, 2]);
   });
 });
 

@@ -1,5 +1,8 @@
-import { useMemo, useState } from "react";
-import { cellEvents, initialsOf, pivotCellKey, pivotSlots, SLOT, type GridPivot, type SlotTuple } from "@edutimetable/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  blockSections, cellEvents, initialsOf, pivotCellKey, pivotSlots, SLOT,
+  type GridPivot, type SlotTuple,
+} from "@edutimetable/shared";
 import { useApi, useConfigCtx } from "../hooks";
 import { useColors } from "../colors-context";
 
@@ -72,13 +75,51 @@ interface SlotsPayload {
   slots: Array<Array<number | null>>;
 }
 
-/** §31 — the Lesson grid tab's own payload: the curriculum, not the slots. */
-interface LessonsPayload {
-  sections: { id: number; classId: number; label: string }[];
+/**
+ * §31 — everything the grid needs that a **placement** does not carry.
+ *
+ * `/slots` says where the lessons ended up; this says what the school intended
+ * and who the rows are. The Lesson grid tab is this payload rendered directly;
+ * the strip reads the rest of it. One request rather than four, because a
+ * strip that fetched on click would make clicking expensive — and clicking
+ * idly is how this screen is meant to be used.
+ */
+interface ContextPayload {
+  sections: { id: number; classId: number; label: string; homeRoom: string | null; classTeacher: string | null }[];
   subjects: { id: number; name: string }[];
   /** [classId, subjectId, periodsPerWeek] */
   cells: Array<[number, number, number]>;
   weekCapacity: number;
+  /** §28.1/§29.3 — the cap, and what this person carries in the pool's OTHER timetables. */
+  teachers: Record<string, { cap: number; elsewhere: number; elsewhereIn: string[] }>;
+}
+
+/**
+ * What the strip is pointed at.
+ *
+ * Two kinds, because the tabs ask different questions. On the four timetable
+ * tabs a selection is a **cell** — a row entity at a day and period. On the
+ * Lesson grid it is a **lesson** — a class-section and a subject, with no time
+ * in it at all. One strip, two vocabularies (§31.4).
+ */
+type Selection =
+  | { kind: "cell"; rowKey: number; day: number; period: number }
+  | { kind: "lesson"; sectionId: number; subjectId: number };
+
+/**
+ * One block of the strip: a label, an optional big line, and detail under it.
+ *
+ * Deliberately a small shape rather than a field per fact. The two vocabularies
+ * have almost nothing in common — a timetable cell has a clock and a teacher's
+ * load, a lesson-grid cell has every section sharing the lesson — and a union
+ * type carrying both would leave every renderer asking which half it had.
+ */
+interface StripGroup {
+  label: string;
+  primary?: string;
+  swatch?: { bg: string; fg: string } | null;
+  lines?: string[];
+  chips?: Array<{ text: string; swatch?: { bg: string; fg: string } | null; title?: string }>;
 }
 
 /**
@@ -131,6 +172,11 @@ const shortSection = (label: string) => {
   return sec ? `${head}-${sec}` : head;
 };
 
+/** An index that stays inside the list, or null when it would not — which is
+ *  what makes an arrow key at the edge do nothing instead of wrapping. */
+const clamp = (i: number, len: number): number | null =>
+  len === 0 || i < 0 || i >= len ? null : i;
+
 export function MasterGrid() {
   const { current } = useConfigCtx();
   const colors = useColors();
@@ -138,6 +184,11 @@ export function MasterGrid() {
   const [status, setStatus] = useState<"draft" | "published">("draft");
   const [draftId, setDraftId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  // §31.6 — what the strip is explaining. Cleared when the tab changes, since
+  // a cell selected on the Teachers tab names a row the Subjects tab does not
+  // have; keeping it would leave the strip describing something invisible.
+  const [selected, setSelected] = useState<Selection | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
 
   const { data: drafts } = useApi<DraftRow[]>(
     current ? `/timetable-configs/${current.id}/drafts` : null,
@@ -148,12 +199,21 @@ export function MasterGrid() {
         `${status === "draft" && draftId !== null ? `&draftId=${draftId}` : ""}`
       : null,
   );
-  // Fetched only for the tab that needs it — four of the five tabs are pivots
-  // of the payload above and asking for the curriculum to render them would be
-  // a request nobody reads (§14).
-  const { data: lessons } = useApi<LessonsPayload>(
-    current && tab === "lesson" ? `/timetable-configs/${current.id}/lessons` : null,
+  // Fetched on every tab, not only the Lesson grid: since §31.6 the strip
+  // reads the class's curriculum, its home room, its class teacher and the
+  // teacher's cap out of it, and those are wanted on all five.
+  const { data: context } = useApi<ContextPayload>(
+    current ? `/timetable-configs/${current.id}/context` : null,
   );
+
+  /*
+    A selection names a row of the tab it was made on, so it cannot survive a
+    change of tab: cell 44 on Teachers is a different person from cell 44 on
+    Classrooms, and the strip would go on describing something no longer on
+    screen. Same for a change of draft or status — the week underneath it is a
+    different week.
+  */
+  useEffect(() => setSelected(null), [tab, status, draftId]);
 
   // One pass over the tuples, grouped by whichever field names the row for
   // this tab. The grouping itself is `pivotSlots` in `packages/shared`, where
@@ -248,6 +308,292 @@ export function MasterGrid() {
     return { ...face, text: teacherShort(teacherId) ?? "\u00b7", swatch: colors.classOf(cls) };
   };
 
+  /**
+   * §31.6 — arrow keys move the selection.
+   *
+   * The strip explains one cell, and the useful reading is across a row: this
+   * teacher's Monday, then their Tuesday. Reaching for the mouse fifty-five
+   * times to do that is not reading, so the keys move the selection and the
+   * strip follows.
+   *
+   * Left and right skip **breaks and activity bands**, because those columns
+   * hold no cell — landing on one would blank the strip for a column nobody
+   * can select by clicking either.
+   */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+    if (!keys.includes(e.key) || !selected) return;
+    e.preventDefault();
+    const dRow = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    const dCol = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+
+    if (selected.kind === "lesson") {
+      const rowAt = visibleRows.findIndex((r) => r.key === selected.sectionId);
+      const colAt = (context?.subjects ?? []).findIndex((x) => x.id === selected.subjectId);
+      const nextRow = clamp(rowAt + dRow, visibleRows.length);
+      const nextCol = clamp(colAt + dCol, context?.subjects.length ?? 0);
+      if (nextRow === null || nextCol === null) return;
+      setSelected({
+        kind: "lesson",
+        sectionId: visibleRows[nextRow].key,
+        subjectId: context!.subjects[nextCol].id,
+      });
+      return;
+    }
+
+    // The selectable columns, flattened across the week in the order they are
+    // drawn — so ArrowRight at Friday's last period simply stops, rather than
+    // wrapping to Monday, which would read as the grid jumping.
+    const selectable = days.flatMap((d) =>
+      columns.filter((p) => !p.isBreak && !p.isActivity && p.periodNumber !== null)
+        .map((p) => ({ day: d, period: p.periodNumber as number })),
+    );
+    const rowAt = visibleRows.findIndex((r) => r.key === selected.rowKey);
+    const colAt = selectable.findIndex((c) => c.day === selected.day && c.period === selected.period);
+    const nextRow = clamp(rowAt + dRow, visibleRows.length);
+    const nextCol = clamp(colAt + dCol, selectable.length);
+    if (nextRow === null || nextCol === null) return;
+    setSelected({
+      kind: "cell",
+      rowKey: visibleRows[nextRow].key,
+      day: selectable[nextCol].day,
+      period: selectable[nextCol].period,
+    });
+  };
+
+  /**
+   * §31.6 — the sentence under the grid.
+   *
+   * Four groups widening outwards from the cell to its context: what the cell
+   * is, whose class, whose lesson, and what else that class studies. Nothing
+   * here costs a request — every fact is already in `/slots` or `/context`,
+   * which is what makes clicking cheap enough to do idly.
+   *
+   * A **strip and not a popover**, deliberately. A popover over a 27px cell
+   * covers the neighbours you are comparing it with, and comparing is almost
+   * always why the cell was clicked — the same argument §8.5 made for putting
+   * a master's form beside its list rather than below it.
+   */
+  const stripForCell = (sel: Extract<Selection, { kind: "cell" }>): StripGroup[] | null => {
+    const entries = grid?.get(pivotCellKey(sel.rowKey, sel.day, sel.period)) ?? [];
+    const period = data.periods.find((p) => p.periodNumber === sel.period);
+    const when = `${DAY_NAMES[sel.day]} · P${sel.period}`
+      + (period ? ` · ${period.startTime}–${period.endTime ?? ""}` : "");
+    const rowName = rows.find((r) => r.key === sel.rowKey)?.label ?? "";
+
+    if (entries.length === 0) {
+      // A free period is a fact too, and the strip is the only place with room
+      // to say whose it is.
+      return [{ label: "The cell", primary: "Free", lines: [when, rowName] }];
+    }
+
+    const events = cellEvents(entries, tab as GridPivot);
+    // Several events in one cell — a subject taught to sixteen sections at once
+    // — cannot be described as one lesson, so the strip lists them instead of
+    // choosing. This is the case the grid draws as a bare count, and the whole
+    // reason the count needs somewhere to expand.
+    if (events.length > 1) {
+      return [
+        { label: "The cell", primary: `${events.length} lessons`, lines: [when, rowName] },
+        {
+          label: "Running at once",
+          chips: events.map((e) => {
+            const [csId, , , subjectId, teacherId, roomId] = e[0];
+            const cls = sectionLabel(csId);
+            const subject = subjectId !== null ? data.subjects[String(subjectId)] : null;
+            return {
+              text: `${cls ? shortSection(cls) : (subject ?? "?")} ${teacherShort(teacherId) ?? ""}`.trim(),
+              swatch: colors.classOf(cls),
+              title: [cls, subject, teacherName(teacherId), roomId !== null ? data.rooms[String(roomId)] : null]
+                .filter(Boolean).join(" · "),
+            };
+          }),
+        },
+      ];
+    }
+
+    const event = events[0];
+    const [csId, , , subjectId, teacherId, roomId, , locked, substituted, blockId] = event[0];
+    const block = blockId !== null && blockId !== undefined ? data.blocks?.[String(blockId)] : undefined;
+    const subject = subjectId !== null && subjectId !== undefined ? data.subjects[String(subjectId)] : null;
+    const room = roomId !== null && roomId !== undefined ? data.rooms[String(roomId)] : null;
+    // Every section in the cell: a §4.10 group's members, or the one section.
+    const attending = event.map((e) => sectionLabel(e[SLOT.classSectionId])).filter(Boolean) as string[];
+    const groups: StripGroup[] = [];
+
+    groups.push({
+      label: "The cell",
+      primary: subject ?? block?.name ?? "Lesson",
+      swatch: subject ? colors.subject(subject) : null,
+      lines: [
+        when,
+        [room, locked === 1 ? "pinned" : null, substituted === 1 ? "substitute" : null]
+          .filter(Boolean).join(" · "),
+      ].filter(Boolean),
+    });
+
+    /*
+      The class. A §4.9 option row belongs to no class-section at all
+      (invariant 9), so the honest answer is the block's members — otherwise
+      the group would read "—" for a lesson forty children are sitting in.
+    */
+    const memberLabels = block && csId === null
+      ? blockSections(data.slots, blockId!).map((id) => sectionLabel(id)).filter(Boolean) as string[]
+      : attending;
+    if (memberLabels.length > 0) {
+      const first = context?.sections.find((x) => x.label === memberLabels[0]) ?? null;
+      groups.push({
+        label: memberLabels.length > 1 ? "The classes" : "The class",
+        primary: memberLabels.length > 2
+          ? `${memberLabels.length} sections`
+          : memberLabels.join(", "),
+        swatch: colors.classOf(memberLabels[0]),
+        lines: [
+          memberLabels.length > 2 ? memberLabels.join(", ") : "",
+          // §19 — the home room explains most of the cells in this row at once.
+          first?.homeRoom ? `Home room ${first.homeRoom}` : "",
+          first?.classTeacher ? `Class teacher ${first.classTeacher}` : "",
+          attending.length > 1 ? "Taught together as one lesson (§4.10)" : "",
+        ].filter(Boolean),
+      });
+    }
+
+    if (teacherId !== null && teacherId !== undefined) {
+      const cap = context?.teachers[String(teacherId)];
+      // Their week in THIS timetable, counted from the tuples on screen. The
+      // pool's other timetables are named separately rather than added in:
+      // CLAUDE.md records what a single blended figure costs — "a line round
+      // one wing reads 67% where the truth is 87%" — and they are two limits
+      // with two different fixes.
+      const mine = data.slots.filter((x) => x[SLOT.teacherId] === teacherId);
+      const here = cellEvents(mine, "teacher").length;
+      const sections = new Set(mine.map((x) => x[SLOT.classSectionId]).filter((x) => x !== null)).size;
+      groups.push({
+        label: "The teacher",
+        primary: teacherName(teacherId) ?? "—",
+        lines: [
+          `${teacherShort(teacherId)} · ${here}${cap ? ` of ${cap.cap}` : ""} periods here`,
+          `${sections} class-section${sections === 1 ? "" : "s"}`,
+          cap && cap.elsewhere > 0
+            ? `and ${cap.elsewhere} more in ${cap.elsewhereIn.join(", ")}`
+            : "",
+        ].filter(Boolean),
+      });
+    }
+
+    // §4.9 — this cell genuinely is several lessons, and the grid has room for
+    // none of them.
+    if (block) {
+      groups.push({
+        label: "Running inside it",
+        chips: block.options.map((o) => ({
+          text: `${abbr(o.subject)} ${initialsOf(o.teacher)}`,
+          swatch: colors.subject(o.subject),
+          title: `${o.subject} — ${o.teacher} (${o.room})`,
+        })),
+      });
+    }
+
+    // What else this class studies. The curriculum, so it is what they are
+    // OWED rather than what happens to be placed — stage 3 puts the two side
+    // by side, and only where they differ.
+    const classId = context?.sections.find((x) => x.label === memberLabels[0])?.classId ?? null;
+    if (classId !== null && context) {
+      const owed = context.cells
+        .filter(([c]) => c === classId)
+        .map(([, sid, n]) => ({ name: context.subjects.find((x) => x.id === sid)?.name ?? "?", periods: n }))
+        .sort((a, b) => b.periods - a.periods);
+      if (owed.length > 0) {
+        groups.push({
+          label: `${memberLabels[0].replace(/-[^-]*$/, "")} studies`,
+          chips: owed.map((o) => ({
+            text: `${abbr(o.name)} ${o.periods}`,
+            swatch: colors.subject(o.name),
+            title: `${o.name} — ${o.periods} periods a week`,
+          })),
+        });
+      }
+    }
+    return groups;
+  };
+
+  /**
+   * The Lesson grid's vocabulary, which is a different question (§31.4).
+   *
+   * A lesson-grid cell has no time in it, so there is no clock and no free
+   * period. What it has instead is **who shares the lesson** — and that list is
+   * not decoration: several sections on one lesson is a §4.9 block or a §4.10
+   * merged group, and this is the only place on the screen where that is
+   * visible.
+   */
+  const stripForLesson = (sel: Extract<Selection, { kind: "lesson" }>): StripGroup[] | null => {
+    if (!context) return null;
+    const section = context.sections.find((x) => x.id === sel.sectionId);
+    const subject = context.subjects.find((x) => x.id === sel.subjectId);
+    if (!section || !subject) return null;
+    const periods = context.cells.find(([c, sid]) => c === section.classId && sid === sel.subjectId)?.[2] ?? 0;
+
+    // Read off the placements: which cells this section's lessons of this
+    // subject sit in, and then everyone else in those cells.
+    const mine = data.slots.filter(
+      (x) => x[SLOT.subjectId] === sel.subjectId && x[SLOT.classSectionId] === sel.sectionId,
+    );
+    const cells = new Set(mine.map((x) => `${x[SLOT.day]}:${x[SLOT.period]}`));
+    const together = data.slots.filter(
+      (x) => x[SLOT.subjectId] === sel.subjectId && cells.has(`${x[SLOT.day]}:${x[SLOT.period]}`),
+    );
+    const sharing = [...new Set(together.map((x) => sectionLabel(x[SLOT.classSectionId])).filter(Boolean))] as string[];
+    const teachers = [...new Set(together.map((x) => x[SLOT.teacherId]).filter((x) => x !== null))] as number[];
+    const rooms = [...new Set(together.map((x) => x[SLOT.roomId]).filter((x) => x !== null))] as number[];
+
+    const groups: StripGroup[] = [
+      {
+        label: "The lesson",
+        primary: subject.name,
+        swatch: colors.subject(subject.name),
+        lines: [
+          `${periods} period${periods === 1 ? "" : "s"} a week`,
+          // Periods are a CLASS fact (§27), and the strip says so rather than
+          // letting a per-section grid imply otherwise.
+          `for every section of ${section.label.replace(/-[^-]*$/, "")}`,
+        ],
+      },
+      {
+        label: "The class",
+        primary: section.label,
+        swatch: colors.classOf(section.label),
+        lines: [
+          section.homeRoom ? `Home room ${section.homeRoom}` : "",
+          section.classTeacher ? `Class teacher ${section.classTeacher}` : "",
+        ].filter(Boolean),
+      },
+    ];
+
+    if (mine.length === 0) {
+      // Not "no teacher" — the curriculum says the lesson exists and nothing
+      // has been placed yet. Saying so is the difference between a gap and a
+      // timetable that has not been generated.
+      groups.push({ label: "Placed", primary: "Not yet", lines: ["Generate to see who takes it and where"] });
+      return groups;
+    }
+    groups.push({
+      label: sharing.length > 1 ? "Sharing the lesson" : "Placed",
+      primary: `${mine.length} placed`,
+      chips: sharing.map((label) => ({ text: shortSection(label), swatch: colors.classOf(label), title: label })),
+    });
+    groups.push({
+      label: teachers.length > 1 ? "Teachers" : "Teacher",
+      chips: teachers.map((t) => ({ text: teacherShort(t) ?? "?", title: teacherName(t) ?? "" })),
+    });
+    if (rooms.length > 0) {
+      groups.push({
+        label: rooms.length > 1 ? "Rooms" : "Room",
+        chips: rooms.map((r) => ({ text: data.rooms[String(r)] ?? "?", title: data.rooms[String(r)] ?? "" })),
+      });
+    }
+    return groups;
+  };
+
   // Every column the Matrix draws, so the two screens describe the same week:
   // breaks and §28.3 activity bands included, the zero period excluded.
   const columns = data.periods.filter((p) => p.periodNumber !== 0);
@@ -293,7 +639,7 @@ export function MasterGrid() {
     : tab === "teacher" ? named(data.teachers)
     : tab === "room" ? named(data.rooms)
     : tab === "subject" ? named(data.subjects)
-    : (lessons?.sections ?? []).map((s) => ({ key: s.id, label: s.label }));
+    : (context?.sections ?? []).map((s) => ({ key: s.id, label: s.label }));
   const visibleRows = q ? rows.filter((r) => r.label.toLowerCase().includes(q)) : rows;
 
   const teachingPeriodNumbers = new Set(
@@ -338,7 +684,7 @@ export function MasterGrid() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {tab === "lesson" ? (
             <span className="chip mono" title="What the school says these classes are taught — the curriculum, not where the lessons ended up">
-              curriculum · a week of {lessons?.weekCapacity ?? "—"} periods
+              curriculum · a week of {context?.weekCapacity ?? "—"} periods
             </span>
           ) : (
             <span className="chip mono">{filled} / {capacity} placed ({capacity ? Math.round((filled / capacity) * 100) : 0}%)</span>
@@ -378,9 +724,30 @@ export function MasterGrid() {
           ))}
         </div>
 
-        <div style={{ flex: "1 1 auto", minWidth: 0, overflow: "auto", maxHeight: "74vh" }}>
+        {/* The grid and the strip are one column: the strip must sit UNDER the
+            scrolling pane and beside the rail, never inside the scroll — a
+            strip that scrolled away with the rows would be explaining a cell
+            you can no longer see. */}
+        <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column" }}>
+          <div
+            ref={gridRef}
+            tabIndex={0}
+            onKeyDown={onKeyDown}
+          /* §31.6 — the strip is meant to be read ACROSS a row, and reaching
+             for the mouse 55 times to do it is not reading. `tabIndex` makes
+             the pane focusable so the arrow keys have somewhere to land; the
+             outline is suppressed because the selected CELL is the visible
+             focus, and a second ring round the whole pane would be noise. */
+          style={{ flex: "1 1 auto", minWidth: 0, overflow: "auto", maxHeight: "74vh", outline: "none" }}
+        >
           {tab === "lesson" ? (
-            <LessonGrid lessons={lessons} visibleRows={visibleRows} colors={colors} />
+            <LessonGrid
+              context={context}
+              visibleRows={visibleRows}
+              colors={colors}
+              selected={selected}
+              onSelect={(sectionId, subjectId) => setSelected({ kind: "lesson", sectionId, subjectId })}
+            />
           ) : (
             <table style={{ borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", width: "100%", minWidth, fontSize: 10 }}>
               <colgroup>
@@ -451,7 +818,18 @@ export function MasterGrid() {
                         }
                         const here = grid?.get(pivotCellKey(row.key, d, p.periodNumber)) ?? [];
                         return (
-                          <Cell key={`${d}:${i}`} events={cellEvents(here, tab)} describe={describe} />
+                          <Cell
+                            key={`${d}:${i}`}
+                            events={cellEvents(here, tab)}
+                            describe={describe}
+                            selected={
+                              selected?.kind === "cell" && selected.rowKey === row.key
+                              && selected.day === d && selected.period === p.periodNumber
+                            }
+                            onSelect={() =>
+                              setSelected({ kind: "cell", rowKey: row.key, day: d, period: p.periodNumber as number })
+                            }
+                          />
                         );
                       }),
                     )}
@@ -465,6 +843,14 @@ export function MasterGrid() {
               {q ? `Nothing matches “${search}”.` : "Nothing to show for this timetable yet."}
             </p>
           )}
+          </div>
+          <Strip
+            groups={
+              selected === null ? null
+              : selected.kind === "cell" ? stripForCell(selected)
+              : stripForLesson(selected)
+            }
+          />
         </div>
       </div>
     </div>
@@ -480,29 +866,40 @@ export function MasterGrid() {
  * reference school — is one fact, "sixteen", and picking an arbitrary one of
  * the sixteen to name would be a smaller answer that reads like the whole one.
  *
- * "Event", not "lesson": §4.10 collapsing already happened in `eventsOf`, so
+ * "Event", not "lesson": §4.10 collapsing already happened in `cellEvents`, so
  * this component never has to know that a teacher's four rows can be one
  * lesson.
  */
 function Cell({
   events,
   describe,
+  selected,
+  onSelect,
 }: {
   events: SlotTuple[][];
   describe: (event: SlotTuple[]) => CellFace;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const base: React.CSSProperties = {
     borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
     height: 22, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap",
-    fontSize: 9, fontFamily: "var(--font-mono)", padding: 0,
+    fontSize: 9, fontFamily: "var(--font-mono)", padding: 0, cursor: "pointer",
+    /* An outline rather than a border or a background: a border would move the
+       cell's neighbours by a pixel and a background would fight §10.5's colour,
+       which is the one thing in the cell carrying meaning. `outline-offset`
+       pulls it inside so it is not clipped by the cell beside it. */
+    ...(selected ? { outline: "2px solid var(--brand-deep)", outlineOffset: -2, position: "relative", zIndex: 1 } : {}),
   };
+  // An EMPTY cell is selectable too. A free period is a fact, and the strip is
+  // the only place with room to say whose it is.
   if (events.length === 0) {
-    return <td style={{ ...base, color: "var(--ink-faint)" }} />;
+    return <td onClick={onSelect} style={{ ...base, color: "var(--ink-faint)" }} />;
   }
   if (events.length === 1) {
     const face = describe(events[0]);
     return (
-      <td title={face.title} style={{
+      <td onClick={onSelect} title={face.title} style={{
         ...base,
         // §10.5 — a substitution keeps its cyan whatever colour the lesson
         // would otherwise have had. An existing meaning outranks a new one.
@@ -520,11 +917,99 @@ function Cell({
   const all = events.map((e) => describe(e));
   return (
     <td
+      onClick={onSelect}
       title={all.map((a) => a.title).join("\n")}
       style={{ ...base, background: "var(--steel-pale)", color: "var(--brand)", fontWeight: 800 }}
     >
       {events.length}
     </td>
+  );
+}
+
+/**
+ * §31.6 — the strip.
+ *
+ * One row along the bottom of the grid box that never moves and never covers
+ * the grid. Clicking a cell fills it; clicking another replaces it.
+ *
+ * **A strip and not a popover.** A popover over a 27-pixel cell covers the
+ * neighbours you are comparing it with, and comparing is almost always why the
+ * cell was clicked. A fixed strip keeps the whole grid visible while it
+ * explains one piece of it — the same argument §8.5 made for putting a
+ * master's form beside its list rather than below it.
+ *
+ * It is **always rendered**, at a fixed height, even with nothing selected.
+ * Appearing on the first click would shorten the grid under the pointer at the
+ * exact moment somebody is reading it, and the row they clicked would move.
+ */
+function Strip({ groups }: { groups: StripGroup[] | null }) {
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--line)", background: "var(--offwhite)",
+        height: 86, display: "flex", alignItems: "stretch",
+        overflowX: "auto", overflowY: "hidden", flex: "0 0 auto",
+      }}
+    >
+      {groups === null || groups.length === 0 ? (
+        <div style={{ display: "flex", alignItems: "center", padding: "0 16px", color: "var(--ink-faint)", fontSize: 12 }}>
+          Click any cell to see what it is — the class, the teacher, the room, and what else that class studies.
+          <span style={{ marginLeft: 10, fontFamily: "var(--font-mono)", fontSize: 11 }}>← ↑ ↓ →</span>
+        </div>
+      ) : (
+        groups.map((g, n) => (
+          <div
+            key={g.label + n}
+            style={{
+              padding: "9px 14px", minWidth: 0,
+              borderLeft: n === 0 ? undefined : "1px solid var(--line)",
+              // The last group — the class's whole curriculum — takes what is
+              // left and scrolls inside itself, so twenty subjects cannot push
+              // the teacher's name off the strip.
+              flex: n === groups.length - 1 ? "1 1 auto" : "0 0 auto",
+              display: "flex", flexDirection: "column", gap: 3,
+            }}
+          >
+            <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", fontWeight: 800 }}>
+              {g.label}
+            </div>
+            {g.primary && (
+              <div style={{
+                fontWeight: 800, fontSize: 13.5, whiteSpace: "nowrap",
+                color: g.swatch?.fg ?? "var(--brand-deep)",
+                background: g.swatch?.bg, borderRadius: 5,
+                padding: g.swatch ? "1px 7px" : undefined, alignSelf: "flex-start",
+              }}>
+                {g.primary}
+              </div>
+            )}
+            {(g.lines ?? []).map((line, k) => (
+              <div key={k} style={{ fontSize: 11, color: "var(--ink-soft, #4F5D70)", whiteSpace: "nowrap" }}>
+                {line}
+              </div>
+            ))}
+            {g.chips && (
+              <div style={{ display: "flex", gap: 4, flexWrap: "nowrap", overflowX: "auto", paddingBottom: 2 }}>
+                {g.chips.map((c, k) => (
+                  <span
+                    key={k}
+                    title={c.title}
+                    style={{
+                      fontSize: 10, fontFamily: "var(--font-mono)", fontWeight: 700,
+                      padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap",
+                      background: c.swatch?.bg ?? "var(--steel-pale)",
+                      color: c.swatch?.fg ?? "var(--brand)",
+                    }}
+                  >
+                    {c.text}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
@@ -543,25 +1028,29 @@ function Cell({
  * class for exactly that reason.
  */
 function LessonGrid({
-  lessons,
+  context,
   visibleRows,
   colors,
+  selected,
+  onSelect,
 }: {
-  lessons: LessonsPayload | null;
+  context: ContextPayload | null;
   visibleRows: Array<{ key: number; label: string }>;
   colors: ReturnType<typeof useColors>;
+  selected: Selection | null;
+  onSelect: (sectionId: number, subjectId: number) => void;
 }) {
   const byClass = useMemo(() => {
     const m = new Map<string, number>();
-    for (const [classId, subjectId, periods] of lessons?.cells ?? []) {
+    for (const [classId, subjectId, periods] of context?.cells ?? []) {
       m.set(`${classId}:${subjectId}`, periods);
     }
     return m;
-  }, [lessons]);
+  }, [context]);
 
-  if (!lessons) return <p className="screen-sub" style={{ padding: 20 }}>Loading the curriculum…</p>;
-  const classOfSection = new Map(lessons.sections.map((s) => [s.id, s.classId]));
-  const subjects = lessons.subjects;
+  if (!context) return <p className="screen-sub" style={{ padding: 20 }}>Loading the curriculum…</p>;
+  const classOfSection = new Map(context.sections.map((s) => [s.id, s.classId]));
+  const subjects = context.subjects;
   const HEADER_PCT = 14;
   const TOTAL_PCT = 7;
   const colPct = subjects.length ? (100 - HEADER_PCT - TOTAL_PCT) / subjects.length : 1;
@@ -607,7 +1096,7 @@ function LessonGrid({
           // a score — Readiness owns that verdict (§4); this only says out loud
           // that the arithmetic on this row does not fit, at the moment
           // somebody is looking at the row.
-          const over = lessons.weekCapacity > 0 && total > lessons.weekCapacity;
+          const over = context.weekCapacity > 0 && total > context.weekCapacity;
           return (
             <tr key={row.key}>
               <th title={row.label} style={rowTh}>{row.label}</th>
@@ -615,11 +1104,18 @@ function LessonGrid({
                 const n = cells[i];
                 const sw = n > 0 ? colors.subject(s.name) : null;
                 return (
-                  <td key={s.id} title={n > 0 ? `${row.label} · ${s.name} · ${n} periods a week` : `${row.label} does not take ${s.name}`} style={{
+                  <td
+                    key={s.id}
+                    onClick={() => onSelect(row.key, s.id)}
+                    title={n > 0 ? `${row.label} · ${s.name} · ${n} periods a week` : `${row.label} does not take ${s.name}`}
+                    style={{
                     borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
                     height: 22, textAlign: "center", fontSize: 9.5, fontFamily: "var(--font-mono)",
-                    fontWeight: n > 0 ? 700 : 400, padding: 0,
+                    fontWeight: n > 0 ? 700 : 400, padding: 0, cursor: "pointer",
                     background: sw?.bg ?? "var(--paper)", color: sw?.fg ?? "var(--ink-faint)",
+                    ...(selected?.kind === "lesson" && selected.sectionId === row.key && selected.subjectId === s.id
+                      ? { outline: "2px solid var(--brand-deep)", outlineOffset: -2, position: "relative", zIndex: 1 }
+                      : {}),
                   }}>
                     {/* A blank, not a zero. Zero periods and "this class does
                         not take this subject" are the same fact here (§27.15
@@ -629,7 +1125,7 @@ function LessonGrid({
                   </td>
                 );
               })}
-              <td title={`${total} of ${lessons.weekCapacity} periods a week`} style={{
+              <td title={`${total} of ${context.weekCapacity} periods a week`} style={{
                 borderBottom: "1px solid var(--line)", height: 22, textAlign: "center",
                 fontSize: 9.5, fontFamily: "var(--font-mono)", fontWeight: 800, padding: 0,
                 background: over ? "var(--signal-bg, #FBE9E7)" : "var(--offwhite)",
