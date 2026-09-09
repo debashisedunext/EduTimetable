@@ -2596,3 +2596,29 @@ the floor, so it could have moved). Regression, all unchanged: isolation, freeze
 guided setup, report cache, auto-fix, clone, drafts, electives, year scope, delete, room assignment,
 teacher scope, import, ERP sync, onboarding, AI data-entry, shared **505**, api **216**, lint,
 web build.
+
+## Phase 43 stage 5 — moving a timetable between pools (§30.6a)
+
+**Landed. §30 is now complete — all six stages.**
+
+- `GET …/resource-group/preview` + `POST …/resource-group`. The plan is recomputed at apply, never
+  taken from the request (§21); count and write declared in one object (§3.13).
+- Grouped → individual is always safe (a new pool has nothing to collide with) and *loosens*, so it
+  is stated plainly. Individual → grouped refuses **by name** when the destination already holds the
+  same class-section.
+- One transaction over both pool columns — a half-applied move is exactly the drift `test:groups`
+  guards against.
+- An emptied **individual** pool is deleted, but only when it holds neither a timetable nor an
+  unattached cohort row. A grouped pool is the session's and is never removed.
+- `loadChanges` reports exact before/after weekly totals per affected teacher rather than a
+  predicted score — those are the numbers Check 2 uses, so they are checkable.
+- **Not freeze-guarded** (decision 4), but written to `audit_logs` and Readiness dropped
+  immediately, so the accepted risk stays answerable.
+
+Verified: `pnpm test:groups` — **69 assertions**, thirteen new, including the collision built
+deliberately (a timetable moves out, someone re-creates those classes in the shared pool, and now it
+cannot move back) after my first fixture failed to create one at all. Isolation gate: **210 routes
+classified**, both new routes swept as controlled experiments (`A 201/200 · B 404`). Regression, all
+unchanged: freeze, staffing, grids, guided setup, import, clone, drafts, electives, report cache,
+year scope, delete, room assignment, teacher scope, auto-fix, ERP sync, onboarding, AI data-entry,
+shared 505, api 216, lint, typecheck.

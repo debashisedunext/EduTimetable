@@ -2433,6 +2433,21 @@ Per §5.3 of the plan, the top-bar selector is the scope: `GET /class-sections?t
 
 The **Classes master deliberately does not filter.** It is where cohort rows are *managed*, including ones attached to no timetable at all, and filtering would make those unreachable from the one screen that exists to reach them. It can afford to show every pool because it already distinguishes them — its table has a Timetable column, which is the qualifier decision §30 asks for wherever several are legitimately in view.
 
+### 30.6a Moving a timetable between pools
+
+`GET /timetable-configs/:id/resource-group/preview` and `POST /timetable-configs/:id/resource-group`.
+
+**The plan is recomputed at apply, never taken from the request** (§21's rule: a preview is not the list of writes) — the request names a *destination*, never a set of rows. The plan is the §3.13 shape: **the count and the write are declared in one object**, so a confirmation cannot under-report what it is about to do.
+
+- **Grouped → individual is always safe.** A brand-new pool has nothing to collide with. It *loosens* — fewer timetables competing for the same cohorts and staff — so it is never automatic and the screen says so.
+- **Individual → grouped can refuse**, and refuses **by name**: the destination may already hold Class 1-B, which within one pool would be two rows for the same children. The refusal says which row and what to do about it.
+- The move is **one transaction** over both columns — the config's pool and every one of its cohort rows' — because they are the same fact stored twice and a half-applied move is precisely the drift `pnpm test:groups` exists to catch.
+- **An emptied individual pool is removed**, but only when it holds neither a timetable nor an unattached cohort row: it was named after a timetable that is no longer in it, and nothing can make that name true again. A *grouped* pool is the session's own and is never removed here.
+
+Instead of predicting a Readiness score, the plan reports `loadChanges`: the teachers whose weekly total is summed against a different set of timetables after the move, with exact before/after numbers and their cap. Those are the numbers **Check 2 itself uses**, so they are checkable — a predicted score would mean simulating the whole engine against a pool that does not exist yet, and could be wrong in either direction.
+
+**Deliberately not freeze-guarded** (§30 decision 4): a pool change alters what is *validated* and never what is placed, which is the argument §4.7 availability is exempt on. That was accepted knowing it might bite, so the deferral is kept answerable — the move is written to `audit_logs` and Readiness is dropped immediately, so a blocker it creates appears now rather than at the next Generate, weeks later, with nobody remembering what changed.
+
 ### 30.7 Clashes between live timetables
 
 §30.5 makes the case that matters impossible — a class cannot be in two live timetables at once. What is left is two timetables over *different* classes that share a teacher or a room: Primary and Senior, all year, both with Mrs Rao. That is a real-world collision the app has never reported, and it exists in schools' data today with nothing to do with individual timetables.

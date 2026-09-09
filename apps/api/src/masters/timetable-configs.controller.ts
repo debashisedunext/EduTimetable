@@ -3,7 +3,7 @@ import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
-import { ResourceGroupService } from "../groups/resource-group.service";
+import { ResourceGroupService, type MoveTarget } from "../groups/resource-group.service";
 import { ValidityService, type Window } from "../validity/validity.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { CloneService } from "./clone.service";
@@ -33,6 +33,24 @@ function readWindow(body: any): Window {
     return d;
   };
   return { from: one(body.effectiveFrom, "effectiveFrom"), to: one(body.effectiveTo, "effectiveTo") };
+}
+
+
+/**
+ * §30 — the destination off a request, in one place so the GET and the POST
+ * cannot read it differently.
+ *
+ * Anything that is not the word "individual" is grouped, which is the safe
+ * reading: a typo lands a timetable in the session's shared pool, where it
+ * would have been anyway, rather than silently minting a pool of one.
+ */
+function readTarget(mode: unknown, groupId: unknown): MoveTarget {
+  if (mode === "individual") return { mode: "individual" };
+  const id = groupId === undefined || groupId === null || groupId === "" ? undefined : Number(groupId);
+  if (id !== undefined && (!Number.isInteger(id) || id <= 0)) {
+    throw new BadRequestException("resourceGroupId must be a timetable group id");
+  }
+  return { mode: "grouped", resourceGroupId: id };
 }
 
 @Controller("timetable-configs")
@@ -595,6 +613,44 @@ export class TimetableConfigsController {
       });
     }
     return out;
+  }
+
+
+  /**
+   * §30 stage 5 — what moving this timetable to another resource pool would do.
+   *
+   * A GET, because it is a question. The same plan is recomputed at apply, so
+   * this can never be the list of writes (§21) — it is what the confirmation
+   * shows, and nothing more.
+   */
+  @Get(":id/resource-group/preview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async previewMove(
+    @Param("id") id: string,
+    @Query("mode") mode?: string,
+    @Query("resourceGroupId") groupId?: string,
+  ) {
+    return this.groups.planMove(toInt(id, "id"), readTarget(mode, groupId));
+  }
+
+  /**
+   * Move it.
+   *
+   * Deliberately NOT freeze-guarded (§30 decision 4): a pool change alters what
+   * is *validated* and never what is placed — no slot moves — which is the same
+   * argument §4.7 availability is exempt on. It is recorded and Readiness is
+   * dropped immediately, so a blocker it creates shows up now rather than at
+   * the next Generate with nobody remembering what changed.
+   */
+  @Post(":id/resource-group")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async move(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const configId = toInt(id, "id");
+    const done = await this.groups.applyMove(
+      configId, req.user.sub, readTarget(body?.mode, body?.resourceGroupId),
+    );
+    await this.readiness.invalidate(req.user.schoolId);
+    return done;
   }
 
   /**
