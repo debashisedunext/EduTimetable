@@ -43,6 +43,32 @@ export const CLASS_LADDER = [
 ] as const;
 
 /** Short labels for the slider's tick marks, where "Pre-Nursery" will not fit. */
+/**
+ * Where a class sits on the ladder — 1 for Pre-Nursery, 16 for Class 12, and
+ * **0** for a name the ladder does not know.
+ *
+ * This is the one definition of what `classes.sequence` means, and it had to
+ * become one: the guided setup wrote the ladder position while `POST /classes`
+ * and the §16 importer defaulted to `0` and `scripts/school2-model.cjs`
+ * hand-numbered a school with no LKG or UKG from 1 to 14. Two vocabularies for
+ * one column, and they met — adding LKG to that school gave it sequence 3,
+ * which Class 1 already held, and MySQL then ordered the tie arbitrarily. The
+ * Master Grid drew LKG-A, Class 1-A, Class 1-B, LKG-B, Class 1-C, LKG-C.
+ *
+ * It is not only an ordering. `bandOf` and `subjectSuitsClass` in `suggest.ts`
+ * compare this number against ABSOLUTE ladder positions to decide which
+ * subjects a class is offered — so a school numbered 1..14 with no LKG had
+ * Class 9 reading as "upper" rather than "senior" long before anything looked
+ * out of order on a screen. A renumbering that only closed the gaps would have
+ * left that wrong, which is why 0 is the answer for an off-ladder name rather
+ * than "the next number": we know where Class 7 belongs and we do not know
+ * where Playgroup belongs, and pretending otherwise is how the two vocabularies
+ * started.
+ */
+export function ladderSequence(className: string): number {
+  return (CLASS_LADDER as readonly string[]).indexOf(className.trim()) + 1;
+}
+
 export const CLASS_LADDER_SHORT = [
   "Pre-Nur", "Nur", "LKG", "UKG",
   "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
@@ -187,8 +213,9 @@ export function planClasses(wings: WingAnswer[]): {
       const count = Math.max(1, Math.min(60, over?.sections ?? wing.sections ?? 1));
       classes.push({
         className,
-        // 1-based ladder position. The gap-free ordering is what matters, not
-        // the absolute number.
+        // The 1-based ladder position, and the ABSOLUTE number matters — see
+        // `ladderSequence`, which is now the one definition of it. `i` is the
+        // ladder index here, so this is that function inlined by construction.
         sequence: i + 1,
         wing: wing.name,
         sections: sectionLetters(count),

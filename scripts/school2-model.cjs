@@ -44,20 +44,26 @@ const BAND_CLASSES = {
 };
 
 const CLASSES = [
+// `sequence` is the CLASS_LADDER position, not a running count — the gaps at 3
+// and 4 are LKG and UKG, which this school does not run, and they are correct.
+// `bandOf` and `subjectSuitsClass` compare this number against absolute ladder
+// positions, so numbering 1..14 here made Class 9 read as "upper" rather than
+// "senior"; and adding an LKG later handed it sequence 3, which Class 1 already
+// held, which is what put the Master Grid's rows out of order.
   { name: "Pre-Nursery", sequence: 1, band: "primary", curriculum: "early" },
   { name: "Nursery", sequence: 2, band: "primary", curriculum: "early" },
-  { name: "Class 1", sequence: 3, band: "primary", curriculum: "junior" },
-  { name: "Class 2", sequence: 4, band: "primary", curriculum: "junior" },
-  { name: "Class 3", sequence: 5, band: "primary", curriculum: "junior" },
-  { name: "Class 4", sequence: 6, band: "middle", curriculum: "junior" },
-  { name: "Class 5", sequence: 7, band: "middle", curriculum: "senior-primary" },
-  { name: "Class 6", sequence: 8, band: "middle", curriculum: "senior-primary" },
-  { name: "Class 7", sequence: 9, band: "middle", curriculum: "senior-primary" },
-  { name: "Class 8", sequence: 10, band: "middle", curriculum: "senior-primary" },
-  { name: "Class 9", sequence: 11, band: "senior", curriculum: "secondary" },
-  { name: "Class 10", sequence: 12, band: "senior", curriculum: "secondary" },
-  { name: "Class 11", sequence: 13, band: "senior", curriculum: "higher" },
-  { name: "Class 12", sequence: 14, band: "senior", curriculum: "higher" },
+  { name: "Class 1", sequence: 5, band: "primary", curriculum: "junior" },
+  { name: "Class 2", sequence: 6, band: "primary", curriculum: "junior" },
+  { name: "Class 3", sequence: 7, band: "primary", curriculum: "junior" },
+  { name: "Class 4", sequence: 8, band: "middle", curriculum: "junior" },
+  { name: "Class 5", sequence: 9, band: "middle", curriculum: "senior-primary" },
+  { name: "Class 6", sequence: 10, band: "middle", curriculum: "senior-primary" },
+  { name: "Class 7", sequence: 11, band: "middle", curriculum: "senior-primary" },
+  { name: "Class 8", sequence: 12, band: "middle", curriculum: "senior-primary" },
+  { name: "Class 9", sequence: 13, band: "senior", curriculum: "secondary" },
+  { name: "Class 10", sequence: 14, band: "senior", curriculum: "secondary" },
+  { name: "Class 11", sequence: 15, band: "senior", curriculum: "higher" },
+  { name: "Class 12", sequence: 16, band: "senior", curriculum: "higher" },
 ];
 
 /**

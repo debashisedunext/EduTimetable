@@ -2664,6 +2664,20 @@ A cell is selectable **only where there is a strip to answer in**, so `/board` i
 
 Two things the tabs must not become a way round. **Permissions**: `/board` needs `timetable.edit` and `/allocation` needs `masters.manage`, and the left nav hides each accordingly — so the Master Grid takes both as props and drops the tab it may not offer. The server refuses either way; the cost of not asking would be a tab that answers 403 rather than one that is not there. **Freshness**: the four pivots are drawn from the host's own copy of `/slots`, so the host now listens for `slots:changed` on the school's socket room exactly as the board always has. Without it, dragging a lesson and switching to Whole shows it where it used to be.
 
+### 31.12 `classes.sequence` is the ladder position, and had two vocabularies
+
+The Whole tab drew LKG-A, Class 1-A, Class 1-B, LKG-B, Class 1-C, LKG-C — the school's rows out of school order. The screen was innocent: every list of class-sections in the app is `orderBy: [{class: {sequence}}, {section: {name}}]`, and two classes held sequence 3, so MySQL resolved the tie however it liked and the section names then interleaved.
+
+The collision came from **one column with two vocabularies**. `planClasses` (the guided setup) writes the `CLASS_LADDER` position; `POST /classes`, the §16 importer and the §23 ERP sync all defaulted to **`0`**; and `scripts/school2-model.cjs` hand-numbered a 14-class school with no LKG or UKG from 1 to 14. They met when an LKG was added to that school through the guided setup: it got position 3, which Class 1 already held.
+
+`0` is the worst available default, and not merely a lazy one — it is not "at the end", it is **first**, tied with every other class created the same way. A school adding five classes on the master screen gets five rows above the whole school in an order nothing defines.
+
+**It was never only an ordering.** `bandOf` and `subjectSuitsClass` in `suggest.ts` compare this number against *absolute* ladder positions to decide which subjects a class is offered, so the school numbered 1..14 had Class 9 reading as "upper" rather than "senior" long before anything looked wrong on a screen. That is why the fix is the ladder position rather than a gap-closing renumber, and why `ladderSequence` returns **0** for a name the ladder does not know instead of "the next number": we know where Class 7 belongs and we do not know where Playgroup belongs, and guessing is how the two vocabularies started.
+
+One definition (`ladderSequence`, in `wizard.ts`, which `suggest.ts`'s `AT` now is) and one resolver for a create (`classSequence`, in the API, used by all three doors): an explicit sequence always wins, a ladder name gets its position, and an off-ladder name goes **after** the ladder — last, visibly, where a human can move it.
+
+The repair migration renumbers only schools whose **every** class name is on the ladder. A school with a Playgroup or a Grade 5R is left completely alone: reordering somebody's own vocabulary on a guess is worse than the tie being fixed, and `classSequence` stops those schools acquiring a collision from here on. For every school it does touch, the relative order either stays exactly as it was — the classes were already in ladder order, differently numbered — or was undefined. No school that was reading correctly changes.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.

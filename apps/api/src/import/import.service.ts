@@ -53,6 +53,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService } from "../groups/resource-group.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
+import { classSequence } from "../masters/class-sequence";
 import { annotateWorkbook, buildWorkbook, parseWorkbook } from "./workbook";
 
 export interface DryRunResult {
@@ -579,8 +580,18 @@ export class ImportService {
         const years = new Map((await tx.academicYear.findMany({ where: { schoolId } })).map((y) => [lc(y.name), y.id]));
 
         // ---- 2. classes ----
+        // The first free number past the ladder, for a class name the ladder
+        // does not know. Counted up as rows are created so two off-ladder
+        // classes in one sheet do not both land on it.
+        let nextOffLadder = (await tx.schoolClass.aggregate({
+          where: { schoolId }, _max: { sequence: true },
+        }))._max.sequence ?? 0;
         for (const r of at("Classes").filter(isNew)) {
-          await tx.schoolClass.create({ data: { schoolId, name: r.data.name, sequence: r.data.sequence ?? 0 } });
+          // Never 0 — see `classSequence`. A blank Sequence column used to put
+          // the row above the whole school rather than at the end of it.
+          const sequence = classSequence(r.data.name, r.data.sequence, nextOffLadder + 1);
+          nextOffLadder = Math.max(nextOffLadder, sequence);
+          await tx.schoolClass.create({ data: { schoolId, name: r.data.name, sequence } });
           bump("classes");
         }
         const classes = new Map((await tx.schoolClass.findMany({ where: { schoolId } })).map((c) => [lc(c.name), c.id]));

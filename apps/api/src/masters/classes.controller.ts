@@ -6,6 +6,7 @@ import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService } from "../groups/resource-group.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertCanOwnClass } from "./teacher-scope.util";
+import { classSequence } from "./class-sequence";
 import { FreezeService } from "../freeze/freeze.service";
 
 @Controller("classes")
@@ -29,13 +30,25 @@ export class ClassesController {
   @Post()
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["name"]);
+    // Where an off-ladder name would go: after everything this school already
+    // has. Read before the create, since the create is what changes it.
+    const highest = await this.prisma.schoolClass.aggregate({
+      where: { schoolId: req.user.schoolId },
+      _max: { sequence: true },
+    });
     const created = await uniq(
       () =>
         this.prisma.schoolClass.create({
           data: {
             schoolId: req.user.schoolId,
             name: String(body.name),
-            sequence: body.sequence != null ? toInt(body.sequence, "sequence") : 0,
+            // Never 0 — see `classSequence`. A class with no sequence used to
+            // sort ABOVE the whole school, tied with every other one.
+            sequence: classSequence(
+              body.name,
+              body.sequence != null ? toInt(body.sequence, "sequence") : null,
+              (highest._max.sequence ?? 0) + 1,
+            ),
           },
         }),
       `Class '${body.name}'`,

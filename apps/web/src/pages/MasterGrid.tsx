@@ -1081,10 +1081,17 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
   const minWidth = 120 + teachingCols * 24 + breakCols * 9 + actCols * 18;
 
   const q = search.trim().toLowerCase();
+  /*
+    Teachers, rooms and subjects, in name order — and `numeric` is doing real
+    work: without it "Room 12" sorts before "Room 2", and a school whose rooms
+    are numbered reads as unsorted for exactly the same reason the class rows
+    did. The class-section rows do NOT come through here; their order is
+    `classes.sequence`, resolved by the server (see `ladderSequence`).
+  */
   const named = (m: Record<string, string>) =>
     Object.entries(m)
       .map(([id, label]) => ({ key: Number(id), label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }));
   /**
    * The rows for this tab.
    *

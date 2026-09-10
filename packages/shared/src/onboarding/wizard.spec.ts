@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLASS_LADDER,
   CLASS_LADDER_SHORT,
+  ladderSequence,
   classSheets,
   planClasses,
   planSummary,
@@ -26,6 +27,33 @@ const wing = (name: string, fromIndex: number, toIndex: number, sections = 2, ov
 describe("§15.3 the class ladder", () => {
   it("has a short label for every rung — the slider cannot show 'Pre-Nursery'", () => {
     expect(CLASS_LADDER_SHORT).toHaveLength(CLASS_LADDER.length);
+  });
+
+  it("gives every ladder name its 1-based position, and an unknown name 0", () => {
+    expect(ladderSequence("Pre-Nursery")).toBe(1);
+    expect(ladderSequence("LKG")).toBe(3);
+    expect(ladderSequence("Class 1")).toBe(5);
+    expect(ladderSequence("Class 12")).toBe(CLASS_LADDER.length);
+    // Every ladder name round-trips — this is what `classes.sequence` holds.
+    for (const [i, name] of CLASS_LADDER.entries()) {
+      expect(ladderSequence(name), name).toBe(i + 1);
+    }
+    // 0, not "the next number": we know where Class 7 belongs and we do not
+    // know where Playgroup belongs. Guessing is how two vocabularies for one
+    // column started, and how LKG ended up sharing sequence 3 with Class 1.
+    expect(ladderSequence("Playgroup")).toBe(0);
+    expect(ladderSequence("Grade 5R")).toBe(0);
+    // Whitespace is not a different class.
+    expect(ladderSequence("  Class 9  ")).toBe(ladderSequence("Class 9"));
+  });
+
+  it("is what `planClasses` writes, so the two cannot drift", () => {
+    const { classes } = planClasses([
+      { name: "Junior", fromIndex: 0, toIndex: 5, sections: 1 },
+    ]);
+    for (const c of classes) {
+      expect(c.sequence, c.className).toBe(ladderSequence(c.className));
+    }
   });
 
   it("is in school order, which is what makes `sequence` meaningful", () => {

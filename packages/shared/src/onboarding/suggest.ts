@@ -12,7 +12,7 @@
  */
 import { LUNCH_LABEL } from "../import/contract";
 import type { RawSheet } from "../import/types";
-import { CLASS_LADDER, planClasses, type WingAnswer } from "./wizard";
+import { CLASS_LADDER, ladderSequence, planClasses, type WingAnswer } from "./wizard";
 
 // ────────────────────────────────────────────────────────────── subjects
 
@@ -290,7 +290,9 @@ const CO_SCHOLASTIC = (priority: number): SubjectDefaults =>
  *    range, so it is offered everywhere, which is the right failure: a missing
  *    proposal is corrected in one click, a wrong one only if somebody notices.
  */
-const AT = (className: string): number => CLASS_LADDER.indexOf(className as never) + 1;
+/** The ladder position, which is what `classes.sequence` holds — one
+ *  definition, in `wizard.ts`, since three writers now depend on it. */
+const AT = ladderSequence;
 /** Class 1 — where formal subject teaching starts, above the pre-primary four. */
 const PRIMARY = AT("Class 1");
 /** Class 5 — the usual entry point for a third language. */
