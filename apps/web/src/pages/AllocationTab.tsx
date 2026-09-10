@@ -41,6 +41,7 @@ export function AllocationTab({
   error,
   wing,
   onSelectCell,
+  toolbarHost,
 }: {
   /** The guided setup's draft. `any` to match `StepAllocation`'s own signature —
    *  a narrower type here would only be cast away at the call below. */
@@ -51,6 +52,8 @@ export function AllocationTab({
   /** The timetable the top bar has selected — this grid must not offer a second choice. */
   wing: string | null;
   onSelectCell: (facts: AllocationCellFacts | null) => void;
+  /** §31.10 — the host's toolbar, so this tab does not draw a second one. */
+  toolbarHost: HTMLElement | null;
 }) {
   const frame: React.CSSProperties = {
     height: "74vh",
@@ -124,6 +127,7 @@ export function AllocationTab({
         density="compact"
         wing={wing}
         onSelectCell={onSelectCell}
+        toolbarHost={toolbarHost}
       />
     </div>
   );

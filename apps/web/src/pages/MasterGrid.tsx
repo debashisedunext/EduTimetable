@@ -341,6 +341,15 @@ export function MasterGrid() {
   const [allocError, setAllocError] = useState<string | null>(null);
   const [edits, setEdits] = useState(0);
   const [saving, setSaving] = useState(false);
+  /**
+   * §31.10 — where the Allocation grid's own controls are drawn.
+   *
+   * State rather than a ref: the grid portals into this node, and a portal
+   * needs a render to happen once the node exists. A ref would be populated
+   * after the render that could have used it, so the controls would appear one
+   * interaction late.
+   */
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   /** Which draft keys are owed to the server. A ref, so a fast second edit in
    *  the same tick does not send yesterday's set — the wizard's own reasoning. */
@@ -1009,11 +1018,26 @@ export function MasterGrid() {
             <option value="draft">Draft</option>
             <option value="published">Published</option>
           </select>
-          <input placeholder={`Filter ${TABS.find((t) => t.key === tab)!.label.toLowerCase()}…`} value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ padding: "8px 12px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12.5, width: 200 }} />
-          {q && (
-            <span className="chip mono">{visibleRows.length} of {rows.length}</span>
+          {/*
+            §31.10 — this filter narrows `visibleRows`, which the Lesson Grid
+            tab does not use: that tab renders the Allocation grid's own rows
+            and has its own filter. Leaving it on screen there was a box that
+            did nothing, so it is hidden and the grid's own is hoisted up beside
+            these controls instead.
+          */}
+          {tab !== "lesson" && (
+            <>
+              <input placeholder={`Filter ${TABS.find((t) => t.key === tab)!.label.toLowerCase()}…`} value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ padding: "8px 12px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12.5, width: 200 }} />
+              {q && (
+                <span className="chip mono">{visibleRows.length} of {rows.length}</span>
+              )}
+            </>
+          )}
+          {/* The Allocation grid's controls land here — see `toolbarHost`. */}
+          {tab === "lesson" && (
+            <div ref={setToolbarSlot} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} />
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1106,6 +1130,7 @@ export function MasterGrid() {
               error={allocError}
               wing={current?.name ?? null}
               onSelectCell={(facts) => setSelected(facts ? { kind: "lesson", facts } : null)}
+              toolbarHost={toolbarSlot}
             />
           ) : (
           <div

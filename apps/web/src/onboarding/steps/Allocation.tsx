@@ -25,6 +25,7 @@
  *     rest is apparatus, and apparatus earns its space by being asked for.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   assignInitials, assignSwatches, computeLoads, coverageGaps, defaultsFor, planClasses, relieveLoad,
   subjectAppliesTo, suggestCurriculum, suggestMappings, weeklyCapacity, withCurriculumPeriods,
@@ -358,7 +359,7 @@ export interface AllocationCellFacts {
 }
 
 export function StepAllocation({
-  answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell,
+  answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell, toolbarHost,
 }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -403,6 +404,21 @@ export function StepAllocation({
    * it hands over what it knows.
    */
   onSelectCell?: (facts: AllocationCellFacts | null) => void;
+  /**
+   * §31.10 — where this step's controls should be drawn.
+   *
+   * The Master Grid already has a toolbar; this step drawing a second one
+   * underneath it gave the Lesson Grid tab two rows of chrome, one above the
+   * box and one inside it. Given a node, the control row is PORTALLED there
+   * instead.
+   *
+   * A portal rather than lifting the state out: `query`, `hoverDetail`,
+   * `showHelp` and the two destructive actions all belong to this component and
+   * read its model. Moving six pieces of state into the host to move six
+   * buttons would be the tail wagging the dog, and `/allocation` — which has no
+   * toolbar to lend — would still need them back here.
+   */
+  toolbarHost?: HTMLElement | null;
 }) {
   const [activeWing, setActiveWing] = useState(0);
   const [query, setQuery] = useState("");
@@ -535,6 +551,18 @@ export function StepAllocation({
     scrollbar appears at precisely the point the cells would stop being legible.
   */
   const tightMinWidth = Math.ceil((MIN_COL_PX * 100) / colPct);
+
+  /**
+   * The load rail's bar and gap, sized so every teacher fits inside its 340px.
+   *
+   * A gap is only worth having while the bars are wide enough to be told apart
+   * without it; past that it is 74% of the space each teacher gets. Below the
+   * `minWidth` floor a flex child stops shrinking and the container overflows,
+   * which is exactly what it used to do.
+   */
+  const RAIL_MAX = 340;
+  const railGap = m.loads.length * 4 <= RAIL_MAX ? 2 : 0;
+  const railBar = m.loads.length <= 110 ? 2 : 1;
 
   /** Every section of the active wing, in grid order. */
   const sections = useMemo(
@@ -804,6 +832,103 @@ export function StepAllocation({
    * "rendered fewer hooks than expected". The path is not exotic; it is what
    * every new school does.
    */
+  /**
+   * §31.10 — this step's own controls, drawn here or lent to a host.
+   *
+   * ONE definition, with the portal deciding only where it lands. Two copies —
+   * one inline, one for the host — is how a control ends up on one and not the
+   * other, six months after anybody remembers there were two.
+   */
+  const controls = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
+      {m.wings.length > 1 && !wing && (
+        <div style={{ display: "flex", gap: 4 }}>
+          {m.wings.map((w, i) => (
+            <button key={w.name} onClick={() => setActiveWing(i)} className="btn"
+              style={{
+                padding: "4px 10px", fontSize: 11.5,
+                background: i === activeWing ? "var(--brand)" : "var(--paper)",
+                color: i === activeWing ? "#fff" : "var(--ink)",
+                borderColor: i === activeWing ? "var(--brand)" : "var(--line)",
+              }}>{w.name}</button>
+          ))}
+        </div>
+      )}
+      {/* The spacer pushes the controls right across a row of their own. Inside
+          a host's toolbar there is no row to push across, and it would shove
+          everything to the far edge. */}
+      {!toolbarHost && <span style={{ flex: 1 }} />}
+      <input value={query} onChange={(e) => setQuery(e.target.value)}
+        placeholder="Filter teacher, subject, class" aria-label="Filter the grid"
+        style={{
+          padding: "5px 9px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12,
+          background: "var(--paper)", color: "var(--ink)", width: 180,
+        }} />
+      {(m.edited.mappings || m.edited.curriculum) && (
+        <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
+          title="Throw away the edits on this page and propose it again from the subjects, teachers and classes"
+          onClick={() => {
+            if (!window.confirm(
+              "Start this page again from the suggestion?\n\n" +
+              "The periods and teachers on this page are re-proposed from your subjects, " +
+              "teachers and classes. Nothing on any other step changes.",
+            )) return;
+            // `null`, not `undefined`. The wizard sends only the keys it
+            // touched, and `JSON.stringify` drops an undefined one — so the
+            // server would merge nothing and the stored plan would survive a
+            // reset that appeared to work. The server reads a non-array as
+            // "not edited" and re-proposes.
+            onChange({ curriculum: null, mappings: null, classTeachers: null });
+          }}>↺ Start again</button>
+      )}
+      {/*
+        Two controls, and the difference between them is the whole point.
+
+        "Start again" rebuilds this page from your subjects, teachers and
+        classes and touches nothing that has been saved. "Clear saved data"
+        deletes the curriculum and the mappings out of the school. One is a
+        rethink, the other is a demolition, and a single button meaning both
+        would be the last thing anybody read before losing an afternoon.
+      */}
+      {m.wing && configIds[m.wing.name.toLowerCase()] !== undefined && (
+        <button className="btn" style={{
+          padding: "4px 9px", fontSize: 11.5,
+          borderColor: "color-mix(in srgb,var(--signal) 40%,var(--line))", color: "var(--signal)",
+        }}
+          title="Delete the curriculum, the mappings and the class teachers this timetable has saved"
+          onClick={() => setResetting(true)}>⌫ Clear saved data</button>
+      )}
+      {/*
+        `aria-pressed` rather than `role="checkbox"`: it is a toolbar toggle,
+        and the tick is the visible half of the same fact.
+      */}
+      <button className="btn" aria-pressed={hoverDetail}
+        style={{
+          padding: "4px 9px", fontSize: 11.5,
+          color: hoverDetail ? "var(--ink)" : "var(--ink-faint)",
+        }}
+        title={hoverDetail
+          ? "Stop showing the detail card when the pointer rests on a cell. Clicking a cell still opens it."
+          : "Show the detail card again when the pointer rests on a cell"}
+        onClick={() => {
+          setHoverDetail(!hoverDetail);
+          // The card on screen belongs to the setting that is being turned
+          // off — leaving it up until the next mouse move reads as the switch
+          // not having worked.
+          setHover(null);
+        }}>
+        {hoverDetail ? "☑" : "☐"} Hover detail
+      </button>
+      <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
+        aria-expanded={showHelp} onClick={() => setShowHelp(!showHelp)}>? Help</button>
+      {onFocusMode && (
+        <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
+          title="Fold the step rail away and give the room to the grid"
+          onClick={() => onFocusMode(true)}>⇱ Focus</button>
+      )}
+    </div>
+  );
+
   if (!m.wing) return <Heading title="Add a wing on step 3 first." />;
 
   return (
@@ -819,97 +944,7 @@ export function StepAllocation({
         says "Allocation", and nobody looking at a class × subject matrix is
         wondering what it is. The row it occupied is a row of school.
       */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
-        {m.wings.length > 1 && !wing && (
-          <div style={{ display: "flex", gap: 4 }}>
-            {m.wings.map((w, i) => (
-              <button key={w.name} onClick={() => setActiveWing(i)} className="btn"
-                style={{
-                  padding: "4px 10px", fontSize: 11.5,
-                  background: i === activeWing ? "var(--brand)" : "var(--paper)",
-                  color: i === activeWing ? "#fff" : "var(--ink)",
-                  borderColor: i === activeWing ? "var(--brand)" : "var(--line)",
-                }}>{w.name}</button>
-            ))}
-          </div>
-        )}
-        <span style={{ flex: 1 }} />
-        <input value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter teacher, subject, class" aria-label="Filter the grid"
-          style={{
-            padding: "5px 9px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12,
-            background: "var(--paper)", color: "var(--ink)", width: 180,
-          }} />
-        {(m.edited.mappings || m.edited.curriculum) && (
-          <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
-            title="Throw away the edits on this page and propose it again from the subjects, teachers and classes"
-            onClick={() => {
-              if (!window.confirm(
-                "Start this page again from the suggestion?\n\n" +
-                "The periods and teachers on this page are re-proposed from your subjects, " +
-                "teachers and classes. Nothing on any other step changes.",
-              )) return;
-              // `null`, not `undefined`. The wizard sends only the keys it
-              // touched, and `JSON.stringify` drops an undefined one — so the
-              // server would merge nothing and the stored plan would survive a
-              // reset that appeared to work. The server reads a non-array as
-              // "not edited" and re-proposes.
-              onChange({ curriculum: null, mappings: null, classTeachers: null });
-            }}>↺ Start again</button>
-        )}
-        {/*
-          Two controls, and the difference between them is the whole point.
-
-          "Start again" rebuilds this page from your subjects, teachers and
-          classes and touches nothing that has been saved. "Clear saved data"
-          deletes the curriculum and the mappings out of the school. One is a
-          rethink, the other is a demolition, and a single button meaning both
-          would be the last thing anybody read before losing an afternoon.
-        */}
-        {m.wing && configIds[m.wing.name.toLowerCase()] !== undefined && (
-          <button className="btn" style={{
-            padding: "4px 9px", fontSize: 11.5,
-            borderColor: "color-mix(in srgb,var(--signal) 40%,var(--line))", color: "var(--signal)",
-          }}
-            title="Delete the curriculum, the mappings and the class teachers this timetable has saved"
-            onClick={() => setResetting(true)}>⌫ Clear saved data</button>
-        )}
-        {/*
-          §27.14 — the hover card, switched off.
-
-          A checkbox rather than a button labelled by its next action: "Hover
-          detail" with a tick says what the state IS, where "Turn hover detail
-          off" would only say what pressing it does — and half the readers of
-          that label take it as a description of the current setting.
-
-          `aria-pressed` rather than `role="checkbox"`: it is a toolbar toggle,
-          and the tick is the visible half of the same fact.
-        */}
-        <button className="btn" aria-pressed={hoverDetail}
-          style={{
-            padding: "4px 9px", fontSize: 11.5,
-            color: hoverDetail ? "var(--ink)" : "var(--ink-faint)",
-          }}
-          title={hoverDetail
-            ? "Stop showing the detail card when the pointer rests on a cell. Clicking a cell still opens it."
-            : "Show the detail card again when the pointer rests on a cell"}
-          onClick={() => {
-            setHoverDetail(!hoverDetail);
-            // The card on screen belongs to the setting that is being turned
-            // off — leaving it up until the next mouse move reads as the switch
-            // not having worked.
-            setHover(null);
-          }}>
-          {hoverDetail ? "☑" : "☐"} Hover detail
-        </button>
-        <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
-          aria-expanded={showHelp} onClick={() => setShowHelp(!showHelp)}>? Help</button>
-        {onFocusMode && (
-          <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
-            title="Fold the step rail away and give the room to the grid"
-            onClick={() => onFocusMode(true)}>⇱ Focus</button>
-        )}
-      </div>
+      {toolbarHost ? createPortal(controls, toolbarHost) : controls}
 
       {/*
         §27.10 — the way back to the proposal.
@@ -1005,13 +1040,33 @@ export function StepAllocation({
             first: you can see that two are red without reading a number, and
             it costs one row of the page instead of six.
           */}
+          {/*
+            The gap and the bar width are DERIVED from how many teachers there
+            are, and that is the whole fix.
+
+            They were fixed at 2px each. A flex item's `min-width` is a floor
+            the container cannot shrink past, so 124 teachers demanded
+            124x2 + 123x2 = 494px inside a box capped at 340 — and a flex
+            container that cannot fit its children does not clip them, it
+            overflows. The bars painted straight over "124 teachers · 29 at
+            75%+ · 667 unstaffed" sitting to their right, which is how a
+            reference school with a real staff list looked from day one.
+
+            `overflow: hidden` is the backstop rather than the fix: it stops a
+            future count spilling again, but a rail that quietly hides half its
+            teachers would be a worse bug than the one it replaced, so the
+            arithmetic keeps every bar inside the box on its own.
+          */}
           <div role="img" aria-label="Every teacher's load, heaviest first"
-            style={{ display: "flex", gap: 2, alignItems: "flex-end", height: 16, flex: 1, minWidth: 90, maxWidth: 340 }}>
+            style={{
+              display: "flex", gap: railGap, alignItems: "flex-end", height: 16,
+              flex: 1, minWidth: 90, maxWidth: 340, overflow: "hidden",
+            }}>
             {m.loads.map((t) => (
               <span key={t.employeeCode}
                 {...peek({ kind: "teacher", code: t.employeeCode })}
                 style={{
-                  flex: 1, minWidth: 2, borderRadius: 1, background: BAND_COLOUR[t.band],
+                  flex: 1, minWidth: railBar, borderRadius: 1, background: BAND_COLOUR[t.band],
                   opacity: t.band === "ok" ? 0.55 : 1,
                   height: `${Math.max(18, Math.min(100, t.pct * 100))}%`,
                 }} />
