@@ -255,7 +255,7 @@ const FALLBACK_ROW_H = 23;
  * occupied, or the scrollbar lies. It starts at `FALLBACK_ROW_H` rather than at
  * zero purely so the FIRST paint is already windowed; see the note there.
  */
-function useRowViewport(paneRef: React.RefObject<HTMLDivElement | null>, layoutKey: unknown) {
+function useRowViewport(pane: HTMLDivElement | null, layoutKey: unknown) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [rowHeight, setRowHeight] = useState(FALLBACK_ROW_H);
@@ -283,14 +283,26 @@ function useRowViewport(paneRef: React.RefObject<HTMLDivElement | null>, layoutK
   }, [layoutKey]);
 
   /*
+    The NODE, not a ref object — and this was a real bug, not a tidy-up.
+
+    With `[paneRef]` as the dependency the effect ran exactly once, on mount,
+    and a plain ref never changes identity so it never ran again. On mount this
+    component has no pane: it early-returns "Loading the grid…" until `/slots`
+    arrives, so the div appears on a LATER render. The observer was therefore
+    never attached, `viewportHeight` stayed 0 for the life of the screen, and
+    `rowWindow` drew `ceil(0 / rowHeight) + 1 + overscan` rows — **seven of
+    fifty-six**, on every tab that uses this pane. A callback ref makes the node
+    a state value, so the effect runs when it actually exists and again whenever
+    a tab switch remounts it.
+
     `useLayoutEffect`, not `useEffect` — §8.1d's lesson, for the same reason it
     was learned there. A passive effect runs after paint, so the first frame
     would be computed for a viewport of zero: seven rows, then thirty-six a
     frame later, which reads as the grid filling itself in on every visit.
   */
   useLayoutEffect(() => {
-    const el = paneRef.current;
-    if (!el) return;
+    if (!pane) return;
+    const el = pane;
     const measure = () => {
       setViewportHeight(el.clientHeight);
       // A resize can change a row's height — a narrower pane wraps a long
@@ -304,13 +316,13 @@ function useRowViewport(paneRef: React.RefObject<HTMLDivElement | null>, layoutK
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [paneRef]);
+  }, [pane]);
 
   return {
     scrollTop,
     viewportHeight,
     rowHeight,
-    onScroll: () => setScrollTop(paneRef.current?.scrollTop ?? 0),
+    onScroll: () => setScrollTop(pane?.scrollTop ?? 0),
     /** Ref callback for the first drawn row — the one height there is. */
     measureRow: (el: HTMLTableRowElement | null) => {
       if (!el || measuredAt.current === epoch.current) return;
@@ -354,11 +366,12 @@ export function MasterGrid() {
   // a cell selected on the Teachers tab names a row the Subjects tab does not
   // have; keeping it would leave the strip describing something invisible.
   const [selected, setSelected] = useState<Selection | null>(null);
-  const gridRef = useRef<HTMLDivElement | null>(null);
+  /** The scrolling pane, as a state value — see `useRowViewport`. */
+  const [paneEl, setPaneEl] = useState<HTMLDivElement | null>(null);
   // §31.8 — scroll state for the windowed body. A hook, so it sits with the
   // other hooks and above every early return; the window itself is computed
   // further down, where the filtered row count exists.
-  const view = useRowViewport(gridRef, tab);
+  const view = useRowViewport(paneEl, tab);
 
   /*
     §31.10 — the Allocation grid's draft, held HERE rather than in the tab.
@@ -534,8 +547,8 @@ export function MasterGrid() {
     computed for a position nothing is at.
   */
   useEffect(() => {
-    if (gridRef.current) gridRef.current.scrollTop = 0;
-  }, [tab, status, draftId, search]);
+    if (paneEl) paneEl.scrollTop = 0;
+  }, [tab, status, draftId, search, paneEl]);
 
   // One pass over the tuples, grouped by whichever field names the row for
   // this tab. The grouping itself is `pivotSlots` in `packages/shared`, where
@@ -645,7 +658,7 @@ export function MasterGrid() {
       viewportHeight: view.viewportHeight,
       headerHeight: HEADER_H,
     });
-    if (want !== null && gridRef.current) gridRef.current.scrollTop = want;
+    if (want !== null && paneEl) paneEl.scrollTop = want;
   };
 
   /**
@@ -1045,8 +1058,20 @@ export function MasterGrid() {
   ).length;
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
+    /*
+      §31.10 — the screen fills its pane and nothing below it scrolls away.
+
+      It was a plain block whose grid pane was `maxHeight: 74vh`. Add the
+      toolbar, the staffing banner, the load rail and an 86px strip and the
+      total passed 100vh, so the PAGE scrolled — and the first thing off the
+      bottom was the strip, which is the half that explains the cell you just
+      clicked. `.content` is a flex child of a 100vh column, so `height: 100%`
+      here resolves against a real number: the box takes what is left after the
+      toolbar, the grid takes what is left after the strip, and only the grid
+      scrolls.
+    */
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {status === "draft" && liveDrafts.length > 0 && (
             <select
@@ -1132,7 +1157,11 @@ export function MasterGrid() {
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "stretch", gap: 0, border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden", background: "var(--paper)" }}>
+      <div style={{
+        display: "flex", alignItems: "stretch", gap: 0, border: "1px solid var(--line)",
+        borderRadius: 12, overflow: "hidden", background: "var(--paper)",
+        flex: 1, minHeight: 0,
+      }}>
         {/* The tab rail is vertical because horizontal tabs cost a row of
             school and these cost 34px of width the row header wanted anyway. */}
         <div style={{ display: "flex", flexDirection: "column", background: "var(--offwhite)", borderRight: "1px solid var(--line)", flex: "0 0 34px" }}>
@@ -1183,7 +1212,7 @@ export function MasterGrid() {
             />
           ) : (
           <div
-            ref={gridRef}
+            ref={setPaneEl}
             tabIndex={0}
             onKeyDown={onKeyDown}
             onScroll={view.onScroll}

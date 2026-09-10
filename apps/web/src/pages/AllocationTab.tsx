@@ -55,8 +55,17 @@ export function AllocationTab({
   /** §31.10 — the host's toolbar, so this tab does not draw a second one. */
   toolbarHost: HTMLElement | null;
 }) {
+  /*
+    §31.10 — fills what the host leaves, rather than claiming 74vh of its own.
+
+    A fixed height here plus the strip below it overflowed `.content` and put
+    the strip off the bottom of the page. The host is a flex column with a real
+    height, so `flex: 1` takes exactly what is left after the toolbar and the
+    strip — and `minHeight: 0` is what lets it SHRINK to that, since a flex
+    item's default `min-height: auto` refuses to go below its content.
+  */
   const frame: React.CSSProperties = {
-    height: "74vh",
+    flex: 1,
     display: "flex",
     flexDirection: "column",
     minHeight: 0,

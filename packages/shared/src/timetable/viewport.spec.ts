@@ -83,6 +83,21 @@ describe("§31.8 windowing the grid body", () => {
       .toEqual({ start: 0, end: 0, padTop: 0, padBottom: 0 });
   });
 
+  it("draws everything when the VIEWPORT has not been measured either", () => {
+    /*
+      The regression this exists for. A viewport of zero is arithmetically
+      valid — it yields about seven rows — and seven rows of fifty-six looks
+      like a grid rather than like a bug: it scrolls, it has headers, and the
+      missing forty-nine are simply not there. It is what a caller whose resize
+      observer never attached actually produced, with nothing reporting it.
+
+      Unknown is not zero, and the safe answer to unknown is all of it.
+    */
+    const w = rowWindow({ total: 56, rowHeight: 23, scrollTop: 0, viewportHeight: 0, headerHeight: 48 });
+    expect(w).toEqual({ start: 0, end: 56, padTop: 0, padBottom: 0 });
+    expect(rowWindow({ total: 56, rowHeight: 23, scrollTop: 0, viewportHeight: -1 }).end).toBe(56);
+  });
+
   it("accounts for the sticky header, which covers the top of its own scroll box", () => {
     // Without the offset the window is computed for a viewport two rows taller
     // than anyone can see, and the last rows of every screenful arrive blank.

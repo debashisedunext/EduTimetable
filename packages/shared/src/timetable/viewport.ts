@@ -92,10 +92,23 @@ export function rowWindow({
   overscan = DEFAULT_OVERSCAN,
   headerHeight = 0,
 }: RowWindowInput): RowWindow {
-  // A row height of zero would divide by zero and a negative one is nonsense;
-  // both mean "not measured yet", and drawing everything is the safe answer —
-  // it is what the screen did before this file existed.
-  if (!Number.isFinite(rowHeight) || rowHeight <= 0 || total <= 0) {
+  /*
+    Not measured yet → draw everything. FAIL SAFE, and it is worth being
+    explicit about why `viewportHeight` is in this guard and not only
+    `rowHeight`.
+
+    A viewport of zero is arithmetically valid: it yields `ceil(0 / rowHeight)
+    + 1` rows plus the overscan, which is about seven. Seven rows of fifty-six
+    is not obviously a bug from the outside — it looks like a grid, it scrolls,
+    and the missing forty-nine are simply absent. That is exactly what happened
+    when the caller's observer failed to attach, and nothing anywhere reported
+    it.
+
+    So a height nobody has measured is treated as unknown rather than as zero,
+    and an unknown height renders the whole list: the worst outcome becomes a
+    slower first paint instead of a screen that quietly lies about the school.
+  */
+  if (!Number.isFinite(rowHeight) || rowHeight <= 0 || viewportHeight <= 0 || total <= 0) {
     return { start: 0, end: Math.max(0, total), padTop: 0, padBottom: 0 };
   }
   const visible = Math.max(0, viewportHeight - headerHeight);
