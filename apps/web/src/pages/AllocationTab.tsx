@@ -1,4 +1,4 @@
-import { StepAllocation } from "../onboarding/steps/Allocation";
+import { StepAllocation, type AllocationCellFacts } from "../onboarding/steps/Allocation";
 
 /**
  * §31.10 — the Master Grid's Lesson Grid tab: the Allocation grid itself.
@@ -39,6 +39,8 @@ export function AllocationTab({
   onChange,
   loading,
   error,
+  wing,
+  onSelectCell,
 }: {
   /** The guided setup's draft. `any` to match `StepAllocation`'s own signature —
    *  a narrower type here would only be cast away at the call below. */
@@ -46,6 +48,9 @@ export function AllocationTab({
   onChange: (patch: Record<string, any>) => void;
   loading: boolean;
   error: string | null;
+  /** The timetable the top bar has selected — this grid must not offer a second choice. */
+  wing: string | null;
+  onSelectCell: (facts: AllocationCellFacts | null) => void;
 }) {
   const frame: React.CSSProperties = {
     height: "74vh",
@@ -82,6 +87,28 @@ export function AllocationTab({
     );
   }
 
+  /*
+    The top bar's timetable and the guided setup's wings are the same thing by
+    name (§3.10a: a wing IS a config, created by name on step 3), and
+    `answersFromSchool` rebuilds them from the configs — so they normally match.
+    When they do not, showing wing 0 while the top bar names another is a lie
+    the reader has no way to catch, so this says so instead.
+  */
+  const names = (answers.wings as Array<{ name: string }>).map((w) => w.name);
+  const known = wing !== null
+    && names.some((n) => n.trim().toLowerCase() === wing.trim().toLowerCase());
+  if (wing !== null && !known) {
+    return (
+      <div style={{ ...frame, padding: 20 }}>
+        <p className="screen-sub">
+          <strong>{wing}</strong> is not part of the guided setup&rsquo;s plan yet, so there is
+          nothing to allocate for it here. Open the guided setup to add it, or pick another
+          timetable above.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div style={frame}>
       {/*
@@ -91,7 +118,13 @@ export function AllocationTab({
         horizontal scrollbar, which was the whole point of putting the grid
         here rather than linking to it.
       */}
-      <StepAllocation answers={answers} onChange={onChange} density="compact" />
+      <StepAllocation
+        answers={answers}
+        onChange={onChange}
+        density="compact"
+        wing={wing}
+        onSelectCell={onSelectCell}
+      />
     </div>
   );
 }

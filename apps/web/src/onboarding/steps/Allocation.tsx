@@ -328,7 +328,38 @@ function useHoverDetail(): [boolean, (on: boolean) => void] {
 
 // ─────────────────────────────────────────────────────────────── the step
 
-export function StepAllocation({ answers, onChange, onFocusMode, density = "comfortable" }: {
+/**
+ * §31.10 — everything the Master Grid's strip needs about one cell.
+ *
+ * Read from this component's own model, so the strip cannot disagree with the
+ * grid above it — and, crucially, so it speaks from the **draft**. The other
+ * four tabs' strip reads `/slots` and `/context`, which is the week as *saved*;
+ * this grid edits answers that are only in the browser until Save. A strip that
+ * asked the server here would say 6 while the cell said 8, one click apart.
+ */
+export interface AllocationCellFacts {
+  /** "Class 5-A" */
+  section: string;
+  /** "Class 5" — periods are a CLASS fact (§27), and the strip says so. */
+  className: string;
+  subject: string;
+  periodsPerWeek: number;
+  teacherCode: string;
+  teacherName: string | null;
+  teacherInitials: string | null;
+  room: string | null;
+  /** §4.10 — every section taught together in this one lesson, this one included. */
+  sharedWith: string[];
+  isClassTeacher: boolean;
+  /** What else this class studies, for the context group. */
+  studies: Array<{ subject: string; periods: number }>;
+  /** The week this wing offers, so a total has a denominator. */
+  capacity: number;
+}
+
+export function StepAllocation({
+  answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell,
+}: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
   /** Lets the step ask the wizard shell to fold its chrome away. */
@@ -351,6 +382,27 @@ export function StepAllocation({ answers, onChange, onFocusMode, density = "comf
    * exactly as they did before this prop.
    */
   density?: "comfortable" | "compact";
+  /**
+   * §31.10 — which wing to show, when the HOST already picks one.
+   *
+   * The Master Grid's top bar selects the timetable and its other four tabs
+   * obey it. This grid has wing tabs of its own, and two controls for one
+   * choice contradict each other the first time they disagree — so when a name
+   * is given the tabs are not rendered and the selection follows it. On
+   * `/allocation`, which has no top bar to defer to, it stays undefined and the
+   * tabs behave exactly as before.
+   */
+  wing?: string | null;
+  /**
+   * §31.10 — the cell somebody is looking at, for a host that draws a strip.
+   *
+   * The FACTS, not the coordinates. The host could look "Class 5-A × Maths" up
+   * for itself, but only by rebuilding this component's model from the same
+   * draft — a second derivation of merged groups, class teachers and swatches,
+   * free to disagree with the grid it sits under. The grid already knows, so
+   * it hands over what it knows.
+   */
+  onSelectCell?: (facts: AllocationCellFacts | null) => void;
 }) {
   const [activeWing, setActiveWing] = useState(0);
   const [query, setQuery] = useState("");
@@ -394,7 +446,66 @@ export function StepAllocation({ answers, onChange, onFocusMode, density = "comf
   const [cursor, setCursor] = useState<{ row: number; col: number }>({ row: 0, col: 0 });
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const m = useModel(answers, activeWing);
+  /*
+    A forced wing wins over the local tab state, and falls back to it when the
+    name matches nothing — `AllocationTab` refuses to render in that case, so
+    reaching the fallback means the host did not supply a wing at all.
+  */
+  const wingNames: string[] = ((answers.wings ?? []) as Array<{ name: string }>).map((w) => w.name);
+  const forcedWing = wing
+    ? wingNames.findIndex((n) => n.trim().toLowerCase() === wing.trim().toLowerCase())
+    : -1;
+  const shownWing = forcedWing >= 0 ? forcedWing : activeWing;
+
+  const m = useModel(answers, shownWing);
+
+  /** §31.10 — one cell, as the strip needs it. */
+  const factsFor = (section: string, subject: string): AllocationCellFacts | null => {
+    const className = section.replace(/-[^-]+$/, "");
+    if (!m.subjects.some((x) => x.name === subject)) return null;
+    const idx = mappingIndexOf(section, subject);
+    const row = idx >= 0 ? m.mappings[idx] : null;
+    const code = row?.employeeCode ?? "";
+    return {
+      section,
+      className,
+      subject,
+      periodsPerWeek: periodsOf(className, subject),
+      teacherCode: code,
+      teacherName: code ? nameOf(code) : null,
+      teacherInitials: code ? initialsOf(code) : null,
+      // The fallback the cell itself draws, so the strip names the same room.
+      room: code ? (row?.room || `${shortLabel(section)} room`) : null,
+      sharedWith: row?.merged && (row.classSections?.length ?? 0) > 1
+        ? row.classSections.map((x) => x.trim())
+        : [section],
+      isClassTeacher: !!code && classTeacherOf(section) === code,
+      studies: m.cells
+        .filter((c) => c.className === className && c.periodsPerWeek > 0)
+        .map((c) => ({ subject: c.subjectName, periods: c.periodsPerWeek }))
+        .sort((a, b) => b.periods - a.periods),
+      capacity: m.capacity,
+    };
+  };
+
+  /**
+   * Which cell the strip is describing.
+   *
+   * Re-emitted whenever the MODEL changes, not only on click: editing through
+   * the dialog would otherwise leave the strip quoting the numbers the cell had
+   * before it was edited — the exact contradiction the strip reads the draft to
+   * avoid. The callback is held in a ref so a host that passes a fresh arrow
+   * every render does not re-fire this on every render.
+   */
+  const [stripCell, setStripCell] = useState<{ section: string; subject: string } | null>(null);
+  const emitCell = useRef(onSelectCell);
+  emitCell.current = onSelectCell;
+  useEffect(() => {
+    emitCell.current?.(stripCell ? factsFor(stripCell.section, stripCell.subject) : null);
+    // Deps are `stripCell` and `m` deliberately: `factsFor` is rebuilt every
+    // render and listing it would re-fire this on renders that changed nothing,
+    // while `m` is what actually changes its answer.
+  }, [stripCell, m]);
 
   /**
    * §31.10 — fitting every subject, and the width below which it stops trying.
@@ -616,6 +727,9 @@ export function StepAllocation({ answers, onChange, onFocusMode, density = "comf
       setCursor({ row, col });
       const sec = sections[row], sub = m.subjects[col];
       if (!sec || !sub) return;
+      // §31.10 — the keyboard cursor moves the strip too, so a row can be read
+      // across without reaching for the mouse for every cell.
+      setStripCell({ section: sec.id, subject: sub.name });
       if (e.key === "Enter") { setEditing({ section: sec.id, subject: sub.name }); return; }
       if (remove) {
         // Nothing there is nothing to remove — and the confirmation would have
@@ -664,7 +778,7 @@ export function StepAllocation({ answers, onChange, onFocusMode, density = "comf
         wondering what it is. The row it occupied is a row of school.
       */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
-        {m.wings.length > 1 && (
+        {m.wings.length > 1 && !wing && (
           <div style={{ display: "flex", gap: 4 }}>
             {m.wings.map((w, i) => (
               <button key={w.name} onClick={() => setActiveWing(i)} className="btn"
@@ -1025,6 +1139,12 @@ export function StepAllocation({ answers, onChange, onFocusMode, density = "comf
                           <button
                             onClick={() => {
                               setCursor({ row: rowIndex, col });
+                              // §31.10 — the strip fills as the dialog opens.
+                              // Both, deliberately: the dialog is where the
+                              // cell is CHANGED and the strip is where it and
+                              // its context are read, and closing the dialog
+                              // leaves the reading behind.
+                              setStripCell({ section: id, subject: s.name });
                               // The hover card is the READING of this cell; the
                               // dialog is the changing of it. Leaving the card
                               // up puts two versions of the same facts on

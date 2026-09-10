@@ -9,6 +9,7 @@ import { useApi, useConfigCtx } from "../hooks";
 import { guardUnsaved } from "../unsaved-guard";
 import { commitAllocation } from "../onboarding/commit-allocation";
 import { AllocationTab } from "./AllocationTab";
+import type { AllocationCellFacts } from "../onboarding/steps/Allocation";
 import { useColors } from "../colors-context";
 
 /**
@@ -109,7 +110,16 @@ interface ContextPayload {
  */
 type Selection =
   | { kind: "cell"; rowKey: number; day: number; period: number }
-  | { kind: "lesson"; sectionId: number; subjectId: number };
+  /**
+   * §31.10 — the Lesson Grid tab's selection carries the FACTS, not ids.
+   *
+   * The grid there edits draft answers, and the facts are read from its own
+   * model. Storing ids and looking them up here would mean re-deriving merged
+   * groups and class teachers from the same draft — a second derivation, free
+   * to disagree with the grid the strip sits under, and certain to disagree the
+   * moment somebody edits without saving.
+   */
+  | { kind: "lesson"; facts: AllocationCellFacts };
 
 /**
  * One block of the strip: a label, an optional big line, and detail under it.
@@ -599,20 +609,12 @@ export function MasterGrid() {
     const dRow = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
     const dCol = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
 
-    if (selected.kind === "lesson") {
-      const rowAt = visibleRows.findIndex((r) => r.key === selected.sectionId);
-      const colAt = (context?.subjects ?? []).findIndex((x) => x.id === selected.subjectId);
-      const nextRow = clamp(rowAt + dRow, visibleRows.length);
-      const nextCol = clamp(colAt + dCol, context?.subjects.length ?? 0);
-      if (nextRow === null || nextCol === null) return;
-      setSelected({
-        kind: "lesson",
-        sectionId: visibleRows[nextRow].key,
-        subjectId: context!.subjects[nextCol].id,
-      });
-      bringRowIntoView(nextRow);
-      return;
-    }
+    /*
+      §31.10 — the Lesson Grid tab does its own keyboard navigation, inside the
+      Allocation grid, and that pane is not even rendered here. Reaching this
+      with a lesson selection would mean two handlers moving one cursor.
+    */
+    if (selected.kind === "lesson") return;
 
     // The selectable columns, flattened across the week in the order they are
     // drawn — so ArrowRight at Friday's last period simply stops, rather than
@@ -824,89 +826,85 @@ export function MasterGrid() {
   };
 
   /**
-   * The Lesson grid's vocabulary, which is a different question (§31.4).
+   * §31.10 — the Lesson Grid tab's strip, which asks a different question.
    *
-   * A lesson-grid cell has no time in it, so there is no clock and no free
-   * period. What it has instead is **who shares the lesson** — and that list is
-   * not decoration: several sections on one lesson is a §4.9 block or a §4.10
-   * merged group, and this is the only place on the screen where that is
-   * visible.
+   * The four timetable tabs describe a PLACEMENT: a lesson at a day and a
+   * period. This describes a LESSON the school intends — no clock in it at all
+   * — and it is read from the grid's own draft rather than from the server, so
+   * it cannot contradict an edit that has not been saved yet.
+   *
+   * The one thing it does ask the server for is §31.7's placed-against-required,
+   * which is genuinely about the *saved* week. Mapped by name, because the
+   * draft holds names and the payload holds ids: a subject that exists only in
+   * the draft has no id, no placements, and correctly gets no line.
    */
-  const stripForLesson = (sel: Extract<Selection, { kind: "lesson" }>): StripGroup[] | null => {
-    if (!context) return null;
-    const section = context.sections.find((x) => x.id === sel.sectionId);
-    const subject = context.subjects.find((x) => x.id === sel.subjectId);
-    if (!section || !subject) return null;
-    const periods = context.cells.find(([c, sid]) => c === section.classId && sid === sel.subjectId)?.[2] ?? 0;
+  const stripForFacts = (f: AllocationCellFacts): StripGroup[] => {
+    const groups: StripGroup[] = [];
+    const swatch = colors.subject(f.subject);
 
-    // Read off the placements: which cells this section's lessons of this
-    // subject sit in, and then everyone else in those cells.
-    const mine = data.slots.filter(
-      (x) => x[SLOT.subjectId] === sel.subjectId && x[SLOT.classSectionId] === sel.sectionId,
-    );
-    const cells = new Set(mine.map((x) => `${x[SLOT.day]}:${x[SLOT.period]}`));
-    const together = data.slots.filter(
-      (x) => x[SLOT.subjectId] === sel.subjectId && cells.has(`${x[SLOT.day]}:${x[SLOT.period]}`),
-    );
-    const sharing = [...new Set(together.map((x) => sectionLabel(x[SLOT.classSectionId])).filter(Boolean))] as string[];
-    const teachers = [...new Set(together.map((x) => x[SLOT.teacherId]).filter((x) => x !== null))] as number[];
-    const rooms = [...new Set(together.map((x) => x[SLOT.roomId]).filter((x) => x !== null))] as number[];
+    // §31.7 — only when they differ, and only where the comparison is honest.
+    const sectionId = context?.sections.find((x) => x.label === f.section)?.id ?? null;
+    const subjectId = context?.subjects.find((x) => x.name === f.subject)?.id ?? null;
+    const placed = sectionId !== null && subjectId !== null
+      && coverage.comparable(sectionId, subjectId)
+      ? coverage.placedAt(sectionId, subjectId)
+      : null;
+    const short = placed !== null && f.periodsPerWeek > 0 && placed !== f.periodsPerWeek;
 
-    // §31.7 — the same arithmetic the cells use, so the strip and the grid
-    // cannot disagree about whether this row is short.
-    const got = coverage.placedAt(section.id, sel.subjectId);
-    const short = periods > 0 && coverage.comparable(section.id, sel.subjectId) && got !== periods;
-    const groups: StripGroup[] = [
-      {
-        label: "The lesson",
-        primary: subject.name,
-        swatch: colors.subject(subject.name),
-        lines: [
-          short
-            ? `${got} placed of ${periods} a week — ${got < periods ? `${periods - got} missing` : `${got - periods} too many`}`
-            : `${periods} period${periods === 1 ? "" : "s"} a week`,
-          // Periods are a CLASS fact (§27), and the strip says so rather than
-          // letting a per-section grid imply otherwise.
-          `for every section of ${section.label.replace(/-[^-]*$/, "")}`,
-          coverage.electiveSubjects.has(sel.subjectId)
-            // §4.9 — the children are in the block doing this subject, but the
-            // option row belongs to no section, so no honest per-section count
-            // exists. Saying so beats a confident 0.
-            ? "Also runs as a split elective — placements are not counted per section"
-            : "",
-        ].filter(Boolean),
-      },
-      {
-        label: "The class",
-        primary: section.label,
-        swatch: colors.classOf(section.label),
-        lines: [
-          section.homeRoom ? `Home room ${section.homeRoom}` : "",
-          section.classTeacher ? `Class teacher ${section.classTeacher}` : "",
-        ].filter(Boolean),
-      },
-    ];
-
-    if (mine.length === 0) {
-      // Not "no teacher" — the curriculum says the lesson exists and nothing
-      // has been placed yet. Saying so is the difference between a gap and a
-      // timetable that has not been generated.
-      groups.push({ label: "Placed", primary: "Not yet", lines: ["Generate to see who takes it and where"] });
-      return groups;
-    }
     groups.push({
-      label: sharing.length > 1 ? "Sharing the lesson" : "Placed",
-      primary: `${got} placed`,
-      chips: sharing.map((label) => ({ text: shortSection(label), swatch: colors.classOf(label), title: label })),
+      label: "The lesson",
+      primary: f.subject,
+      swatch,
+      lines: [
+        f.periodsPerWeek > 0
+          ? `${f.periodsPerWeek} period${f.periodsPerWeek === 1 ? "" : "s"} a week`
+          : "Not taught to this class",
+        // Periods are a CLASS fact (§27) — the grid's rows are sections, and
+        // the strip is where that is said out loud rather than implied.
+        f.periodsPerWeek > 0 ? `for every section of ${f.className}` : "",
+        short ? `${placed} of ${f.periodsPerWeek} placed in the shown week` : "",
+      ].filter(Boolean),
     });
+
     groups.push({
-      label: teachers.length > 1 ? "Teachers" : "Teacher",
-      chips: teachers.map((t) => ({ text: teacherShort(t) ?? "?", title: teacherName(t) ?? "" })),
+      label: f.sharedWith.length > 1 ? "The classes" : "The class",
+      primary: f.sharedWith.length > 2 ? `${f.sharedWith.length} sections` : f.sharedWith.join(", "),
+      swatch: colors.classOf(f.section),
+      lines: [
+        f.sharedWith.length > 2 ? f.sharedWith.join(", ") : "",
+        // §4.10 — one lesson, several sections. The grid draws a ⛓ in the cell;
+        // this is where it says what the chain means.
+        f.sharedWith.length > 1 ? "Taught together as one lesson (§4.10)" : "",
+        // §31.10 — the room, which left the cell so twenty subjects could fit.
+        f.room ? `Room ${f.room}` : "",
+      ].filter(Boolean),
     });
-    if (rooms.length > 0) {
+
+    groups.push({
+      label: "The teacher",
+      primary: f.teacherName ?? "Nobody yet",
+      lines: f.teacherName
+        ? [
+          `${f.teacherInitials}${f.isClassTeacher ? " · class teacher" : ""}`,
+          "Click the cell to change who takes it",
+        ]
+        : ["Click the cell to give this lesson a teacher"],
+    });
+
+    if (f.studies.length > 0) {
+      const total = f.studies.reduce((n, x) => n + x.periods, 0);
       groups.push({
-        label: rooms.length > 1 ? "Rooms" : "Room",
-        chips: rooms.map((r) => ({ text: data.rooms[String(r)] ?? "?", title: data.rooms[String(r)] ?? "" })),
+        label: `${f.className} studies`,
+        chips: f.studies.map((x) => ({
+          text: `${abbr(x.subject)} ${x.periods}`,
+          swatch: colors.subject(x.subject),
+          title: `${x.subject} — ${x.periods} periods a week`,
+        })),
+        lines: [
+          f.capacity > 0
+            ? `${total} of ${f.capacity} periods a week${total > f.capacity ? " — over" : ""}`
+            : `${total} periods a week`,
+        ],
       });
     }
     return groups;
@@ -1106,6 +1104,8 @@ export function MasterGrid() {
               onChange={patchAlloc}
               loading={allocLoading}
               error={allocError}
+              wing={current?.name ?? null}
+              onSelectCell={(facts) => setSelected(facts ? { kind: "lesson", facts } : null)}
             />
           ) : (
           <div
@@ -1226,7 +1226,7 @@ export function MasterGrid() {
             groups={
               selected === null ? null
               : selected.kind === "cell" ? stripForCell(selected)
-              : stripForLesson(selected)
+              : stripForFacts(selected.facts)
             }
           />
         </div>
