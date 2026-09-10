@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots,
   rowWindow, scrollTopFor, SLOT,
@@ -380,7 +381,21 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
 }) {
   const { current } = useConfigCtx();
   const colors = useColors();
-  const [tab, setTab] = useState<Tab>("section");
+  /*
+    §31.13 — which tab to open on can be asked for in the URL.
+
+    `/master-grid?tab=lesson` is what the guided setup's Settings step and the
+    old `/allocation` link now point at, so "take me to the allocation" lands
+    on the grid that owns it rather than on Whole with a tab to find. Read once
+    into state rather than driven by the URL, because switching tab afterwards
+    is a view preference and pushing a history entry for each one would make
+    the browser's Back button mean "previous tab".
+  */
+  const [params] = useSearchParams();
+  const asked = params.get("tab");
+  const [tab, setTab] = useState<Tab>(
+    TABS.some((t) => t.key === asked) ? (asked as Tab) : "section",
+  );
   // The rail, less whatever this person may not do. `TABS` stays the full list
   // because the corner header and the filter placeholder read a tab's label out
   // of it, and those must work for the tab on screen whoever is looking.
@@ -1153,7 +1168,19 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {(status === "draft" || tab === "board") && liveDrafts.length > 0 && (
+          {/*
+            §31.13 — no draft controls on the Lesson grid.
+
+            Curriculum and mappings are `class_subjects` and `subject_mappings`:
+            master rows, one set per school, which every draft of every wing is
+            generated FROM. A draft picker there would offer a choice that
+            changes nothing, and — worse — imply that "Class 5-A gets 6 periods
+            of Maths" could differ between Draft #3 and Draft #4. It cannot.
+
+            The other four tabs are placements, which is exactly what a draft
+            IS, so they keep both controls and follow whatever is chosen.
+          */}
+          {tab !== "lesson" && (status === "draft" || tab === "board") && liveDrafts.length > 0 && (
             <select
               value={shownDraftId ?? ""}
               onChange={(e) => setDraftId(Number(e.target.value))}
@@ -1167,7 +1194,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
               ))}
             </select>
           )}
-          {tab !== "board" && (
+          {tab !== "board" && tab !== "lesson" && (
             <select value={status} onChange={(e) => setStatus(e.target.value as "draft" | "published")}
               style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
               <option value="draft">Draft</option>
@@ -1233,10 +1260,14 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
           ) : (
             <span className="chip mono">{filled} / {capacity} placed ({capacity ? Math.round((filled / capacity) * 100) : 0}%)</span>
           )}
-          <span className="chip mono">
-            {data.status}
-            {status === "draft" && shownDraft ? ` #${shownDraft.draftNo}` : ""}
-          </span>
+          {/* §31.13 — the same argument: this chip names the draft on screen,
+              and on the Lesson grid there is no draft on screen. */}
+          {tab !== "lesson" && (
+            <span className="chip mono">
+              {data.status}
+              {status === "draft" && shownDraft ? ` #${shownDraft.draftNo}` : ""}
+            </span>
+          )}
           {/*
             §31.10 — the assistant's launcher, docked in this screen's own bar.
 

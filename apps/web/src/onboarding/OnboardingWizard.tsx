@@ -19,10 +19,8 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { asMessage } from "../components";
 import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings } from "./steps/Structure";
-import { ALLOCATION_STEP, commitAllocation } from "./commit-allocation";
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
-import { StepAllocation } from "./steps/Allocation";
 import { planClasses, type SubjectAnswer, type TeacherAnswer } from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
 import { DraftTerms, termProblems } from "../terms/TermsEditor";
@@ -34,6 +32,45 @@ import { DraftTerms, termProblems } from "../terms/TermsEditor";
  * (`onboarding.service.ts`), because a resumed draft is read there.
  */
 export const TOTAL_STEPS = 10;
+
+/**
+ * §31.13 — the steps this wizard SHOWS, in order.
+ *
+ * Step 9 (Allocation) is deliberately absent. Curriculum and mappings moved to
+ * the Master Grid's Lesson Grid, which is the one place they are entered now —
+ * so Rooms is followed by Settings, and Settings offers the door across.
+ *
+ * The **numbers do not change**, and that is the point of a list rather than a
+ * smaller `TOTAL_STEPS`. `POST /onboarding/commit/:step`, the stored
+ * `current_step`, `migrateStep` on the server and `ALLOCATION_STEP` in
+ * `commit-allocation.ts` all mean what they have always meant; only which of
+ * them the wizard walks through has changed. Renumbering would have been a
+ * second migration of everybody's stored step for a change to a menu.
+ */
+export const WIZARD_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 10] as const;
+
+/** Where a step sits in the visible sequence, or -1 for one that is not shown. */
+export const stepIndex = (n: number): number => WIZARD_STEPS.indexOf(n as never);
+
+/**
+ * The nearest step this wizard will actually show.
+ *
+ * A draft saved mid-setup can name step 9, and there is no longer anywhere to
+ * put somebody who resumes there — so they land on Settings, which is what
+ * came after it. Everything else is returned untouched.
+ */
+export const visibleStep = (n: number): number => {
+  const clamped = Math.min(TOTAL_STEPS, Math.max(1, n));
+  return stepIndex(clamped) >= 0 ? clamped : TOTAL_STEPS;
+};
+
+/** The next step forward, or the same one at the end. */
+export const stepAfter = (n: number): number =>
+  WIZARD_STEPS[Math.min(WIZARD_STEPS.length - 1, stepIndex(visibleStep(n)) + 1)];
+
+/** The previous step, or the same one at the start. */
+export const stepBefore = (n: number): number =>
+  WIZARD_STEPS[Math.max(0, stepIndex(visibleStep(n)) - 1)];
 
 /**
  * What to say after a step lands.
@@ -56,7 +93,7 @@ const CHEERS = [
 
 /** "5 steps to go" — and something better than "0 steps to go" at the end. */
 function remaining(step: number): string {
-  const left = TOTAL_STEPS - step;
+  const left = WIZARD_STEPS.length - 1 - stepIndex(visibleStep(step));
   if (left <= 0) return "that was the last one";
   if (left === 1) return "just one step to go";
   return `only ${left} steps to go`;
@@ -125,23 +162,25 @@ export const STEP_TITLES = [
  * The steps whose content is a table or a grid, and so uses the full width of
  * the pane (§24.5d).
  *
- * Classes (the per-class section grid), Teachers, Rooms and Allocation
- * (class-section × subject) are the widest things in the app; the other six are
+ * Classes (the per-class section grid), Teachers and Rooms are the widest things
+ * left here now that §31.13 has moved Allocation out; the other six are
  * ordinary forms, which a measure makes easier to read rather than harder.
  * A set of step numbers rather than a guess inside each screen, so the two
  * kinds are visible side by side and a new step has to choose.
  */
-const WIDE_STEPS = new Set([4, 7, 8, 9]);
+const WIDE_STEPS = new Set([4, 7, 8]);
 
 /**
  * The steps that want the pane's HEIGHT, not only its width (§28).
  *
- * Allocation is a grid that scrolls inside itself: its load line and its footer
- * are pinned and only the table moves. That only works if the step is handed a
- * fixed height rather than growing the dialog's own scroller — otherwise the
- * page grows a second scrollbar and the thing somebody is pointing at moves.
+ * Empty since §31.13 took Allocation out — it was the only one, because it is a
+ * grid that scrolls inside itself with its load line and footer pinned, and
+ * that only works when the step is handed a fixed height rather than growing
+ * the dialog's own scroller. The mechanism stays because the requirement is
+ * about a KIND of step rather than about that one, and the next grid to arrive
+ * here would otherwise rediscover the second-scrollbar bug from scratch.
  */
-const TALL_STEPS = new Set([9]);
+const TALL_STEPS = new Set<number>();
 
 /** What a §16 commit reports back. */
 interface Committed { created?: Record<string, number> }
@@ -175,7 +214,9 @@ export interface SchoolIdentity {
  * pressed would be worse.
  */
 function Progress({ step }: { step: number }) {
-  const pct = Math.round(((step - 1) / TOTAL_STEPS) * 100);
+  // Counted over the steps actually shown, so the bar reaches 100% on the
+  // last one somebody can be standing on rather than stopping short of it.
+  const pct = Math.round((stepIndex(visibleStep(step)) / WIZARD_STEPS.length) * 100);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
       <div style={{
@@ -197,10 +238,26 @@ function Progress({ step }: { step: number }) {
   );
 }
 
-function Rail({ step, furthest, onJump, disabled }: {
+/**
+ * §31.13 — every step is reachable, always.
+ *
+ * The rail used to open a step only when every step before it was complete,
+ * with "Finish Rooms first" on the ones it refused. That is defensible for a
+ * wizard somebody is walking through once; it is wrong for a screen people come
+ * back to for years, where "I need to add a room" should not require finishing
+ * the session dates first. Nothing is lost by opening them: a forward jump
+ * still commits every step it passes that is ready, and skips the ones that are
+ * not — see `jumpTo`, which now reports what it skipped rather than refusing to
+ * move. `problemAt` still guards **Next**, which is the deliberate "I have
+ * finished this step" action.
+ *
+ * `unfinished` is therefore a marker, not a gate: the dot says a step still
+ * wants something, and you may go and look at it.
+ */
+function Rail({ step, unfinished, onJump, disabled }: {
   step: number;
-  /** The last step whose prerequisites are all filled in. */
-  furthest: number;
+  /** Steps still missing something — drawn with a ring, never locked. */
+  unfinished: (n: number) => boolean;
   onJump: (n: number) => void;
   disabled: boolean;
 }) {
@@ -215,11 +272,12 @@ function Rail({ step, furthest, onJump, disabled }: {
       need clicking to find out.
     */
     <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 14 }}>
-      {STEP_TITLES.map((label, i) => {
-        const n = i + 1;
-        const state = n < step ? "done" : n === step ? "now" : "todo";
-        // Anything already passed, plus anything whose prerequisites are met.
-        const open = n <= Math.max(step, furthest);
+      {WIZARD_STEPS.map((n, i) => {
+        const label = STEP_TITLES[n - 1];
+        // "Done" is about position, not about the numbers: the sequence skips
+        // step 9, so `n < step` would call Settings undone while standing on it.
+        const state = i < stepIndex(step) ? "done" : n === step ? "now" : "todo";
+        const wants = unfinished(n);
         return (
           <div key={label} style={{
             display: "flex", alignItems: "flex-start", minWidth: 0,
@@ -239,22 +297,19 @@ function Rail({ step, furthest, onJump, disabled }: {
             )}
             <button
               type="button"
-              onClick={() => open && onJump(n)}
-              disabled={disabled || !open || n === step}
+              onClick={() => onJump(n)}
+              disabled={disabled || n === step}
               aria-current={state === "now" ? "step" : undefined}
               title={
                 n === step ? `${label} — you are here`
-                  : open ? `Go to ${label}`
-                  // Named, not just greyed: "why can I not click this?" has an
-                  // answer, and it is always the same one.
-                  : `Finish ${STEP_TITLES[furthest - 1]} first`
+                  : wants ? `Go to ${label} — it still wants something`
+                  : `Go to ${label}`
               }
               style={{
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
                 flex: "0 1 auto", minWidth: 0, maxWidth: 104,
                 background: "none", border: "none", padding: 0, font: "inherit",
-                cursor: !open || n === step || disabled ? "default" : "pointer",
-                opacity: open ? 1 : 0.45,
+                cursor: n === step || disabled ? "default" : "pointer",
               }}>
               <span
                 // The current step is lifted, ringed and gently pulsing — at a
@@ -267,9 +322,15 @@ function Rail({ step, furthest, onJump, disabled }: {
                   font: `600 ${state === "now" ? 11 : 10}px/1 var(--mono, monospace)`,
                   background: state === "done" ? "var(--accent)" : state === "now" ? "var(--brand)" : "var(--paper)",
                   color: state === "todo" ? "var(--ink-faint)" : "#fff",
-                  border: `1.5px solid ${state === "todo" ? "var(--line)" : "transparent"}`,
+                  // Amber ring = "this one still wants something", which is the
+                  // whole of what used to be a locked dot. It informs where the
+                  // lock only refused.
+                  border: `1.5px solid ${
+                    wants && state !== "now" ? "var(--amber)"
+                      : state === "todo" ? "var(--line)" : "transparent"
+                  }`,
                   transition: "width 220ms ease, height 220ms ease, background 300ms ease",
-                }}>{state === "done" ? "✓" : n}</span>
+                }}>{state === "done" && !wants ? "✓" : i + 1}</span>
               {/*
                 Named under its dot rather than beside it: eleven labels in a row
                 pushed the dots apart unevenly, since "Curriculum" is three times
@@ -440,7 +501,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * visit; in the URL it is spent the moment they navigate.
    */
   startWing?: string | null;
-  onClose: (reason: "saved" | "discarded") => void;
+  /**
+   * How the wizard was left.
+   *
+   * §31.13 adds `allocation`: the Settings step's door to the Master Grid's
+   * Lesson Grid, which is neither finishing nor abandoning — the draft is saved
+   * and stays resumable, and the caller decides where "the allocation" is.
+   */
+  onClose: (reason: "saved" | "discarded" | "allocation") => void;
 }) {
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
@@ -486,7 +554,9 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           // Loading is not editing. Everything here is already saved, so
           // nothing is owed to the server until somebody changes it.
           touched.current.clear();
-          setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt ?? d.currentStep)));
+          // §31.13 — a draft saved on the old step 9 resumes on Settings, since
+          // there is no longer an Allocation step to put anybody on.
+          setStep(visibleStep(startAt ?? d.currentStep));
         } else if (d.prefilled && d.answers) {
           /**
            * §27.12 — the school's own masters, rebuilt but NOT saved.
@@ -499,9 +569,9 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
            */
           setAnswers(d.answers);
           for (const k of Object.keys(d.answers)) touched.current.add(k);
-          setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt ?? d.currentStep ?? 1)));
+          setStep(visibleStep(startAt ?? d.currentStep ?? 1));
         } else if (startAt) {
-          setStep(Math.min(TOTAL_STEPS, Math.max(1, startAt)));
+          setStep(visibleStep(startAt));
         }
       })
       .catch(() => { /* an unreadable draft is not a reason to block a new one */ })
@@ -623,25 +693,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
         codes.add(code);
       }
     }
-    if (step === 9) {
-      // Only "over" blocks. A class that is UNDER its week is a warning, not an
-      // error: free periods are a real choice some schools make, and Readiness
-      // says so plainly on the next screen.
-      const weeks = answers.weeks ?? {};
-      const cellsByClass = new Map<string, number>();
-      for (const c of answers.curriculum ?? []) {
-        cellsByClass.set(c.className, (cellsByClass.get(c.className) ?? 0) + c.periodsPerWeek);
-      }
-      const { classes } = planClasses(answers.wings ?? []);
-      for (const c of classes) {
-        const week = weeks[c.wing];
-        const capacity = (week?.periodsPerDay ?? 8) * (week?.workingDays ?? [1, 2, 3, 4, 5]).length;
-        const total = cellsByClass.get(c.className) ?? 0;
-        if (total > capacity) {
-          return `${c.className} is given ${total} periods a week but ${c.wing}'s week holds ${capacity}. Reduce a subject, or lengthen the week on step 5.`;
-        }
-      }
-    }
+    /*
+      §31.13 — there was a step 9 check here: no class may be given more
+      periods than its wing's week holds. It is deliberately not carried over
+      as dead code, because the rule did not move with the step — the Master
+      Grid's Lesson Grid enforces it on the cell being typed into
+      (`computeLoads` / `assertWithinWeek`, §27), which is both earlier and
+      more precise than a banner on a step somebody is trying to leave.
+    */
     return null;
   };
 
@@ -664,13 +723,12 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     if (n === 3) return { configs: await commitWings(answers) };
     if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
     if (n === 5) { await commitWeeks(answers); return undefined; }
-    /**
-     * §31.10 — step 9 has a second door now (the Master Grid's Lesson Grid
-     * tab), so what "commit the allocation" means lives in one module that
-     * both call. The precondition it documents is satisfied here: `next()`
-     * persists the draft before it reaches `commitStep`.
-     */
-    if (n === ALLOCATION_STEP) return commitAllocation(answers);
+    /*
+      §31.13 — step 9 is not in `WIZARD_STEPS`, so it never reaches here.
+      Committing the allocation is the Master Grid Lesson Grid's Save, which
+      calls the same `commitAllocation` module. There is one commit path; the
+      wizard simply no longer walks it.
+    */
     // Steps 6–10 all go through the §16 importer, which is what makes them
     // idempotent — pressing Next twice, or coming back, creates nothing extra.
     if (n >= 6 && n <= 10) {
@@ -680,18 +738,16 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
   };
 
   /**
-   * The furthest step that can be opened right now.
+   * §31.13 — which steps still want something.
    *
-   * "Freely, if the data entry is filled" — so a step is reachable when every
-   * step before it is complete. Derived from the answers rather than remembered
-   * as a high-water mark, which means it survives a refresh, a different
-   * machine, and going back to empty something out: take the teachers away and
-   * the steps after them stop being reachable, which is the honest answer.
+   * This used to be `furthest`: the first incomplete step, and the point past
+   * which the rail refused to go. Every step is open now, so the same question
+   * has a better answer — mark the steps that are not finished and let somebody
+   * go and look at any of them. Derived from the answers rather than remembered
+   * as a high-water mark, so it survives a refresh, a different machine, and
+   * going back to empty something out.
    */
-  const furthest = (() => {
-    for (let n = 1; n <= TOTAL_STEPS; n++) if (problemAt(n)) return n;
-    return TOTAL_STEPS;
-  })();
+  const unfinished = (n: number) => problemAt(n) !== null;
 
   /**
    * Jump to a step from the rail.
@@ -707,28 +763,48 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     if (busy || target === step) return;
     setPraise(null);
     setError(null);
-    if (target < step) {
+    if (stepIndex(target) < stepIndex(step)) {
       if (await persist(target)) setStep(target);
       return;
     }
-    for (let n = step; n < target; n++) {
-      const bad = problemAt(n);
-      if (bad) {
-        setError(`${STEP_TITLES[n - 1]} is not finished yet — ${bad}`);
-        if (await persist(n)) setStep(n);
-        return;
-      }
-    }
+    /*
+      §31.13 — a forward jump commits what it can and ALWAYS lands.
+
+      It used to refuse: the first incomplete step it passed became an error
+      and the destination was never reached. That is the behaviour "let me go
+      to any tab" is about — somebody who wants to add a room should not have
+      to finish the session dates to get there.
+
+      So each step in between is committed only if it is ready, and the ones
+      that are not are named afterwards rather than blocking. Nothing is lost
+      by skipping one: every commit is idempotent, so pressing Next through it
+      later writes exactly the rows this pass did not.
+    */
     setBusy(true);
+    const skipped: string[] = [];
     try {
-      for (let n = step; n < target; n++) await commitStep(n);
+      for (const n of WIZARD_STEPS) {
+        if (stepIndex(n) < stepIndex(step) || stepIndex(n) >= stepIndex(target)) continue;
+        if (problemAt(n)) { skipped.push(STEP_TITLES[n - 1]); continue; }
+        await commitStep(n);
+      }
     } catch (e) {
+      // A server refusal is different from an unfinished step, and is still
+      // worth stopping for: it means a commit that looked ready was not.
       setError(asMessage(e));
       setBusy(false);
       return;
     }
     setBusy(false);
-    if (await persist(target)) setStep(target);
+    if (await persist(target)) {
+      setStep(target);
+      if (skipped.length > 0) {
+        setError(
+          `Saved what was ready. ${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} `
+          + "still unfinished — the rail marks them, and nothing is lost.",
+        );
+      }
+    }
   };
 
   /**
@@ -823,25 +899,36 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
       return;
     }
     setBusy(false);
-    if (await persist(Math.min(TOTAL_STEPS, step + 1))) {
+    if (await persist(stepAfter(step))) {
       // Celebrated only after the advance is real — the commit landed AND the
       // new position saved. A flourish for something that then failed to save
       // is worse than no flourish at all.
       setPraise(wellDone(step, created));
       celebrate(burstFrom.current ?? undefined);
-      setStep((s) => Math.min(TOTAL_STEPS, s + 1));
+      setStep((s) => stepAfter(s));
     }
   };
 
   const back = async () => {
     setPraise(null);
-    if (step === 1) return;
-    await persist(step - 1);
-    setStep((s) => Math.max(1, s - 1));
+    if (step === WIZARD_STEPS[0]) return;
+    await persist(stepBefore(step));
+    setStep((s) => stepBefore(s));
   };
 
   const saveAndClose = async () => {
     if (await persist(step)) onClose("saved");
+  };
+
+  /**
+   * §31.13 — save, then hand over to the Master Grid's Lesson Grid.
+   *
+   * `persist` and not `finish`: the setup is not over, and marking the draft
+   * complete here would stop it offering to resume — somebody who goes to
+   * allocate and comes back would find the wizard with nothing to carry on.
+   */
+  const openAllocation = async () => {
+    if (await persist(step)) onClose("allocation");
   };
 
   const discard = async () => {
@@ -887,10 +974,10 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
             transition: "max-height 240ms ease, opacity 180ms ease",
           }}>
             <Progress step={step} />
-            <Rail step={step} furthest={furthest} onJump={(n) => void jumpTo(n)} disabled={busy} />
+            <Rail step={step} unfinished={unfinished} onJump={(n) => void jumpTo(n)} disabled={busy} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
-            <span>Step {step} of {TOTAL_STEPS} · {STEP_TITLES[step - 1]} · {school.name}</span>
+            <span>Step {stepIndex(visibleStep(step)) + 1} of {WIZARD_STEPS.length} · {STEP_TITLES[step - 1]} · {school.name}</span>
             <span style={{ flex: 1 }} />
             <button
               onClick={() => setFocus(!focus)}
@@ -986,8 +1073,13 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
             : step === 6 ? <StepSubjects answers={answers} onChange={patch} />
             : step === 7 ? <StepTeachers answers={answers} onChange={patch} />
             : step === 8 ? <StepRooms answers={answers} onChange={patch} />
-            : step === 9 ? <StepAllocation answers={answers} onChange={patch} onFocusMode={setFocus} />
-            : <StepSettings answers={answers} onChange={patch} />
+            : (
+              <StepSettings
+                answers={answers}
+                onChange={patch}
+                onOpenAllocation={() => { void openAllocation(); }}
+              />
+            )
           )}
           {error && (
             <div style={{
@@ -1007,7 +1099,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           borderTop: "1px solid var(--line)", background: "var(--offwhite)",
           display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
         }}>
-          <button className="btn" onClick={back} disabled={busy || step === 1}>← Back</button>
+          <button className="btn" onClick={back} disabled={busy || step === WIZARD_STEPS[0]}>← Back</button>
           <button className="btn" onClick={discard} disabled={busy}
             style={{ border: "none", background: "none", color: "var(--ink-faint)", fontSize: 12 }}>
             Discard

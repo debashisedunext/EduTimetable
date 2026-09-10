@@ -35,7 +35,14 @@ const NAV: NavGroup[] = [
     items: [
       { icon: "calendar", label: "Timetables", to: "/", requires: PERMISSIONS.MASTERS_MANAGE },
       { icon: "book", label: "Masters", to: "/masters", requires: PERMISSIONS.MASTERS_MANAGE },
-      { icon: "grid", label: "Allocation", to: "/allocation", requires: PERMISSIONS.MASTERS_MANAGE },
+      /*
+        §31.13 — directly below Masters, and standing where "Allocation" used
+        to. The Lesson Grid tab IS the Allocation grid (§31.10), so two entries
+        would have led to one screen; `/allocation` still redirects there for
+        anybody with the link. It needs only `timetable.view.all` because four
+        of its six tabs are read-only — the two editable ones gate themselves.
+      */
+      { icon: "master", label: "Master Grid", to: "/master-grid", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
       { icon: "wand", label: "Timetable Week", to: "/setup", requires: PERMISSIONS.MASTERS_MANAGE },
       { icon: "import", label: "Import from Excel", to: "/import", requires: PERMISSIONS.MASTERS_MANAGE },
       // §23 — the same pipeline, with the ERP as its source instead of a file.
@@ -50,11 +57,16 @@ const NAV: NavGroup[] = [
   {
     label: "Manage",
     items: [
-      { icon: "grid", label: "Allocation Matrix", to: "/matrix", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
-      // §31 — beside the Matrix, because it is the same week read the same way;
-      // what differs is that this one fits the whole school on one screen.
-      { icon: "master", label: "Master Grid", to: "/master-grid", requires: PERMISSIONS.TIMETABLE_VIEW_ALL },
-      { icon: "board", label: "Draft Board", to: "/board", requires: PERMISSIONS.TIMETABLE_EDIT },
+      /*
+        §31.13 — the Allocation Matrix and the Draft Board are not listed here
+        any more. Both are Master Grid tabs now (Whole and Draft board), and a
+        menu that offers the same week twice teaches people that two entries
+        must be two different things.
+
+        The ROUTES stay. Generate links to `/matrix`, Publish links to `/board`
+        three times, and somebody has both bookmarked — removing a menu entry
+        is a change to how a screen is found, not a decision to delete it.
+      */
       { icon: "publish", label: "Publish", to: "/publish", requires: PERMISSIONS.TIMETABLE_PUBLISH },
       { icon: "swap", label: "Substitute Center", to: "/substitutes", requires: PERMISSIONS.SUBSTITUTE_MANAGE },
       // §29.2 — beside Substitute Center on purpose: both are "somebody is not
@@ -114,12 +126,15 @@ const NAV: NavGroup[] = [
  * their own scrolling between them. An inset around one of those is a margin
  * inside a margin, and on the Allocation grid it was costing rows of school.
  */
-const FULL_BLEED = new Set(["/guided-setup", "/allocation"]);
+// §31.13 — `/allocation` is a redirect now, so it never renders anything
+// to bleed. `/master-grid` wants the width for the same reason the Allocation
+// grid did: it is the widest screen in the app.
+const FULL_BLEED = new Set(["/guided-setup", "/master-grid"]);
 
 const TITLES: Record<string, [string, string]> = {
   "/": ["Build", "Timetables"],
   "/masters": ["Build", "Masters"],
-  "/allocation": ["Build", "Allocation"],
+  "/master-grid": ["Build", "Master Grid"],
   "/setup": ["Build", "Timetable Week"],
   "/import": ["Build", "Import Master Data"],
   "/sync": ["Build", "Sync Masters from the ERP"],
@@ -128,7 +143,7 @@ const TITLES: Record<string, [string, string]> = {
   "/readiness": ["Build", "Readiness Dashboard"],
   "/generate": ["Build", "Generate Timetable"],
   "/matrix": ["Manage", "Full Allocation Matrix"],
-  "/master-grid": ["Manage", "Master Grid"],
+
   "/board": ["Manage", "Draft Board"],
   "/publish": ["Manage", "Publish Confirmation"],
   "/substitutes": ["Manage", "Substitute Teacher Center"],

@@ -223,10 +223,12 @@ button { font-family: inherit; cursor: pointer; }
 
 /* §8.3 — the same wizard as an ordinary page.
    No border, shadow or radius: those say "this is a panel floating above the
-   page", and it no longer is. It still fills the height it is given, because
-   step 9's grid pins its own header and footer and scrolls between them — take
-   the fixed height away and the page grows a second scrollbar under the first,
-   and the row somebody is pointing at moves as they reach it. */
+   page", and it no longer is. It still fills the height it is given: the tall
+   steps pin their own header and footer and scroll between them, and taking
+   the fixed height away grows a second scrollbar under the first, so the row
+   somebody is pointing at moves as they reach it. (§31.13 moved the last such
+   step — Allocation — to the Master Grid; the rule stays because the shape it
+   protects belongs to any grid step, not to that one.) */
 .pane-page {
   display: flex; flex-direction: column;
   /* The room there IS, not the viewport minus a number somebody measured once:

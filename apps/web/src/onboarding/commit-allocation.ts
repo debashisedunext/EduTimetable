@@ -1,13 +1,16 @@
 /**
  * §31.10 — what "commit the allocation" means, defined once.
  *
- * The Allocation grid now has two doors: the guided setup's step 9
- * (`/allocation`, which is `<GuidedSetup startAt={9} />` and nothing else) and
- * the Master Grid's **Lesson Grid** tab. Both edit the same draft answers and
- * both must land the same rows in the same order.
+ * The Allocation grid had two doors — the guided setup's step 9 and the Master
+ * Grid's **Lesson Grid** tab. §31.13 removed the first: the wizard runs School
+ * → … → Rooms → Settings, and Settings offers a button across to the Lesson
+ * Grid instead. So there is one caller now, and this module stays because the
+ * SEQUENCE is the thing worth having in one place, not because two callers
+ * need it — `ALLOCATION_STEP` is still 9 on the server, and a second door
+ * appearing later must land the same rows in the same order.
  *
- * The order is not incidental. Step 9 is two calls, and they are two rather
- * than one because they write to different places:
+ * The order is not incidental. It is two calls rather than one because they
+ * write to different places:
  *
  *  1. **`commitWeeks(answers, { changedOnly: true })`** — §28 lets this grid
  *     change a period's *length*, which is a `timetable_config` fact (a step 5

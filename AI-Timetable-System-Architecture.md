@@ -2678,6 +2678,23 @@ One definition (`ladderSequence`, in `wizard.ts`, which `suggest.ts`'s `AT` now 
 
 The repair migration renumbers only schools whose **every** class name is on the ladder. A school with a Playgroup or a Grade 5R is left completely alone: reordering somebody's own vocabulary on a guess is worse than the tie being fixed, and `classSequence` stops those schools acquiring a collision from here on. For every school it does touch, the relative order either stays exactly as it was — the classes were already in ladder order, differently numbered — or was undefined. No school that was reading correctly changes.
 
+
+### 31.13 The guided setup hands the allocation over, and every step is reachable
+
+Four changes, and the first three are one decision followed through.
+
+**The wizard has no Allocation step.** Rooms is followed by Settings, and Settings carries a button across to the Master Grid's Lesson Grid — which is the same `StepAllocation` component (§31.10), so nothing was rebuilt and nothing moved twice. A screen people come back to for years does not belong halfway through a nine-question setup.
+
+**The step NUMBERS did not change.** `WIZARD_STEPS = [1..8, 10]` is a list of which steps are shown, not a smaller `TOTAL_STEPS`. `POST /onboarding/commit/:step`, the stored `current_step`, `migrateStep` on the server and `ALLOCATION_STEP` in `commit-allocation.ts` all still mean what they meant; renumbering would have been a second migration of everybody's stored step for a change to a menu. A draft saved on step 9 resumes on Settings, through `visibleStep`.
+
+The wizard therefore no longer commits the allocation, and that is deliberate rather than an omission: `/onboarding/finish` only ever wrote settings, so the rows were always written by whichever step was walked, and the Lesson Grid's Save is now the one that writes these. The proposal is not lost — the Lesson Grid reads the same draft answers, so it opens on the suggestion `suggestCurriculum` had already made.
+
+**Every step is reachable, always.** The rail used to open a step only when every step before it was complete, with "Finish Rooms first" on the ones it refused. Defensible for a wizard walked once; wrong for a screen somebody returns to, where adding a room should not require finishing the session dates. So a forward jump commits each step it passes **that is ready**, skips the ones that are not, and always lands — naming what it skipped afterwards instead of refusing to move. Nothing is lost by a skip: every commit is idempotent, so pressing Next through that step later writes exactly the rows the jump did not. `problemAt` still guards **Next**, which is the deliberate "I have finished this step" action, and the rail marks an unfinished step with an amber ring — informing where the lock only refused.
+
+**The Lesson Grid has no draft controls.** Curriculum and mappings are `class_subjects` and `subject_mappings`: master rows, one set per school, which every draft of every wing is generated *from*. A draft picker there would offer a choice that changes nothing and imply that "Class 5-A gets 6 periods of Maths" could differ between Draft #3 and Draft #4. It cannot. The other four tabs are placements — which is exactly what a draft *is* — so they keep the picker, the Draft/Published select and the chip, and follow whatever is chosen.
+
+**The nav lost two entries and gained a move.** Allocation Matrix and Draft Board are Master Grid tabs now (Whole and Draft board), and a menu offering the same week twice teaches people that two entries must be two different things. Master Grid moves to **Build, directly below Masters**, standing where Allocation used to — its Lesson Grid *is* that screen. The **routes stay**: Generate links to `/matrix`, Publish links to `/board` three times, and people bookmark screens; removing a menu entry is a change to how a screen is found, not a decision to delete it. `/allocation` redirects to `/master-grid?tab=lesson`, which is also what the Settings step's button opens.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
