@@ -275,7 +275,22 @@ export async function commitWings(answers: Record<string, any>): Promise<number>
     if (existing.some((c) => c.name.toLowerCase() === w.name.toLowerCase())) continue;
     await api("/timetable-configs", {
       method: "POST",
-      body: JSON.stringify({ name: w.name, academicYearId: year.id }),
+      /*
+        §30.9 — the pool the wing says it is in.
+
+        The wizard never creates an individual timetable itself (they come from
+        the Timetables screen, which is where the choice is offered), so in
+        practice this always sends `grouped` and the individual ones are
+        skipped above by name. It is sent anyway because the alternative is a
+        default that is right only by coincidence: if an individual wing ever
+        did reach here it would be created as a wing of the main school, which
+        would silently put its classes into the shared pool.
+      */
+      body: JSON.stringify({
+        name: w.name,
+        academicYearId: year.id,
+        mode: w.individual ? "individual" : "grouped",
+      }),
     });
   }
   return wings.length;
@@ -346,13 +361,22 @@ export function StepClasses({ answers, onChange, startWing = null }: {
     const i = wings.findIndex((w) => w.name.trim().toLowerCase() === want);
     return i < 0 ? 0 : i;
   });
-  const wing = wings[active];
+  /*
+    §30.9 — clamped, because the list can SHRINK under a stored index.
+
+    The wizard narrows `answers.wings` to the resource pool being set up, so
+    switching from a school with three grouped wings to an individual timetable
+    leaves one. Without this, `active` still pointed at 2 and the step rendered
+    "Add a wing on the previous step first" for a wing that is plainly there.
+  */
+  const idx = wings.length === 0 ? 0 : Math.min(active, wings.length - 1);
+  const wing = wings[idx];
   const { classes, issues } = useMemo(() => planClasses(wings), [wings]);
   const summary = useMemo(() => planSummary({ wings }), [wings]);
 
   if (!wing) return <Note tone="warn">Add a wing on the previous step first.</Note>;
 
-  const update = (w: WingAnswer) => onChange({ wings: wings.map((x, i) => (i === active ? w : x)) });
+  const update = (w: WingAnswer) => onChange({ wings: wings.map((x, i) => (i === idx ? w : x)) });
   const override = (className: string, patch: { sections?: number; removed?: boolean }) =>
     update({ ...wing, overrides: { ...(wing.overrides ?? {}), [className]: { ...(wing.overrides?.[className] ?? {}), ...patch } } });
 
@@ -372,9 +396,9 @@ export function StepClasses({ answers, onChange, startWing = null }: {
               className="btn"
               style={{
                 padding: "5px 11px", fontSize: 12,
-                background: i === active ? "var(--brand)" : "var(--paper)",
-                color: i === active ? "#fff" : "var(--ink)",
-                borderColor: i === active ? "var(--brand)" : "var(--line)",
+                background: i === idx ? "var(--brand)" : "var(--paper)",
+                color: i === idx ? "#fff" : "var(--ink)",
+                borderColor: i === idx ? "var(--brand)" : "var(--line)",
               }}>{w.name}</button>
           ))}
         </div>
@@ -488,7 +512,9 @@ export function StepWeek({ answers, onChange }: {
 }) {
   const wings: WingAnswer[] = answers.wings ?? [];
   const [active, setActive] = useState(0);
-  const wing = wings[active];
+  // §30.9 — same clamp, same reason: the scope switcher can shorten this list.
+  const idx = wings.length === 0 ? 0 : Math.min(active, wings.length - 1);
+  const wing = wings[idx];
   if (!wing) return <Note tone="warn">Add a wing on step 3 first.</Note>;
 
   const weeks: Record<string, WeekAnswer> = answers.weeks ?? {};
@@ -516,9 +542,9 @@ export function StepWeek({ answers, onChange }: {
             <button key={w.name} onClick={() => setActive(i)} className="btn"
               style={{
                 padding: "5px 11px", fontSize: 12,
-                background: i === active ? "var(--brand)" : "var(--paper)",
-                color: i === active ? "#fff" : "var(--ink)",
-                borderColor: i === active ? "var(--brand)" : "var(--line)",
+                background: i === idx ? "var(--brand)" : "var(--paper)",
+                color: i === idx ? "#fff" : "var(--ink)",
+                borderColor: i === idx ? "var(--brand)" : "var(--line)",
               }}>{w.name}</button>
           ))}
         </div>

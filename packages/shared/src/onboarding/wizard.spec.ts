@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   CLASS_LADDER,
   CLASS_LADDER_SHORT,
+  GROUPED_SCOPE,
   ladderSequence,
+  wingScope,
   classSheets,
   planClasses,
   planSummary,
@@ -27,6 +29,54 @@ const wing = (name: string, fromIndex: number, toIndex: number, sections = 2, ov
 describe("§15.3 the class ladder", () => {
   it("has a short label for every rung — the slider cannot show 'Pre-Nursery'", () => {
     expect(CLASS_LADDER_SHORT).toHaveLength(CLASS_LADDER.length);
+  });
+
+  it("puts every ordinary wing in one pool and each individual one in its own (§30.9)", () => {
+    expect(wingScope({ name: "Primary Wing" })).toBe(GROUPED_SCOPE);
+    expect(wingScope({ name: "Primary Wing", individual: false })).toBe(GROUPED_SCOPE);
+    expect(wingScope({ name: "Senior Wing" })).toBe(wingScope({ name: "Primary Wing" }));
+    // Two individual timetables share nothing — not even with each other.
+    expect(wingScope({ name: "Weekly", individual: true }))
+      .not.toBe(wingScope({ name: "Saturday", individual: true }));
+    expect(wingScope({ name: "Weekly", individual: true })).not.toBe(GROUPED_SCOPE);
+    // The name is the key, so it is compared the way every other name in this
+    // wizard is: trimmed and case-insensitively.
+    expect(wingScope({ name: " weekly ", individual: true }))
+      .toBe(wingScope({ name: "Weekly", individual: true }));
+  });
+
+  it("does NOT report a class claimed by two wings in different pools (§30.9)", () => {
+    // The exact shape that was wrong on screen: a main timetable and an
+    // individual one both running Class 1 to Class 6.
+    const { classes, issues } = planClasses([
+      { name: "Main Timetable 2026-27", fromIndex: 4, toIndex: 9, sections: 4 },
+      { name: "Weekly Timetable", fromIndex: 4, toIndex: 9, sections: 1, individual: true },
+    ]);
+    expect(issues).toEqual([]);
+    // Both wings keep every class — an individual timetable exists precisely so
+    // it can teach Class 1 while the main wings also teach Class 1.
+    const byWing = new Map<string, number>();
+    for (const c of classes) byWing.set(c.wing, (byWing.get(c.wing) ?? 0) + 1);
+    expect(byWing.get("Main Timetable 2026-27")).toBe(6);
+    expect(byWing.get("Weekly Timetable")).toBe(6);
+  });
+
+  it("still reports a class claimed by two wings in the SAME pool", () => {
+    const { issues } = planClasses([
+      { name: "Middle", fromIndex: 4, toIndex: 9, sections: 2 },
+      { name: "Senior", fromIndex: 9, toIndex: 12, sections: 2 },
+    ]);
+    // Class 6 is index 9 in both ranges — one pool, so this is still an error.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("Class 6");
+  });
+
+  it("keeps two individual timetables out of each other's way", () => {
+    const { issues } = planClasses([
+      { name: "Weekly", fromIndex: 4, toIndex: 6, sections: 1, individual: true },
+      { name: "Saturday", fromIndex: 4, toIndex: 6, sections: 1, individual: true },
+    ]);
+    expect(issues).toEqual([]);
   });
 
   it("gives every ladder name its 1-based position, and an unknown name 0", () => {

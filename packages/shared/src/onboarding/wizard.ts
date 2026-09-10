@@ -154,7 +154,39 @@ export interface WingAnswer {
   sections: number;
   /** Per-class overrides, by class name — the grid's edits. */
   overrides?: Record<string, { sections?: number; removed?: boolean }>;
+  /**
+   * §30.9 — this wing stands alone, in a §30 resource pool of its own.
+   *
+   * A boolean is enough to identify the pool, and that is not a shortcut: an
+   * individual pool holds **exactly one** timetable — `assertAdmits` is the
+   * rule, and CLAUDE.md states it as "an individual timetable cannot have more
+   * than one wing" — so the wing IS the pool. Grouped wings all share the
+   * session's one pool, so `false`/absent identifies that pool just as
+   * completely.
+   *
+   * Absent means grouped, which is every wing that existed before §30.9 and
+   * every wing the wizard creates itself.
+   */
+  individual?: boolean;
 }
+
+/**
+ * §30.9 — which resource pool a wing competes in.
+ *
+ * The string is an identity, not a label: two wings share classes, rooms,
+ * teachers and a timetable slot only when this matches. It exists because
+ * "which pool?" was being answered in three places by three different pieces of
+ * code, all of which had the same bug — none of them asked.
+ *
+ * `planClasses` uses it to decide whether two wings claiming Class 1 are in
+ * conflict (§30 says they are not, if they are in different pools), and the
+ * guided setup uses it to decide which wings to show at all.
+ */
+export const wingScope = (w: Pick<WingAnswer, "name" | "individual">): string =>
+  w.individual ? `individual:${w.name.trim().toLowerCase()}` : "grouped";
+
+/** The shared pool every ordinary wing belongs to. */
+export const GROUPED_SCOPE = "grouped";
 
 export interface SessionAnswer {
   name: string;
@@ -179,10 +211,22 @@ export interface PlannedClass {
 /**
  * Expand the wings into the class rows they describe.
  *
- * A class named by two wings is a data error rather than something to merge:
- * `classes.name` is unique per school, so "Class 6 in Middle and Class 6 in
- * Senior" cannot both exist. Reported, not silently deduplicated — the admin
- * has to decide which wing teaches it.
+ * A class named by two wings **in the same pool** is a data error rather than
+ * something to merge: within a §30 resource group a class-section belongs to
+ * exactly one timetable, so "Class 6 in Middle and Class 6 in Senior" cannot
+ * both exist. Reported, not silently deduplicated — the admin has to decide
+ * which wing teaches it.
+ *
+ * Across pools it is not an error at all, and §30.9 is where that was fixed.
+ * `class_sections` is unique on `(class, section, academic_year,
+ * resource_group_id)` precisely so an individual timetable can run Class 1
+ * while the main wings also run Class 1 — the two rows are different children
+ * in different weeks, sharing nothing.
+ *
+ * The `classes` row itself is still one per school, which is why the returned
+ * list may name the same class twice: once per pool. The §16 importer skips the
+ * second by natural key and files the SECTIONS in their own pools, which is the
+ * behaviour `classSectionsInPool` exists for.
  */
 export function planClasses(wings: WingAnswer[]): {
   classes: PlannedClass[];
@@ -190,9 +234,22 @@ export function planClasses(wings: WingAnswer[]): {
 } {
   const classes: PlannedClass[] = [];
   const issues: Array<{ message: string; fix: string }> = [];
+  /*
+    §30.9 — keyed by POOL and class, not by class alone.
+
+    "A class belongs to one wing" was never the whole rule; §30 made it
+    "**within a resource group**, a class-section belongs to exactly one
+    timetable". This map was the last place still enforcing the old one, and
+    the effect was a school being told Class 1 was in two timetables that
+    cannot see each other — with the offered fixes ("narrow one of the two
+    ranges", "remove Class 1 from one of them") both being changes it must not
+    make. An individual timetable exists precisely so it can teach Class 1
+    while the main wings also teach Class 1.
+  */
   const claimedBy = new Map<string, string>();
 
   for (const wing of wings ?? []) {
+    const scope = wingScope(wing);
     const lo = Math.max(0, Math.min(CLASS_LADDER.length - 1, wing.fromIndex));
     const hi = Math.max(lo, Math.min(CLASS_LADDER.length - 1, wing.toIndex));
     for (let i = lo; i <= hi; i++) {
@@ -200,7 +257,7 @@ export function planClasses(wings: WingAnswer[]): {
       const over = wing.overrides?.[className];
       if (over?.removed) continue;
 
-      const owner = claimedBy.get(className);
+      const owner = claimedBy.get(`${scope}\u0000${className}`);
       if (owner && owner !== wing.name) {
         issues.push({
           message: `${className} is in both ${owner} and ${wing.name}.`,
@@ -208,7 +265,7 @@ export function planClasses(wings: WingAnswer[]): {
         });
         continue;
       }
-      claimedBy.set(className, wing.name);
+      claimedBy.set(`${scope}\u0000${className}`, wing.name);
 
       const count = Math.max(1, Math.min(60, over?.sections ?? wing.sections ?? 1));
       classes.push({

@@ -197,6 +197,45 @@ export class OnboardingService {
     return { dismissedAt: at.toISOString() };
   }
 
+  /**
+   * §30.9 — which pool each wing is in, read from the school every time.
+   *
+   * `individual` is **not an answer**. It is a fact about the timetable, chosen
+   * on the Timetables screen and changeable afterwards (§30.6a moves a
+   * timetable between pools), so a copy of it stored in somebody's draft is a
+   * copy that can be wrong. Two ways it would be: a draft saved before this
+   * field existed carries none at all — which is every draft in every school
+   * today, and would have left this bug exactly where it was — and a draft
+   * saved before a move carries the old answer.
+   *
+   * So it is stamped on the way out of the database rather than trusted from
+   * the draft. Matched by NAME, which is what `commitWings`, the §16 importer
+   * and the wizard's own tab strip all match wings by; a wing the school has no
+   * config for yet is left alone, because it is about to create a grouped one.
+   */
+  private async stampPools(schoolId: number, answers: Record<string, unknown>) {
+    if (!Array.isArray(answers.wings) || answers.wings.length === 0) return answers;
+    const configs = await this.prisma.timetableConfig.findMany({
+      where: { schoolId },
+      select: { name: true, resourceGroup: { select: { mode: true } } },
+    });
+    const mode = new Map(configs.map((c) => [c.name.trim().toLowerCase(), c.resourceGroup?.mode]));
+    return {
+      ...answers,
+      wings: (answers.wings as Array<Record<string, unknown>>).map((w) => {
+        const found = mode.get(String(w.name ?? "").trim().toLowerCase());
+        if (found === undefined) return w;
+        // Written only when true, so a grouped wing's answers are byte-identical
+        // to what they were — which is what keeps every existing draft unchanged.
+        // The stored value is DROPPED rather than merged: a draft saved while a
+        // timetable was individual must not keep saying so after §30.6a moves it.
+        const rest = { ...w };
+        delete rest.individual;
+        return found === "individual" ? { ...rest, individual: true } : rest;
+      }),
+    };
+  }
+
   /** The half-finished setup, or null. */
   async draftFor(schoolId: number, userId: number) {
     const row = await this.prisma.onboardingSession.findFirst({
@@ -207,7 +246,7 @@ export class OnboardingService {
       id: row.id,
       mode: row.mode,
       currentStep: migrateStep(row.currentStep, row.answers),
-      answers: (row.answers as Record<string, unknown>) ?? {},
+      answers: await this.stampPools(schoolId, (row.answers as Record<string, unknown>) ?? {}),
       // §24.6 — where this run's conversation begins in the audit log. Part of
       // the draft, because that is what it is a property of.
       chatSince: row.chatSince,
@@ -381,7 +420,14 @@ export class OnboardingService {
    */
   private async answersFromSchool(schoolId: number) {
     const [configs, years, subjects, teachers, school] = await Promise.all([
-      this.prisma.timetableConfig.findMany({ where: { schoolId }, orderBy: { id: "asc" } }),
+      /* §30.9 — the pool's MODE travels with the wing. Without it the wizard
+         cannot tell an individual timetable from a wing of the main school,
+         and reports Class 1 as claimed by two timetables that share nothing. */
+      this.prisma.timetableConfig.findMany({
+        where: { schoolId },
+        include: { resourceGroup: { select: { mode: true } } },
+        orderBy: { id: "asc" },
+      }),
       this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { id: "desc" } }),
       this.prisma.subject.findMany({
         where: { schoolId },
@@ -487,6 +533,15 @@ export class OnboardingService {
         // sections that already exist.
         sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0]
           ?? DEFAULT_WING_SECTIONS,
+        /*
+          §30.9 — which pool this wing competes in.
+
+          Written only when it is TRUE, so a school with no individual
+          timetables stores exactly the answers it stored before, and a draft
+          that predates this field reads as grouped — which is what every wing
+          was.
+        */
+        ...(cfg.resourceGroup?.mode === "individual" ? { individual: true } : {}),
       });
 
       const periods = await this.prisma.period.findMany({

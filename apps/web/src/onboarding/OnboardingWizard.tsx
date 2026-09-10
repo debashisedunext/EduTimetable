@@ -21,7 +21,10 @@ import { asMessage } from "../components";
 import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings } from "./steps/Structure";
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
-import { planClasses, type SubjectAnswer, type TeacherAnswer } from "@edutimetable/shared";
+import {
+  GROUPED_SCOPE, planClasses, wingScope,
+  type SubjectAnswer, type TeacherAnswer, type WingAnswer,
+} from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
 import { DraftTerms, termProblems } from "../terms/TermsEditor";
 
@@ -573,9 +576,132 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
       .finally(() => setLoading(false));
   }, []);
 
+  /**
+   * §30.9 — which §30 resource pool this setup is working on.
+   *
+   * A school's ordinary wings share one pool and are set up together; an
+   * individual timetable is a pool of its own and shares **nothing** — not a
+   * class, not a room, not a teacher's capacity. Mixing them in one wing list
+   * was the bug: the Classes step reported Class 1 as claimed by both the main
+   * timetable and an individual one, and offered two fixes the school must not
+   * make.
+   *
+   * Held here rather than in step 4 because it is not a fact about that step:
+   * the week (5), the teachers pinned to a wing (7) and the rooms (8) are all
+   * per-wing too, and a scope that changed between steps would be worse than
+   * none.
+   */
+  const [scope, setScope] = useState<string>(GROUPED_SCOPE);
+
+  const allWings: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
+  /**
+   * The scopes this school actually has, in the order the wings are stored.
+   *
+   * `grouped` is always offered even when no wing is in it yet — it is where
+   * "+ Add wing" puts one, so a school with nothing but an individual
+   * timetable must still be able to reach it.
+   */
+  const scopes = (() => {
+    const out: Array<{ key: string; label: string; count: number }> = [];
+    const grouped = allWings.filter((w) => wingScope(w) === GROUPED_SCOPE);
+    out.push({
+      key: GROUPED_SCOPE,
+      label: grouped.length === 1 ? grouped[0].name : "Main school",
+      count: grouped.length,
+    });
+    for (const w of allWings) {
+      if (wingScope(w) === GROUPED_SCOPE) continue;
+      out.push({ key: wingScope(w), label: w.name, count: 1 });
+    }
+    return out;
+  })();
+
+  /*
+    The wings this scope owns — and therefore every wing any step can see.
+
+    Filtering ONCE, here, rather than teaching twenty-five call sites about
+    pools: `answers.wings` is read by the ladder, the week, the room
+    suggestion, the teacher pinning, `planClasses` and the summary boxes, and a
+    filter at each of them is twenty-five chances to forget one.
+  */
+  const wingsInScope = allWings.filter((w) => wingScope(w) === scope);
+
+  /**
+   * What a step is handed: the draft, with `wings` narrowed to this scope.
+   *
+   * The stored draft keeps every wing — losing the others on a save would be a
+   * far worse bug than the one being fixed — so the narrowing happens on the
+   * way IN and `patch` widens again on the way out.
+   */
+  const answersInScope: Record<string, any> = { ...answers, wings: wingsInScope };
+
+  /**
+   * Put a step's edited wing list back into the full one, in place.
+   *
+   * Walked in order rather than concatenated, so a wing does not jump to the
+   * end of the tab strip for having been edited. A shorter list means a wing
+   * was removed; a longer one means a wing was added, and it is appended.
+   */
+  const mergeWings = (next: WingAnswer[]): WingAnswer[] => {
+    const incoming = [...next];
+    const out: WingAnswer[] = [];
+    for (const w of allWings) {
+      if (wingScope(w) !== scope) { out.push(w); continue; }
+      const take = incoming.shift();
+      if (take) out.push(take);
+    }
+    out.push(...incoming);
+    return out;
+  };
+
+  /*
+    §3.10a + §30.9 — arriving from "New Timetable" names the wing in the URL,
+    and that wing may be an individual timetable.
+
+    Without this the setup opens on the main school's scope, where the wing
+    just created does not appear at all — the exact "I made it and it is not
+    there" the flow exists to avoid. Once, guarded by a ref: after that the
+    switcher is the person's, and a later edit to the wings must not drag them
+    back to where they arrived.
+  */
+  const scopedToStart = useRef(false);
+  useEffect(() => {
+    if (scopedToStart.current || !startWing) return;
+    const want = startWing.trim().toLowerCase();
+    const found = allWings.find((w) => w.name.trim().toLowerCase() === want);
+    if (!found) return;
+    scopedToStart.current = true;
+    setScope(wingScope(found));
+  }, [startWing, answers.wings]);
+
   const patch = (p: Record<string, any>) => {
-    for (const k of Object.keys(p)) touched.current.add(k);
-    setAnswers((a) => ({ ...a, ...p }));
+    let payload = p;
+    if (Array.isArray(p.wings)) {
+      /*
+        A step only ever saw this scope's wings, so what comes back replaces
+        exactly those. Everything a step creates belongs to the scope it was
+        created in — an individual pool holds one timetable and the wizard
+        never makes one, so anything added here is grouped.
+      */
+      const stamped = (p.wings as WingAnswer[]).map((w) =>
+        scope === GROUPED_SCOPE
+          ? (w.individual ? { ...w, individual: false } : w)
+          : { ...w, individual: true },
+      );
+      payload = { ...p, wings: mergeWings(stamped) };
+      /*
+        Renaming the wing you are scoped to changes its scope key — the key is
+        the name, as everything else in this wizard is (`answers.weeks` is
+        keyed by wing name too). Re-key here, or the next render finds no wing
+        in scope and the screen empties under somebody's cursor.
+      */
+      if (scope !== GROUPED_SCOPE && stamped.length === 1) {
+        const moved = wingScope(stamped[0]);
+        if (moved !== scope) setScope(moved);
+      }
+    }
+    for (const k of Object.keys(payload)) touched.current.add(k);
+    setAnswers((a) => ({ ...a, ...payload }));
   };
 
   /**
@@ -649,10 +775,13 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
       if (bad) return `${bad.message} ${bad.fix}`;
     }
     if (step === 3) {
-      if ((answers.wings ?? []).length === 0) return "Add at least one wing — most schools have one to three.";
+      if (wingsInScope.length === 0) return "Add at least one wing — most schools have one to three.";
     }
     if (step === 4) {
-      const { classes, issues } = planClasses(answers.wings ?? []);
+      // §30.9 — this scope's wings. `planClasses` is pool-aware too, so this
+      // is belt and braces rather than the only guard; the filter is what stops
+      // another pool's wing being NAMED in a message about this one.
+      const { classes, issues } = planClasses(wingsInScope);
       // Refused rather than merged: `classes.name` is unique per school, so
       // which wing teaches a shared class is a decision, not a guess.
       if (issues.length > 0) return `${issues[0].message} ${issues[0].fix}`;
@@ -660,7 +789,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     }
     if (step === 5) {
       const weeks = answers.weeks ?? {};
-      for (const w of answers.wings ?? []) {
+      for (const w of wingsInScope) {
         const days = weeks[w.name]?.workingDays ?? [1, 2, 3, 4, 5];
         if (days.length === 0) return `${w.name} needs at least one working day.`;
       }
@@ -872,7 +1001,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     if (step === 5) {
       const weeks = { ...(answers.weeks ?? {}) };
       let filled = false;
-      for (const w of answers.wings ?? []) {
+      for (const w of wingsInScope) {
         if (!weeks[w.name]) { weeks[w.name] = defaultWeek(); filled = true; }
       }
       if (filled) shown.weeks = weeks;
@@ -973,6 +1102,51 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span>Step {stepIndex(visibleStep(step)) + 1} of {WIZARD_STEPS.length} · {STEP_TITLES[step - 1]} · {school.name}</span>
+            {/*
+              §30.9 — which §30 pool this setup is working on.
+
+              Shown ONLY when the school has more than one, which for almost
+              every school is never: an individual timetable is a deliberate,
+              unusual thing to create, and a selector offering one choice is a
+              control that teaches nothing and costs a glance on every step.
+
+              Beside the step line rather than above the tab strip on step 4,
+              because it governs every step — the week, the teachers pinned to a
+              wing and the rooms are all per-wing too, and a scope that changed
+              between steps would be worse than none.
+            */}
+            {scopes.length > 1 && (
+              <>
+                <span style={{ color: "var(--line)" }}>|</span>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{
+                    font: "800 9px/1 Inter, sans-serif", letterSpacing: "0.07em",
+                    textTransform: "uppercase", color: "var(--ink-faint)",
+                  }}>
+                    Setting up
+                  </span>
+                  <select
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                    disabled={busy}
+                    title="An individual timetable stands on its own — it shares no class, room or teacher with the rest of the school, so it is set up on its own too."
+                    style={{
+                      font: "700 11.5px/1 Inter, sans-serif", color: "var(--brand)",
+                      border: "1px solid var(--steel-pale)", background: "var(--steel-pale)",
+                      borderRadius: 7, padding: "4px 8px",
+                    }}
+                  >
+                    {scopes.map((sc) => (
+                      <option key={sc.key} value={sc.key}>
+                        {sc.key === GROUPED_SCOPE
+                          ? `${sc.label} · ${sc.count} timetable${sc.count === 1 ? "" : "s"}`
+                          : `${sc.label} · individual`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <span style={{ flex: 1 }} />
             <button
               onClick={() => setFocus(!focus)}
@@ -1060,17 +1234,25 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           {loading ? (
             <p style={{ fontSize: 13, color: "var(--ink-soft)" }}>Loading what you saved…</p>
           ) : (
-            step === 1 ? <StepSchool school={school} answers={answers} onChange={patch} />
-            : step === 2 ? <StepSession answers={answers} onChange={patch} />
-            : step === 3 ? <StepWings answers={answers} onChange={patch} />
-            : step === 4 ? <StepClasses answers={answers} onChange={patch} startWing={startWing} />
-            : step === 5 ? <StepWeek answers={answers} onChange={patch} />
-            : step === 6 ? <StepSubjects answers={answers} onChange={patch} />
-            : step === 7 ? <StepTeachers answers={answers} onChange={patch} />
-            : step === 8 ? <StepRooms answers={answers} onChange={patch} />
+            /*
+              §30.9 — every step is handed `answersInScope`, not `answers`.
+
+              The only difference is `wings`, narrowed to the pool being set
+              up. Steps 1 and 2 do not read it and are given the same object for
+              one reason: a step that starts reading wings later must not have
+              to remember to ask for the narrowed copy.
+            */
+            step === 1 ? <StepSchool school={school} answers={answersInScope} onChange={patch} />
+            : step === 2 ? <StepSession answers={answersInScope} onChange={patch} />
+            : step === 3 ? <StepWings answers={answersInScope} onChange={patch} />
+            : step === 4 ? <StepClasses answers={answersInScope} onChange={patch} startWing={startWing} />
+            : step === 5 ? <StepWeek answers={answersInScope} onChange={patch} />
+            : step === 6 ? <StepSubjects answers={answersInScope} onChange={patch} />
+            : step === 7 ? <StepTeachers answers={answersInScope} onChange={patch} />
+            : step === 8 ? <StepRooms answers={answersInScope} onChange={patch} />
             : (
               <StepSettings
-                answers={answers}
+                answers={answersInScope}
                 onChange={patch}
                 onOpenAllocation={() => { void openAllocation(); }}
               />

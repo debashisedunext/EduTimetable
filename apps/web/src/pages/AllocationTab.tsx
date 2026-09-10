@@ -1,3 +1,4 @@
+import { GROUPED_SCOPE, wingScope, type WingAnswer } from "@edutimetable/shared";
 import { StepAllocation, type AllocationCellFacts } from "../onboarding/steps/Allocation";
 
 /**
@@ -40,6 +41,7 @@ export function AllocationTab({
   loading,
   error,
   wing,
+  individual = false,
   onSelectCell,
   toolbarHost,
 }: {
@@ -51,6 +53,17 @@ export function AllocationTab({
   error: string | null;
   /** The timetable the top bar has selected — this grid must not offer a second choice. */
   wing: string | null;
+  /**
+   * §30.9 — whether that timetable stands alone in a §30 resource pool.
+   *
+   * It decides which OTHER wings this grid may see, and that is not cosmetic:
+   * `computeLoads` sums a teacher's periods across every wing it is handed, so
+   * a teacher taking six periods in the main school and four in an individual
+   * timetable was shown at ten against one weekly limit. The two timetables
+   * share nothing — not a room, not a class, not that teacher's capacity — so
+   * the honest figure in each is its own.
+   */
+  individual?: boolean;
   onSelectCell: (facts: AllocationCellFacts | null) => void;
   /** §31.10 — the host's toolbar, so this tab does not draw a second one. */
   toolbarHost: HTMLElement | null;
@@ -121,6 +134,23 @@ export function AllocationTab({
     );
   }
 
+  /*
+    §30.9 — the wings this timetable competes with, and no others.
+
+    Narrowed here rather than inside `StepAllocation`, for the reason the
+    guided setup narrows in one place too: `wings` is read by
+    `suggestCurriculum`, `suggestMappings`, `computeLoads` and `coverageGaps`,
+    and a filter at each of them is four chances to forget one.
+
+    A draft written before §30.9 has no `individual` flag on any wing, which
+    reads as grouped — which is what every wing was.
+  */
+  const want = individual && wing ? wingScope({ name: wing, individual: true }) : GROUPED_SCOPE;
+  const scoped = {
+    ...answers,
+    wings: (answers.wings as WingAnswer[]).filter((w) => wingScope(w) === want),
+  };
+
   return (
     <div style={frame}>
       {/*
@@ -131,7 +161,7 @@ export function AllocationTab({
         here rather than linking to it.
       */}
       <StepAllocation
-        answers={answers}
+        answers={scoped}
         onChange={onChange}
         density="compact"
         wing={wing}

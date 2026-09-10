@@ -1327,6 +1327,10 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
               loading={allocLoading}
               error={allocError}
               wing={current?.name ?? null}
+              /* §30.9 — an individual timetable shares no asset with the rest
+                 of the school, so its grid must not be shown the rest of the
+                 school's wings. `resourceMode` is on the config summary. */
+              individual={current?.resourceMode === "individual"}
               onSelectCell={(facts) => setSelected(facts ? { kind: "lesson", facts } : null)}
               toolbarHost={toolbarSlot}
             />

@@ -11,6 +11,7 @@
     "test:staffing": "node scripts/staffing-smoke.cjs",
     "test:grids": "node scripts/reports-grid-smoke.cjs",
     "test:groups": "node scripts/resource-groups-smoke.cjs",
+    "test:pools": "node scripts/individual-pool-smoke.cjs",
     "test:mastergrid": "node scripts/master-grid-smoke.cjs",
     "lint": "eslint ."
   },
