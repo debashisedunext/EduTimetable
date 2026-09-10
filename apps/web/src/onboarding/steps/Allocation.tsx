@@ -105,6 +105,35 @@ const label = (className: string, section: string) => `${className}-${section}`;
 /** "Class 3-A" → "3-A": the class is already the group heading. */
 const shortLabel = (l: string) => l.replace(/^Class\s+/i, "");
 
+/**
+ * §31.10 — "Pre-Nursery-A" → "PNA", for a column that has to be narrow.
+ *
+ * The row header is 11% of a fixed-layout table, and a full label spends it on
+ * a name the reader already knows from the row above. The class's words become
+ * their initials and the section is appended: multi-word names shrink hardest,
+ * which is exactly where the width was going.
+ *
+ * A number stays a number — "Class 5-A" is "5A", not "5A" via some initial of
+ * "5" — and an existing acronym is left alone, so "LKG-A" is "LKGA" rather than
+ * "LA", which would collide with every other L class.
+ *
+ * The full label never leaves the screen: it is the cell's `title`, and the
+ * §31.6 strip prints it in full.
+ */
+const initialLabel = (l: string) => {
+  const cut = l.lastIndexOf("-");
+  const cls = (cut > 0 ? l.slice(0, cut) : l).replace(/^class\s+/i, "").trim();
+  const sec = cut > 0 ? l.slice(cut + 1).trim() : "";
+  const words = cls.split(/[\s-]+/).filter(Boolean);
+  // A single word is trimmed rather than initialled: "Nursery" as "N" would
+  // collide with every other N class, and left whole it is longer than the
+  // column — so three letters, which is what a wall chart uses.
+  const head = words.length > 1
+    ? words.map((w) => w[0]).join("").toUpperCase()
+    : cls.length <= 4 ? cls : cls.slice(0, 3);
+  return `${head}${sec}`;
+};
+
 const BAND_COLOUR: Record<string, string> = {
   ok: "var(--steel)", warn: "var(--amber)", full: "var(--brand)", over: "var(--signal)",
 };
@@ -560,9 +589,18 @@ export function StepAllocation({
    * `minWidth` floor a flex child stops shrinking and the container overflows,
    * which is exactly what it used to do.
    */
-  const RAIL_MAX = 340;
-  const railGap = m.loads.length * 4 <= RAIL_MAX ? 2 : 0;
-  const railBar = m.loads.length <= 110 ? 2 : 1;
+  const RAIL_MAX = 560;
+  const railFits = (bar: number, gap: number) =>
+    m.loads.length * bar + Math.max(0, m.loads.length - 1) * gap <= RAIL_MAX;
+  // Widest pair that fits, in order. Stated as a list rather than as a formula
+  // because the answer wanted is "as bold as will go", and a formula would have
+  // to be read backwards to see that.
+  const [railBar, railGap] =
+    railFits(4, 2) ? [4, 2]
+    : railFits(3, 1) ? [3, 1]
+    : railFits(2, 1) ? [2, 1]
+    : railFits(2, 0) ? [2, 0]
+    : [1, 0];
 
   /** Every section of the active wing, in grid order. */
   const sections = useMemo(
@@ -1059,19 +1097,27 @@ export function StepAllocation({
           */}
           <div role="img" aria-label="Every teacher's load, heaviest first"
             style={{
-              display: "flex", gap: railGap, alignItems: "flex-end", height: 16,
-              flex: 1, minWidth: 90, maxWidth: 340, overflow: "hidden",
+              display: "flex", gap: railGap, alignItems: "flex-end", height: 22,
+              flex: 1, minWidth: 90, maxWidth: RAIL_MAX, overflow: "hidden",
+              // A floor under the shortest bar, so a lightly-loaded teacher is
+              // still a mark rather than a gap in the row.
+              paddingBottom: 1, borderBottom: "1px solid var(--line)",
             }}>
             {m.loads.map((t) => (
               <span key={t.employeeCode}
                 {...peek({ kind: "teacher", code: t.employeeCode })}
                 style={{
                   flex: 1, minWidth: railBar, borderRadius: 1, background: BAND_COLOUR[t.band],
-                  opacity: t.band === "ok" ? 0.55 : 1,
+                  opacity: t.band === "ok" ? 0.7 : 1,
                   height: `${Math.max(18, Math.min(100, t.pct * 100))}%`,
                 }} />
             ))}
           </div>
+
+          {/* The spacer sits BEFORE the counts now: the bars get the room they
+              need on the left, and the figures read as a summary at the end of
+              the row rather than as labels crowding the chart. */}
+          <span style={{ flex: 1 }} />
 
           <div style={{ fontSize: 11.2, color: "var(--ink-faint)", display: "flex", gap: 11, flexWrap: "wrap" }}>
             <span><strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{m.loads.length}</strong> teachers</span>
@@ -1084,7 +1130,6 @@ export function StepAllocation({
               <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{m.gaps}</strong> unstaffed</span>}
           </div>
 
-          <span style={{ flex: 1 }} />
           <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
             onClick={() => setShowAdvice(!showAdvice)}>
             {overCount > 0 || m.gaps > 0 ? `Ease the load (${overCount + m.gaps})` : "Ease the load"}
@@ -1099,6 +1144,10 @@ export function StepAllocation({
                 || (m.initialsOf.get(t.employeeCode) ?? "").toLowerCase().includes(q);
               return (
                 <button key={t.employeeCode}
+                  // §31.10 — a teacher past their weekly limit is the one thing
+                  // on this rail somebody has to act on, so it moves. Only
+                  // `over`: a warn band is a number to know, not a thing to do.
+                  className={t.band === "over" ? "alloc-over" : undefined}
                   onClick={() => setSelected(selected === t.employeeCode ? null : t.employeeCode)}
                   {...peek({ kind: "teacher", code: t.employeeCode })}
                   style={{
@@ -1195,14 +1244,17 @@ export function StepAllocation({
                          is in the strip and on the row's own hover card. */
                       ...(tight ? { overflow: "hidden", textOverflow: "ellipsis", maxWidth: 0 } : {}),
                     }}>
-                      {i === 0 && (
+                      {i === 0 && !tight && (
                         <span style={{
                           font: "700 9px/1 Inter", letterSpacing: "0.07em", textTransform: "uppercase",
                           color: "var(--ink-faint)", display: "block", marginBottom: 2,
                         }}>{c.className}</span>
                       )}
-                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span>{shortLabel(id)}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 6 }} title={id}>
+                        {/* §31.10 — "PNA" at compact density, the full label
+                            everywhere else. The `title` above keeps the whole
+                            name a hover away, and the strip prints it in full. */}
+                        <span>{tight ? initialLabel(id) : shortLabel(id)}</span>
                         <span
                           {...peek({ kind: "ct", section: id })}
                           style={{
@@ -1234,6 +1286,11 @@ export function StepAllocation({
                           borderTop: i === 0 ? "2px solid var(--steel-light)" : undefined,
                         }}>
                           <button
+                            // §31.10 — a lesson the class is owed and nobody
+                            // teaches. It moves because it is the one state on
+                            // this grid that is unfinished rather than merely
+                            // informative.
+                            className={p > 0 && !code ? "alloc-unstaffed" : undefined}
                             onClick={() => {
                               setCursor({ row: rowIndex, col });
                               // §31.10 — the strip fills as the dialog opens.
@@ -1259,7 +1316,20 @@ export function StepAllocation({
                               ...(p <= 0
                                 ? { background: "var(--offwhite)", color: "var(--ink-faint)", border: "1px solid var(--line)" }
                                 : !code
-                                  ? { background: "var(--signal-bg)", color: "var(--signal)", border: "1.5px dashed var(--signal)" }
+                                  ? {
+                                    /*
+                                      §31.10 — `backgroundColor`, never the
+                                      `background` shorthand: `.alloc-unstaffed`
+                                      draws its moving edge with
+                                      `background-image`, and the shorthand
+                                      resets that to none. The border is
+                                      transparent rather than absent so the cell
+                                      keeps the same box as its neighbours.
+                                    */
+                                    backgroundColor: "var(--signal-bg)",
+                                    color: "var(--signal)",
+                                    border: "1.5px solid transparent",
+                                  }
                                   : { background: sw?.bg, color: sw?.fg, border: `1px solid ${sw?.border ?? "transparent"}` }),
                             }}>
                             <span style={{ font: "700 13.5px/1 var(--font-mono, monospace)", display: "block", opacity: p <= 0 ? 0.5 : 1 }}>

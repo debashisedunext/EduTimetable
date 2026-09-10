@@ -100,6 +100,27 @@ interface ContextPayload {
   teachers: Record<string, { cap: number; elsewhere: number; elsewhereIn: string[] }>;
 }
 
+/** §31.10 — the Readiness Dashboard's own answer, as the strip's tail needs it. */
+interface ReadinessIssue {
+  code: string;
+  severity: "blocker" | "warning";
+  message: string;
+  fix?: string;
+  entity?: { type: string; id: number; label: string };
+}
+interface ReadinessPayload {
+  score: number;
+  ready: boolean;
+  blockers: ReadinessIssue[];
+  warnings: ReadinessIssue[];
+  stats: {
+    classSections: number;
+    teachers: number;
+    totalRequiredSlots: number;
+    totalAvailableSlots: number;
+  };
+}
+
 /**
  * What the strip is pointed at.
  *
@@ -147,12 +168,23 @@ interface StripGroup {
  */
 type Tab = GridPivot | "lesson";
 
+/*
+  §31.10 — the Lesson grid leads.
+
+  It is the only editable tab and the one somebody opens to DO something; the
+  other four report on what it produced. The tab that changes the school comes
+  before the tabs that describe it.
+
+  The screen still OPENS on Whole. First in a list and selected by default are
+  different claims, and landing straight in an editor is not what somebody who
+  came to look at the week asked for.
+*/
 const TABS: Array<{ key: Tab; label: string; hint: string }> = [
+  { key: "lesson", label: "Lesson grid", hint: "Class-sections × subjects — periods per week, editable" },
   { key: "section", label: "Whole", hint: "Every class-section's week — the complete timetable" },
   { key: "teacher", label: "Teachers", hint: "Every teacher's week, one row each" },
   { key: "room", label: "Classrooms", hint: "Which class is in each room, period by period" },
   { key: "subject", label: "Subjects", hint: "When each subject is taught, and by whom" },
-  { key: "lesson", label: "Lesson grid", hint: "Class-sections × subjects — periods per week" },
 ];
 
 /** What one cell draws: three characters, a colour, and the two markers that
@@ -446,6 +478,10 @@ export function MasterGrid() {
       // server sweeps its cache on the commit — so refetch rather than leave
       // them describing the school as it was a moment ago.
       refetchContext();
+      // The score, the totals and the issue list are all downstream of what was
+      // just written — a summary still describing the school as it was before
+      // the save is the one thing worse than no summary.
+      refetchReadiness();
     } catch (e) {
       setAllocError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -468,6 +504,19 @@ export function MasterGrid() {
   const { data: context, refetch: refetchContext } = useApi<ContextPayload>(
     current ? `/timetable-configs/${current.id}/context` : null,
   );
+  /**
+   * §31.10 — the four figures at the end of the strip.
+   *
+   * `timetable.generate`, not `timetable.view.all` like the rest of this
+   * screen, so somebody who may only READ the week gets a 403 here. That is
+   * not an error to show: the summary simply does not appear, and the strip is
+   * exactly what it was. `useApi` hands back `null` data with the message, so
+   * every read below is already guarded.
+   */
+  const { data: readiness, refetch: refetchReadiness } = useApi<ReadinessPayload>(
+    current ? `/timetable-configs/${current.id}/readiness` : null,
+  );
+  const [showIssues, setShowIssues] = useState(false);
 
   /*
     A selection names a row of the tab it was made on, so it cannot survive a
@@ -1253,9 +1302,15 @@ export function MasterGrid() {
               : selected.kind === "cell" ? stripForCell(selected)
               : stripForFacts(selected.facts)
             }
+            readiness={readiness}
+            onShowIssues={() => setShowIssues(true)}
           />
         </div>
       </div>
+
+      {showIssues && readiness && (
+        <IssueDrawer readiness={readiness} onClose={() => setShowIssues(false)} />
+      )}
     </div>
   );
 }
@@ -1345,7 +1400,15 @@ function Cell({
  * Appearing on the first click would shorten the grid under the pointer at the
  * exact moment somebody is reading it, and the row they clicked would move.
  */
-function Strip({ groups }: { groups: StripGroup[] | null }) {
+function Strip({
+  groups,
+  readiness,
+  onShowIssues,
+}: {
+  groups: StripGroup[] | null;
+  readiness: ReadinessPayload | null;
+  onShowIssues: () => void;
+}) {
   return (
     <div
       style={{
@@ -1412,6 +1475,227 @@ function Strip({ groups }: { groups: StripGroup[] | null }) {
           </div>
         ))
       )}
+
+      {/*
+        §31.10 — the same four numbers wherever you are on this screen.
+
+        Pinned to the right and OUTSIDE the group list on purpose: the groups
+        change with every click and answer "what is this cell?", while these
+        answer "how is the whole timetable?" — a question whose answer must not
+        move about or vanish when nothing is selected. `marginLeft: auto` keeps
+        them at the end however many groups there are.
+      */}
+      {readiness && (
+        <div style={{
+          marginLeft: "auto", flex: "0 0 auto", display: "flex", alignItems: "center",
+          gap: 16, padding: "0 16px", borderLeft: "1px solid var(--line)",
+          background: "var(--paper)",
+        }}>
+          <Figure
+            label="Readiness"
+            value={`${readiness.score}%`}
+            tone={readiness.ready ? "ok" : readiness.score >= 80 ? "warn" : "bad"}
+          />
+          <Figure label="Week holds" value={readiness.stats.totalAvailableSlots.toLocaleString()} />
+          <Figure
+            label="Allocated"
+            value={readiness.stats.totalRequiredSlots.toLocaleString()}
+            tone={readiness.stats.totalRequiredSlots > readiness.stats.totalAvailableSlots ? "bad" : "plain"}
+          />
+          {/*
+            The only one that is a control, because it is the only one with
+            somewhere to go. A count with no way to see what it counts is a
+            number that makes somebody feel worse and no better informed.
+          */}
+          <button
+            onClick={onShowIssues}
+            disabled={readiness.blockers.length + readiness.warnings.length === 0}
+            title={readiness.blockers.length + readiness.warnings.length === 0
+              ? "Nothing to fix"
+              : "Show what is wrong, and what to do about it"}
+            style={{
+              border: "none", background: "none", padding: "2px 0", textAlign: "left",
+              cursor: readiness.blockers.length + readiness.warnings.length === 0 ? "default" : "pointer",
+              font: "inherit",
+            }}
+          >
+            <Figure
+              label={readiness.blockers.length > 0 ? "Errors \u203a" : "Warnings \u203a"}
+              value={String(readiness.blockers.length > 0
+                ? readiness.blockers.length
+                : readiness.warnings.length)}
+              tone={readiness.blockers.length > 0 ? "bad"
+                : readiness.warnings.length > 0 ? "warn" : "ok"}
+            />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One figure in the strip's tail: a small label over a large number. */
+function Figure({
+  label,
+  value,
+  tone = "plain",
+}: {
+  label: string;
+  value: string;
+  tone?: "plain" | "ok" | "warn" | "bad";
+}) {
+  const colour = tone === "bad" ? "var(--signal)"
+    : tone === "warn" ? "var(--amber)"
+    : tone === "ok" ? "var(--accent)"
+    : "var(--brand-deep)";
+  return (
+    <span style={{ display: "flex", flexDirection: "column", gap: 3, whiteSpace: "nowrap" }}>
+      <span style={{
+        font: "800 9px/1 Inter, sans-serif", letterSpacing: "0.07em",
+        textTransform: "uppercase", color: "var(--ink-faint)",
+      }}>
+        {label}
+      </span>
+      <span style={{ font: "800 17px/1 var(--font-mono, monospace)", color: colour }}>{value}</span>
+    </span>
+  );
+}
+
+/**
+ * §31.10 — what is wrong, in order, with what to do about it.
+ *
+ * A drawer down the right, full height, over the page rather than beside it.
+ * The strip's figure is a count, and a count alone is a number that makes
+ * somebody feel worse and no better informed; this is where it goes.
+ *
+ * Blockers first and warnings after — the Readiness Dashboard's own order, and
+ * the order the school has to work in: a blocker stops Generate and a warning
+ * does not. Each carries the engine's own `fix`, because §4's "tell me what to
+ * fix" is a core promise: that prose is written where the numbers are in scope,
+ * so it names the row and the change rather than restating the rule.
+ *
+ * Read-only, deliberately. §21's auto-resolve applies remedies behind a consent
+ * step, a `WRITABLE` allow-list and a compare-and-set on the value the admin
+ * saw, and it lives on the Readiness Dashboard. An Apply button here would be a
+ * second writer over the same remedies — the mistake this whole phase has been
+ * careful not to make.
+ */
+function IssueDrawer({
+  readiness,
+  onClose,
+}: {
+  readiness: ReadinessPayload;
+  onClose: () => void;
+}) {
+  const rows = [
+    ...readiness.blockers.map((i) => ({ ...i, kind: "blocker" as const })),
+    ...readiness.warnings.map((i) => ({ ...i, kind: "warning" as const })),
+  ];
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(11,31,68,.35)" }}
+    >
+      <aside
+        role="dialog"
+        aria-label="What is wrong with this timetable"
+        style={{
+          position: "absolute", top: 0, right: 0, bottom: 0, width: "min(460px, 92vw)",
+          background: "var(--paper)", borderLeft: "1px solid var(--line)",
+          boxShadow: "-14px 0 40px rgba(11,31,68,.14)",
+          display: "flex", flexDirection: "column",
+        }}
+      >
+        <header style={{
+          padding: "14px 18px", borderBottom: "1px solid var(--line)",
+          display: "flex", alignItems: "center", gap: 12,
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ font: "800 15px/1.2 Inter, sans-serif", color: "var(--brand-deep)" }}>
+              {readiness.blockers.length > 0
+                ? `${readiness.blockers.length} thing${readiness.blockers.length === 1 ? "" : "s"} to fix`
+                : "Nothing is blocking generation"}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 3 }}>
+              Readiness {readiness.score}%
+              {readiness.warnings.length > 0
+                ? ` \u00b7 ${readiness.warnings.length} warning${readiness.warnings.length === 1 ? "" : "s"}`
+                : ""}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            style={{
+              border: "1px solid var(--line)", background: "var(--paper)", borderRadius: 8,
+              padding: "6px 11px", cursor: "pointer", font: "700 12px/1 Inter, sans-serif",
+            }}>
+            Close
+          </button>
+        </header>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 18px 22px" }}>
+          {rows.length === 0 && (
+            <p className="screen-sub">Every check passes. This timetable is ready to generate.</p>
+          )}
+          {rows.map((issue, n) => {
+            const bad = issue.kind === "blocker";
+            return (
+              <div
+                key={`${issue.code}:${n}`}
+                style={{
+                  borderLeft: `3px solid ${bad ? "var(--signal)" : "var(--amber)"}`,
+                  background: bad ? "var(--signal-bg)" : "var(--amber-bg)",
+                  borderRadius: "0 9px 9px 0", padding: "11px 13px", marginBottom: 10,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 5 }}>
+                  {/* Numbered, because "in sequence" is the ask — and because a
+                      list of eleven identical cards is one nobody can hold
+                      their place in. */}
+                  <span style={{
+                    font: "800 10px/1 var(--font-mono, monospace)",
+                    color: bad ? "var(--signal)" : "var(--amber)",
+                  }}>
+                    {n + 1}
+                  </span>
+                  <span style={{
+                    font: "800 9px/1 Inter, sans-serif", letterSpacing: "0.07em",
+                    textTransform: "uppercase", color: bad ? "var(--signal)" : "var(--amber)",
+                  }}>
+                    {bad ? "Blocks generation" : "Worth knowing"}
+                  </span>
+                  {issue.entity && (
+                    <span style={{
+                      marginLeft: "auto", font: "600 10.5px/1 var(--font-mono, monospace)",
+                      color: "var(--ink-faint)", whiteSpace: "nowrap",
+                      overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150,
+                    }} title={issue.entity.label}>
+                      {issue.entity.label}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 12.8, lineHeight: 1.55, color: "var(--ink)" }}>
+                  {issue.message}
+                </div>
+                {issue.fix && (
+                  <div style={{
+                    fontSize: 12.2, lineHeight: 1.5, color: "var(--ink-soft)",
+                    marginTop: 7, paddingTop: 7, borderTop: "1px solid rgba(0,0,0,.07)",
+                  }}>
+                    <strong style={{ color: "var(--ink)" }}>Fix:</strong> {issue.fix}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {rows.length > 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--ink-faint)", lineHeight: 1.55, marginTop: 14 }}>
+              The Readiness Dashboard can apply many of these for you, with a confirmation and an
+              undo. This list is read-only so there is only ever one thing writing to your master
+              data.
+            </p>
+          )}
+        </div>
+      </aside>
     </div>
   );
 }

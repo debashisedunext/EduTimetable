@@ -693,3 +693,65 @@ button { font-family: inherit; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .praise { animation: none; }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   §31.10 — the Allocation grid's two moving signals.
+
+   Both are CSS rather than inline style for the same reason: `@keyframes`
+   cannot be expressed in a React style object, and an animation driven from JS
+   would run a re-render per frame on a 64 × 20 grid.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/*
+   A cell nobody teaches: marching ants.
+
+   Four gradients rather than a `border: dashed`, because a border's dashes
+   cannot move. Each gradient draws one edge, `background-size` gives it its
+   thickness, and shifting `background-position` by exactly one dash period
+   (12px) makes the loop seamless — top and bottom travel one way, the sides the
+   other, so the ants go round rather than all sliding left.
+
+   The cell keeps its own `background-color`; only `background-image` is claimed
+   here. Anything applying this class must therefore set `backgroundColor`
+   rather than the `background` shorthand, which would reset these.
+*/
+@keyframes alloc-ants {
+  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
+}
+.alloc-unstaffed {
+  background-image:
+    repeating-linear-gradient(90deg, var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  var(--signal) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: alloc-ants 900ms linear infinite;
+}
+
+/*
+   A teacher past their weekly limit: a glow that breathes.
+
+   `box-shadow` rather than `outline` or a border, so the pulse costs no layout
+   — the chips sit in a horizontal scroller and a growing border would shove its
+   neighbours every 1.6 seconds.
+*/
+@keyframes alloc-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 0%, transparent); }
+}
+.alloc-over {
+  animation: alloc-glow 1600ms ease-out infinite;
+}
+
+/*
+   Both are attention signals, and attention signals are exactly what a person
+   who has asked for less motion is asking not to have. The cell keeps a static
+   dashed edge so it still reads as unallocated, and the chip keeps its red
+   border, which it had anyway.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .alloc-unstaffed { animation: none; }
+  .alloc-over { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 35%, transparent); }
+}
