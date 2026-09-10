@@ -755,3 +755,31 @@ button { font-family: inherit; cursor: pointer; }
   .alloc-unstaffed { animation: none; }
   .alloc-over { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 35%, transparent); }
 }
+
+/*
+   §31.10 — the strip's issue count, asking to be clicked.
+
+   The count was the one figure in the tail with somewhere to go and no sign
+   that it did: four numbers in a row, one of them a button. The ring makes the
+   difference visible without a fifth colour or an icon, and it is on the
+   BUTTON rather than the number so the whole target reads as one thing.
+
+   Only when something blocks generation. A screen that pulses at a school with
+   nothing wrong is a screen whose pulses stop meaning anything.
+*/
+@keyframes strip-alert {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 42%, transparent); }
+  55%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--signal) 0%, transparent); }
+}
+.strip-alert {
+  border-radius: 9px;
+  animation: strip-alert 1900ms ease-out infinite;
+}
+.strip-alert:hover { background: var(--signal-bg) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .strip-alert {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 32%, transparent);
+  }
+}

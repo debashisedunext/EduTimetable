@@ -329,6 +329,20 @@ function Topbar({ me }: { me: MeResponse }) {
           </div>
         )}
         {me.permissions.includes(PERMISSIONS.NOTIFICATIONS_VIEW) && <Bell />}
+        {/*
+          §31.10 — where the assistant's launcher lands.
+
+          It was a fixed button at the bottom-right corner, which is where every
+          screen with a footer puts something: on the Master Grid it sat on top
+          of the strip's issue count, the one control down there anybody needs
+          to press. A floating launcher has no way to know what it is covering,
+          so it stops floating — `AiDock` portals into this slot, and the button
+          now lives beside the other things that are true of the whole app.
+
+          An empty span when the assistant is not available to this role, which
+          costs nothing and keeps the bar's spacing identical either way.
+        */}
+        <span id="ai-launcher-slot" style={{ display: "flex", alignItems: "center" }} />
         <span className="badge badge-ok">● Live</span>
       </div>
     </div>

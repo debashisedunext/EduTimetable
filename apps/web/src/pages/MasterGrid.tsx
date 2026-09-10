@@ -1539,11 +1539,16 @@ function Strip({
           <button
             onClick={onShowIssues}
             disabled={readiness.blockers.length + readiness.warnings.length === 0}
+            // Only for a blocker. A warning is worth knowing and does not stop
+            // anybody working, and a screen that pulses at a school with
+            // nothing wrong is a screen whose pulses stop meaning anything.
+            className={readiness.blockers.length > 0 ? "strip-alert" : undefined}
             title={readiness.blockers.length + readiness.warnings.length === 0
               ? "Nothing to fix"
               : "Show what is wrong, and what to do about it"}
             style={{
-              border: "none", background: "none", padding: "2px 0", textAlign: "left",
+              border: "none", background: "none", padding: "3px 8px", textAlign: "left",
+              borderRadius: 9,
               cursor: readiness.blockers.length + readiness.warnings.length === 0 ? "default" : "pointer",
               font: "inherit",
             }}
