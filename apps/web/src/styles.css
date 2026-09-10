@@ -394,6 +394,31 @@ button { font-family: inherit; cursor: pointer; }
 .board-toast.ok { background: #eefaf2; border: 1px solid #34a06a; color: #1d6b45; }
 @keyframes toastin { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* §31.11 — the Draft Board inside the Master Grid.
+
+   Height is the scarce dimension there and width is not, so the cells lose
+   vertical padding and keep their width. The numbers are chosen against a real
+   week: every wing in the reference school runs 8 teaching periods and 2
+   breaks, so the pane holds 8 rows at 42px, two breaks at 17px, a day header,
+   and ten 6px gaps — about 450px, against the ~600px a 1080-tall screen leaves
+   after the topbar, this screen's toolbar and the 86px strip. A longer week
+   scrolls the pane rather than the page, as every other tab does.
+
+   Scoped to a class rather than made the default: `/board` is a page of its
+   own with a whole screen to spend, and a card that has room for a subject,
+   a teacher and a room is easier to read than one that does not. */
+.board-compact .dnd-cell { min-height: 42px; border-radius: 7px; padding: 2px; }
+.board-compact .dnd-break { min-height: 17px; font-size: 8.5px; border-radius: 6px; }
+.board-compact .dnd-card { font-size: 10px; padding: 3px 5px; border-radius: 6px; line-height: 1.2; }
+.board-compact .dnd-card .s { font-size: 8.5px; }
+/* The tray is a column beside the grid, so its cards stack rather than wrap. */
+.board-compact .tray { flex-wrap: nowrap; flex-direction: column; gap: 5px; padding: 7px; }
+
+/* §31.6 — the cell the strip is explaining. An outline rather than a border,
+   so selecting does not move the neighbours you are comparing it with, and
+   `outline-offset` pulls it inside so the cell beside it cannot clip it. */
+.dnd-cell.picked { outline: 2px solid var(--brand-deep, #0B1F44); outline-offset: -2px; }
+
 /* ---- mockup form patterns (Setup Wizard §8.1a) ---- */
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; color: var(--steel); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }

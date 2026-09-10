@@ -190,7 +190,12 @@ export default function App() {
           <Route path="/matrix" element={<Matrix />} />
           {/* §31 — the same week as the Matrix, at grid density and pivoted
               five ways. Not a replacement: see the note at the top of the file. */}
-          <Route path="/master-grid" element={<MasterGrid />} />
+          <Route path="/master-grid" element={
+            <MasterGrid
+              canEdit={me.permissions.includes(PERMISSIONS.TIMETABLE_EDIT)}
+              canManage={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE)}
+            />
+          } />
           <Route path="/board" element={<Board />} />
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />

@@ -1,14 +1,17 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots,
   rowWindow, scrollTopFor, SLOT,
   type GridPivot, type RowWindow, type SlotTuple,
 } from "@edutimetable/shared";
-import { api } from "../api";
+import { io } from "socket.io-client";
+import { api, getToken } from "../api";
 import { useApi, useConfigCtx } from "../hooks";
 import { guardUnsaved } from "../unsaved-guard";
 import { commitAllocation } from "../onboarding/commit-allocation";
 import { AllocationTab } from "./AllocationTab";
+import { Board } from "./Board";
+import type { StripGroup } from "./strip";
 import type { AllocationCellFacts } from "../onboarding/steps/Allocation";
 import { useColors } from "../colors-context";
 
@@ -140,23 +143,17 @@ type Selection =
    * to disagree with the grid the strip sits under, and certain to disagree the
    * moment somebody edits without saving.
    */
-  | { kind: "lesson"; facts: AllocationCellFacts };
-
-/**
- * One block of the strip: a label, an optional big line, and detail under it.
- *
- * Deliberately a small shape rather than a field per fact. The two vocabularies
- * have almost nothing in common — a timetable cell has a clock and a teacher's
- * load, a lesson-grid cell has every section sharing the lesson — and a union
- * type carrying both would leave every renderer asking which half it had.
- */
-interface StripGroup {
-  label: string;
-  primary?: string;
-  swatch?: { bg: string; fg: string } | null;
-  lines?: string[];
-  chips?: Array<{ text: string; swatch?: { bg: string; fg: string } | null; title?: string }>;
-}
+  | { kind: "lesson"; facts: AllocationCellFacts }
+  /**
+   * §31.11 — the Draft Board tab hands over FINISHED groups.
+   *
+   * Three vocabularies now, and this is the third: a board cell is a placement
+   * with a clock, and the board resolves it against the payload its own cards
+   * were drawn from. Resolving it here instead would use the Master Grid's copy
+   * of `/slots` — possibly a different draft — and explain a lesson that is not
+   * on the screen. Same call §31.10 made for the Lesson Grid, same reason.
+   */
+  | { kind: "board"; groups: StripGroup[] };
 
 /**
  * The five tabs.
@@ -166,7 +163,7 @@ interface StripGroup {
  * lives once in `packages/shared` rather than four times here. `lesson` is the
  * odd one out and reads a different endpoint entirely.
  */
-type Tab = GridPivot | "lesson";
+type Tab = GridPivot | "lesson" | "board";
 
 /*
   §31.10 — the Lesson grid leads.
@@ -182,6 +179,16 @@ type Tab = GridPivot | "lesson";
 const TABS: Array<{ key: Tab; label: string; hint: string }> = [
   { key: "lesson", label: "Lesson grid", hint: "Class-sections × subjects — periods per week, editable" },
   { key: "section", label: "Whole", hint: "Every class-section's week — the complete timetable" },
+  /*
+    §31.11 — the Draft Board, under Whole.
+
+    Whole is what the week IS and this is where it is changed, so the two sit
+    together: read the shape of the school, then reach for the cell that is
+    wrong. It is the real `/board` screen embedded, not a second one — the
+    rules engine, the server revalidation on drop and the §29.1 freeze guard
+    are all there, and a second board would be a second writer over placement.
+  */
+  { key: "board", label: "Draft board", hint: "Drag lessons between cells — the draft, editable" },
   { key: "teacher", label: "Teachers", hint: "Every teacher's week, one row each" },
   { key: "room", label: "Classrooms", hint: "Which class is in each room, period by period" },
   { key: "subject", label: "Subjects", hint: "When each subject is taught, and by whom" },
@@ -355,10 +362,30 @@ function Spacer({ height, span }: { height: number; span: number }) {
 const clamp = (i: number, len: number): number | null =>
   len === 0 || i < 0 || i >= len ? null : i;
 
-export function MasterGrid() {
+/**
+ * §31.11 — the two editable tabs carry the permissions their own screens do.
+ *
+ * `/board` needs `timetable.edit` and `/allocation` needs `masters.manage`, and
+ * the left nav hides each accordingly. Reaching the same editor through a tab
+ * must not be a way round that: the server refuses either way, so the cost of
+ * not asking is a tab that answers 403 rather than one that is not offered.
+ *
+ * Threaded as props rather than read from a hook because this app has no
+ * session context — `me` is a prop everywhere it is used, and inventing a
+ * second way to ask for one screen is how two answers come into existence.
+ */
+export function MasterGrid({ canEdit = false, canManage = false }: {
+  canEdit?: boolean;
+  canManage?: boolean;
+}) {
   const { current } = useConfigCtx();
   const colors = useColors();
   const [tab, setTab] = useState<Tab>("section");
+  // The rail, less whatever this person may not do. `TABS` stays the full list
+  // because the corner header and the filter placeholder read a tab's label out
+  // of it, and those must work for the tab on screen whoever is looking.
+  const tabs = TABS.filter((t) =>
+    (t.key !== "board" || canEdit) && (t.key !== "lesson" || canManage));
   const [status, setStatus] = useState<"draft" | "published">("draft");
   const [draftId, setDraftId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
@@ -502,10 +529,10 @@ export function MasterGrid() {
     }
   };
 
-  const { data: drafts } = useApi<DraftRow[]>(
+  const { data: drafts, refetch: refetchDrafts } = useApi<DraftRow[]>(
     current ? `/timetable-configs/${current.id}/drafts` : null,
   );
-  const { data } = useApi<SlotsPayload>(
+  const { data, refetch: refetchSlots } = useApi<SlotsPayload>(
     current
       ? `/timetable-configs/${current.id}/slots?status=${status}` +
         `${status === "draft" && draftId !== null ? `&draftId=${draftId}` : ""}`
@@ -532,6 +559,52 @@ export function MasterGrid() {
   const [showIssues, setShowIssues] = useState(false);
 
   /*
+    §31.11 — the other four tabs must not go on describing a week the Draft
+    Board tab has just changed.
+
+    The board writes through `/board/*`, which broadcasts `slots:changed` to the
+    school's room, and the board refetches itself on it. This screen holds its
+    OWN copy of `/slots` — the one the four pivots are drawn from — so without
+    this, dragging a lesson and switching to Whole shows it where it used to be.
+    The same socket the board has always used, rather than a refetch on every
+    tab change: a change is the thing worth reacting to, not a click.
+  */
+  const configId = current?.id ?? null;
+  useEffect(() => {
+    if (configId === null) return;
+    const socket = io({ auth: { token: getToken() } });
+    socket.on("slots:changed", (d: { configId: number }) => {
+      if (d.configId === configId) refetchSlots();
+    });
+    // The id, not the config object: `useConfigCtx` hands back a fresh value on
+    // every render, and a socket that reconnects on every render is a socket
+    // that never lives long enough to hear anything.
+    return () => { socket.disconnect(); };
+  }, [configId, refetchSlots]);
+
+  /**
+   * §31.11 — where the Draft Board tab's strip content arrives.
+   *
+   * `useCallback` with no dependencies on purpose: the board emits whenever its
+   * groups CHANGE, and a handler that changed identity every render would make
+   * "changed" meaningless.
+   */
+  const onBoardStrip = useCallback((groups: StripGroup[] | null) => {
+    setSelected(groups && groups.length > 0 ? { kind: "board", groups } : null);
+  }, []);
+
+  /*
+    §31.11 — the board edits a draft, so this screen shows one while it is open.
+
+    The Draft/Published select is hidden on that tab rather than disabled: a
+    board over a published week is not a narrower thing to offer, it is a
+    contradiction, and a greyed control invites somebody to work out why.
+  */
+  useEffect(() => {
+    if (tab === "board") setStatus("draft");
+  }, [tab]);
+
+  /*
     A selection names a row of the tab it was made on, so it cannot survive a
     change of tab: cell 44 on Teachers is a different person from cell 44 on
     Classrooms, and the strip would go on describing something no longer on
@@ -555,7 +628,7 @@ export function MasterGrid() {
   // it is unit-tested against every §4.9 and §4.10 shape — see the note there
   // about why it is one function and not four.
   const grid = useMemo(
-    () => (!data || tab === "lesson" ? null : pivotSlots(data.slots, tab)),
+    () => (!data || tab === "lesson" || tab === "board" ? null : pivotSlots(data.slots, tab)),
     [data, tab],
   );
 
@@ -685,7 +758,7 @@ export function MasterGrid() {
       Allocation grid, and that pane is not even rendered here. Reaching this
       with a lesson selection would mean two handlers moving one cursor.
     */
-    if (selected.kind === "lesson") return;
+    if (selected.kind !== "cell") return;
 
     // The selectable columns, flattened across the week in the order they are
     // drawn — so ArrowRight at Friday's last period simply stops, rather than
@@ -1073,7 +1146,7 @@ export function MasterGrid() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {status === "draft" && liveDrafts.length > 0 && (
+          {(status === "draft" || tab === "board") && liveDrafts.length > 0 && (
             <select
               value={shownDraftId ?? ""}
               onChange={(e) => setDraftId(Number(e.target.value))}
@@ -1087,11 +1160,13 @@ export function MasterGrid() {
               ))}
             </select>
           )}
-          <select value={status} onChange={(e) => setStatus(e.target.value as "draft" | "published")}
-            style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
-            <option value="draft">Draft</option>
-            <option value="published">Published</option>
-          </select>
+          {tab !== "board" && (
+            <select value={status} onChange={(e) => setStatus(e.target.value as "draft" | "published")}
+              style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
+              <option value="draft">Draft</option>
+              <option value="published">Published</option>
+            </select>
+          )}
           {/*
             §31.10 — this filter narrows `visibleRows`, which the Lesson Grid
             tab does not use: that tab renders the Allocation grid's own rows
@@ -1099,7 +1174,7 @@ export function MasterGrid() {
             did nothing, so it is hidden and the grid's own is hoisted up beside
             these controls instead.
           */}
-          {tab !== "lesson" && (
+          {tab !== "lesson" && tab !== "board" && (
             <>
               <input placeholder={`Filter ${TABS.find((t) => t.key === tab)!.label.toLowerCase()}…`} value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1109,8 +1184,9 @@ export function MasterGrid() {
               )}
             </>
           )}
-          {/* The Allocation grid's controls land here — see `toolbarHost`. */}
-          {tab === "lesson" && (
+          {/* The embedded screens' own controls land here — see `toolbarHost`.
+              One host, because only one of them is ever on screen. */}
+          {(tab === "lesson" || tab === "board") && (
             <div ref={setToolbarSlot} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} />
           )}
         </div>
@@ -1178,7 +1254,7 @@ export function MasterGrid() {
         {/* The tab rail is vertical because horizontal tabs cost a row of
             school and these cost 34px of width the row header wanted anyway. */}
         <div style={{ display: "flex", flexDirection: "column", background: "var(--offwhite)", borderRight: "1px solid var(--line)", flex: "0 0 34px" }}>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
@@ -1222,6 +1298,30 @@ export function MasterGrid() {
               wing={current?.name ?? null}
               onSelectCell={(facts) => setSelected(facts ? { kind: "lesson", facts } : null)}
               toolbarHost={toolbarSlot}
+            />
+          ) : tab === "board" ? (
+            /*
+              §31.11 — the real Draft Board, for the same reasons and with the
+              same shape: its own scrolling pane, its toolbar in the host's bar,
+              and the strip fed from its payload rather than from ours.
+
+              `draftId` goes DOWN and `onDraftChange` comes back up, so the
+              picker above governs this tab as it governs the other four — and
+              the refetch is what makes a draft created down there appear in it.
+            */
+            <Board
+              embedded
+              draftId={shownDraftId}
+              /*
+                Both refetches, and the second one is not redundant. Discarding
+                the draft the server had chosen for us sends `null` — and if the
+                picker was already on `null` that sets no state, changes no URL
+                and refetches nothing, leaving `data.draftId` naming a draft that
+                no longer exists.
+              */
+              onDraftChange={(id) => { setDraftId(id); refetchDrafts(); refetchSlots(); }}
+              toolbarHost={toolbarSlot}
+              onStrip={onBoardStrip}
             />
           ) : (
           <div
@@ -1342,6 +1442,8 @@ export function MasterGrid() {
             groups={
               selected === null ? null
               : selected.kind === "cell" ? stripForCell(selected)
+              // §31.11 — already resolved, by the screen that drew the cell.
+              : selected.kind === "board" ? selected.groups
               : stripForFacts(selected.facts)
             }
             readiness={readiness}

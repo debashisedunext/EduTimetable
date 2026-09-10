@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
 import {
@@ -24,6 +25,7 @@ import {
 import { api, getToken } from "../api";
 import { useApi, useConfigCtx } from "../hooks";
 import { useColors } from "../colors-context";
+import type { StripGroup } from "./strip";
 
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -207,11 +209,13 @@ function DraggableCard({
   );
 }
 
-function TrayCard({ id, label, sub, count, swatch }: { id: string; label: string; sub: string; count: number; swatch: Swatch | null }) {
+function TrayCard({ id, label, sub, count, swatch, fill }: { id: string; label: string; sub: string; count: number; swatch: Swatch | null; fill?: boolean }) {
   const { attributes, listeners, setNodeRef } = useDraggable({ id });
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} className="dnd-card"
-      style={{ width: 150, ...(swatch ? { background: swatch.bg, borderColor: swatch.border } : {}) }}>
+      // §31.11 — in the Master Grid the tray is a narrow COLUMN beside the
+      // grid, so a card takes the column's width rather than a fixed 150.
+      style={{ width: fill ? "auto" : 150, ...(swatch ? { background: swatch.bg, borderColor: swatch.border } : {}) }}>
       <div className="t" style={swatch ? { color: swatch.fg } : undefined}>
         {label} <span className="mono" style={{ fontWeight: 400 }}>×{count}</span>
       </div>
@@ -221,12 +225,17 @@ function TrayCard({ id, label, sub, count, swatch }: { id: string; label: string
 }
 
 function DropCell({
-  day, period, verdict, shaking, children,
+  day, period, verdict, shaking, selected, onSelect, children,
 }: {
   day: number;
   period: number;
   verdict: CellVerdict | null;
   shaking: boolean;
+  /** §31.11 — this is the cell the strip is explaining. */
+  selected?: boolean;
+  /** §31.11 — given only when there is a strip to fill; the standalone screen
+   *  has nowhere to put the answer, so its cells are not selectable. */
+  onSelect?: () => void;
   children: React.ReactNode;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: `cell:${day}:${period}` });
@@ -236,8 +245,14 @@ function DropCell({
     verdict?.kind === "swap" ? "legal-swap" : "",
     isOver ? "over" : "",
     shaking ? "rejected" : "",
+    selected ? "picked" : "",
   ].filter(Boolean).join(" ");
-  return <div ref={setNodeRef} className={cls}>{children}</div>;
+  /*
+    A plain onClick, and it does not fight the drag: the PointerSensor is armed
+    with `distance: 4`, so a press that never moves is not a drag at all and the
+    click still arrives. Pressing and moving starts a drag and no click fires.
+  */
+  return <div ref={setNodeRef} className={cls} onClick={onSelect}>{children}</div>;
 }
 
 function StatBox({ n, l, color }: { n: React.ReactNode; l: string; color?: string }) {
@@ -355,16 +370,58 @@ function DraftCompare({
   );
 }
 
+/**
+ * §31.11 — what the Master Grid needs to host this screen as a tab.
+ *
+ * Every field is optional, so `<Board />` on `/board` is exactly the screen it
+ * has always been. The Master Grid embeds the REAL board rather than drawing a
+ * second one, for the reason §31.10 gave for the Lesson Grid tab: the rules
+ * engine, the server revalidation on drop and the §29.1 freeze guard all live
+ * here, and a second board over the same slots would be a second writer over
+ * placement — the one mistake this whole phase has been careful not to make.
+ */
+export interface BoardProps {
+  /** Draw for a host's pane: portalled toolbar, denser cells, no page chrome. */
+  embedded?: boolean;
+  /**
+   * §22 — the draft to edit, when the HOST owns the choice.
+   *
+   * The Master Grid already has a draft picker governing its other four tabs.
+   * Two pickers over one screen is two answers to "which draft am I looking
+   * at?", so when the host supplies `onDraftChange` this board hides its own
+   * and follows.
+   */
+  draftId?: number | null;
+  onDraftChange?: (id: number | null) => void;
+  /** Where the toolbar is drawn. Null renders it in place, as the page does. */
+  toolbarHost?: HTMLElement | null;
+  /** §31.6 — the strip under the host's grid, fed from THIS payload. */
+  onStrip?: (groups: StripGroup[] | null) => void;
+}
+
 /** Screen §8.4 — the Draft Board: drag cards with instant client-side legality
  *  (shared BoardEngine), server revalidation on drop (invariant 7). */
-export function Board() {
+export function Board({
+  embedded = false,
+  draftId: hostDraftId,
+  onDraftChange,
+  toolbarHost,
+  onStrip,
+}: BoardProps) {
   const { current } = useConfigCtx();
   const colors = useColors();
   const configId = current?.id ?? null;
   // §22 — which of the school's drafts this board is editing. `null` means
   // "whichever the server considers current", which is what a single-draft
   // school always gets and is why nothing changes for them.
-  const [draftId, setDraftId] = useState<number | null>(null);
+  const [ownDraftId, setOwnDraftId] = useState<number | null>(null);
+  /** The host owns the choice when it offered to hear about it. */
+  const controlled = onDraftChange !== undefined;
+  const draftId = controlled ? (hostDraftId ?? null) : ownDraftId;
+  const chooseDraft = (id: number | null) => {
+    if (onDraftChange) onDraftChange(id);
+    else setOwnDraftId(id);
+  };
   const { data: drafts, refetch: refetchDrafts } = useApi<Draft[]>(
     configId ? `/timetable-configs/${configId}/drafts` : null,
   );
@@ -460,7 +517,7 @@ export function Board() {
         method: "POST",
         body: JSON.stringify({ label: label.trim() || null, copyFromDraftId: shownDraftId }),
       });
-      setDraftId(made.id);
+      chooseDraft(made.id);
       refetchDrafts();
       say("ok", "New draft created from this one — edits here no longer touch the original");
     } catch (e) {
@@ -477,7 +534,7 @@ export function Board() {
     setBusy(true);
     try {
       await api(`/timetable-configs/${configId}/drafts/${d.id}`, { method: "DELETE" });
-      if (shownDraftId === d.id) setDraftId(null);
+      if (shownDraftId === d.id) chooseDraft(null);
       refetchDrafts();
       refetch();
       say("ok", `Draft #${d.draftNo} discarded`);
@@ -521,6 +578,159 @@ export function Board() {
 
   const teachingPeriods = (data?.periods ?? []).filter((p) => p.periodNumber !== 0);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  /*
+    §31.11 — the cell the host's strip is explaining.
+
+    Only ever set when a strip exists to receive it: on `/board` there is
+    nowhere to put the answer, so the cells are not selectable there and this
+    stays null for the life of the screen.
+
+    It is a CELL and not a card, deliberately. An empty cell is a fact — this
+    class has Thursday P4 free — and it is the one the tray is about to fill.
+  */
+  const [picked, setPicked] = useState<{ day: number; period: number } | null>(null);
+  // A cell names a position in the grid on screen, so it cannot outlive a
+  // change of grid: Monday P3 in 5-A is a different lesson from Monday P3 in
+  // 5-B, and the strip would go on describing the one you left.
+  useEffect(() => setPicked(null), [draftId, view, sectionId, teacherId]);
+
+  /**
+   * §31.11 — what the strip says while this tab is open.
+   *
+   * Two halves. The first describes the selected cell, or, with nothing
+   * selected, says how the board works — the sentence that used to sit under
+   * the grid and cost a row of school. The second is **the draft's own
+   * numbers**, which is where the five stat boxes went: they are the figures
+   * this draft is judged on, and the strip is a row that already exists.
+   *
+   * Built from THIS component's payload rather than handed up as ids. The host
+   * is looking at its own copy of `/slots` — possibly a different draft, or the
+   * published week — and a strip resolved against that would explain a lesson
+   * that is not on the board (§31.10's rule, restated for cards).
+   */
+  const stripGroups: StripGroup[] | null = useMemo(() => {
+    if (!onStrip || !data) return null;
+    const groups: StripGroup[] = [];
+
+    if (picked) {
+      const period = data.periods.find((p) => p.periodNumber === picked.period);
+      const when = `${DAY_NAMES[picked.day]} · P${picked.period}`
+        + (period ? ` · ${period.startTime}` : "");
+      const rowName = view === "section"
+        ? (sections.find((x) => x.id === activeSection)?.label ?? "")
+        : (data.teachers[String(activeTeacher)] ?? "");
+      // The same lookup the cell itself used, so the strip and the card cannot
+      // disagree about what is in the cell. §4.9: in the teacher view a block
+      // is this person's lesson when one of its OPTIONS is theirs — matching
+      // `teacherId` alone leaves every language teacher's week blank.
+      const e = view === "section"
+        ? entriesByCell.get(`${activeSection}@${picked.day}:${picked.period}`)
+        : (engine?.all ?? []).find((x) =>
+            x.day === picked.day && x.period === picked.period
+            && (x.teacherId === activeTeacher || x.options.some((op) => op.teacherId === activeTeacher)));
+
+      if (!e) {
+        groups.push({ label: "The cell", primary: "Free", lines: [when, rowName].filter(Boolean) });
+      } else {
+        const subject = e.subjectId !== null ? (data.subjects[String(e.subjectId)] ?? null) : null;
+        const block = e.electiveBlockId !== null ? data.blocks?.[String(e.electiveBlockId)] : undefined;
+        const room = e.roomId !== null ? (data.rooms[String(e.roomId)] ?? null) : null;
+        const attending = e.classSectionIds
+          .map((id) => sections.find((x) => x.id === id)?.label)
+          .filter(Boolean) as string[];
+
+        groups.push({
+          label: "The card",
+          // §10.5 — a block is several subjects at once and belongs to none of
+          // them, so it is named by the block and keeps no subject's colour.
+          primary: subject ?? block?.name ?? "Lesson",
+          swatch: subject ? colors.subject(subject) : null,
+          lines: [
+            when,
+            [room, e.locked ? "pinned" : null].filter(Boolean).join(" · "),
+          ].filter(Boolean),
+        });
+
+        if (attending.length > 0) {
+          groups.push({
+            label: attending.length > 1 ? "The classes" : "The class",
+            primary: attending.length > 2 ? `${attending.length} sections` : attending.join(", "),
+            swatch: colors.classOf(attending[0]),
+            lines: [
+              attending.length > 2 ? attending.join(", ") : "",
+              e.mergedGroupId !== null ? "Taught together as one lesson (§4.10)" : "",
+            ].filter(Boolean),
+          });
+        }
+
+        if (e.teacherId !== null) {
+          groups.push({
+            label: "The teacher",
+            primary: data.teachers[String(e.teacherId)] ?? "—",
+            lines: [
+              e.locked
+                ? "Pinned — drags and solver re-runs treat this cell as fixed"
+                : "Drag the card to move it; every legal destination glows",
+            ],
+          });
+        }
+
+        if (block) {
+          groups.push({
+            label: "Running inside it",
+            chips: block.options.map((op) => ({
+              text: `${op.subject} ${initials(op.teacher)}`,
+              swatch: colors.subject(op.subject),
+              title: `${op.subject} — ${op.teacher} (${op.room})`,
+            })),
+          });
+        }
+      }
+    } else {
+      groups.push({
+        label: "The board",
+        lines: [
+          "Pick up a card — every legal destination glows green, cyan proposes a swap.",
+          "Illegal drops shake and explain the rule. Click any cell to see what it is.",
+        ],
+      });
+    }
+
+    if (shown) {
+      const errs = shown.errorCount ?? 0;
+      const warns = shown.warningCount ?? 0;
+      groups.push({
+        label: `Draft #${shown.draftNo}`,
+        primary: shown.generationPct === null ? "—" : `${shown.generationPct}% generated`,
+        lines: [
+          `${(shown.placedLessons ?? 0).toLocaleString()} of ${(shown.requiredLessons ?? 0).toLocaleString()} lessons placed`,
+          `${errs} error${errs === 1 ? "" : "s"} · ${warns} warning${warns === 1 ? "" : "s"}`,
+          shown.label ?? "",
+        ].filter(Boolean),
+      });
+    }
+    return groups;
+  }, [onStrip, data, picked, view, activeSection, activeTeacher, entriesByCell, engine, sections, colors, shown]);
+
+  /*
+    Emitted on CONTENT, not on identity.
+
+    The host's handler puts these in its own state, which re-renders this
+    component, which would rebuild the array — so a dependency on the array
+    itself is a loop waiting for one unmemoised value upstream (`useColors`,
+    say) to arm it. Comparing the serialised groups makes the loop impossible
+    by construction rather than by everybody upstream staying careful. The
+    groups are five small objects, so the cost is nothing.
+  */
+  const lastStrip = useRef<string>("");
+  useEffect(() => {
+    if (!onStrip) return;
+    const key = JSON.stringify(stripGroups);
+    if (key === lastStrip.current) return;
+    lastStrip.current = key;
+    onStrip(stripGroups);
+  });
 
   const post = useCallback(
     async (path: string, body: unknown, okMsg?: string) => {
@@ -653,8 +863,11 @@ export function Board() {
     }
   };
 
-  if (!current) return <p className="screen-sub">Select a timetable first.</p>;
-  if (!ctx || !data || !engine) return <p className="screen-sub">Loading draft board…</p>;
+  // A host draws this inside a bordered pane, so a bare sentence at the very
+  // top-left of it reads as a rendering fault rather than a state.
+  const holdStyle = embedded ? { padding: 20 } : undefined;
+  if (!current) return <p className="screen-sub" style={holdStyle}>Select a timetable first.</p>;
+  if (!ctx || !data || !engine) return <p className="screen-sub" style={holdStyle}>Loading draft board…</p>;
 
   const activeEntry = activeKey && !activeKey.startsWith("tray:") ? engine.get(activeKey) : null;
 
@@ -719,12 +932,18 @@ export function Board() {
               ) : (
                 <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-faint)", fontSize: 10 }}>—</span>
               );
+              // §31.11 — selectable only where there is a strip to answer in.
+              const pick = onStrip
+                ? () => setPicked({ day: d, period: p.periodNumber as number })
+                : undefined;
+              const isPicked = picked !== null && picked.day === d && picked.period === p.periodNumber;
               return editable ? (
-                <DropCell key={cellId} day={d} period={p.periodNumber as number} verdict={activeKey ? (legal?.get(cellId) ?? null) : null} shaking={shakeCell === cellId}>
+                <DropCell key={cellId} day={d} period={p.periodNumber as number} verdict={activeKey ? (legal?.get(cellId) ?? null) : null} shaking={shakeCell === cellId}
+                  selected={isPicked} onSelect={pick}>
                   {content}
                 </DropCell>
               ) : (
-                <div key={cellId} className="dnd-cell">{content}</div>
+                <div key={cellId} className={`dnd-cell${isPicked ? " picked" : ""}`} onClick={pick}>{content}</div>
               );
             }),
           ]
@@ -733,70 +952,229 @@ export function Board() {
     </div>
   );
 
+  /*
+    §31.11 — the controls, written once and placed in one of two rows.
+
+    On `/board` they are this screen's own toolbar, split left and right across
+    the width. In the Master Grid they are portalled into the host's bar, which
+    is the same device §31.10 used for the Allocation grid: the host already
+    draws a toolbar, and a second one below it would cost a row of the grid on
+    a screen whose whole design is about not spending rows.
+  */
+  const small: React.CSSProperties = embedded
+    ? { padding: "5px 10px", fontSize: 12 }
+    : {};
+  const selectStyle: React.CSSProperties = embedded
+    ? { padding: "5px 9px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 12 }
+    : { padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 };
+  const pickerStyle: React.CSSProperties = { ...selectStyle, fontWeight: 700, color: "var(--brand)" };
+
+  const pickers = (
+    <>
+      {/* §22.5 — which of the school's drafts this board is editing. Left of
+          everything else because it scopes everything else.
+
+          Hidden when the HOST has a picker of its own: the Master Grid's one
+          governs its other four tabs too, and two selects over one screen is
+          two answers to "which draft am I looking at?". */}
+      {!controlled && liveDrafts.length > 0 && (
+        <select
+          value={shownDraftId ?? ""}
+          onChange={(e) => chooseDraft(Number(e.target.value))}
+          style={{ ...pickerStyle, border: "1px solid var(--brand)", background: "var(--steel-pale)" }}
+        >
+          {liveDrafts.map((d) => (
+            <option key={d.id} value={d.id}>
+              Draft #{d.draftNo}{d.label ? ` — ${d.label}` : ""}
+              {d.generationPct !== null ? ` · ${d.generationPct}%` : ""}
+            </option>
+          ))}
+        </select>
+      )}
+      <select value={view} onChange={(e) => setView(e.target.value as "section" | "teacher")} style={selectStyle}>
+        <option value="section">By Class-Section</option>
+        <option value="teacher">By Teacher (read-only)</option>
+      </select>
+      {view === "section" ? (
+        <select value={activeSection ?? ""} onChange={(e) => setSectionId(Number(e.target.value))} style={pickerStyle}>
+          {sections.map((s) => <option key={s.id} value={s.id}>{s.label} · Draft</option>)}
+        </select>
+      ) : (
+        <select value={activeTeacher ?? ""} onChange={(e) => setTeacherId(Number(e.target.value))} style={pickerStyle}>
+          {teacherIds.map((t) => <option key={t} value={t}>{data.teachers[String(t)]}</option>)}
+        </select>
+      )}
+      {/* The pill states the SELECTED draft's standing, not a constant —
+          an archived draft is read-only and a published one is the
+          school's live timetable, and both must say so. */}
+      <span className={`badge ${shown?.status === "published" ? "badge-ok" : shown?.status === "archived" ? "badge-neutral" : "badge-warn"}`}>
+        {shown?.status === "published"
+          ? `DRAFT #${shown.draftNo} — PUBLISHED`
+          : shown?.status === "archived"
+            ? `DRAFT #${shown.draftNo} — ARCHIVED`
+            : shown
+              ? `DRAFT #${shown.draftNo} — not published`
+              : "DRAFT — not published"}
+      </span>
+    </>
+  );
+
+  const actions = (
+    <>
+      <button className="btn" style={small} onClick={newDraft} disabled={busy}>＋ New draft</button>
+      <button className="btn" style={small} onClick={() => setComparing((c) => !c)} disabled={liveDrafts.length < 2}
+        title={liveDrafts.length < 2 ? "Compare needs at least two drafts" : "Compare every draft's numbers side by side"}>
+        {comparing ? "Hide comparison" : "Compare drafts"}
+      </button>
+      <button className="btn" style={small} onClick={autoFill} disabled={busy}>Auto-fill remaining gaps</button>
+      <Link
+        to={shownDraftId !== null ? `/publish?draftId=${shownDraftId}` : "/publish"}
+        className="btn btn-primary"
+        style={{ textDecoration: "none", ...small }}
+      >
+        {shown ? `Publish Draft #${shown.draftNo}…` : "Publish…"}
+      </Link>
+    </>
+  );
+
+  const controls = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {pickers}
+      {actions}
+    </div>
+  );
+
+  const trayTotal = tray.reduce((n, t) => n + t.missing, 0);
+  const trayBlock = (
+    <>
+      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", marginBottom: 6 }}>
+        Unplaced tray — drag onto the grid ({trayTotal} period{trayTotal === 1 ? "" : "s"})
+      </div>
+      <div className="tray">
+        {tray.length === 0 ? (
+          <span style={{ fontSize: 11.5, color: "var(--ink-faint)", alignSelf: "center" }}>
+            Every required period for this class-section is placed ✓ &nbsp;(drop a card here? use ✕ on a card to return it)
+          </span>
+        ) : (
+          tray.map((t) => (
+            <TrayCard key={`${t.subjectId}:${t.teacherId}`} id={`tray:${t.subjectId}:${t.teacherId}`}
+              swatch={colors.subject(data.subjects[String(t.subjectId)])}
+              fill={embedded}
+              label={data.subjects[String(t.subjectId)] ?? "?"}
+              sub={data.teachers[String(t.teacherId)] ?? ""} count={t.missing} />
+          ))
+        )}
+      </div>
+    </>
+  );
+
+  const overlay = (
+    <DragOverlay dropAnimation={null}>
+      {activeKey ? (
+        <div className="drag-overlay-card">
+          {activeKey.startsWith("tray:")
+            ? data.subjects[activeKey.split(":")[1]] ?? "…"
+            : activeEntry?.electiveBlockId != null
+              ? `${cardLabel(activeEntry, data)} ⋔ · ${activeEntry.options.length} lessons, ${activeEntry.classSectionIds.length} sections`
+              : `${data.subjects[String(activeEntry?.subjectId)] ?? "…"} · ${initials(data.teachers[String(activeEntry?.teacherId)] ?? "")}`}
+        </div>
+      ) : null}
+    </DragOverlay>
+  );
+
+  const sectionBoard = (
+    <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => { setActiveKey(null); setLegal(null); }}>
+      {embedded ? (
+        /*
+          §31.11 — the tray is a COLUMN beside the grid, not a band under it.
+
+          Height is the scarce dimension on this screen and width is not: the
+          grid needs five day columns and the pane is 1,600px wide. Sticky, so
+          it stays reachable while the grid scrolls — a drag target that has
+          scrolled off the top is a drag nobody can finish.
+        */
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+            {grid((d, p) => entriesByCell.get(`${activeSection}@${d}:${p}`), true)}
+          </div>
+          <aside style={{ flex: "0 0 178px", position: "sticky", top: 0 }}>
+            {trayBlock}
+          </aside>
+        </div>
+      ) : (
+        <>
+          {grid((d, p) => entriesByCell.get(`${activeSection}@${d}:${p}`), true)}
+          <div style={{ marginTop: 18 }}>{trayBlock}</div>
+        </>
+      )}
+      {overlay}
+    </DndContext>
+  );
+
+  const teacherBoard = grid(
+    (d, p) => {
+      for (const e of engine.all) {
+        if (e.day !== d || e.period !== p) continue;
+        // §4.9: a block is this teacher's lesson when one of its options
+        // is theirs. Matching only `teacherId` left every language
+        // teacher's week blank, because a block has no teacher of its own.
+        if (e.teacherId === activeTeacher) return e;
+        if (e.options.some((o) => o.teacherId === activeTeacher)) return e;
+      }
+      return undefined;
+    },
+    false,
+    activeTeacher,
+  );
+
+  const emptyState = (
+    <div className="card" style={{ textAlign: "center", padding: 40 }}>
+      <p style={{ fontWeight: 700, marginBottom: 6 }}>No draft to edit.</p>
+      <p className="screen-sub">Generate a timetable, or start a new draft from the published version.</p>
+      <button className="btn btn-primary" disabled={busy}
+        onClick={() => post("draft-from-published", {}, "Draft created from the published timetable")}>
+        Create draft from published
+      </button>
+    </div>
+  );
+
+  const body = data.slots.length === 0 ? emptyState : view === "section" ? sectionBoard : teacherBoard;
+
+  const compare = (
+    <DraftCompare drafts={liveDrafts} shownId={shownDraftId} onOpen={(id) => { chooseDraft(id); setComparing(false); }} onDiscard={discardDraft} busy={busy} />
+  );
+
+  if (embedded) {
+    /*
+      §31.11 — one screen, and the scarce dimension is height.
+
+      Three things that cost rows on `/board` are gone here rather than shrunk.
+      The five stat boxes moved into the strip, which already exists and was
+      showing nothing on this tab. The comparison table REPLACES the grid
+      instead of sitting above it — it is a different way to look at the same
+      drafts, not an addition to this one. And the paragraph under the grid is
+      in the strip's opening line.
+
+      What is left is a flex column: the pane takes what the host leaves and
+      scrolls inside itself, so nothing below it — least of all the strip — is
+      pushed off the bottom of the page.
+    */
+    return (
+      <div className="board-compact" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {toolbarHost ? createPortal(controls, toolbarHost) : controls}
+        <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "10px 12px" }}>
+          {comparing && liveDrafts.length > 0 ? compare : body}
+        </div>
+        {toast && <div className={`board-toast ${toast.kind}`}>{toast.msg}</div>}
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {/* §22.5 — which of the school's drafts this board is editing. Left of
-              everything else because it scopes everything else. */}
-          {liveDrafts.length > 0 && (
-            <select
-              value={shownDraftId ?? ""}
-              onChange={(e) => setDraftId(Number(e.target.value))}
-              style={{ padding: "8px 11px", border: "1px solid var(--brand)", borderRadius: 8, fontWeight: 700, fontSize: 13, color: "var(--brand)", background: "var(--steel-pale)" }}
-            >
-              {liveDrafts.map((d) => (
-                <option key={d.id} value={d.id}>
-                  Draft #{d.draftNo}{d.label ? ` — ${d.label}` : ""}
-                  {d.generationPct !== null ? ` · ${d.generationPct}%` : ""}
-                </option>
-              ))}
-            </select>
-          )}
-          <select value={view} onChange={(e) => setView(e.target.value as "section" | "teacher")}
-            style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
-            <option value="section">By Class-Section</option>
-            <option value="teacher">By Teacher (read-only)</option>
-          </select>
-          {view === "section" ? (
-            <select value={activeSection ?? ""} onChange={(e) => setSectionId(Number(e.target.value))}
-              style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 700, fontSize: 13, color: "var(--brand)" }}>
-              {sections.map((s) => <option key={s.id} value={s.id}>{s.label} · Draft</option>)}
-            </select>
-          ) : (
-            <select value={activeTeacher ?? ""} onChange={(e) => setTeacherId(Number(e.target.value))}
-              style={{ padding: "8px 11px", border: "1px solid var(--line)", borderRadius: 8, fontWeight: 700, fontSize: 13, color: "var(--brand)" }}>
-              {teacherIds.map((t) => <option key={t} value={t}>{data.teachers[String(t)]}</option>)}
-            </select>
-          )}
-          {/* The pill states the SELECTED draft's standing, not a constant —
-              an archived draft is read-only and a published one is the
-              school's live timetable, and both must say so. */}
-          <span className={`badge ${shown?.status === "published" ? "badge-ok" : shown?.status === "archived" ? "badge-neutral" : "badge-warn"}`}>
-            {shown?.status === "published"
-              ? `DRAFT #${shown.draftNo} — PUBLISHED`
-              : shown?.status === "archived"
-                ? `DRAFT #${shown.draftNo} — ARCHIVED`
-                : shown
-                  ? `DRAFT #${shown.draftNo} — not published`
-                  : "DRAFT — not published"}
-          </span>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={newDraft} disabled={busy}>＋ New draft</button>
-          <button className="btn" onClick={() => setComparing((c) => !c)} disabled={liveDrafts.length < 2}
-            title={liveDrafts.length < 2 ? "Compare needs at least two drafts" : "Compare every draft's numbers side by side"}>
-            {comparing ? "Hide comparison" : "Compare drafts"}
-          </button>
-          <button className="btn" onClick={autoFill} disabled={busy}>Auto-fill remaining gaps</button>
-          <Link
-            to={shownDraftId !== null ? `/publish?draftId=${shownDraftId}` : "/publish"}
-            className="btn btn-primary"
-            style={{ textDecoration: "none" }}
-          >
-            {shown ? `Publish Draft #${shown.draftNo}…` : "Publish…"}
-          </Link>
-        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>{pickers}</div>
+        <div style={{ display: "flex", gap: 10 }}>{actions}</div>
       </div>
 
       {/* §22.5 — the numbers this draft is judged on, read off the registry
@@ -814,72 +1192,9 @@ export function Board() {
         </div>
       )}
 
-      {comparing && liveDrafts.length > 0 && (
-        <DraftCompare drafts={liveDrafts} shownId={shownDraftId} onOpen={(id) => { setDraftId(id); setComparing(false); }} onDiscard={discardDraft} busy={busy} />
-      )}
+      {comparing && liveDrafts.length > 0 && compare}
 
-      {data.slots.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: 40 }}>
-          <p style={{ fontWeight: 700, marginBottom: 6 }}>No draft to edit.</p>
-          <p className="screen-sub">Generate a timetable, or start a new draft from the published version.</p>
-          <button className="btn btn-primary" disabled={busy}
-            onClick={() => post("draft-from-published", {}, "Draft created from the published timetable")}>
-            Create draft from published
-          </button>
-        </div>
-      ) : view === "section" ? (
-        <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => { setActiveKey(null); setLegal(null); }}>
-          {grid((d, p) => entriesByCell.get(`${activeSection}@${d}:${p}`), true)}
-
-          <div style={{ marginTop: 18 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", marginBottom: 6 }}>
-              Unplaced tray — drag onto the grid ({tray.reduce((n, t) => n + t.missing, 0)} period{tray.reduce((n, t) => n + t.missing, 0) === 1 ? "" : "s"})
-            </div>
-            <div className="tray">
-              {tray.length === 0 ? (
-                <span style={{ fontSize: 11.5, color: "var(--ink-faint)", alignSelf: "center" }}>
-                  Every required period for this class-section is placed ✓ &nbsp;(drop a card here? use ✕ on a card to return it)
-                </span>
-              ) : (
-                tray.map((t) => (
-                  <TrayCard key={`${t.subjectId}:${t.teacherId}`} id={`tray:${t.subjectId}:${t.teacherId}`}
-                    swatch={colors.subject(data.subjects[String(t.subjectId)])}
-                    label={data.subjects[String(t.subjectId)] ?? "?"}
-                    sub={data.teachers[String(t.teacherId)] ?? ""} count={t.missing} />
-                ))
-              )}
-            </div>
-          </div>
-
-          <DragOverlay dropAnimation={null}>
-            {activeKey ? (
-              <div className="drag-overlay-card">
-                {activeKey.startsWith("tray:")
-                  ? data.subjects[activeKey.split(":")[1]] ?? "…"
-                  : activeEntry?.electiveBlockId != null
-                    ? `${cardLabel(activeEntry, data)} ⋔ · ${activeEntry.options.length} lessons, ${activeEntry.classSectionIds.length} sections`
-                    : `${data.subjects[String(activeEntry?.subjectId)] ?? "…"} · ${initials(data.teachers[String(activeEntry?.teacherId)] ?? "")}`}
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
-      ) : (
-        grid(
-          (d, p) => {
-            for (const e of engine.all) {
-              if (e.day !== d || e.period !== p) continue;
-              // §4.9: a block is this teacher's lesson when one of its options
-              // is theirs. Matching only `teacherId` left every language
-              // teacher's week blank, because a block has no teacher of its own.
-              if (e.teacherId === activeTeacher) return e;
-              if (e.options.some((o) => o.teacherId === activeTeacher)) return e;
-            }
-            return undefined;
-          },
-          false,
-          activeTeacher,
-        )
-      )}
+      {body}
 
       <p className="screen-sub" style={{ marginTop: 14 }}>
         Pick up a card — every legal destination glows green (cyan = swap proposal). Illegal drops shake, beep, and

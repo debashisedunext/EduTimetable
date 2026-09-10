@@ -2532,12 +2532,19 @@ Three things it has to say out loud:
 
 A §4.9 block carries its own periods/week and is not a curriculum row, so an elective's options are **not** columns here — a grid showing French and German would be claiming Class 5 is taught both.
 
-### 31.5 Read-only, and three things deliberately not built
+### 31.5 The four pivots are read-only; the editing tabs are the real editors, embedded
 
-The reference product edits from this screen. This one does not:
+Phase 44 shipped this screen read-only, on two arguments. §31.10 and §31.11 kept both arguments and dropped the conclusion, because the arguments were never against *editing here* — they were against **building a second editor**:
 
-- **No curriculum or mapping edits.** §27 makes the Allocation grid the **one writer** for those, and a second editor over the same rows is how two answers to "how many periods does 1-A get?" come into existence.
-- **No drag-and-drop.** Placement edits belong on the Board, where the rules engine, the legality highlighting and the §29.1 freeze guard live — and a 27px cell is the worst drag target in the app. Same answer §10.6 gave.
+- **§27 makes the Allocation grid the one writer** for curriculum and mappings, and a second editor over the same rows is how two answers to "how many periods does 1-A get?" come into existence.
+- **Placement edits belong on the Board**, where the rules engine, the legality highlighting and the §29.1 freeze guard live — and a 27px cell is the worst drag target in the app. Same answer §10.6 gave.
+
+Both hold exactly as written, and both are satisfied by **embedding the real screen** rather than reimplementing it. The Lesson grid tab renders `StepAllocation` (§31.10) and the Draft board tab renders `Board` (§31.11), each with its own props, its own commit path and its own guards. There is still one writer for curriculum and one for placement; each now has two doors.
+
+So the read-only rule survives, narrowed to what it was always about — **the four pivot tabs**. Whole, Teachers, Classrooms and Subjects draw cells at 27 pixels and nothing there is editable, because a 27px cell is a bad target and a fifth writer would be a real one.
+
+Two refusals that did not change:
+
 - **It does not replace the Allocation Matrix.** They read the same payload and answer different questions: the Matrix has wide cells naming subject *and* teacher, for reading one class's week; this has narrow cells showing the shape of the whole school's. Adding pivots to the Matrix would have made its cells too small for what it is for.
 - **One wing at a time.** The top-bar selector picks the timetable, and §3.10 wings keep different hours — two wings in one grid would need §10.6's wall-clock axis and would still leave most cells blank.
 
@@ -2619,11 +2626,43 @@ And one that would have quietly undone the saving: the ref that measures is atta
 
 The honest limit of that table: it is `renderToString` in Node over the same cell shape, so it measures **building and serialising the element tree**, not browser layout and paint. §14's "render-to-usable ≤ 600ms" is a paint budget and this stack has no headless browser, so that budget remains unverified for this screen. What is verified is that the work which changed got 4.8x smaller, and that the node count — which layout and paint scale with — fell by 70%.
 
-### 31.9 What is left
+### 31.9 What Phase 44 shipped
 
-Nothing planned. The screen is read-only by design (§31.5), and the two things that would most naturally come next — editing, and showing several wings at once — are both refused there with reasons.
+Five tabs, four of them read-only pivots, and no editing anywhere. §31.10 and §31.11 revised that — see §31.5 for how, and why the rule it revised is still standing.
 
 Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, coverage on a clean week and after one deletion, and §17.8), `viewport.spec.ts` + `coverage.spec.ts` + `pivot.spec.ts` (**38 unit tests**), and the §17.8 sweep, which classified the new route with no help.
+
+### 31.10 The Lesson grid is the Allocation grid
+
+The Lesson grid began as its own read-only table of class-sections against subjects. It is now `StepAllocation` itself — the guided setup's step 9, the one writer for curriculum and mappings (§27) — rendered inside the tab at `density="compact"`, with its toolbar portalled into the Master Grid's own bar and its cell selection feeding the strip.
+
+Three props carry the whole difference, and each removes a temptation to fork:
+
+- **`density="compact"`** — percentage columns instead of content-sized ones, and the room out of the cell. Twenty subjects then fit with no horizontal scroll, which was the point of putting the grid here at all.
+- **`toolbarHost`** — the host already draws a toolbar, and a second one below it costs a row of a screen whose whole design is about not spending rows.
+- **`onSelectCell`** — the tab hands the strip **facts**, not ids. The grid edits draft answers that are not on the server yet; resolving ids here would be a second derivation, free to disagree with the grid it sits under, and certain to the moment somebody edits without saving.
+
+`onFocusMode` is deliberately not passed: it exists so the step can ask the wizard's shell to fold its chrome away, and here the vertical tab rail *is* the frame. The Focus button renders only when the prop is given, so omitting it removes the control without touching `Allocation.tsx` — which is what embedding rather than forking buys.
+
+The draft lives in the **host**, not the tab, which is what makes moving between the five tabs free: the tab unmounts, the work does not. Only leaving the screen is guarded, and by a module-level `guardUnsaved` rather than `useBlocker`, because `main.tsx` mounts a plain `<BrowserRouter>` and converting the app's routing to data routers to guard one screen is a large change for a small feature. Saving is one deliberate act: the wizard saves on Next, a tab has no Next, and auto-saving a grid that takes single digits with no Enter would commit half-typed numbers. `commitAllocation` is the two calls step 9 makes, in one place so the two doors cannot drift — `commitWeeks(answers, {changedOnly: true})` for the period *length* (a `timetable_config` fact, so it cannot ride through the §16 importer), then `POST /onboarding/commit/9`, whose skip-by-natural-key is what makes pressing Save twice create nothing.
+
+### 31.11 The Draft board is a tab, under Whole
+
+Same move, same reasons, one screen further. `Board` gains four optional props — `embedded`, `draftId` + `onDraftChange`, `toolbarHost`, `onStrip` — and `/board` is untouched, because every one of them is optional.
+
+**Under Whole**, deliberately: Whole is what the week *is* and this is where it is changed, so the reading and the fixing sit together.
+
+**The host owns the draft.** The Master Grid already has a picker governing its other four tabs, and two selects over one screen is two answers to "which draft am I looking at?". So `draftId` goes down and `onDraftChange` comes back up; the board hides its own select whenever the host offered to listen. The host refetches its **draft list** as well as its slots on that callback, and the second refetch is not redundant: discarding the draft the server had chosen sends `null`, and if the picker was already on `null` that sets no state, changes no URL and refetches nothing — leaving `data.draftId` naming a draft that no longer exists. For the same reason the Draft/Published select is **hidden** on this tab rather than disabled: a board over a published week is not a narrower thing to offer, it is a contradiction, and a greyed control invites somebody to work out why.
+
+**The strip is fed from the board's payload, not the host's.** The board resolves a clicked cell against the tuples its own cards were drawn from and hands up finished groups. The host is looking at its own copy of `/slots` — possibly a different draft — and a strip resolved against that would explain a lesson that is not on the screen. Emitted on **content**, not identity: the host puts the groups in state, which re-renders the board, which rebuilds them, so comparing the serialised groups is what makes the loop impossible by construction rather than by every value upstream staying memoised.
+
+**One screen, and the scarce dimension is height.** Three things that cost rows on `/board` are gone rather than shrunk. The five stat boxes moved **into the strip**, which already existed and was showing nothing on this tab — they are the figures the draft is judged on, and the strip is a row that is drawn either way. The draft comparison **replaces** the grid instead of sitting above it, because it is a different way to look at the same drafts and not an addition to this one. The paragraph under the grid became the strip's opening line. What is left is a flex column whose pane scrolls inside itself, so nothing below it — least of all the strip — is pushed off the bottom of the page.
+
+The **tray is a column beside the grid**, not a band under it, and sticky: height is scarce and width is not, and a drag target that has scrolled off the top is a drag nobody can finish. Cells are denser through a `.board-compact` class rather than by changing the defaults — `/board` is a page of its own with a screen to spend, and a card with room for a subject, a teacher and a room is easier to read than one without. The numbers are set against a real week: every wing in the reference school runs 8 teaching periods and 2 breaks, so the pane holds 8 rows at 42px, two breaks at 17px, a day header and ten 6px gaps — about 450px, against the ~600px a 1080-tall screen leaves after the topbar, the toolbar and the 86px strip.
+
+A cell is selectable **only where there is a strip to answer in**, so `/board` is unchanged there too. Clicking does not fight the drag: the `PointerSensor` is armed at `distance: 4`, so a press that never moves is not a drag and the click still arrives, while a real drag ends with pointerdown and pointerup in different cells and fires no click on either. An **empty** cell is selectable, because a free period is a fact — and it is the one the tray is about to fill.
+
+Two things the tabs must not become a way round. **Permissions**: `/board` needs `timetable.edit` and `/allocation` needs `masters.manage`, and the left nav hides each accordingly — so the Master Grid takes both as props and drops the tab it may not offer. The server refuses either way; the cost of not asking would be a tab that answers 403 rather than one that is not there. **Freshness**: the four pivots are drawn from the host's own copy of `/slots`, so the host now listens for `slots:changed` on the school's socket room exactly as the board always has. Without it, dragging a lesson and switching to Whole shows it where it used to be.
 
 ## 25. Term-wise Timetables (Phase 26)
 
