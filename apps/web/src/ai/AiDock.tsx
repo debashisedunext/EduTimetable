@@ -11,6 +11,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation } from "react-router-dom";
 import { COMMON_SUBJECTS, PERMISSIONS } from "@edutimetable/shared";
 import { Markdown } from "../markdown";
 import { useConfigCtx } from "../hooks";
@@ -68,6 +69,7 @@ function Launcher({ open, onToggle, inBar = false }: {
 
 export function AiDock({ permissions }: { permissions: string[] }) {
   const { current } = useConfigCtx();
+  const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [picker, setPicker] = useState(false);
@@ -82,9 +84,28 @@ export function AiDock({ permissions }: { permissions: string[] }) {
    * of the corner on every page load.
    */
   const [launcherSlot, setLauncherSlot] = useState<HTMLElement | null>(null);
+  /**
+   * Where the panel starts, measured from whatever the launcher ended up in.
+   *
+   * The panel is `position: fixed`, so a constant would be right for exactly
+   * one placement — and the launcher now has two. Anchored below the slot, it
+   * cannot cover the button that opened it, wherever that button is.
+   */
+  const [panelTop, setPanelTop] = useState(74);
+  /*
+    Re-looked-up on every navigation, not once on mount.
+
+    This component lives outside `<Routes>` and stays mounted for the session,
+    while the slot belongs to a screen that comes and goes. A single lookup at
+    mount finds nothing on any other page, and then never looks again — so
+    arriving at the screen that HAS a slot would leave the launcher floating in
+    the corner it was moved out of.
+  */
   useLayoutEffect(() => {
-    setLauncherSlot(document.getElementById("ai-launcher-slot"));
-  }, []);
+    const el = document.getElementById("ai-launcher-slot");
+    setLauncherSlot(el);
+    setPanelTop(el ? Math.round(el.getBoundingClientRect().bottom) + 10 : 74);
+  }, [pathname, open]);
   const { messages, busy, error, ask, reset } = useAiChat(current?.id ?? null);
 
   const canChat = permissions.includes(PERMISSIONS.AI_CHAT);
@@ -134,8 +155,9 @@ export function AiDock({ permissions }: { permissions: string[] }) {
           style={{
             // Hangs from the bar the launcher is in, rather than rising from a
             // corner it no longer occupies.
-            position: "fixed", right: 22, top: 74, zIndex: 59,
-            width: "min(430px, calc(100vw - 44px))", height: "min(620px, calc(100vh - 100px))",
+            position: "fixed", right: 22, top: panelTop, zIndex: 59,
+            width: "min(430px, calc(100vw - 44px))",
+            height: `min(620px, calc(100vh - ${panelTop + 26}px))`,
             display: "flex", flexDirection: "column",
             background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14,
             boxShadow: "0 16px 48px rgba(11,31,68,0.22)", overflow: "hidden",

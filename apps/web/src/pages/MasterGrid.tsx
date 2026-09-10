@@ -1154,6 +1154,19 @@ export function MasterGrid() {
             {data.status}
             {status === "draft" && shownDraft ? ` #${shownDraft.draftNo}` : ""}
           </span>
+          {/*
+            §31.10 — the assistant's launcher, docked in this screen's own bar.
+
+            It used to float at the bottom-right of every page, where on this
+            one it covered the strip's issue count. The app's top bar carries
+            facts about the WHOLE session — which school, which timetable, what
+            is unread — and the assistant answers questions about the timetable
+            in front of you, so it belongs on the bar that names that timetable.
+
+            `AiDock` looks this slot up on every navigation; screens without one
+            keep the floating button, which is what the fallback is for.
+          */}
+          <span id="ai-launcher-slot" style={{ display: "flex", alignItems: "center" }} />
         </div>
       </div>
 
