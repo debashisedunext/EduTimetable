@@ -84,7 +84,14 @@ export function AllocationTab({
 
   return (
     <div style={frame}>
-      <StepAllocation answers={answers} onChange={onChange} />
+      {/*
+        §31.10 — `compact`, which is the one visual difference from
+        `/allocation`: percentage columns instead of content-sized ones, and
+        the room out of the cell. Twenty subjects then fit without a
+        horizontal scrollbar, which was the whole point of putting the grid
+        here rather than linking to it.
+      */}
+      <StepAllocation answers={answers} onChange={onChange} density="compact" />
     </div>
   );
 }

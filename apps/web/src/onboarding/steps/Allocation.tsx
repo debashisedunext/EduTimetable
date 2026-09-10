@@ -328,11 +328,29 @@ function useHoverDetail(): [boolean, (on: boolean) => void] {
 
 // ─────────────────────────────────────────────────────────────── the step
 
-export function StepAllocation({ answers, onChange, onFocusMode }: {
+export function StepAllocation({ answers, onChange, onFocusMode, density = "comfortable" }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
   /** Lets the step ask the wizard shell to fold its chrome away. */
   onFocusMode?: (on: boolean) => void;
+  /**
+   * §31.10 — how much width a column may take.
+   *
+   * `comfortable` is this grid as it has always been: columns sized by their
+   * content, three lines in a cell, and a horizontal scrollbar once a school
+   * has more subjects than the pane has room for. That is right for
+   * `/allocation`, which is a page of its own.
+   *
+   * `compact` is the Master Grid's Lesson Grid tab, where the whole point is
+   * that **every subject is on screen at once**. Two things pay for it: the
+   * columns become percentages of a `table-layout: fixed` table rather than
+   * content-sized, and the cell's third line — the room — moves to the strip
+   * below the grid, which is why that strip exists.
+   *
+   * The default is what it was, so the guided setup and `/allocation` render
+   * exactly as they did before this prop.
+   */
+  density?: "comfortable" | "compact";
 }) {
   const [activeWing, setActiveWing] = useState(0);
   const [query, setQuery] = useState("");
@@ -377,6 +395,35 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
   const gridRef = useRef<HTMLDivElement>(null);
 
   const m = useModel(answers, activeWing);
+
+  /**
+   * §31.10 — fitting every subject, and the width below which it stops trying.
+   *
+   * At `compact` the columns are percentages of a fixed-layout table, so N
+   * subjects share whatever is there. `minWidth` is the honest floor: below
+   * about 56px a cell cannot hold a period count and two initials, and a grid
+   * that shrinks past that is claiming to show something it does not. A school
+   * with more subjects than the pane can hold gets a scrollbar instead of an
+   * illegible row — the rule §31.1 set for the timetable tabs.
+   */
+  const tight = density === "compact";
+  const HEAD_PCT = 11;
+  const LOAD_PCT = 6;
+  /** The narrowest a cell may be and still hold a period count and two initials. */
+  const MIN_COL_PX = 56;
+  const subjectCols = m.subjects.length;
+  const colPct = subjectCols > 0 ? (100 - HEAD_PCT - LOAD_PCT) / subjectCols : 1;
+  /*
+    DERIVED from `colPct`, not measured out separately.
+
+    The obvious version — `112 + cols * 56 + 86` — is a second arithmetic for
+    the same fact, and it disagrees: the row header and the Load column are
+    percentages here, so they take more than their old fixed minimums and the
+    subject columns end up under the floor the number was supposed to defend.
+    This is the width at which a subject column is exactly `MIN_COL_PX`, so the
+    scrollbar appears at precisely the point the cells would stop being legible.
+  */
+  const tightMinWidth = Math.ceil((MIN_COL_PX * 100) / colPct);
 
   /** Every section of the active wing, in grid order. */
   const sections = useMemo(
@@ -872,7 +919,18 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
         border: "1px solid var(--line)", borderRadius: 10, background: "var(--paper)",
         overflow: "auto", flex: 1, minHeight: 220,
       }}>
-        <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", fontSize: 11.5 }}>
+        <table style={{
+          borderCollapse: "separate", borderSpacing: 0, width: "100%",
+          fontSize: tight ? 11 : 11.5,
+          ...(tight ? { tableLayout: "fixed" as const, minWidth: tightMinWidth } : {}),
+        }}>
+          {tight && (
+            <colgroup>
+              <col style={{ width: `${HEAD_PCT}%` }} />
+              {m.subjects.map((s2) => <col key={s2.name} style={{ width: `${colPct}%` }} />)}
+              <col style={{ width: `${LOAD_PCT}%` }} />
+            </colgroup>
+          )}
           <thead>
             <tr>
               <th style={{
@@ -885,7 +943,12 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
                   {...peek({ kind: "subject", subject: s.name })}
                   style={{
                     position: "sticky", top: 0, zIndex: 3, background: "var(--brand)", color: "#fff",
-                    font: "600 10.5px/1.2 Inter", padding: "6px 5px", textAlign: "center", whiteSpace: "nowrap",
+                    font: "600 10.5px/1.2 Inter", padding: tight ? "6px 2px" : "6px 5px",
+                    textAlign: "center", whiteSpace: "nowrap",
+                    // Same reason as the row header: fixed layout will not
+                    // widen for "Physical Educ", so it is clipped and the full
+                    // name stays on the hover card.
+                    ...(tight ? { overflow: "hidden" } : {}),
                   }}>
                   {s.name.length > 6 ? s.name.slice(0, 5) : s.name}
                   <span style={{ display: "block", font: "500 9px/1 var(--font-mono, monospace)", opacity: 0.7, marginTop: 2 }}>
@@ -914,6 +977,12 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
                       padding: "3px 8px 3px 11px", borderBottom: "1px solid var(--line)",
                       borderRight: "1px solid var(--line)", fontWeight: 600, fontSize: 11.5, whiteSpace: "nowrap",
                       borderTop: i === 0 ? "2px solid var(--steel-light)" : undefined,
+                      /* §31.10 — `table-layout: fixed` means content no longer
+                         widens its column, so a long class-section name spills
+                         over the first subject instead of pushing it right.
+                         Clipped rather than allowed to overlap; the full label
+                         is in the strip and on the row's own hover card. */
+                      ...(tight ? { overflow: "hidden", textOverflow: "ellipsis", maxWidth: 0 } : {}),
                     }}>
                       {i === 0 && (
                         <span style={{
@@ -966,7 +1035,8 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
                             }}
                             {...peek({ kind: "cell", section: id, subject: s.name })}
                             style={{
-                              width: "100%", minWidth: 58, borderRadius: 6, padding: "3px 2px", display: "block",
+                              width: "100%", minWidth: tight ? 0 : 58, borderRadius: 6,
+                              padding: tight ? "2px 1px" : "3px 2px", display: "block",
                               cursor: "pointer", opacity: dim ? 0.16 : 1,
                               boxShadow: isCursor ? "0 0 0 2px var(--brand)" : undefined,
                               ...(p <= 0
@@ -988,15 +1058,22 @@ export function StepAllocation({ answers, onChange, onFocusMode }: {
                                   borderRadius: "50%", border: "1.5px solid currentColor", font: "700 7.5px/1 monospace",
                                 }}>●</span>
                               )}
-                              {p <= 0 ? " " : code ? initialsOf(code) : "no teacher"}
+                              {p <= 0 ? " " : code ? initialsOf(code) : tight ? "none" : "no teacher"}
                               {merged && <span title="taught as one lesson">⛓</span>}
                             </span>
-                            <span style={{
-                              font: "400 8.5px/1.1 Inter", opacity: 0.7, marginTop: 1, display: "block",
-                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                            }}>
-                              {p <= 0 ? " " : code ? (row?.room || `${shortLabel(id)} room`) : "click to fix"}
-                            </span>
+                            {/* §31.10 — the room is the third line, and the
+                                twelve pixels a column that let twenty subjects
+                                fit. At `compact` it moves to the strip, which
+                                has the room to print it in full rather than
+                                ellipsised to "Pre-Nurs…". */}
+                            {!tight && (
+                              <span style={{
+                                font: "400 8.5px/1.1 Inter", opacity: 0.7, marginTop: 1, display: "block",
+                                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                              }}>
+                                {p <= 0 ? " " : code ? (row?.room || `${shortLabel(id)} room`) : "click to fix"}
+                              </span>
+                            )}
                           </button>
                         </td>
                       );
