@@ -512,7 +512,23 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * §30.10 — the error banner remembers WHICH pool it is about.
+   *
+   * A plain string was not enough, and the failure was on screen: a school
+   * setting up its individual timetable was shown "Class 1 is in both Main
+   * Timetable 2026-27 and New" — a real clash between two grouped wings,
+   * raised while the main school was selected and still sitting there after the
+   * switch. `changeScope` clears it, but that is one of nine places this state
+   * is written from, and "every writer remembers to clear it" is not a property
+   * anybody can keep true. React Fast Refresh preserves state across a hot
+   * reload too, so an error could even outlive the code that raised it.
+   *
+   * Stamping the scope makes the wrong banner impossible rather than unlikely:
+   * it is rendered only where it was raised. The setter keeps its old signature,
+   * so all nine writers are untouched — the one that matters is the read.
+   */
+  const [errorAt, setErrorAt] = useState<{ scope: string; message: string } | null>(null);
   /** The line shown after a step lands; cleared when the next one starts. */
   const [praise, setPraise] = useState<string | null>(null);
   const [sound, setSound] = useState(soundEnabled());
@@ -603,6 +619,18 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * Wrapped rather than left to a `useEffect` on `scope`, because clearing an
    * error is a consequence of the click and not of the render that follows it.
    */
+  /*
+    A ref, because `setError` is called from async work that captured an older
+    render. Reading the scope through it stamps the error with the pool the
+    person is looking at NOW, not the one they were in when the request left.
+  */
+  const scopeNow = useRef(scope);
+  scopeNow.current = scope;
+  const setError = (message: string | null) =>
+    setErrorAt(message === null ? null : { scope: scopeNow.current, message });
+  /** Shown only in the pool that raised it. */
+  const error = errorAt && errorAt.scope === scope ? errorAt.message : null;
+
   const changeScope = (next: string) => {
     if (next === scope) return;
     setScope(next);
@@ -1001,6 +1029,10 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
 
   const next = async () => {
     setPraise(null);
+    // §30.10 — cleared FIRST. It used to be cleared only after the step
+    // validated and the draft saved, so a persist that failed left the previous
+    // attempt's message standing over a fresh one.
+    setError(null);
     const bad = problemAt(step);
     if (bad) { setError(bad); return; }
     /**
