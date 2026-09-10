@@ -268,10 +268,29 @@ async function main() {
       session: { name: "ZZIP 2026-27", startDate: "2026-04-01", endDate: "2027-03-31" },
     },
   });
-  const unscoped = await call("POST", "/onboarding/commit/4", S);
-  check(unscoped.status >= 400 && /both ZZIP Main and ZZIP Second/.test(unscoped.json?.message ?? ""),
-    "with no scope it still refuses — the grouped clash is real and must be reported",
-    (unscoped.json?.message ?? "").slice(0, 60));
+  /*
+    §30.11 — the refusal is computed from the DATA, not from the request.
+
+    An unscoped commit is a caller asking for everything, and it used to be
+    refused entirely because two grouped wings clash. The individual timetable
+    shares nothing with them, so its rows are built and the clash comes back as
+    an issue rather than as a 400 — independence that needed the request to be
+    phrased right was not independence.
+  */
+  const wholesale = await call("POST", "/onboarding/commit/4", S);
+  check(wholesale.status < 300,
+    "an UNSCOPED commit builds the pools that are fine instead of refusing everything",
+    wholesale.status >= 300 ? (wholesale.json?.message ?? "").slice(0, 70)
+      : `created ${JSON.stringify(wholesale.json?.created ?? {})}`);
+  check((wholesale.json?.issues ?? []).some((i) => /both ZZIP Main and ZZIP Second/.test(i.message)),
+    "...and still reports the grouped clash rather than swallowing it",
+    JSON.stringify((wholesale.json?.issues ?? [])[0]?.message ?? "none"));
+  const builtWeekly = await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: weekly.id },
+  });
+  check(builtWeekly >= 3,
+    "the individual timetable's cohorts exist even though another pool clashed",
+    `${builtWeekly} class-sections`);
 
   const scoped = await call(
     "POST",
@@ -295,6 +314,62 @@ async function main() {
   check(badScope.status >= 400,
     "an unknown scope is refused rather than quietly falling back to every wing",
     String(badScope.status));
+
+  /*
+    §30.11 — publishing, and the check that used to reach across pools.
+
+    `assertPublishable` refuses a publish when another LIVE timetable already
+    teaches one of the same classes over an overlapping window. That is right
+    inside a pool — two wings of the main school cannot both put Class 6 on the
+    wall — and wrong across them: an individual timetable is built without
+    reference to any other, so a class the main school also teaches is not its
+    concern. The publication row is written straight to the database because
+    what is being tested is the CHECK, not the publish pipeline.
+  */
+  console.log("\nAn individual timetable publishes over a class the main school already teaches:");
+  await prisma.timetablePublication.create({
+    data: {
+      schoolId, timetableConfigId: main.id, version: 1,
+      slotCount: 0, changedCount: 0, unallocatedCount: 0,
+    },
+  });
+  // Both teach Class 5 — `main` has secA, `weekly` has the twin in its own pool.
+  const redateWeekly = await call("PUT", `/timetable-configs/${weekly.id}`, S, {
+    name: "ZZIP Weekly", effectiveFrom: "2026-04-01", effectiveTo: "2027-03-31",
+  });
+  check(redateWeekly.status < 300,
+    "dating it across the same window is not refused — it shares no pool with the live one",
+    redateWeekly.status >= 300 ? (redateWeekly.json?.message ?? "").slice(0, 90) : "accepted");
+
+  /*
+    ...and the rule still bites inside a pool, which is the half worth keeping.
+
+    `ZZIP Second` is given its own section of Class 5 in the SHARED pool, so it
+    and the live `ZZIP Main` genuinely put the same children on the wall over
+    the same dates. That must still be refused — the change was about pools, not
+    about abandoning the rule.
+  */
+  const secC = (await call("POST", `/classes/${c5.id}/sections`, S, {
+    name: "C", academicYearId: year.id,
+  })).json.classSection;
+  await call("PUT", `/timetable-configs/${second.id}/class-sections`, S, { classSectionIds: [secC.id] });
+  const redateSecond = await call("PUT", `/timetable-configs/${second.id}`, S, {
+    name: "ZZIP Second", effectiveFrom: "2026-04-01", effectiveTo: "2027-03-31",
+  });
+  check(redateSecond.status >= 400 && /one live timetable at a time/.test(redateSecond.json?.message ?? ""),
+    "while a SIBLING WING over the same class and dates is still refused — one pool, one rule",
+    redateSecond.status >= 400 ? (redateSecond.json?.message ?? "").slice(0, 70) : `accepted (${redateSecond.status})`);
+
+  /*
+    §30.7's occupancy warning follows the same rule: a teacher or a room in two
+    live timetables at one wall-clock time is worth saying inside a pool and
+    meaningless across them.
+  */
+  const ready = await call("GET", `/timetable-configs/${weekly.id}/readiness`, S);
+  const crossPool = (ready.json?.warnings ?? []).filter((w) => /ZZIP Main/.test(w.message ?? ""));
+  check(crossPool.length === 0,
+    "and Readiness raises no occupancy clash against the other pool's live timetable",
+    crossPool[0]?.message?.slice(0, 70) ?? "none");
 
   // ── 5. a teacher's capacity is free in the individual timetable
   console.log("\nA teacher's week is counted per pool, not per school:");

@@ -230,10 +230,18 @@ export interface PlannedClass {
  */
 export function planClasses(wings: WingAnswer[]): {
   classes: PlannedClass[];
-  issues: Array<{ message: string; fix: string }>;
+  /**
+   * §30.11 — every issue names the POOL it belongs to.
+   *
+   * A clash is always between two wings of one pool (there is no other kind
+   * since §30.9), and the caller usually needs to know which: the commit
+   * refuses pool by pool, so a clash in the main school cannot hold an
+   * individual timetable's rows hostage.
+   */
+  issues: Array<{ message: string; fix: string; scope: string }>;
 } {
   const classes: PlannedClass[] = [];
-  const issues: Array<{ message: string; fix: string }> = [];
+  const issues: Array<{ message: string; fix: string; scope: string }> = [];
   /*
     §30.9 — keyed by POOL and class, not by class alone.
 
@@ -262,6 +270,7 @@ export function planClasses(wings: WingAnswer[]): {
         issues.push({
           message: `${className} is in both ${owner} and ${wing.name}.`,
           fix: `A class belongs to one wing — narrow one of the two ranges, or remove ${className} from one of them in the grid below.`,
+          scope,
         });
         continue;
       }
@@ -321,7 +330,7 @@ export function sessionSheets(session: SessionAnswer): RawSheet[] {
  */
 export function classSheets(answers: WizardAnswers): {
   sheets: RawSheet[];
-  issues: Array<{ message: string; fix: string }>;
+  issues: Array<{ message: string; fix: string; scope: string }>;
 } {
   const { classes, issues } = planClasses(answers.wings ?? []);
   if (classes.length === 0) return { sheets: [], issues };

@@ -816,7 +816,11 @@ export class OnboardingService {
    * failure mode a second copy of this switch would eventually produce.
    */
   private async sheetsFor(schoolId: number, step: number, answers: WizardAnswers & Record<string, any>) {
-    const issues: Array<{ message: string; fix: string }> = [];
+    /* §30.11 — `scope` names the §30 pool an issue belongs to, so a commit can
+       refuse one pool without refusing another. Optional here: only step 4's
+       come from `planClasses` and carry one; the rest are about the school as a
+       whole and belong to every pool, which is what absent means. */
+    const issues: Array<{ message: string; fix: string; scope?: string }> = [];
     const year = answers.session?.name ?? "";
     const subjects: SubjectAnswer[] = answers.subjects ?? [];
     const teachers: TeacherAnswer[] = answers.teachers ?? [];
@@ -952,6 +956,12 @@ export class OnboardingService {
    * would put the bug back silently, which is the one outcome worse than an
    * error naming what happened.
    */
+  /** The wings an `answers` object actually carries — after `narrowToScope`,
+   *  the ones this request is building. */
+  private wingsIn(answers: Record<string, any>): WingAnswer[] {
+    return Array.isArray(answers.wings) ? answers.wings : [];
+  }
+
   private narrowToScope<T extends Record<string, any>>(answers: T, scope?: string): T {
     if (!scope) return answers;
     const all: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
@@ -973,12 +983,41 @@ export class OnboardingService {
       scope,
     );
 
-    const { sheets, issues } = await this.sheetsFor(schoolId, step, answers);
-    // A class claimed by two wings is a decision, not something to merge:
-    // `classes.name` is unique per school, so both cannot exist.
-    const blocking = step === 4 ? issues : [];
-    if (blocking.length > 0) {
-      throw new BadRequestException(`${blocking[0].message} ${blocking[0].fix}`);
+    const built = await this.sheetsFor(schoolId, step, answers);
+    const issues = built.issues;
+    let sheets = built.sheets;
+    /*
+      §30.11 — a pool is refused on its OWN merits, and the others are BUILT.
+
+      A class claimed by two wings is a decision rather than something to merge
+      (`classes.name` is unique per school, so both cannot exist), and step 4
+      still refuses it. What changed is the blast radius: this threw on the
+      first issue from ANY pool, so two wings of the main school overlapping
+      stopped an individual timetable — which shares nothing with them, and
+      cannot be fixed from the screen showing the message — from being created
+      at all.
+
+      Narrowing the request would have hidden that rather than fixed it: a
+      caller who forgot to say which pool it was building would be blocked
+      again, and independence that depends on the request being phrased right is
+      not independence. So the refusal is computed from the DATA: the pools with
+      issues are dropped, everything else is built, and the refusals come back
+      in the response for the caller to show against the pool they belong to.
+
+      A throw is kept for the case where nothing survives, because then nothing
+      happened and silence would read as success.
+    */
+    if (step === 4 && issues.length > 0) {
+      const bad = new Set(issues.map((i) => i.scope).filter((x): x is string => !!x));
+      const healthy = this.wingsIn(answers).filter((w) => !bad.has(wingScope(w)));
+      if (healthy.length === 0) {
+        throw new BadRequestException(`${issues[0].message} ${issues[0].fix}`);
+      }
+      const rebuilt = await this.sheetsFor(schoolId, step, { ...answers, wings: healthy });
+      // The refusals are kept, not replaced: `rebuilt` has none by
+      // construction, and dropping them would build the healthy pools while
+      // reporting nothing wrong with the others.
+      sheets = rebuilt.sheets;
     }
     if (sheets.length === 0) throw new BadRequestException("There is nothing to create yet.");
 

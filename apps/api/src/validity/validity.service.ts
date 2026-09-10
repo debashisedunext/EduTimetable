@@ -147,15 +147,30 @@ export class ValidityService {
     if (mine.size === 0) return;
 
     /*
-      Candidates are every OTHER timetable in the same session with a live
-      publication. Deliberately not narrowed to the same pool: the whole point
-      is that two POOLS can hold the same class, so a pool filter would exclude
-      precisely the case this exists to catch.
+      §30.11 — candidates are every other LIVE timetable **in the same pool**.
+
+      This filter used to be argued against, in this comment, on the grounds
+      that two pools can hold the same class and a pool filter would exclude
+      exactly the case worth catching. That was written before the product
+      decided what an individual timetable IS: a timetable that shares nothing —
+      no class, no room, no teacher's capacity — and is built without reference
+      to any other. A rule that blocks it on account of a timetable it cannot
+      see is that decision not being kept.
+
+      `resourceGroupId` is the whole predicate, and it needs no mode check: an
+      individual pool holds exactly one timetable (`assertAdmits`), so "same
+      pool" is already false for an individual one against anything else. Within
+      a pool the rule is untouched — two wings of the main school still cannot
+      both publish Class 6 over the same dates.
     */
     const live = (await this.liveConfigIds()).filter((id) => id !== configId);
     if (live.length === 0) return;
     const others = await this.prisma.timetableConfig.findMany({
-      where: { id: { in: live }, academicYearId: me.academicYearId },
+      where: {
+        id: { in: live },
+        academicYearId: me.academicYearId,
+        resourceGroupId: me.resourceGroupId,
+      },
       select: { id: true, name: true, effectiveFrom: true, effectiveTo: true },
     });
 
@@ -199,20 +214,36 @@ export class ValidityService {
   async clashesFor(configId: number): Promise<FeasibilityIssue[]> {
     const me = await this.prisma.timetableConfig.findUnique({
       where: { id: configId },
-      select: { id: true, name: true, academicYearId: true, effectiveFrom: true, effectiveTo: true },
+      select: {
+        id: true, name: true, academicYearId: true, resourceGroupId: true,
+        effectiveFrom: true, effectiveTo: true,
+      },
     });
     if (!me) return [];
 
     /*
-      Only against timetables that are LIVE and whose window overlaps mine. A
-      draft cannot collide with anything — nobody is in a room because of it —
-      and two timetables that never run together are not in conflict however
-      much they share.
+      Only against timetables that are LIVE, **in the same pool**, and whose
+      window overlaps mine.
+
+      §30.11 — the pool filter is the one that matters here. This is the check
+      that reports a teacher or a room engaged by two timetables at the same
+      wall-clock time, and an individual timetable does not check occupancy
+      against anything: it is built on its own, with every asset free. Within a
+      pool the warning is unchanged, which is the case it was written for —
+      Primary and Senior, all year, both with Mrs Rao.
+
+      A draft still cannot collide with anything (nobody is in a room because of
+      one), and two timetables that never run together are not in conflict
+      however much they share.
     */
     const live = (await this.liveConfigIds()).filter((id) => id !== configId);
     if (live.length === 0) return [];
     const others = (await this.prisma.timetableConfig.findMany({
-      where: { id: { in: live }, academicYearId: me.academicYearId },
+      where: {
+        id: { in: live },
+        academicYearId: me.academicYearId,
+        resourceGroupId: me.resourceGroupId,
+      },
       select: { id: true, name: true, effectiveFrom: true, effectiveTo: true },
     })).filter((o) => windowsOverlap(
       { from: me.effectiveFrom, to: me.effectiveTo },

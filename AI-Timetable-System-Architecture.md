@@ -2765,6 +2765,33 @@ Two selections that must not go stale: the bar is cleared when the wing changes,
 
 There is no headless browser in this stack, so the interaction itself is unverified by test — the arithmetic behind it (capacity refusal, the load preview) is the same `computeLoads` the rail and §31.15's bar already use.
 
+
+### 30.11 Independence is a property of the timetable, not of the request
+
+§30.9 narrowed the wizard's wing list and threaded a `?scope=` through the commit. That fixed the screen and got the shape wrong: it made an individual timetable independent **only on the paths that remembered to say so**. A caller that forgot — an older client, a script, the AI — got the old behaviour back, and independence that depends on the request being phrased correctly is not independence.
+
+**One predicate, and it needs no mode check.** Two timetables are comparable **iff they share a `resource_group_id`**. `assertAdmits` guarantees an individual pool holds exactly one timetable, so "same pool" is already false for an individual one against anything else. Every site that compares two timetables filters candidates by that column and nothing else.
+
+The audit of every such site:
+
+| Where | What it compares | Before |
+|---|---|---|
+| `planClasses` | a class claimed by two wings | fixed in §30.9 |
+| `crossConfigTeacherLoad` | a teacher's load elsewhere | already filtered by pool |
+| `uq_class/teacher/room_slot` | slot occupancy | already keyed by `timetable_config_id` — **there is no cross-timetable occupancy constraint in the database**, and never was |
+| `setClassSections` | a section claimed by another timetable | rows are per-pool already |
+| `commit(4)` | a clash blocking the write | blocked every pool on any pool's issue |
+| `assertPublishable` (§30.5) | a class live in two timetables at once | **blocked** across pools, by explicit design |
+| `clashesFor` (§30.7) | a teacher or room in two live timetables | **warned** across pools |
+
+**§30.5 now stops at the pool boundary**, and the comment that argued against exactly this filter is rewritten. It was written before the product decided what an individual timetable *is*; blocking one on account of a timetable it cannot see is that decision not being kept. Within a pool the rule is untouched: two wings of the main school still cannot both put Class 6 on the wall over the same dates. The school gets **no signal at all** across pools — a deliberate call, made knowing the cost: if the individual timetable really does run at the same time of day as the main one, the app will not say so.
+
+**§30.7 stops there too**, for the same reason and with less at stake: it is a warning either way.
+
+**`commit` refuses pool by pool, computed from the data.** Narrowing the request would have hidden the problem rather than fixed it, so the pools carrying issues are dropped, everything else is **built**, and the refusals come back in the response for the caller to show against the pool they belong to. Every issue from `planClasses` now names its pool, which is what makes that possible. A throw survives for the case where nothing is left to build, because then nothing happened and silence would read as success.
+
+Proof (`pnpm test:pools`): an **unscoped** commit builds the individual timetable's cohorts while two grouped wings clash, and still reports the clash; the individual timetable takes a date window over a class the live main timetable teaches, while a **sibling wing** over the same class and dates is still refused; and Readiness raises no occupancy warning across pools.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
