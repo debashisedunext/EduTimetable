@@ -20,7 +20,7 @@ import {
   classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
   roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
-  wingRangeFor, withCurriculumPeriods,
+  wingRangeFor, wingScope, withCurriculumPeriods,
   type CurriculumCell, type MappingSuggestion, type SubjectAnswer, type SuggestedRoom,
   type TeacherAnswer, type WingAnswer, type WizardAnswers,
 } from "@edutimetable/shared";
@@ -933,10 +933,45 @@ export class OnboardingService {
     return out;
   }
 
-  async commit(schoolId: number, userId: number, step: number) {
+  /**
+   * §30.9 — the wings this request is setting up, and no others.
+   *
+   * The draft holds every wing the school has, because losing the others on a
+   * save would be a far worse bug. But a commit is about one §30 resource pool:
+   * the wizard narrows to one, and the server has to narrow the same way or it
+   * validates and creates rows for pools nobody is looking at.
+   *
+   * That was not theoretical. `commit(4)` runs `planClasses` over the wings it
+   * is given and throws on the first issue — so a school setting up an
+   * individual timetable was refused with "Class 1 is in both Main Timetable
+   * 2026-27 and New", a real conflict between two GROUPED wings that has
+   * nothing to do with the timetable being set up and cannot be fixed from the
+   * screen showing the message.
+   *
+   * An unknown scope is refused rather than ignored. Falling back to every wing
+   * would put the bug back silently, which is the one outcome worse than an
+   * error naming what happened.
+   */
+  private narrowToScope<T extends Record<string, any>>(answers: T, scope?: string): T {
+    if (!scope) return answers;
+    const all: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
+    if (all.length === 0) return answers;
+    const mine = all.filter((w) => wingScope(w) === scope);
+    if (mine.length === 0) {
+      throw new BadRequestException(
+        "That timetable is not part of this setup any more — reopen the guided setup and pick one.",
+      );
+    }
+    return { ...answers, wings: mine };
+  }
+
+  async commit(schoolId: number, userId: number, step: number, scope?: string) {
     const draft = await this.draftFor(schoolId, userId);
     if (!draft) throw new BadRequestException("There is nothing saved to commit.");
-    const answers = draft.answers as WizardAnswers & Record<string, any>;
+    const answers = this.narrowToScope(
+      draft.answers as WizardAnswers & Record<string, any>,
+      scope,
+    );
 
     const { sheets, issues } = await this.sheetsFor(schoolId, step, answers);
     // A class claimed by two wings is a decision, not something to merge:
@@ -1039,10 +1074,15 @@ export class OnboardingService {
    * anybody presses anything — and, on a resumed draft, is what tells them
    * their classes are already there rather than silently creating none.
    */
-  async preview(schoolId: number, userId: number, step: number) {
+  async preview(schoolId: number, userId: number, step: number, scope?: string) {
     const draft = await this.draftFor(schoolId, userId);
     if (!draft) return { ok: true, totals: { read: 0, create: 0, skip: 0, errors: 0 }, issues: [] };
-    const answers = draft.answers as WizardAnswers & Record<string, any>;
+    // §30.9 — a preview that showed other pools' rows would be a preview of a
+    // commit that is not about to happen.
+    const answers = this.narrowToScope(
+      draft.answers as WizardAnswers & Record<string, any>,
+      scope,
+    );
     const built = await this.sheetsFor(schoolId, step, answers);
     if (built.sheets.length === 0) {
       return { ok: built.issues.length === 0, totals: { read: 0, create: 0, skip: 0, errors: 0 }, issues: built.issues };

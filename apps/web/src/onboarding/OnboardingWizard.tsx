@@ -593,6 +593,23 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    */
   const [scope, setScope] = useState<string>(GROUPED_SCOPE);
 
+  /**
+   * Change scope, and drop what was said about the last one.
+   *
+   * The error banner and the praise line are both about the pool that produced
+   * them — "Class 1 is in both Main Timetable and New" is true of the main
+   * school and means nothing while an individual timetable is on screen, but it
+   * is state, so it sat there after the switch looking like a fresh refusal.
+   * Wrapped rather than left to a `useEffect` on `scope`, because clearing an
+   * error is a consequence of the click and not of the render that follows it.
+   */
+  const changeScope = (next: string) => {
+    if (next === scope) return;
+    setScope(next);
+    setError(null);
+    setPraise(null);
+  };
+
   const allWings: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
   /**
    * The scopes this school actually has, in the order the wings are stored.
@@ -843,7 +860,19 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    *  - step 5's `PUT /:id/structure` rewrites the period rows wholesale.
    */
   const commitStep = async (n: number): Promise<Record<string, number> | undefined> => {
-    if (n === 2) return (await api<Committed>("/onboarding/commit/2", { method: "POST" })).created;
+    /*
+      §30.9 — the pool being set up travels with the commit.
+
+      The server commits from the STORED draft, which holds every wing, so
+      without this it validates and creates rows for pools nobody is looking
+      at. Concretely: `commit(4)` runs `planClasses` over what it is given and
+      throws on the first issue, so a school setting up an individual timetable
+      was refused with "Class 1 is in both Main Timetable 2026-27 and New" — a
+      real conflict between two GROUPED wings, unrelated to the timetable on
+      screen and unfixable from it.
+    */
+    const q = `?scope=${encodeURIComponent(scope)}`;
+    if (n === 2) return (await api<Committed>(`/onboarding/commit/2${q}`, { method: "POST" })).created;
     if (n === 3) return { configs: await commitWings(answers) };
     if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
     if (n === 5) { await commitWeeks(answers); return undefined; }
@@ -856,7 +885,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     // Steps 6–10 all go through the §16 importer, which is what makes them
     // idempotent — pressing Next twice, or coming back, creates nothing extra.
     if (n >= 6 && n <= 10) {
-      return (await api<Committed>(`/onboarding/commit/${n}`, { method: "POST" })).created;
+      return (await api<Committed>(`/onboarding/commit/${n}${q}`, { method: "POST" })).created;
     }
     return undefined;
   };
@@ -1127,7 +1156,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
                   </span>
                   <select
                     value={scope}
-                    onChange={(e) => setScope(e.target.value)}
+                    onChange={(e) => changeScope(e.target.value)}
                     disabled={busy}
                     title="An individual timetable stands on its own — it shares no class, room or teacher with the rest of the school, so it is set up on its own too."
                     style={{

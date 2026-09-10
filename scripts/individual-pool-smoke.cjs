@@ -245,6 +245,57 @@ async function main() {
     "but two GROUPED wings claiming Class 6 still is — §30 kept that rule",
     within.issues[0]?.message?.slice(0, 60) ?? "no issue");
 
+  /*
+    The reported symptom, and the half `planClasses` alone did not fix.
+
+    `commit(4)` runs `planClasses` over the wings it is HANDED and throws on the
+    first issue. The draft holds every wing, so a school setting up the
+    individual timetable was refused with a real conflict between two GROUPED
+    wings — a message that names two timetables the screen is not showing and
+    offers two fixes it cannot make.
+  */
+  console.log("\nCommitting the individual timetable is not blocked by the main school's clash:");
+  // Both grouped wings claim Class 5, deliberately: this is the clash.
+  await call("PUT", "/onboarding/session", S, {
+    mode: "wizard",
+    currentStep: 4,
+    answers: {
+      wings: [
+        { name: "ZZIP Main", fromIndex: 4, toIndex: 9, sections: 2 },
+        { name: "ZZIP Second", fromIndex: 4, toIndex: 9, sections: 2 },
+        { name: "ZZIP Weekly", fromIndex: 4, toIndex: 6, sections: 1, individual: true },
+      ],
+      session: { name: "ZZIP 2026-27", startDate: "2026-04-01", endDate: "2027-03-31" },
+    },
+  });
+  const unscoped = await call("POST", "/onboarding/commit/4", S);
+  check(unscoped.status >= 400 && /both ZZIP Main and ZZIP Second/.test(unscoped.json?.message ?? ""),
+    "with no scope it still refuses — the grouped clash is real and must be reported",
+    (unscoped.json?.message ?? "").slice(0, 60));
+
+  const scoped = await call(
+    "POST",
+    `/onboarding/commit/4?scope=${encodeURIComponent(wingScope({ name: "ZZIP Weekly", individual: true }))}`,
+    S,
+  );
+  check(scoped.status < 300,
+    "scoped to the individual timetable it commits — the other pool's clash is not its business",
+    scoped.status >= 300 ? (scoped.json?.message ?? "").slice(0, 80) : `created ${JSON.stringify(scoped.json?.created ?? {})}`);
+
+  const weeklyRows = await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: weekly.id },
+  });
+  check(weeklyRows >= 3, "and its cohorts really exist", `${weeklyRows} class-sections`);
+  const strayed = await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: { in: [main.id, second.id] }, resourceGroupId: weeklyPool },
+  });
+  check(strayed === 0, "with nothing of the main school's filed in its pool", `${strayed} strays`);
+
+  const badScope = await call("POST", "/onboarding/commit/4?scope=individual:nothing", S);
+  check(badScope.status >= 400,
+    "an unknown scope is refused rather than quietly falling back to every wing",
+    String(badScope.status));
+
   // ── 5. a teacher's capacity is free in the individual timetable
   console.log("\nA teacher's week is counted per pool, not per school:");
   const subject = (await call("POST", "/subjects", S, { name: "ZZIP Maths" })).json;

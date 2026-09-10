@@ -12,7 +12,7 @@
  * returns counts about their own school and nothing else.
  */
 import {
-  BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Req,
+  BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Query, Req,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PERMISSIONS } from "@edutimetable/shared";
@@ -101,20 +101,30 @@ export class OnboardingController {
   /** What committing this step would create — same pipeline, dry. */
   @Get("onboarding/preview/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
-  preview(@Req() req: AuthedRequest, @Param("step") step: string) {
-    return this.onboarding.preview(req.user.schoolId, req.user.sub, Number(step));
+  preview(
+    @Req() req: AuthedRequest,
+    @Param("step") step: string,
+    /** §30.9 — the pool being set up; see `narrowToScope`. */
+    @Query("scope") scope?: string,
+  ) {
+    return this.onboarding.preview(req.user.schoolId, req.user.sub, Number(step), scope);
   }
 
   /** Commit this step's answers, through the §16 importer and nothing else. */
   @Post("onboarding/commit/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
-  async commit(@Req() req: AuthedRequest, @Param("step") step: string) {
+  async commit(
+    @Req() req: AuthedRequest,
+    @Param("step") step: string,
+    /** §30.9 — which §30 resource pool the wizard is setting up. */
+    @Query("scope") scope?: string,
+  ) {
     // §29.1 — the guided setup commits through the §16 importer, so it is the
     // same blunt check for the same reason: a step's answers become rows by
     // name, not by timetable id. Saving answers and previewing are untouched —
     // nothing is written until Next.
     await this.freeze.assertNoneFrozen("master data");
-    return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step));
+    return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step), scope);
   }
 
   /** Step 11: write the settings and mark the guided setup done. */
