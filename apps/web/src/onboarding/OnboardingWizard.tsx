@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { asMessage } from "../components";
 import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings } from "./steps/Structure";
+import { ALLOCATION_STEP, commitAllocation } from "./commit-allocation";
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
 import { StepAllocation } from "./steps/Allocation";
@@ -664,15 +665,12 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
     if (n === 5) { await commitWeeks(answers); return undefined; }
     /**
-     * §28 — the Allocation grid can change a period's LENGTH.
-     *
-     * That is a step 5 fact (`timetable_config.period_duration_mins`), not a
-     * master row, so it cannot ride through the §16 importer with the rest of
-     * this step. It goes back through step 5's own committer instead — the one
-     * that already owns period rows — and only for the wings that actually
-     * differ, because that endpoint rewrites the grid wholesale.
+     * §31.10 — step 9 has a second door now (the Master Grid's Lesson Grid
+     * tab), so what "commit the allocation" means lives in one module that
+     * both call. The precondition it documents is satisfied here: `next()`
+     * persists the draft before it reaches `commitStep`.
      */
-    if (n === 9) await commitWeeks(answers, { changedOnly: true });
+    if (n === ALLOCATION_STEP) return commitAllocation(answers);
     // Steps 6–10 all go through the §16 importer, which is what makes them
     // idempotent — pressing Next twice, or coming back, creates nothing extra.
     if (n >= 6 && n <= 10) {

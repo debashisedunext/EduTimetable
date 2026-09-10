@@ -2,9 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots,
   rowWindow, scrollTopFor, SLOT,
-  type Coverage, type GridPivot, type RowWindow, type SlotTuple,
+  type GridPivot, type RowWindow, type SlotTuple,
 } from "@edutimetable/shared";
+import { api } from "../api";
 import { useApi, useConfigCtx } from "../hooks";
+import { guardUnsaved } from "../unsaved-guard";
+import { commitAllocation } from "../onboarding/commit-allocation";
+import { AllocationTab } from "./AllocationTab";
 import { useColors } from "../colors-context";
 
 /**
@@ -314,6 +318,122 @@ export function MasterGrid() {
   // further down, where the filtered row count exists.
   const view = useRowViewport(gridRef, tab);
 
+  /*
+    §31.10 — the Allocation grid's draft, held HERE rather than in the tab.
+
+    That is what makes moving between the five tabs free: the tab unmounts, the
+    work does not. Only leaving the screen is guarded. It is fetched lazily —
+    four of the five tabs never need it, and `GET /onboarding/session` on every
+    visit would be a request nobody reads (§14).
+  */
+  const [alloc, setAlloc] = useState<Record<string, any> | null>(null);
+  const [allocLoading, setAllocLoading] = useState(false);
+  const [allocError, setAllocError] = useState<string | null>(null);
+  const [edits, setEdits] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+  /** Which draft keys are owed to the server. A ref, so a fast second edit in
+   *  the same tick does not send yesterday's set — the wizard's own reasoning. */
+  const allocTouched = useRef<Set<string>>(new Set());
+  /**
+   * Where the guided setup was when we found it.
+   *
+   * Sent back on save so a side edit here never MOVES anybody's setup. Omitting
+   * it entirely looked right — the server keeps the stored step when it is
+   * resuming — but for a school whose setup is finished the row is not
+   * "resuming", and the step would silently reset to 1: the next resume would
+   * open at Academic Year instead of where they left off.
+   */
+  const allocStep = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (tab !== "lesson" || alloc !== null || allocLoading) return;
+    setAllocLoading(true);
+    api<{ empty?: boolean; prefilled?: boolean; currentStep?: number; answers?: Record<string, any> }>("/onboarding/session")
+      .then((d) => {
+        setAlloc(d.answers ?? {});
+        allocTouched.current.clear();
+        allocStep.current = typeof d.currentStep === "number" ? d.currentStep : null;
+        /*
+          §27.12 — a draft rebuilt from the school is NOT saved yet, so every
+          key is owed. Without this the first Save commits from a stored draft
+          that does not have them and reports "there is nothing to create yet"
+          while the grid on screen is full.
+        */
+        if (d.empty && d.prefilled && d.answers) {
+          for (const k of Object.keys(d.answers)) allocTouched.current.add(k);
+        }
+        setAllocError(null);
+      })
+      .catch((e) => setAllocError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAllocLoading(false));
+  }, [tab, alloc, allocLoading]);
+
+  const patchAlloc = (p: Record<string, any>) => {
+    for (const k of Object.keys(p)) allocTouched.current.add(k);
+    setAlloc((a) => ({ ...(a ?? {}), ...p }));
+    setEdits((n) => n + 1);
+    setSaved(null);
+  };
+
+  const dirty = edits > 0;
+
+  /*
+    §31.10 — leaving the screen with unsaved work says so; changing tab does
+    not. `guardUnsaved` rather than a router blocker: `main.tsx` mounts a plain
+    `<BrowserRouter>`, and `useBlocker` needs a data router.
+  */
+  useEffect(() => {
+    if (!dirty) return;
+    const release = guardUnsaved(() =>
+      window.confirm(`${edits} unsaved change${edits === 1 ? "" : "s"} to the allocation. Leave and lose them?`),
+    );
+    const onUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", onUnload);
+    return () => { release(); window.removeEventListener("beforeunload", onUnload); };
+  }, [dirty, edits]);
+
+  const saveAlloc = async () => {
+    if (!alloc || saving) return;
+    setSaving(true);
+    setAllocError(null);
+    try {
+      /*
+        The answers go up FIRST, and only the touched keys. The server commits
+        from the STORED draft, so an answer still in the browser is one the
+        commit cannot see — `commitAllocation` documents that precondition and
+        this is where it is met.
+
+        `currentStep` is the one the draft already had, never step 9: editing a
+        cell here must not move somebody's guided setup to a step they were not
+        on.
+      */
+      const keys = [...allocTouched.current];
+      const delta: Record<string, any> = {};
+      for (const k of keys) delta[k] = alloc[k];
+      await api("/onboarding/session", {
+        method: "PUT",
+        body: JSON.stringify({
+          answers: delta,
+          mode: "wizard",
+          ...(allocStep.current !== null ? { currentStep: allocStep.current } : {}),
+        }),
+      });
+      allocTouched.current.clear();
+      await commitAllocation(alloc);
+      setEdits(0);
+      setSaved("Saved");
+      // The other four tabs read the curriculum this just wrote, and the
+      // server sweeps its cache on the commit — so refetch rather than leave
+      // them describing the school as it was a moment ago.
+      refetchContext();
+    } catch (e) {
+      setAllocError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const { data: drafts } = useApi<DraftRow[]>(
     current ? `/timetable-configs/${current.id}/drafts` : null,
   );
@@ -326,7 +446,7 @@ export function MasterGrid() {
   // Fetched on every tab, not only the Lesson grid: since §31.6 the strip
   // reads the class's curriculum, its home room, its class teacher and the
   // teacher's cap out of it, and those are wanted on all five.
-  const { data: context } = useApi<ContextPayload>(
+  const { data: context, refetch: refetchContext } = useApi<ContextPayload>(
     current ? `/timetable-configs/${current.id}/context` : null,
   );
 
@@ -900,9 +1020,37 @@ export function MasterGrid() {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {tab === "lesson" ? (
-            <span className="chip mono" title="What the school says these classes are taught — the curriculum, not where the lessons ended up">
-              curriculum · a week of {context?.weekCapacity ?? "—"} periods
-            </span>
+            <>
+              {allocError && (
+                <span className="chip mono" style={{ background: "var(--signal-bg)", color: "var(--signal)" }}
+                  title={allocError}>
+                  {allocError.slice(0, 60)}
+                </span>
+              )}
+              {saved && !dirty && (
+                <span className="chip mono" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>
+                  {saved}
+                </span>
+              )}
+              {/* §31.10 — one deliberate act. The wizard saves on Next; a tab
+                  has no Next, and auto-saving a grid that takes single digits
+                  with no Enter would commit half-typed numbers. */}
+              <button
+                onClick={saveAlloc}
+                disabled={!dirty || saving}
+                style={{
+                  border: "none", borderRadius: 8, padding: "8px 15px",
+                  font: "700 12.5px/1 Inter, sans-serif",
+                  cursor: dirty && !saving ? "pointer" : "default",
+                  background: dirty ? "var(--brand)" : "var(--steel-pale)",
+                  color: dirty ? "#fff" : "var(--ink-faint)",
+                }}
+              >
+                {saving ? "Saving…"
+                  : dirty ? `● Save ${edits} change${edits === 1 ? "" : "s"}`
+                  : "Saved"}
+              </button>
+            </>
           ) : (
             <span className="chip mono">{filled} / {capacity} placed ({capacity ? Math.round((filled / capacity) * 100) : 0}%)</span>
           )}
@@ -946,6 +1094,20 @@ export function MasterGrid() {
             strip that scrolled away with the rows would be explaining a cell
             you can no longer see. */}
         <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column" }}>
+          {tab === "lesson" ? (
+            /*
+              §31.10 — the real Allocation grid, outside the Master Grid's own
+              scrolling pane: it scrolls inside itself, and nesting one
+              scroller in another gives two scrollbars and a sticky header
+              stuck to the wrong box.
+            */
+            <AllocationTab
+              answers={alloc}
+              onChange={patchAlloc}
+              loading={allocLoading}
+              error={allocError}
+            />
+          ) : (
           <div
             ref={gridRef}
             tabIndex={0}
@@ -958,18 +1120,7 @@ export function MasterGrid() {
              focus, and a second ring round the whole pane would be noise. */
           style={{ flex: "1 1 auto", minWidth: 0, overflow: "auto", maxHeight: "74vh", outline: "none" }}
         >
-          {tab === "lesson" ? (
-            <LessonGrid
-              coverage={coverage}
-              win={win}
-              measureRow={view.measureRow}
-              context={context}
-              visibleRows={visibleRows}
-              colors={colors}
-              selected={selected}
-              onSelect={(sectionId, subjectId) => setSelected({ kind: "lesson", sectionId, subjectId })}
-            />
-          ) : (
+          {(
             <table style={{ borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", width: "100%", minWidth, fontSize: 10 }}>
               <colgroup>
                 <col style={{ width: `${HEADER_PCT}%` }} />
@@ -1070,6 +1221,7 @@ export function MasterGrid() {
             </p>
           )}
           </div>
+          )}
           <Strip
             groups={
               selected === null ? null
@@ -1236,180 +1388,6 @@ function Strip({ groups }: { groups: StripGroup[] | null }) {
         ))
       )}
     </div>
-  );
-}
-
-/**
- * §31 — the Lesson grid tab: class-sections down, **subjects** across, periods
- * per week in the cell.
- *
- * The odd tab out, and the reason it is worth naming: the other four are an
- * entity against time and this is the same shape as §27's Allocation grid —
- * "class-sections down, subjects across" — read-only and at grid density. Its
- * numbers are the **curriculum**, so a cell reading 6 means Class 1-A is
- * *meant* to have six periods of English, whether or not a timetable exists.
- *
- * Periods are a **class** fact (§27): `class_subjects` is keyed by class, so
- * 5-A and 5-B show one curriculum in two rows. The payload keys its cells by
- * class for exactly that reason.
- */
-function LessonGrid({
-  coverage,
-  win,
-  measureRow,
-  context,
-  visibleRows,
-  colors,
-  selected,
-  onSelect,
-}: {
-  coverage: Coverage;
-  win: RowWindow;
-  measureRow: (el: HTMLTableRowElement | null) => void;
-  context: ContextPayload | null;
-  visibleRows: Array<{ key: number; label: string }>;
-  colors: ReturnType<typeof useColors>;
-  selected: Selection | null;
-  onSelect: (sectionId: number, subjectId: number) => void;
-}) {
-  const byClass = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const [classId, subjectId, periods] of context?.cells ?? []) {
-      m.set(`${classId}:${subjectId}`, periods);
-    }
-    return m;
-  }, [context]);
-
-  if (!context) return <p className="screen-sub" style={{ padding: 20 }}>Loading the curriculum…</p>;
-  const classOfSection = new Map(context.sections.map((s) => [s.id, s.classId]));
-  const subjects = context.subjects;
-  const HEADER_PCT = 14;
-  const TOTAL_PCT = 7;
-  const colPct = subjects.length ? (100 - HEADER_PCT - TOTAL_PCT) / subjects.length : 1;
-
-  return (
-    <table style={{ borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", width: "100%", minWidth: 140 + subjects.length * 42 + 60, fontSize: 10 }}>
-      <colgroup>
-        <col style={{ width: `${HEADER_PCT}%` }} />
-        {subjects.map((s) => <col key={s.id} style={{ width: `${colPct}%` }} />)}
-        <col style={{ width: `${TOTAL_PCT}%` }} />
-      </colgroup>
-      <thead>
-        <tr>
-          <th style={cornerTh}>Class-Section</th>
-          {subjects.map((s) => {
-            const sw = colors.subject(s.name);
-            return (
-              <th key={s.id} title={s.name} style={{
-                position: "sticky", top: 0, zIndex: 3,
-                background: sw?.bg ?? "var(--steel-pale)", color: sw?.fg ?? "var(--brand)",
-                padding: "5px 2px", fontSize: 9, fontWeight: 800,
-                borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                overflow: "hidden", whiteSpace: "nowrap",
-              }}>
-                {abbr(s.name)}
-              </th>
-            );
-          })}
-          <th style={{
-            position: "sticky", top: 0, zIndex: 3, background: "var(--brand)", color: "#fff",
-            padding: "5px 2px", fontSize: 9, fontWeight: 800, borderBottom: "1px solid var(--line)",
-          }}>
-            Total
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        <Spacer height={win.padTop} span={2 + subjects.length} />
-        {visibleRows.slice(win.start, win.end).map((row, rowIndex) => {
-          const classId = classOfSection.get(row.key);
-          const cells = subjects.map((s) => byClass.get(`${classId}:${s.id}`) ?? 0);
-          const total = cells.reduce((a, b) => a + b, 0);
-          /*
-            §31.7 — the row's own shortfall, over the subjects that CAN be
-            compared. Deliberately not `placedIn`, which counts every teaching
-            lesson the section has: a §4.9 block's periods are real lessons and
-            are not curriculum rows, so on any school with an elective the two
-            would differ by the block's length and the row would always look
-            over-taught.
-          */
-          const counted = subjects
-            .map((s, i) => ({ s, required: cells[i] }))
-            .filter((x) => x.required > 0 && coverage.comparable(row.key, x.s.id));
-          const requiredCounted = counted.reduce((a, x) => a + x.required, 0);
-          const placedCounted = counted.reduce((a, x) => a + coverage.placedAt(row.key, x.s.id), 0);
-          const short = counted.length > 0 && placedCounted !== requiredCounted;
-          // Over the week this timetable actually offers. Not a blocker and not
-          // a score — Readiness owns that verdict (§4); this only says out loud
-          // that the arithmetic on this row does not fit, at the moment
-          // somebody is looking at the row.
-          const over = context.weekCapacity > 0 && total > context.weekCapacity;
-          return (
-            <tr key={row.key} ref={rowIndex === 0 ? measureRow : undefined}>
-              <th title={row.label} style={rowTh}>{row.label}</th>
-              {subjects.map((s, i) => {
-                const n = cells[i];
-                const placed = coverage.placedAt(row.key, s.id);
-                /*
-                  §31.7 — two numbers ONLY when they differ. A cell that always
-                  read `6/6` would be a number nobody reads, and within a week
-                  nobody would be reading `5/6` either.
-
-                  `comparable` is what stops it crying wolf: an ungenerated
-                  section and a subject that also runs as a §4.9 option both
-                  produce a difference that is not one.
-                */
-                const differs = n > 0 && coverage.comparable(row.key, s.id) && placed !== n;
-                // The subject's colour is given up for this one cell. §10.5's
-                // own rule — an existing meaning outranks a new one — cuts this
-                // way here: "this row is short" is the more urgent fact, and
-                // the column header is still carrying the subject's colour.
-                const sw = differs || n === 0 ? null : colors.subject(s.name);
-                return (
-                  <td
-                    key={s.id}
-                    onClick={() => onSelect(row.key, s.id)}
-                    title={
-                      n === 0 ? `${row.label} does not take ${s.name}`
-                      : differs ? `${row.label} · ${s.name} · ${placed} placed of ${n} a week`
-                      : `${row.label} · ${s.name} · ${n} periods a week`
-                    }
-                    style={{
-                    borderRight: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
-                    height: 22, textAlign: "center", fontSize: differs ? 8.5 : 9.5, fontFamily: "var(--font-mono)",
-                    fontWeight: n > 0 ? 700 : 400, padding: 0, cursor: "pointer",
-                    background: differs ? "var(--signal-bg)" : sw?.bg ?? "var(--paper)",
-                    color: differs ? "var(--signal)" : sw?.fg ?? "var(--ink-faint)",
-                    ...(selected?.kind === "lesson" && selected.sectionId === row.key && selected.subjectId === s.id
-                      ? { outline: "2px solid var(--brand-deep)", outlineOffset: -2, position: "relative", zIndex: 1 }
-                      : {}),
-                  }}>
-                    {/* A blank, not a zero. Zero periods and "this class does
-                        not take this subject" are the same fact here (§27.15
-                        made not-taken a real deletion), and a grid of zeros
-                        would hide the numbers that matter. */}
-                    {n === 0 ? "" : differs ? `${placed}/${n}` : n}
-                  </td>
-                );
-              })}
-              <td title={
-                short
-                  ? `${placedCounted} placed of the ${requiredCounted} this section is owed · ${total} of ${context.weekCapacity} periods a week`
-                  : `${total} of ${context.weekCapacity} periods a week`
-              } style={{
-                borderBottom: "1px solid var(--line)", height: 22, textAlign: "center",
-                fontSize: short ? 8.5 : 9.5, fontFamily: "var(--font-mono)", fontWeight: 800, padding: 0,
-                background: over || short ? "var(--signal-bg, #FBE9E7)" : "var(--offwhite)",
-                color: over || short ? "var(--signal)" : "var(--brand-deep)",
-              }}>
-                {short ? `${placedCounted}/${requiredCounted}` : total}{over ? "!" : ""}
-              </td>
-            </tr>
-          );
-        })}
-        <Spacer height={win.padBottom} span={2 + subjects.length} />
-      </tbody>
-    </table>
   );
 }
 

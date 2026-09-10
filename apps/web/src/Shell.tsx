@@ -6,6 +6,7 @@ import { api, clearToken, getToken, switchSchool } from "./api";
 import { useConfigCtx } from "./hooks";
 import { Icon, type IconName } from "./icons";
 import { useNavCollapsed } from "./nav-collapse";
+import { mayLeave } from "./unsaved-guard";
 import { NavScroll } from "./nav-scroll";
 
 interface NavEntry {
@@ -448,6 +449,16 @@ export function Shell({ me }: { me: MeResponse }) {
                     saying the same word.
                   */
                   aria-label={collapsed ? i.label : undefined}
+                  /*
+                    §31.10 — a screen holding unsaved work gets to ask first.
+                    Here rather than in a router blocker: `main.tsx` mounts a
+                    plain `<BrowserRouter>`, and `useBlocker` needs a data
+                    router — converting the app's routing to guard one screen
+                    is a change across every route for a small feature.
+                    `mayLeave()` is true whenever nothing is guarding, so every
+                    other nav click is exactly as it was.
+                  */
+                  onClick={(e) => { if (!mayLeave()) e.preventDefault(); }}
                   onMouseEnter={(e) => enter(e, i.label)}
                   onMouseLeave={leave}
                   onFocus={(e) => enter(e, i.label)}
