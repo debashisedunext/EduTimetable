@@ -216,6 +216,7 @@ export async function buildFeasibilitySnapshot(
       samePeriodAcrossWeek: r.samePeriodAcrossWeek,
       consecutiveBlockSize: r.consecutiveBlockSize,
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+      blockMayCrossBreak: r.blockMayCrossBreak,
     })),
     teachers: teachers.map((t) => ({
       id: t.id,

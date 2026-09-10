@@ -422,6 +422,20 @@ export interface CurriculumCell {
   subjectName: string;
   periodsPerWeek: number;
   maxPerDay: number;
+  /**
+   * §31.10 — consecutive blocks, carried through the DRAFT at last.
+   *
+   * `class_subjects.consecutive_block_size` and `consecutive_blocks_per_week`
+   * have existed since §4.8, the solver has placed them atomically since, and
+   * the Excel Curriculum sheet has had the columns all along — but this shape
+   * carried four fields, so the guided setup could not represent them and the
+   * cell dialog had nothing to edit. Optional, so a draft written before this
+   * reads back as "no block", which is what it meant.
+   */
+  consecutiveBlockSize?: number;
+  consecutiveBlocksPerWeek?: number | null;
+  /** §31.10 — may the block run through a break? Meaningless without a size. */
+  blockMayCrossBreak?: boolean;
 }
 
 export interface CurriculumPlan {
@@ -497,7 +511,7 @@ export function suggestCurriculum(
         // has declared this subject's classes: it has answered the question the
         // rung was estimating.
         const fits = (s.classes ?? []).length > 0 || subjectSuitsClass(s.name, c.sequence);
-        return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab) };
+        return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab), doubles: Boolean(s.requiresDoublePeriod) };
       })
       .filter((x) => x.weight > 0);
 
@@ -520,7 +534,7 @@ export function suggestCurriculum(
     if (wanted.length === 0) {
       for (const s of offered) {
         const w = WEIGHTS.find((x) => x.match.test(s.name));
-        wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab) });
+        wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab), doubles: Boolean(s.requiresDoublePeriod) });
       }
     }
 
@@ -603,6 +617,23 @@ export function suggestCurriculum(
         subjectName: s.subjectName,
         periodsPerWeek: s.periods,
         /**
+         * §31.10 — `subjects.requires_double_period`, finally connected.
+         *
+         * That flag has been on the Subjects master, in the Excel importer and
+         * in the AI drafting tool since §4.8, and **the solver never read it**:
+         * ticking "Requires Double Period" on Mathematics did nothing anywhere.
+         * The column that the solver does read is
+         * `class_subjects.consecutive_block_size`, which nothing was setting.
+         *
+         * So the flag SEEDS the curriculum row — §27.15's pattern, where the
+         * ladder shapes a proposal and never becomes a rule. A school can still
+         * set any block size it likes on the cell; this only means a subject
+         * that says it wants doubles arrives proposing one, instead of being
+         * ignored. Only when the week can hold a pair: a 1-period subject with
+         * a 2-period block is arithmetic Check 3 would refuse.
+         */
+        ...(s.doubles && s.periods >= 2 ? { consecutiveBlockSize: 2 } : {}),
+        /**
          * One a day is the friendly default — and it must not be smaller than
          * the week arithmetically requires.
          *
@@ -628,13 +659,28 @@ export function suggestCurriculum(
 /** The proposed curriculum, as an importer sheet. */
 export function curriculumSheets(plan: CurriculumPlan, academicYear: string): RawSheet[] {
   if (plan.cells.length === 0) return [];
-  const rows = plan.cells.map((c) => ({
-    "Class Name": c.className,
-    "Academic Year": academicYear,
-    "Subject Name": c.subjectName,
-    "Periods/Week": c.periodsPerWeek,
-    "Max Periods/Day": c.maxPerDay,
-  }));
+  const rows = plan.cells.map((c) => {
+    const size = c.consecutiveBlockSize && c.consecutiveBlockSize > 1 ? c.consecutiveBlockSize : 1;
+    return {
+      "Class Name": c.className,
+      "Academic Year": academicYear,
+      "Subject Name": c.subjectName,
+      "Periods/Week": c.periodsPerWeek,
+      "Max Periods/Day": c.maxPerDay,
+      /*
+        §31.10 — always present, never conditional on this row having a block.
+
+        `headers` below is `Object.keys(rows[0])`, so a key that only some rows
+        carry is a key the sheet loses entirely whenever the first row happens
+        not to have one — and every later row's block would be silently
+        dropped on commit. Three columns of "1", "" and "No" is the cost of not
+        having that bug.
+      */
+      "Block Size": size,
+      "Blocks/Week": size > 1 ? (c.consecutiveBlocksPerWeek ?? "") : "",
+      "Break In Block": size > 1 && c.blockMayCrossBreak ? "Yes" : "No",
+    };
+  });
   return [{
     name: "Curriculum",
     headers: Object.keys(rows[0]),

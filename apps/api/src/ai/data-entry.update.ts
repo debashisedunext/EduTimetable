@@ -74,7 +74,11 @@ export const UPDATABLE: Record<string, string[]> = {
   ],
   Curriculum: [
     "periodsPerWeek", "maxPeriodsPerDay", "samePeriodAcrossWeek",
-    "consecutiveBlockSize", "consecutiveBlocksPerWeek",
+    // §31.10 — the block's shape, and whether a break may fall inside it.
+    // Listed beside its two companions deliberately: they are one decision, and
+    // a conversation able to set a block size but not say whether it may cross
+    // a break could only ever produce the stricter half of what was asked.
+    "consecutiveBlockSize", "consecutiveBlocksPerWeek", "blockMayCrossBreak",
   ],
   // The unique key is (subject, class-section), so WHO teaches it is a change
   // rather than an identity — which makes "move Class 5-A maths to Rekha" an

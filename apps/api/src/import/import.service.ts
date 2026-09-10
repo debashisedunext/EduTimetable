@@ -288,6 +288,7 @@ export class ImportService {
           subjectName: r.subject.name, periodsPerWeek: r.periodsPerWeek,
           maxPeriodsPerDay: r.maxPeriodsPerDay, samePeriodAcrossWeek: r.samePeriodAcrossWeek,
           consecutiveBlockSize: r.consecutiveBlockSize, consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+          blockMayCrossBreak: r.blockMayCrossBreak,
         })),
         "Class Teachers": sections
           .filter((cs) => cs.classTeacher)
@@ -893,6 +894,10 @@ export class ImportService {
               samePeriodAcrossWeek: r.data.samePeriodAcrossWeek ?? false,
               consecutiveBlockSize: blockSize,
               consecutiveBlocksPerWeek: blockSize > 1 ? (r.data.consecutiveBlocksPerWeek ?? null) : null,
+              // §31.10 — cleared with the block, for the same reason the API
+              // clears it: a row with no block has no answer to give, and a
+              // stale `true` would reappear the day somebody sets a size again.
+              blockMayCrossBreak: blockSize > 1 ? Boolean(r.data.blockMayCrossBreak) : false,
             },
           });
           bump("curriculum");

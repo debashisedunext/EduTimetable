@@ -211,6 +211,51 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
     assertValid(input, result);
   });
 
+  it("a block may cross the break when the row says so, and only then (§31.10)", () => {
+    /*
+      The proof this feature needs, and it has to be a PLACEMENT rather than a
+      form: a real generation, and where the two periods actually landed.
+
+      `cleanSchool` is [3,3] — a break between P3 and P4 — so a 2-period block
+      that starts at P3 straddles it. With the flag off no block may do that,
+      and with it on the domain merely GAINS that start; blocks that fit inside
+      a run still land there, which is what makes turning it on safe.
+    */
+    const startsAtTheBreak = (blockMayCrossBreak: boolean) => {
+      const snap = cleanSchool();
+      snap.subjectRequirements[0].consecutiveBlockSize = 2;
+      snap.subjectRequirements[0].consecutiveBlocksPerWeek = 3;
+      snap.subjectRequirements[0].blockMayCrossBreak = blockMayCrossBreak;
+      const input = inputFor(snap);
+      const vars = buildVariables(input, new SolverState(input).teacherCtx);
+      const block = vars.find((v) => v.span === 2 && v.subjectId === 300)!;
+      return block.domain.filter((d) => d.period === 3).length;
+    };
+
+    // Off: P3 is not even in the domain — pruned before search, never scored
+    // down (invariant 2), so the solver cannot consider it at all.
+    expect(startsAtTheBreak(false)).toBe(0);
+    // On: it is, once per working day.
+    expect(startsAtTheBreak(true)).toBe(5);
+  });
+
+  it("a crossing block still places, and still places contiguously (§31.10)", () => {
+    // Widening a domain must not break the search: every lesson still lands,
+    // and a block is still two adjacent periods — crossing a break changes
+    // which pairs are legal, never that a block is a pair.
+    const snap = cleanSchool();
+    snap.subjectRequirements[0].consecutiveBlockSize = 2;
+    snap.subjectRequirements[0].consecutiveBlocksPerWeek = 3;
+    snap.subjectRequirements[0].blockMayCrossBreak = true;
+    const input = inputFor(snap);
+    const result = solveTimetable(input);
+    expect(result.unplaced).toEqual([]);
+    const blocks = result.placements.filter((p) => p.span === 2 && p.subjectId === 300);
+    expect(blocks.length).toBe(6);
+    for (const b of blocks) expect(b.period + 1).toBeLessThanOrEqual(6);
+    assertValid(input, result);
+  });
+
   it("merged group occupies the same slot in every member section, teacher once (§4.9)", () => {
     const snap = cleanSchool();
     snap.mappings = snap.mappings.filter((m) => m.subjectId !== 302);

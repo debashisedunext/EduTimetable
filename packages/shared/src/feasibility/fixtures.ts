@@ -63,6 +63,9 @@ export function cleanSchool(): FeasibilitySnapshot {
       samePeriodAcrossWeek: false,
       consecutiveBlockSize: 1,
       consecutiveBlocksPerWeek: null,
+      // §31.10 — the golden school keeps the rule every school had before the
+      // flag existed: a block sits inside one unbroken run.
+      blockMayCrossBreak: false,
     })),
     // Every fixture teacher covers class 5 — the only class here — so the
     // golden school stays clean under §18's Check 8.

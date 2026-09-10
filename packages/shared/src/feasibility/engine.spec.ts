@@ -139,6 +139,35 @@ describe("Feasibility Engine — golden fixtures (§4, task 1.14)", () => {
     expect(issue!.message).toContain("runs of at most 2");
   });
 
+  it("...but not when the row is ALLOWED to cross a break (§31.10)", () => {
+    /*
+      The same fragmented day, the same 3-period block, and the school has said
+      the block may run through a break. "No block can ever fit" is then simply
+      false, and refusing before Generate would be refusing a school for doing
+      what it just asked for — and offering it a fix that undoes the request.
+    */
+    const snap = cleanSchool();
+    snap.config.daySegments = [2, 2, 2];
+    snap.subjectRequirements[0].consecutiveBlockSize = 3;
+    snap.subjectRequirements[0].maxPeriodsPerDay = 3;
+    snap.subjectRequirements[0].blockMayCrossBreak = true;
+    const r = runFeasibility(snap);
+    expect(r.blockers.some((i) => i.code === "BLOCK_FRAGMENTED")).toBe(false);
+  });
+
+  it("crossing a break does not excuse a block longer than the DAY (§31.10)", () => {
+    // The one limit that survives: breaks stop dividing the day, but the day is
+    // still only so long. That branch belongs to BLOCK_EXCEEDS_DAILY_MAX and
+    // must keep firing, or "may cross a break" would read as "may be any size".
+    const snap = cleanSchool();
+    snap.config.daySegments = [2, 2, 2];
+    snap.subjectRequirements[0].consecutiveBlockSize = 3;
+    snap.subjectRequirements[0].maxPeriodsPerDay = 2;
+    snap.subjectRequirements[0].blockMayCrossBreak = true;
+    const r = runFeasibility(snap);
+    expect(r.blockers.some((i) => i.code === "BLOCK_EXCEEDS_DAILY_MAX")).toBe(true);
+  });
+
   it("block math invalid: 4 blocks × 2 > 6 periods/week → blocker", () => {
     const snap = cleanSchool();
     snap.subjectRequirements[0].consecutiveBlockSize = 2;

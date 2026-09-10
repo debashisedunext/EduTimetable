@@ -41,6 +41,13 @@
  *     the wing's number and names the rest, and the number it names comes off
  *     `crossConfigTeacherLoad`, the codebase's one cross-timetable calculation.
  *
+ *  6. **A consecutive block goes where the school said it may** (§31.10). The
+ *     fixture puts a break in the middle of the day and asks for a 2-period
+ *     block. With `blockMayCrossBreak` off, BOTH periods must land on the same
+ *     side of it; with it on, the solver is ALLOWED to cross — and the proof is
+ *     placed rows, not a stored column, because the column has existed since
+ *     §4.8 and it was the placement that never honoured a choice.
+ *
  * Everything it creates uses @zzmg.test / "ZZMG " and is removed at the end.
  */
 const { createRequire } = require("node:module");
@@ -457,6 +464,183 @@ async function main() {
   check(empty.slots.length === 0, "the second wing has never been generated", `${empty.slots.length} slots`);
   check(!covEmpty.comparable(n9.id, subj.Maths.id),
     "so its 8 periods of Maths are not reported as 8 missing — 'not generated' and 'nothing placed' are different facts");
+
+  // ───────────────────────── 3e. CONSECUTIVE BLOCKS AND THE BREAK (§31.10)
+  console.log("\nA consecutive block, and the break it may or may not cross:");
+  const email3 = `blocks@${DOMAIN}`;
+  await call("POST", "/auth/register", null, { email: email3, password: PW, name: "ZZMG Blocks" });
+  const acct3 = (await call("POST", "/auth/verify", null, { token: await mailToken(email3, "verify") })).json.accountToken;
+  const bs = await call("POST", "/schools", acct3, { name: "ZZMG Blocks" });
+  const S3 = bs.json.sessionToken;
+  const schoolId3 = bs.json.schoolId;
+
+  const yr3 = (await call("POST", "/academic-years", S3, {
+    name: "ZZMG B 2026-27", startDate: "2026-04-01", endDate: "2027-03-31", isActive: true,
+  })).json;
+  const cfg3 = (await call("POST", "/timetable-configs", S3, { name: "ZZMG Blocks Wing", academicYearId: yr3.id })).json;
+  /*
+    Six periods with a break after P3, so the day is two runs of three. A
+    2-period block therefore has exactly one illegal start — P3, which would
+    put P3 before the break and P4 after it. That single cell is the whole
+    experiment.
+  */
+  await call("PUT", `/timetable-configs/${cfg3.id}/structure`, S3, {
+    startTime: "08:00", periodsPerDay: 6, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5],
+    breaks: [{ afterPeriod: 3, name: "Lunch", durationMins: 30 }],
+  });
+  const bc = (await call("POST", "/classes", S3, { name: "Class 7", sequence: 11 })).json;
+  const bsec = (await call("POST", `/classes/${bc.id}/sections`, S3, { name: "A", academicYearId: yr3.id })).json.classSection;
+  await call("PUT", `/timetable-configs/${cfg3.id}/class-sections`, S3, { classSectionIds: [bsec.id] });
+  const bsub = (await call("POST", "/subjects", S3, { name: "ZZMG Practical" })).json;
+  const broom = (await call("POST", "/rooms", S3, { name: "ZZMG 7-A", roomType: "classroom", capacity: 40 })).json;
+  await call("PUT", `/class-sections/${bsec.id}`, S3, { homeRoomId: broom.id });
+  const bt = (await call("POST", "/teachers", S3, {
+    name: "ZZMG Prac", employeeCode: "ZZMG-PRAC",
+    maxPeriodsPerWeek: 40, maxPeriodsPerDay: 6, minPeriodsPerDay: 0,
+  })).json;
+
+  const curRow = await call("POST", "/class-subjects", S3, {
+    classId: bc.id, academicYearId: yr3.id, subjectId: bsub.id,
+    periodsPerWeek: 4, maxPeriodsPerDay: 2,
+    consecutiveBlockSize: 2, consecutiveBlocksPerWeek: 2,
+  });
+  check(curRow.status < 300 && curRow.json?.consecutiveBlockSize === 2,
+    "a curriculum row can ask for 2-period blocks", `${curRow.json?.consecutiveBlockSize}`);
+  check(curRow.json?.blockMayCrossBreak === false,
+    "and defaults to NOT crossing a break — every school before this flag existed",
+    `${curRow.json?.blockMayCrossBreak}`);
+  await call("POST", "/mappings", S3, {
+    teacherId: bt.id, subjectId: bsub.id, classSectionIds: [bsec.id], periodsPerWeek: 4,
+  });
+
+  /** Generate, then report which period each block started at. */
+  const blockStarts = async () => {
+    const stale = await redis.keys(`s${schoolId3}:slots:${cfg3.id}:*`);
+    if (stale.length) await redis.del(...stale);
+    await call("POST", `/timetable-configs/${cfg3.id}/generate`, S3, {});
+    let done = null;
+    for (let i = 0; i < 90 && !done; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const r = await call("GET", `/timetable-configs/${cfg3.id}/generate/latest`, S3);
+      if (r.json?.state === "completed" || r.json?.state === "failed") done = r.json;
+    }
+    /*
+      Read through `/slots`, not straight from the table.
+
+      §22: every Generate writes into a NEW draft, and the rows of the previous
+      one are still `status: "draft"` — a raw query returns both and the second
+      run appears to have placed twice as much. `/slots` resolves the config's
+      CURRENT draft, which is also what the screen shows.
+    */
+    const payload = (await call("GET", `/timetable-configs/${cfg3.id}/slots?status=draft`, S3)).json;
+    const rows = (payload?.slots ?? [])
+      .filter((t) => t[3] === bsub.id)
+      .map((t) => ({ dayOfWeek: t[1], periodNumber: t[2] }))
+      .sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.periodNumber - b.periodNumber);
+    const byDay = new Map();
+    for (const r of rows) {
+      if (!byDay.has(r.dayOfWeek)) byDay.set(r.dayOfWeek, []);
+      byDay.get(r.dayOfWeek).push(r.periodNumber);
+    }
+    return { state: done?.state, rows, byDay };
+  };
+
+  const off = await blockStarts();
+  check(off.state === "completed" && off.rows.length === 4,
+    "it generates, placing all four periods", `${off.state} · ${off.rows.length} rows`);
+  /*
+    The claim: with the flag off, no PAIR of adjacent periods straddles the
+    break. P3 and P4 are adjacent numbers but sit either side of lunch, so a
+    block starting at P3 is exactly what §4.8 forbids.
+  */
+  const straddles = (byDay) => [...byDay.values()].some((ps) => ps.includes(3) && ps.includes(4));
+  check(!straddles(off.byDay),
+    "and no block sits either side of the break — §4.8's rule, unchanged",
+    [...off.byDay.entries()].map(([d, ps]) => `${d}:${ps.join("+")}`).join(" "));
+
+  // Now allow it. The domain GAINS the crossing start; it does not require it.
+  const rowId = (await prisma.classSubject.findFirst({
+    where: { schoolId: schoolId3, classId: bc.id, subjectId: bsub.id },
+  })).id;
+  const upd = await call("PUT", `/class-subjects/${rowId}`, S3, {
+    periodsPerWeek: 4, maxPeriodsPerDay: 2,
+    consecutiveBlockSize: 2, consecutiveBlocksPerWeek: 2, blockMayCrossBreak: true,
+  });
+  check(upd.status < 300 && upd.json?.blockMayCrossBreak === true,
+    "the school turns crossing ON for that row", `${upd.json?.blockMayCrossBreak}`);
+
+  const on = await blockStarts();
+  check(on.state === "completed" && on.rows.length === 4,
+    "it still generates every period — widening a domain must not break the search",
+    `${on.state} · ${on.rows.length} rows`);
+
+  // The solver is free to cross now, and free not to; asserting that it DID
+  // would be asserting a heuristic. What is checkable is that the placement is
+  // still legal and that the engine no longer refuses the shape outright.
+  const readyOn = await call("GET", `/timetable-configs/${cfg3.id}/readiness`, S3);
+  check((readyOn.json?.blockers ?? []).length === 0,
+    "and Readiness has no blocker for it", `${readyOn.json?.score}%`);
+
+  /*
+    The refusal that has to become conditional. Three periods a block in a day
+    whose runs are three long fits; make the runs shorter than the block and
+    Check 3 says "no block can ever fit" — which stops being true the moment
+    the row may cross.
+  */
+  await call("PUT", `/timetable-configs/${cfg3.id}/structure`, S3, {
+    startTime: "08:00", periodsPerDay: 6, periodDurationMins: 40, workingDays: [1, 2, 3, 4, 5],
+    breaks: [
+      { afterPeriod: 2, name: "Short break", durationMins: 10 },
+      { afterPeriod: 4, name: "Lunch", durationMins: 30 },
+    ],
+  });
+  await call("PUT", `/class-subjects/${rowId}`, S3, {
+    periodsPerWeek: 6, maxPeriodsPerDay: 3,
+    consecutiveBlockSize: 3, consecutiveBlocksPerWeek: 2, blockMayCrossBreak: false,
+  });
+  const refused = await call("GET", `/timetable-configs/${cfg3.id}/readiness`, S3);
+  const fragmented = (refused.json?.blockers ?? []).find((b) => b.code === "BLOCK_FRAGMENTED");
+  check(!!fragmented,
+    "a 3-period block in a day of 2-period runs is refused BEFORE Generate",
+    (fragmented?.message ?? "(no blocker)").slice(0, 90));
+
+  await call("PUT", `/class-subjects/${rowId}`, S3, {
+    periodsPerWeek: 6, maxPeriodsPerDay: 3,
+    consecutiveBlockSize: 3, consecutiveBlocksPerWeek: 2, blockMayCrossBreak: true,
+  });
+  const allowed = await call("GET", `/timetable-configs/${cfg3.id}/readiness`, S3);
+  check(!(allowed.json?.blockers ?? []).some((b) => b.code === "BLOCK_FRAGMENTED"),
+    "...and NOT refused once the school says the block may cross a break — the blocker learned the setting, not just the domain",
+    // Named, not counted: a bare "1 blocker" leaves the reader unable to tell a
+    // clean pass from one that merely traded this refusal for another.
+    (allowed.json?.blockers ?? []).map((b) => b.code).join(", ") || "no blockers at all");
+
+  /*
+    And now the strongest form of the claim: a day of 2-period runs and a
+    3-period block leave the solver NO choice but to cross. If the domain change
+    never reached real placement, this cannot generate at all — so the rows
+    themselves are the proof, rather than the absence of a refusal.
+  */
+  const bmap = await prisma.teacherSubjectClassSection.findFirst({
+    where: { schoolId: schoolId3, subjectId: bsub.id },
+  });
+  await call("PUT", `/mappings/${bmap.id}`, S3, { periodsPerWeek: 6 });
+  const feasible = await call("GET", `/timetable-configs/${cfg3.id}/readiness`, S3);
+  check((feasible.json?.blockers ?? []).length === 0,
+    "with the mapping matched to the curriculum the wing is feasible",
+    (feasible.json?.blockers ?? []).map((b) => b.code).join(", ") || `${feasible.json?.score}%`);
+
+  const forced = await blockStarts();
+  check(forced.state === "completed" && forced.rows.length === 6,
+    "and it generates — which is only possible by crossing a break",
+    `${forced.state} · ${forced.rows.length} rows`);
+  // Segments are P1-P2 | P3-P4 | P5-P6, so any three consecutive periods must
+  // span a boundary. Asserted on the periods actually written.
+  const triples = [...forced.byDay.values()].filter((ps) => ps.length >= 3);
+  const spansABreak = (ps) => ps.some((x) => ps.includes(x + 1) && [2, 4].includes(x));
+  check(triples.length > 0 && triples.every(spansABreak),
+    "every placed block really does sit across a break, in the rows themselves",
+    [...forced.byDay.entries()].map(([d, ps]) => `${d}:${ps.join("+")}`).join(" "));
 
   // ───────────────────────── 4. §17.8
   console.log("\nAnother school cannot read either of them:");

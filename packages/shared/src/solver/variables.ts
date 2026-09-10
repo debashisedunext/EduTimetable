@@ -170,6 +170,20 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
      * feasibility check has to see it before the search starts.
      */
     subjectIds: number[],
+    /**
+     * §31.10 — may this block run through a break?
+     *
+     * A curriculum row's own answer, and it only ever WIDENS: `false` keeps the
+     * §4.8 rule that a block sits inside one unbroken run, `true` also allows
+     * one period either side of a break. It permits a crossing, it never
+     * requires one, so a block that fits inside a run still lands there —
+     * which is what makes turning it on safe for a school that just wants the
+     * option.
+     *
+     * Domain pruning, not scoring (invariant 2): the solver must never be able
+     * to *consider* a straddling block for a row that forbids it.
+     */
+    mayCrossBreak = false,
   ): Array<{ day: number; period: number }> => {
     const ctxs = teacherIds.map((id) => teacherCtx.get(id)).filter((x): x is TeacherCtx => !!x);
     const placements = subjectIds
@@ -197,7 +211,9 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     for (const day of days) {
       if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
       for (let p = 1; p + span - 1 <= perDay; p++) {
-        if (seg[p] !== seg[p + span - 1]) continue; // block cannot straddle a break (§4.8)
+        // §4.8 — a block sits inside one unbroken run, unless §31.10's flag
+        // says this row may cross one. Span 1 never trips it either way.
+        if (!mayCrossBreak && seg[p] !== seg[p + span - 1]) continue;
         if (!lunchOk[p]) continue;
         // always_first_period: such a teacher never takes P1 in any OTHER section
         const p1Blocked = ctxs.some(
@@ -271,7 +287,15 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       maxPerDay,
     };
     for (let i = 0; i < blocks; i++) {
-      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds, [m.subjectId]) });
+      vars.push({
+        ...common,
+        id: nextId++,
+        span: blockSize,
+        domain: domainFor(
+          [m.teacherId], blockSize, common.classSectionIds, [m.subjectId],
+          req?.blockMayCrossBreak ?? false,
+        ),
+      });
     }
     for (let i = 0; i < singles; i++) {
       vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]) });

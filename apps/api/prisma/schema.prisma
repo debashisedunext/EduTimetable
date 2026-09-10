@@ -698,6 +698,11 @@ model ClassSubject {
   samePeriodAcrossWeek     Boolean      @default(false) @map("same_period_across_week")
   consecutiveBlockSize     Int          @default(1) @map("consecutive_block_size")
   consecutiveBlocksPerWeek Int?         @map("consecutive_blocks_per_week")
+  /// §31.10 — may a consecutive block run through a break (one period either
+  /// side of lunch, or across the short bell)? FALSE is every school today and
+  /// stays the default. TRUE only ever WIDENS the domain: it permits a
+  /// crossing, it never requires one.
+  blockMayCrossBreak       Boolean      @default(false) @map("block_may_cross_break")
   schoolId                 Int          @map("school_id")
   school                   School       @relation(fields: [schoolId], references: [id])
 

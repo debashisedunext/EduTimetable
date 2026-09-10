@@ -614,7 +614,49 @@ export function StepAllocation({
     if (periods <= 0) { onChange({ curriculum: others }); return; }
     const existing = m.cells.find((c) => c.className === className && c.subjectName === subject);
     const maxPerDay = Math.max(Math.ceil(periods / m.days), existing?.maxPerDay ?? 1);
-    onChange({ curriculum: [...others, { className, subjectName: subject, periodsPerWeek: periods, maxPerDay }] });
+    onChange({ curriculum: [...others, {
+      className, subjectName: subject, periodsPerWeek: periods, maxPerDay,
+      /*
+        §31.10 — the block survives a change of periods.
+
+        This rebuilds the cell from scratch, so anything not named here is
+        silently dropped. Before the block fields existed that was harmless;
+        now, typing a digit into the cell would quietly undo a double period
+        somebody set in the dialog, with nothing on screen to show it had gone.
+      */
+      consecutiveBlockSize: existing?.consecutiveBlockSize,
+      consecutiveBlocksPerWeek: existing?.consecutiveBlocksPerWeek,
+      blockMayCrossBreak: existing?.blockMayCrossBreak,
+    }] });
+  };
+
+  /**
+   * §31.10 — how a subject is blocked, for one class.
+   *
+   * A CLASS fact, like the periods beside it: `class_subjects` is keyed by
+   * class, so every section of Pre-Nursery gets the same double period. The
+   * dialog says so, the same way the Load column's rowSpan has always said it
+   * about periods.
+   *
+   * A size of 1 clears the two companions rather than leaving them beside a
+   * block that no longer exists — the same rule the API and the importer apply
+   * on write, so all three agree about what "no block" stores.
+   */
+  const setBlock = (
+    className: string,
+    subject: string,
+    block: { size: number; perWeek: number | null; mayCrossBreak: boolean },
+  ) => {
+    const existing = m.cells.find((c) => c.className === className && c.subjectName === subject);
+    if (!existing) return;
+    const size = Math.max(1, Math.min(4, Math.floor(block.size)));
+    const others = m.cells.filter((c) => !(c.className === className && c.subjectName === subject));
+    onChange({ curriculum: [...others, {
+      ...existing,
+      consecutiveBlockSize: size,
+      consecutiveBlocksPerWeek: size > 1 ? block.perWeek : null,
+      blockMayCrossBreak: size > 1 ? block.mayCrossBreak : false,
+    }] });
   };
 
   const setMappings = (next: MappingSuggestion[]) => onChange({ mappings: next });
@@ -1317,6 +1359,9 @@ export function StepAllocation({
           totalOf={totalOf}
           onSave={(next) => {
             if (next.periods !== undefined) setPeriods(next.className, editing.subject, next.periods);
+            // After the periods, so a cell created by this same save has a row
+            // for the block to be written onto.
+            if (next.block) setBlock(next.className, editing.subject, next.block);
             if (next.mappings) setMappings(next.mappings);
             if (next.classTeacher !== undefined) setClassTeacher(editing.section, next.classTeacher);
             // §28 — the period LENGTH is step 5's key, so it is written back

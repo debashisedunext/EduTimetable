@@ -1634,7 +1634,19 @@ function checkDailyDistribution(
       });
       return;
     }
-    if (daySegments.length > 0 && Math.max(...daySegments) < size) {
+    /*
+      §31.10 — "no block can ever fit" stops being true the moment the row is
+      allowed to cross a break.
+
+      This check, its message and its remedy all have to learn the setting, not
+      just the domain pruning in `variables.ts`. Without it a school that
+      deliberately turned crossing ON — one period either side of lunch — is
+      refused before Generate and offered a fix that undoes the thing it just
+      asked for. The days are contiguous once breaks stop dividing them, so the
+      only remaining limit is the day's teaching length, which the
+      `BLOCK_EXCEEDS_DAILY_MAX` branch above already owns.
+    */
+    if (!r.blockMayCrossBreak && daySegments.length > 0 && Math.max(...daySegments) < size) {
       issues.push({
         code: "BLOCK_FRAGMENTED",
         severity: "blocker",

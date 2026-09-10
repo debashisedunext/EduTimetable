@@ -13,7 +13,7 @@ import { api } from "../../api";
 import { asMessage } from "../../components";
 import {
   CLASS_LADDER, computeLoads, defaultsFor, subjectAppliesTo, subjectStartsAt, subjectSuitsClass,
-  type LoadRemedy, type MappingSuggestion, type SubjectAnswer, type Swatch,
+  type CurriculumCell, type LoadRemedy, type MappingSuggestion, type SubjectAnswer, type Swatch,
   type TeacherAnswer, type TeacherLoad,
 } from "@edutimetable/shared";
 
@@ -41,7 +41,13 @@ export interface AllocModel {
   initialsOf: Map<string, string>;
   /** Minutes in one period, for this wing (§28). */
   minutes: number;
-  cells: Array<{ className: string; subjectName: string; periodsPerWeek: number; maxPerDay: number }>;
+  /**
+   * The curriculum cells, as `CurriculumCell` rather than a structural copy of
+   * four of its fields. The copy silently stopped matching when §31.10 added
+   * the block columns — a shape written out twice is a shape that drifts, and
+   * this one drifted the first time the original grew.
+   */
+  cells: CurriculumCell[];
   mappings: MappingSuggestion[];
   classTeachers: Array<{ classSection: string; employeeCode: string }>;
   rooms: string[];
@@ -495,6 +501,14 @@ export interface CellSave {
   classTeacher?: string;
   /** §28 — the wing's period length, if it was changed here. */
   minutes?: number;
+  /**
+   * §31.10 — how this subject is blocked for this class.
+   *
+   * A CLASS fact like the periods beside it (`class_subjects` is keyed by
+   * class), so it applies to every section — which is why the dialog says so
+   * next to the control rather than leaving it to be discovered.
+   */
+  block?: { size: number; perWeek: number | null; mayCrossBreak: boolean };
 }
 
 export function CellDialog({ m, answers, section, subject, onClose, onSave, onRemove,
@@ -523,6 +537,18 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
   const [room, setRoom] = useState(existing?.room ?? "");
   const [isCT, setIsCT] = useState(!!existing && classTeacherOf(section) === existing.employeeCode);
   const [minutes, setMinutes] = useState(m.minutes);
+  /**
+   * §31.10 — consecutive blocks, at last reachable from the screen.
+   *
+   * The columns have existed since §4.8 and the solver has placed blocks
+   * atomically all along; the Excel Curriculum sheet has carried Block Size and
+   * Blocks/Week since the importer shipped. What was missing was any way to say
+   * it here, so a school not using spreadsheets could not.
+   */
+  const cell = m.cells.find((c) => c.className === className && c.subjectName === subject);
+  const [blockSize, setBlockSize] = useState(cell?.consecutiveBlockSize ?? 1);
+  const [blocksPerWeek, setBlocksPerWeek] = useState<number | null>(cell?.consecutiveBlocksPerWeek ?? null);
+  const [crossBreak, setCrossBreak] = useState(Boolean(cell?.blockMayCrossBreak));
   /** §27 — start narrow, widen on request. See the note by the select. */
   const [showAll, setShowAll] = useState(false);
 
@@ -616,6 +642,13 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
     const currentCT = classTeacherOf(section);
     if (isCT && code) next.classTeacher = code;
     else if (!isCT && currentCT === oldCode && currentCT) next.classTeacher = "";
+    // Only when something about the block actually moved — an unchanged value
+    // written back would churn the draft and mark the step dirty for nothing.
+    if (blockSize !== (cell?.consecutiveBlockSize ?? 1)
+      || blocksPerWeek !== (cell?.consecutiveBlocksPerWeek ?? null)
+      || crossBreak !== Boolean(cell?.blockMayCrossBreak)) {
+      next.block = { size: blockSize, perWeek: blocksPerWeek, mayCrossBreak: crossBreak };
+    }
     onSave(next);
   };
 
@@ -678,6 +711,97 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
             much time a subject gets — and the label says whose setting it is,
             rather than implying the change is local.
           */}
+          {/*
+            §31.10 — consecutive periods, and whether a break may fall inside
+            one.
+
+            Only offered once the class actually has periods: a block is a shape
+            for teaching that exists, and a "2-period block" on a subject nobody
+            is taught is a number with nothing to apply to.
+
+            A CLASS fact, said out loud — `class_subjects` is keyed by class, so
+            this is every section of Pre-Nursery at once, exactly like the
+            periods above it.
+          */}
+          {periods > 0 && (
+            <Field label="Consecutive periods">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <select
+                  value={blockSize}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setBlockSize(n);
+                    // Clearing with the block, so the two companions never
+                    // outlive it — the same rule the API and the importer
+                    // apply on write.
+                    if (n <= 1) { setBlocksPerWeek(null); setCrossBreak(false); }
+                  }}
+                  style={{
+                    width: 150, padding: "7px 9px", border: "1px solid var(--line)", borderRadius: 8,
+                    fontSize: 12.5, background: "var(--paper)", color: "var(--ink)",
+                  }}
+                >
+                  <option value={1}>Single periods</option>
+                  <option value={2}>Double (2 together)</option>
+                  <option value={3}>Triple (3 together)</option>
+                  <option value={4}>Four together</option>
+                </select>
+                {blockSize > 1 && (
+                  <>
+                    <select
+                      value={blocksPerWeek ?? ""}
+                      onChange={(e) => setBlocksPerWeek(e.target.value === "" ? null : Number(e.target.value))}
+                      style={{
+                        width: 150, padding: "7px 9px", border: "1px solid var(--line)", borderRadius: 8,
+                        fontSize: 12.5, background: "var(--paper)", color: "var(--ink)",
+                      }}
+                    >
+                      {/* Blank means "as many as fit", which is what the solver
+                          does with a null — never a hidden default of 1. */}
+                      <option value="">as many as fit</option>
+                      {Array.from({ length: Math.floor(periods / blockSize) }, (_, i) => i + 1).map((n) => (
+                        <option key={n} value={n}>{n} block{n === 1 ? "" : "s"} a week</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                      {(() => {
+                        const blocks = blocksPerWeek ?? Math.floor(periods / blockSize);
+                        const singles = periods - blocks * blockSize;
+                        return `${blocks} × ${blockSize}${singles > 0 ? ` + ${singles} single${singles === 1 ? "" : "s"}` : ""} of ${periods}`;
+                      })()}
+                    </span>
+                  </>
+                )}
+              </div>
+              {blockSize > 1 && (
+                <label style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, marginTop: 9,
+                  fontSize: 12.2, color: "var(--ink-soft)", lineHeight: 1.5, cursor: "pointer",
+                }}>
+                  <input type="checkbox" checked={crossBreak}
+                    onChange={(e) => setCrossBreak(e.target.checked)}
+                    style={{ marginTop: 2 }} />
+                  <span>
+                    <strong style={{ color: "var(--ink)" }}>A break may fall inside the block</strong>
+                    <span style={{ display: "block" }}>
+                      {/* The exact meaning, because "allow" and "require" are
+                          one word apart and only one of them is true: this
+                          WIDENS where the block may go. A block that fits
+                          inside an unbroken run still lands there. */}
+                      {crossBreak
+                        ? "One period either side of lunch or the short bell is allowed — not required, so it will still sit inside an unbroken run when it can."
+                        : "The periods must run without a break between them."}
+                    </span>
+                  </span>
+                </label>
+              )}
+              <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 7, lineHeight: 1.5 }}>
+                Applies to every section of {className} — periods and their shape are a class fact.
+                The solver places a block whole or not at all.
+              </div>
+            </Field>
+          )}
+
           <Field label="Period length">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}

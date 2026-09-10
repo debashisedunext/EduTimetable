@@ -254,6 +254,15 @@ export interface SnapshotSubjectRequirement {
   samePeriodAcrossWeek: boolean;
   consecutiveBlockSize: number;
   consecutiveBlocksPerWeek: number | null;
+  /**
+   * §31.10 — may a consecutive block run through a break?
+   *
+   * `false` is every school before this existed, and only ever means what it
+   * has always meant: the block must sit inside one unbroken run of periods.
+   * `true` WIDENS the domain — it permits a crossing rather than requiring one,
+   * so a block that fits inside a run still lands there.
+   */
+  blockMayCrossBreak: boolean;
 }
 
 export interface SnapshotTeacher {

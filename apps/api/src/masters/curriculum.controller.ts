@@ -47,6 +47,7 @@ export class CurriculumController {
       samePeriodAcrossWeek: r.samePeriodAcrossWeek,
       consecutiveBlockSize: r.consecutiveBlockSize,
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+      blockMayCrossBreak: r.blockMayCrossBreak,
     }));
   }
 
@@ -144,6 +145,14 @@ export class CurriculumController {
       samePeriodAcrossWeek: Boolean(body.samePeriodAcrossWeek),
       consecutiveBlockSize: blockSize,
       consecutiveBlocksPerWeek: blockSize > 1 ? blocksPerWeek : null,
+      /*
+        §31.10 — cleared with the block, not kept beside it.
+
+        "May cross a break" is a fact about a block, so a row with no block has
+        no answer to give. Leaving a stale `true` behind would make it reappear
+        the day somebody sets a block size again, without them ever saying so.
+      */
+      blockMayCrossBreak: blockSize > 1 ? Boolean(body.blockMayCrossBreak) : false,
     };
   }
 }
