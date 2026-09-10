@@ -540,7 +540,7 @@ export interface CellSave {
  * inches above it cannot disagree.
  */
 export function CellBar({
-  m, answers, section, subject, periodsOf, mappingIndexOf, classTeacherOf, totalOf,
+  m, answers, section, subject, periodsOf, mappingIndexOf, classTeacherOf,
   onChange, onRemove, onMore, compact = false,
 }: {
   m: AllocModel;
@@ -550,7 +550,6 @@ export function CellBar({
   periodsOf: (className: string, subject: string) => number;
   mappingIndexOf: (section: string, subject: string) => number;
   classTeacherOf: (section: string) => string;
-  totalOf: (className: string) => number;
   /** One field at a time — see "Applied immediately" above. */
   onChange: (next: CellSave) => void;
   onRemove: () => void;
@@ -603,22 +602,6 @@ export function CellBar({
       daysByWing: m.daysByWing,
     });
     return { mappings: next, byCode: new Map(after.map((t) => [t.employeeCode, t])) };
-  };
-
-  const setPeriods = (n: number) => {
-    const want = Math.max(0, Math.min(60, n));
-    const total = totalOf(className) - periods + want;
-    if (total > m.capacity) {
-      setRefusal(`${className} would need ${total} periods and the week holds ${m.capacity}.`);
-      return;
-    }
-    const now = code ? loadWith(code, want).byCode.get(code) : undefined;
-    if (now && now.used > now.cap) {
-      setRefusal(`${now.name} would be on ${now.used} against a limit of ${now.cap}.`);
-      return;
-    }
-    setRefusal(null);
-    onChange({ className, periods: want });
   };
 
   const setTeacher = (nextCode: string) => {
@@ -675,14 +658,26 @@ export function CellBar({
         {section} · {subject}
       </span>
 
-      {field("Periods", (
-        <input
-          type="number" min={0} max={60} value={periods}
-          onChange={(e) => setPeriods(Number(e.target.value))}
-          style={{ ...box, width: 52 }}
-          title={`A CLASS fact — ${className} has ${m.classes.find((c) => c.className === className)?.sections.length ?? 1} section(s) and they all get this`}
-        />
-      ))}
+      {/*
+        §31.16 — the periods are NOT here.
+
+        They are typed into the cell, which is a real field now. A second box
+        holding the same number is a second answer to "where do I change this?",
+        and the one further from the grid always wins the argument by being
+        easier to see — which is how the cell came to look read-only in the
+        first place. What is left in this bar is exactly what the cell cannot
+        show: the teacher, the room, the block and the class-teacher role.
+
+        The count is still stated, because the refusals below quote it and a
+        reason that names a number nothing on the bar shows is a reason nobody
+        can check.
+      */}
+      <span style={{ fontSize: 11.5, color: "var(--ink-soft)", alignSelf: "center", whiteSpace: "nowrap" }}
+        title={`A CLASS fact — ${className} has ${m.classes.find((c) => c.className === className)?.sections.length ?? 1} section(s) and they all get this`}>
+        <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{periods}</strong>
+        {periods === 1 ? " period" : " periods"} a week
+        <span style={{ color: "var(--ink-faint)" }}> · type in the cell</span>
+      </span>
 
       {field("Teacher", (
         <select value={code} onChange={(e) => setTeacher(e.target.value)}

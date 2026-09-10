@@ -24,7 +24,7 @@
  *  3. **Everything except the grid is collapsed.** The grid is the page; the
  *     rest is apparatus, and apparatus earns its space by being asked for.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   assignInitials, assignSwatches, computeLoads, coverageGaps, defaultsFor, planClasses, relieveLoad,
@@ -388,6 +388,48 @@ export interface AllocationCellFacts {
   capacity: number;
 }
 
+/**
+ * §31.16 — one cell's box, as a button or as a field.
+ *
+ * The selected cell holds a real `<input>`, and an input inside a `<button>` is
+ * invalid HTML: the button swallows the click that would place a caret, and
+ * screen readers announce a control containing a control. So the element
+ * changes with the state while everything else — the colours, the three lines,
+ * the focus ring — stays identical, which is why the caller passes one style
+ * object rather than maintaining two.
+ *
+ * The div claims no ARIA role of its own: the `<input>` inside is the control
+ * and carries the label, and a `gridcell` on a wrapper inside a real `<td>`
+ * would describe the same table to a screen reader twice, differently.
+ */
+function CellShell({
+  editing, className, onClick, style, title, children, ...rest
+}: {
+  editing: boolean;
+  className?: string;
+  onClick: () => void;
+  style: React.CSSProperties;
+  title?: string;
+  children: React.ReactNode;
+} & Record<string, unknown>) {
+  if (editing) {
+    return (
+      /* No `role` invented for the div: the labelled `<input>` inside IS the
+         control, and claiming `gridcell` on a wrapper inside a real `<td>`
+         would describe the table to a screen reader twice, differently. */
+      <div className={className} onClick={onClick} title={title}
+        style={{ ...style, cursor: "text" }} {...rest}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <button className={className} onClick={onClick} title={title} style={style} {...rest}>
+      {children}
+    </button>
+  );
+}
+
 export function StepAllocation({
   answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell, toolbarHost,
 }: {
@@ -457,17 +499,6 @@ export function StepAllocation({
   const [showAdvice, setShowAdvice] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [editing, setEditing] = useState<{ section: string; subject: string } | null>(null);
-  /**
-   * §31.15 — the digits typed into a cell, while they are still being typed.
-   *
-   * A ref rather than state: it must not cause a render (the value it produces
-   * already does, through `setPeriods`), and a state update scheduled between
-   * two fast keystrokes would let the second read the first's stale value.
-   */
-  const typing = useRef<{ key: string; value: string; at: number }>({ key: "", value: "", at: 0 });
-  /** How long two digits count as one number. Long enough to be deliberate,
-   *  short enough that returning to a cell later starts a new number. */
-  const TYPE_WINDOW_MS = 900;
   const [hover, setHover] = useState<{ what: Hover; x: number; y: number } | null>(null);
   const [hoverDetail, setHoverDetail] = useHoverDetail();
   const [resetting, setResetting] = useState(false);
@@ -835,6 +866,127 @@ export function StepAllocation({
       // broken; the employee code still works for anybody who knows it.
       || initialsOf(code).toLowerCase().includes(q);
 
+  /**
+   * §31.16 — where the cursor goes, defined once.
+   *
+   * Two callers now: the window handler, for a grid nobody has clicked into,
+   * and the in-cell input, which the window handler deliberately ignores. A
+   * second copy would be a second set of clamping rules, and the two would
+   * disagree at the edges first.
+   */
+  const moveTo = (row: number, col: number) => {
+    const r = Math.max(0, Math.min(sections.length - 1, row));
+    const c = Math.max(0, Math.min(m.subjects.length - 1, col));
+    setCursor({ row: r, col: c });
+    const sec = sections[r], sub = m.subjects[c];
+    if (sec && sub) setStripCell({ section: sec.id, subject: sub.name });
+  };
+
+  /**
+   * What the in-cell input currently reads.
+   *
+   * Held as a STRING, and that is the whole reason it is state rather than the
+   * model's number: backspacing to empty has to leave the field empty for as
+   * long as somebody is typing. A number cannot express "empty", so binding the
+   * input to `periodsOf` would put a 0 back under the caret the instant the last
+   * digit was deleted — and then "12" typed over it would read as "012".
+   */
+  const [typed, setTyped] = useState("");
+  const cellInput = useRef<HTMLInputElement>(null);
+
+  /*
+    Re-seeded from the model whenever the selection moves, and only then.
+
+    Not on every render: the model changes as a direct result of typing, so
+    re-seeding there would overwrite the string somebody is halfway through
+    with the number it has already produced.
+  */
+  useLayoutEffect(() => {
+    if (!stripCell) return;
+    const className = stripCell.section.replace(/-[^-]+$/, "");
+    const p = periodsOf(className, stripCell.subject);
+    setTyped(p > 0 ? String(p) : "");
+    /*
+      Focused here rather than with `autoFocus`, so arrowing from cell to cell
+      moves the caret with the selection rather than only on the first mount —
+      and in a LAYOUT effect (§8.1d), because a passive one runs after paint and
+      the caret would appear a frame late on every single move.
+    */
+    cellInput.current?.focus();
+    cellInput.current?.select();
+  }, [stripCell?.section, stripCell?.subject]);
+
+  /** Digits in, a refusal or a write out. */
+  const commitTyped = (className: string, subject: string, raw: string) => {
+    const clean = raw.replace(/[^0-9]/g, "").slice(0, 2);
+    setTyped(clean);
+    // An empty field is somebody mid-edit, not a request for zero. Writing 0
+    // here would drop the row's periods on the way to typing a two-digit
+    // number, and the load rail would flash as they passed through.
+    if (clean === "") return;
+    const want = Number(clean);
+    // Refused above the week, as the screen refuses everywhere else: a class
+    // asking for more periods than its week holds can never be timetabled.
+    const total = totalOf(className) - periodsOf(className, subject) + want;
+    if (total <= m.capacity) setPeriods(className, subject, want);
+  };
+
+  /**
+   * §31.16 — the arrows, inside a field the window handler will not see.
+   *
+   * They always move CELLS rather than the caret. The field holds at most two
+   * characters and is selected on arrival, so there is no caret position worth
+   * navigating to — and a grid where Right sometimes moves a column and
+   * sometimes a character is a grid nobody can move around confidently.
+   */
+  const onCellKey = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    row: number, col: number,
+    className: string, subject: string,
+  ) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      moveTo(
+        row + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
+        col + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
+      );
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      setEditing({ section: sections[row].id, subject });
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      /*
+        Blurs, and does NOT clear the selection.
+
+        Clearing it would take the toolbar's fields away too — the bar is drawn
+        from the same selection — so Escape would silently mean "stop editing
+        the teacher and the room as well". Letting go of the keyboard is the
+        whole of what it is for; the next arrow key takes it back.
+      */
+      cellInput.current?.blur();
+      return;
+    }
+    /*
+      §27.15 — Delete, and NOT Backspace.
+
+      Backspace used to open the same removal confirmation, which was right
+      while the cell was a button and is wrong now that it is a field: inside a
+      field Backspace means "delete a digit", and one that instead asked to
+      delete the whole curriculum row would be the most dangerous keystroke on
+      the screen. Delete keeps that job, and the toolbar's ✕ is the visible one.
+    */
+    if (e.key === "Delete") {
+      e.preventDefault();
+      if (periodsOf(className, subject) > 0 || mappingIndexOf(sections[row].id, subject) >= 0) {
+        setRemoving({ className, subject });
+      }
+    }
+  };
+
   // ── keyboard ───────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -842,23 +994,29 @@ export function StepAllocation({
       const el = document.activeElement;
       if (el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA")) return;
       const nav = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key);
-      const digit = /^[0-9]$/.test(e.key);
-      // §27.15 — Delete asks the same question the dialog's button asks, and
-      // goes through the same confirmation. A keystroke must not be the one
-      // path that deletes saved rows without showing what they are.
-      const remove = e.key === "Delete" || e.key === "Backspace";
-      if (!nav && !digit && !remove) return;
+      /*
+        §31.16 — Delete, and no longer Backspace.
+
+        Backspace opened the same removal confirmation, which was right while
+        every cell was a button. The selected cell is a field now, and inside a
+        field Backspace means "delete a digit" — a Backspace that instead asked
+        to delete a whole curriculum row would be the most dangerous keystroke
+        on the screen, and the two meanings would differ by whether the caret
+        happened to be in the cell. Delete keeps the job; the toolbar's ✕ is
+        the visible one.
+      */
+      const remove = e.key === "Delete";
+      if (!nav && !remove) return;
       e.preventDefault();
       const row = Math.max(0, Math.min(sections.length - 1,
         cursor.row + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0)));
       const col = Math.max(0, Math.min(m.subjects.length - 1,
         cursor.col + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0)));
-      setCursor({ row, col });
       const sec = sections[row], sub = m.subjects[col];
       if (!sec || !sub) return;
       // §31.10 — the keyboard cursor moves the strip too, so a row can be read
       // across without reaching for the mouse for every cell.
-      setStripCell({ section: sec.id, subject: sub.name });
+      moveTo(row, col);
       if (e.key === "Enter") { setEditing({ section: sec.id, subject: sub.name }); return; }
       if (remove) {
         // Nothing there is nothing to remove — and the confirmation would have
@@ -868,34 +1026,18 @@ export function StepAllocation({
         }
         return;
       }
-      if (digit) {
-        /*
-          §31.15 — digits ACCUMULATE, so a two-digit answer is typeable.
+      /*
+        §31.16 — no digit path here any more.
 
-          Each press used to replace the value, so "12" ended as 2 and there
-          was no way to type ten from the grid at all — the dialog was the only
-          route to it, which is exactly the trip this change removes. Consecutive
-          presses on the same cell within `TYPE_WINDOW_MS` append; anything else
-          — a pause, a different cell, an arrow key — starts again.
-        */
-        const key = `${sec.id}\u0000${sub.name}`;
-        const now = Date.now();
-        const fresh = typing.current.key !== key || now - typing.current.at > TYPE_WINDOW_MS;
-        const buffer = fresh ? e.key : `${typing.current.value}${e.key}`.slice(-2);
-        typing.current = { key, value: buffer, at: now };
-        const want = Number(buffer);
-        // Refused above 100%, as the screen refuses everywhere else: a class
-        // asking for more periods than its week holds can never be timetabled.
-        const next = totalOf(sec.className) - periodsOf(sec.className, sub.name) + want;
-        if (next <= m.capacity) setPeriods(sec.className, sub.name, want);
-        // A refused second digit must not stay in the buffer, or the next press
-        // builds on a number the grid never accepted.
-        else typing.current = { key, value: String(periodsOf(sec.className, sub.name)), at: now };
-      } else {
-        // Any other key ends the number being typed. Without this, arrowing
-        // away and back inside the window would append to it.
-        typing.current = { key: "", value: "", at: 0 };
-      }
+        Digits are typed into the cell's own `<input>`, which is focused the
+        moment a cell is selected — and this handler deliberately ignores a
+        focused input, so after the first selection it never sees one. Keeping a
+        second way to write the number would mean two buffers for one field,
+        and they would disagree the first time somebody typed fast.
+
+        Arrowing into a cell from here still selects it, which focuses the
+        field: the keyboard hands over rather than sharing.
+      */
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -966,7 +1108,7 @@ export function StepAllocation({
           m={m} answers={answers}
           section={stripCell.section} subject={stripCell.subject}
           periodsOf={periodsOf} mappingIndexOf={mappingIndexOf}
-          classTeacherOf={classTeacherOf} totalOf={totalOf}
+          classTeacherOf={classTeacherOf}
           compact={tight}
           onMore={() => setEditing({ section: stripCell.section, subject: stripCell.subject })}
           onRemove={() => setRemoving({
@@ -1411,6 +1553,11 @@ export function StepAllocation({
                       const merged = !!row?.merged && row.classSections.length > 1;
                       const rowIndex = sections.findIndex((x) => x.id === id);
                       const isCursor = cursor.row === rowIndex && cursor.col === col;
+                      /* §31.16 — the one cell that is an input. `stripCell`
+                         rather than `isCursor`: the cursor exists from the
+                         first render, and an input focused before anybody has
+                         clicked would steal the page's focus on arrival. */
+                      const picked = stripCell?.section === id && stripCell?.subject === s.name;
                       const dim = (selected && code !== selected) || !matches(id, s.name, code);
 
                       return (
@@ -1418,11 +1565,19 @@ export function StepAllocation({
                           padding: 1.5, borderBottom: "1px solid var(--line)", textAlign: "center",
                           borderTop: i === 0 ? "2px solid var(--steel-light)" : undefined,
                         }}>
-                          <button
-                            // §31.10 — a lesson the class is owed and nobody
-                            // teaches. It moves because it is the one state on
-                            // this grid that is unfinished rather than merely
-                            // informative.
+                          {/*
+                            §31.16 — the SELECTED cell is a real input, so it is
+                            a `div` rather than a `button`.
+
+                            An `<input>` inside a `<button>` is invalid HTML and
+                            the button swallows the clicks that would place a
+                            caret, so the element has to change with the state.
+                            Everything else about it — the colours, the three
+                            lines, the ring — is identical, which is why the
+                            style object is shared rather than written twice.
+                          */}
+                          <CellShell
+                            editing={picked}
                             className={p > 0 && !code ? "alloc-unstaffed" : undefined}
                             onClick={() => {
                               /*
@@ -1471,9 +1626,39 @@ export function StepAllocation({
                                   }
                                   : { background: sw?.bg, color: sw?.fg, border: `1px solid ${sw?.border ?? "transparent"}` }),
                             }}>
-                            <span style={{ font: "700 13.5px/1 var(--font-mono, monospace)", display: "block", opacity: p <= 0 ? 0.5 : 1 }}>
-                              {p <= 0 ? "–" : p}
-                            </span>
+                            {picked ? (
+                              /*
+                                §31.16 — the number, typed where it is read.
+
+                                Same box, same font, same height as the span it
+                                replaces: a field that changed the cell's size
+                                would move every row below it the moment the
+                                cursor arrived, which is the thing this grid is
+                                least able to afford.
+                              */
+                              <input
+                                ref={cellInput}
+                                value={typed}
+                                inputMode="numeric"
+                                aria-label={`Periods a week of ${s.name} for ${c.className}`}
+                                onChange={(e) => commitTyped(c.className, s.name, e.target.value)}
+                                onFocus={(e) => e.currentTarget.select()}
+                                onKeyDown={(e) => onCellKey(e, rowIndex, col, c.className, s.name)}
+                                style={{
+                                  font: "700 13.5px/1 var(--font-mono, monospace)",
+                                  display: "block", width: "100%", textAlign: "center",
+                                  border: "none", background: "transparent", color: "inherit",
+                                  padding: 0, margin: 0, outline: "none",
+                                  // The number line is 13.5px tall; matching it
+                                  // exactly is what stops the row twitching.
+                                  height: 13.5, minWidth: 0,
+                                }}
+                              />
+                            ) : (
+                              <span style={{ font: "700 13.5px/1 var(--font-mono, monospace)", display: "block", opacity: p <= 0 ? 0.5 : 1 }}>
+                                {p <= 0 ? "–" : p}
+                              </span>
+                            )}
                             <span style={{
                               font: "600 9.5px/1.1 var(--font-mono, monospace)", marginTop: 2, display: "flex",
                               alignItems: "center", justifyContent: "center", gap: 3,
@@ -1500,7 +1685,7 @@ export function StepAllocation({
                                 {p <= 0 ? " " : code ? (row?.room || `${shortLabel(id)} room`) : "click to fix"}
                               </span>
                             )}
-                          </button>
+                          </CellShell>
                         </td>
                       );
                     })}

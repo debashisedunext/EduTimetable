@@ -2746,6 +2746,23 @@ The dialog is kept, reached by **Enter** or by **⋯ More**, for the two things 
 
 Two selections that must not go stale: the bar is cleared when the wing changes, since it now *edits* rather than merely describes — a bar pointing at a section the grid no longer shows would write to a class nobody is looking at — and the block control is disabled at zero periods, because `setBlock` returns early without a curriculum row and an enabled control there would silently do nothing.
 
+
+### 31.16 The cell is the field
+
+§31.15 made the number typeable with the cell selected, and that was not enough: nothing on screen said so. A cell with no caret and no box looks read-only however it behaves, and the Periods field sitting in the toolbar answered the question "where does the number go?" before the grid could — which is how a working keystroke stayed invisible.
+
+**The selected cell holds a real `<input>`.** Click it and the caret is there. That forces one structural change: an `<input>` inside a `<button>` is invalid HTML, the button swallows the click that would place a caret, and a control inside a control is announced twice — so `CellShell` renders a `<button>` normally and a `<div>` when selected, with one shared style object rather than two that drift. The div claims no ARIA role of its own; the labelled input inside is the control.
+
+**The typed value is a string, and that is the point.** Binding the input to `periodsOf` would put a `0` back under the caret the instant the last digit was deleted, and "12" typed over it would read as "012" — a number cannot express "empty", and empty is what somebody halfway through typing has. An empty field therefore writes nothing rather than writing zero, so passing through it on the way to a two-digit number does not drop the row's periods and flash the load rail.
+
+**The arrows move cells, not the caret.** The window handler ignores a focused input by design, so navigation has to live in the field — and inside a two-character field selected on arrival there is no caret position worth navigating to. A grid where Right sometimes moves a column and sometimes a character is a grid nobody moves around confidently. Focus follows the selection in a **layout** effect (§8.1d): a passive one runs after paint, so the caret would arrive a frame late on every move.
+
+**Backspace changed meaning, and had to.** It opened the removal confirmation — right while every cell was a button, dangerous the moment one is a field, and worst of all *conditional*: it would have meant "delete a digit" or "delete this curriculum row" depending on where the caret happened to be. `Delete` keeps the job and the toolbar's ✕ is the visible route. Escape blurs and **does not** clear the selection, because the selection also draws the toolbar's fields — clearing it would make Escape silently mean "stop editing the teacher and the room as well".
+
+**The Periods field left the toolbar.** Two boxes holding one number is two answers to "where do I change this?", and the one further from the grid wins by being easier to see — which is exactly how the cell came to look read-only. What remains in the bar is precisely what a 58-pixel cell cannot show: the teacher, the room, the block and the class-teacher role. The count is still *stated* there, because the bar's refusals quote it and a reason naming a number nothing on the bar shows is a reason nobody can check.
+
+There is no headless browser in this stack, so the interaction itself is unverified by test — the arithmetic behind it (capacity refusal, the load preview) is the same `computeLoads` the rail and §31.15's bar already use.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
