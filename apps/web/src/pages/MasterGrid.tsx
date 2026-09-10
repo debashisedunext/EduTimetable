@@ -1268,19 +1268,12 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
               {status === "draft" && shownDraft ? ` #${shownDraft.draftNo}` : ""}
             </span>
           )}
-          {/*
-            §31.10 — the assistant's launcher, docked in this screen's own bar.
-
-            It used to float at the bottom-right of every page, where on this
-            one it covered the strip's issue count. The app's top bar carries
-            facts about the WHOLE session — which school, which timetable, what
-            is unread — and the assistant answers questions about the timetable
-            in front of you, so it belongs on the bar that names that timetable.
-
-            `AiDock` looks this slot up on every navigation; screens without one
-            keep the floating button, which is what the fallback is for.
-          */}
-          <span id="ai-launcher-slot" style={{ display: "flex", alignItems: "center" }} />
+          {/* §31.14 — the assistant's launcher is in the APP's top bar now,
+              on every page. It sat here for one release, which put a control
+              people reach for by memory in a different place on one screen out
+              of thirty. The collision it was moved here to avoid — the floating
+              corner button covering the strip's issue count — is solved by it
+              not floating, wherever it is docked. */}
         </div>
       </div>
 

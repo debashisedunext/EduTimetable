@@ -2695,6 +2695,17 @@ The wizard therefore no longer commits the allocation, and that is deliberate ra
 
 **The nav lost two entries and gained a move.** Allocation Matrix and Draft Board are Master Grid tabs now (Whole and Draft board), and a menu offering the same week twice teaches people that two entries must be two different things. Master Grid moves to **Build, directly below Masters**, standing where Allocation used to — its Lesson Grid *is* that screen. The **routes stay**: Generate links to `/matrix`, Publish links to `/board` three times, and people bookmark screens; removing a menu entry is a change to how a screen is found, not a decision to delete it. `/allocation` redirects to `/master-grid?tab=lesson`, which is also what the Settings step's button opens.
 
+
+### 31.14 The assistant's launcher has one home
+
+It floated at the bottom-right of every screen, which is fine until a screen puts something there — on the Master Grid it sat over the strip's issue count. §31.11 docked it in that screen's own toolbar, which fixed the collision and introduced a smaller one: a control people reach for by memory was in a different place on one page out of thirty.
+
+So the slot lives in `Shell`'s **top bar**, beside the notification bell and the timetable picker, and every page inherits it. The floating corner button stays as the fallback for anything rendered outside the shell.
+
+The panel's `top` is still *measured* from the slot rather than being a constant — the top bar's height is not fixed, since a §30.5 dated timetable adds a line under the picker — and the lookup is still a `useLayoutEffect` keyed on the route, because a passive effect shows the floating fallback for one painted frame before the portal moves it, which reads as a button jumping out of the corner on every page load.
+
+One label bug came with the same change: the wizard's Next button read `STEP_TITLES[step]`, the title one index along, which was the same thing while the sequence was 1..10 and stopped being it the moment §31.13 took 9 out — Rooms offered "Next: Allocation" and landed on Settings. It reads `stepAfter(step)` now, the same function the press itself uses, so the label and the destination cannot disagree again.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.

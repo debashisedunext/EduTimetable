@@ -76,30 +76,37 @@ export function AiDock({ permissions }: { permissions: string[] }) {
   const [chosen, setChosen] = useState<string[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   /**
-   * §31.10 — the top bar's slot for this launcher.
+   * §31.14 — the app top bar's slot for this launcher.
    *
-   * `useLayoutEffect` rather than `useEffect`: the fallback below draws the old
-   * floating button when there is no slot, and a passive effect would show it
-   * for one painted frame before the portal moved it — a button that jumps out
-   * of the corner on every page load.
+   * One home, on every page: `Shell`'s `Topbar` renders the slot, so a control
+   * people reach for by memory is in the same place every time. The fallback
+   * below still draws the floating corner button when there is no slot, which
+   * covers anything rendered outside the shell.
+   *
+   * `useLayoutEffect` rather than `useEffect`: a passive effect would show that
+   * fallback for one painted frame before the portal moved it — a button that
+   * jumps out of the corner on every page load.
    */
   const [launcherSlot, setLauncherSlot] = useState<HTMLElement | null>(null);
   /**
    * Where the panel starts, measured from whatever the launcher ended up in.
    *
    * The panel is `position: fixed`, so a constant would be right for exactly
-   * one placement — and the launcher now has two. Anchored below the slot, it
-   * cannot cover the button that opened it, wherever that button is.
+   * one placement — the docked slot and the floating fallback are two.
+   * Anchored below the slot, it cannot cover the button that opened it, and it
+   * follows a top bar that changes height rather than assuming one that does
+   * not.
    */
   const [panelTop, setPanelTop] = useState(74);
   /*
     Re-looked-up on every navigation, not once on mount.
 
-    This component lives outside `<Routes>` and stays mounted for the session,
-    while the slot belongs to a screen that comes and goes. A single lookup at
-    mount finds nothing on any other page, and then never looks again — so
-    arriving at the screen that HAS a slot would leave the launcher floating in
-    the corner it was moved out of.
+    This component lives outside `<Routes>` and stays mounted for the whole
+    session. The slot is in the top bar and therefore always there — but the
+    top bar's HEIGHT is not constant (a dated timetable adds a line under the
+    picker, §30.5), so the measurement has to be retaken where the layout can
+    have changed. It is also what makes the fallback correct for anything
+    rendered outside the shell.
   */
   useLayoutEffect(() => {
     const el = document.getElementById("ai-launcher-slot");

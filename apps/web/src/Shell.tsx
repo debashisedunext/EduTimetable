@@ -344,6 +344,21 @@ function Topbar({ me }: { me: MeResponse }) {
           </div>
         )}
         {me.permissions.includes(PERMISSIONS.NOTIFICATIONS_VIEW) && <Bell />}
+        {/*
+          §31.14 — the assistant's launcher, on every page.
+
+          It floated at the bottom-right, where on the Master Grid it covered
+          the strip's issue count; §31.11 docked it in that screen's own bar,
+          which fixed the collision and left the button somewhere different on
+          one page out of thirty. A control people reach for by memory has to
+          be in the same place every time, so it lives here — beside the bell
+          and the timetable picker, which is where the app's own controls are.
+
+          `AiDock` portals into this slot and falls back to the floating corner
+          button if it is ever absent, which is what keeps a role without
+          `ai.chat` — and any page rendered outside this shell — working.
+        */}
+        <span id="ai-launcher-slot" style={{ display: "flex", alignItems: "center" }} />
         <span className="badge badge-ok">● Live</span>
       </div>
     </div>

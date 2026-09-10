@@ -138,14 +138,9 @@ function wellDone(step: number, created: Record<string, number> | undefined): st
       case 6: return did(n("subjects"), `You have just created ${plural(n("subjects"), "subject")}`, "Your subjects are in");
       case 7: return did(n("teachers"), `You have just added ${plural(n("teachers"), "teacher")}`, "Your teachers are in");
       case 8: return did(n("rooms"), `You have just created ${plural(n("rooms"), "room")}`, "Your rooms are ready");
-      // One step now writes both sheets, so the cheer counts both — and leads
-      // with the mappings, because "every subject has a teacher" is the thing
-      // somebody actually wanted to be true.
-      case 9: return did(
-        n("mappings") + n("curriculum"),
-        `You have just made ${plural(n("mappings"), "assignment")} across ${plural(n("curriculum"), "curriculum row")}`,
-        "Every subject has its periods and a teacher",
-      );
+      // §31.13 — no case 9. The wizard does not commit the allocation any
+      // more, so there is nothing here to cheer; the Master Grid's Lesson Grid
+      // is where that happens and it reports its own save.
       default: return "Your school is set up";
     }
   })();
@@ -1106,7 +1101,10 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           </button>
           <span style={{ flex: 1 }} />
           <button className="btn" onClick={saveAndClose} disabled={busy}>Save &amp; close</button>
-          {step === TOTAL_STEPS ? (
+          {/* The last step SHOWN, which is what decides Finish-vs-Next — the
+              same list `stepAfter` walks, rather than `TOTAL_STEPS`, which only
+              happens to be the same number today. */}
+          {step === WIZARD_STEPS[WIZARD_STEPS.length - 1] ? (
             <button className="btn btn-primary"
               onClick={(e) => {
                 const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1124,7 +1122,17 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
                 void next();
               }}
               disabled={busy}>
-              {busy ? "Saving…" : `Next: ${STEP_TITLES[step]} →`}
+              {/*
+                §31.13 — the step this button GOES TO, not the next number.
+
+                `STEP_TITLES[step]` read the title one index along, which was
+                the same thing while the sequence was 1..10 and stopped being
+                it the moment 9 was taken out: Rooms offered "Next: Allocation"
+                and landed on Settings. `stepAfter` is the same function the
+                press itself uses, so the label and the destination cannot
+                disagree again.
+              */}
+              {busy ? "Saving…" : `Next: ${STEP_TITLES[stepAfter(step) - 1]} →`}
             </button>
           )}
         </div>
