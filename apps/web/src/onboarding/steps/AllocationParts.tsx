@@ -511,6 +511,279 @@ export interface CellSave {
   block?: { size: number; perWeek: number | null; mayCrossBreak: boolean };
 }
 
+/**
+ * §31.15 — the selected cell's fields, in the toolbar rather than over the grid.
+ *
+ * ## Why this replaced the dialog on click
+ *
+ * A dialog is right for a decision you make once and confirm. This grid is not
+ * that: somebody works across a row — Maths 6, English 6, Science 5 — and a
+ * popup that opens, takes a value and closes costs two clicks and a re-read of
+ * where they were for every cell. Worse, it covers the neighbours, which is the
+ * same argument §31.6 made for the strip being a strip and not a popover.
+ *
+ * So clicking a cell now SELECTS it, the number is typed straight into the
+ * grid, and everything the popup held appears here — in the bar the Filter
+ * already lives in, above a grid that stays entirely visible.
+ *
+ * ## Applied immediately, deliberately
+ *
+ * There is no Save in this bar. The dialog had one because it batched several
+ * fields behind a confirmation; a toolbar that asked you to confirm each field
+ * would be a dialog wearing a different shape. Every edit lands in the draft as
+ * it is made — exactly as typing a digit into a cell already did — and the
+ * Master Grid's own Save is what writes it to the school.
+ *
+ * The refusals are the dialog's, unchanged and computed the same way: a class
+ * over its week and a teacher over their cap are both refused with the reason,
+ * through the same `computeLoads` the rail uses, so this bar and the chip two
+ * inches above it cannot disagree.
+ */
+export function CellBar({
+  m, answers, section, subject, periodsOf, mappingIndexOf, classTeacherOf, totalOf,
+  onChange, onRemove, onMore, compact = false,
+}: {
+  m: AllocModel;
+  answers: Record<string, any>;
+  section: string;
+  subject: string;
+  periodsOf: (className: string, subject: string) => number;
+  mappingIndexOf: (section: string, subject: string) => number;
+  classTeacherOf: (section: string) => string;
+  totalOf: (className: string) => number;
+  /** One field at a time — see "Applied immediately" above. */
+  onChange: (next: CellSave) => void;
+  onRemove: () => void;
+  /** The full dialog: the impact preview and the §4.10 merged-group detail,
+   *  which genuinely do not fit in a bar. */
+  onMore: () => void;
+  compact?: boolean;
+}) {
+  const className = section.replace(/-[^-]+$/, "");
+  const idx = mappingIndexOf(section, subject);
+  const existing = idx >= 0 ? m.mappings[idx] : null;
+  const merged = !!existing?.merged && existing.classSections.length > 1;
+  const periods = periodsOf(className, subject);
+  const code = existing?.employeeCode ?? "";
+  const room = existing?.room ?? "";
+  const isCT = !!existing && classTeacherOf(section) === existing.employeeCode;
+  const cell = m.cells.find((c) => c.className === className && c.subjectName === subject);
+  const blockSize = cell?.consecutiveBlockSize ?? 1;
+  const swatch = m.swatches[subject];
+  const [refusal, setRefusal] = useState<string | null>(null);
+  /* Cleared when the selection moves: a refusal is about the edit that was
+     attempted, and carrying it to the next cell reads as that cell refusing. */
+  useEffect(() => setRefusal(null), [section, subject]);
+
+  /** The same eligibility rule the dialog applies, for the same reasons. */
+  const eligible = m.staff.filter((t) =>
+    t.subjects.includes(subject) && !t.guest
+    && (t.classes.length === 0 || t.classes.includes(className)));
+  const offered = eligible.length === 0
+    ? m.staff
+    : [...eligible, ...m.staff.filter((t) => t.code === code && !eligible.some((e) => e.code === t.code))];
+
+  /** What a proposed teacher would be carrying — the rail's own arithmetic. */
+  const loadWith = (nextCode: string, nextPeriods: number) => {
+    const next: MappingSuggestion[] = idx >= 0
+      ? (nextCode
+        ? m.mappings.map((x, i) => (i === idx ? { ...x, employeeCode: nextCode } : x))
+        : m.mappings.filter((_, i) => i !== idx))
+      : (nextCode
+        ? [...m.mappings, { employeeCode: nextCode, subjectName: subject, classSections: [section], periodsPerWeek: nextPeriods }]
+        : m.mappings);
+    const cells = m.cells
+      .filter((c) => !(c.className === className && c.subjectName === subject))
+      .concat(nextPeriods > 0
+        ? [{ className, subjectName: subject, periodsPerWeek: nextPeriods, maxPerDay: Math.max(1, Math.ceil(nextPeriods / m.days)) }]
+        : []);
+    const after = computeLoads({
+      wings: m.wings as never, curriculum: cells, mappings: next,
+      teachers: (answers.teachers ?? []) as TeacherAnswer[], subjects: m.subjects,
+      daysByWing: m.daysByWing,
+    });
+    return { mappings: next, byCode: new Map(after.map((t) => [t.employeeCode, t])) };
+  };
+
+  const setPeriods = (n: number) => {
+    const want = Math.max(0, Math.min(60, n));
+    const total = totalOf(className) - periods + want;
+    if (total > m.capacity) {
+      setRefusal(`${className} would need ${total} periods and the week holds ${m.capacity}.`);
+      return;
+    }
+    const now = code ? loadWith(code, want).byCode.get(code) : undefined;
+    if (now && now.used > now.cap) {
+      setRefusal(`${now.name} would be on ${now.used} against a limit of ${now.cap}.`);
+      return;
+    }
+    setRefusal(null);
+    onChange({ className, periods: want });
+  };
+
+  const setTeacher = (nextCode: string) => {
+    const preview = loadWith(nextCode, periods);
+    const now = nextCode ? preview.byCode.get(nextCode) : undefined;
+    if (now && now.used > now.cap) {
+      setRefusal(`${now.name} would be on ${now.used} against a limit of ${now.cap}.`);
+      return;
+    }
+    setRefusal(null);
+    onChange({ className, mappings: preview.mappings });
+    // A class teacher has to be somebody: clearing the teacher clears the role
+    // rather than leaving it pointing at an employee code no longer in the cell.
+    if (isCT && !nextCode) onChange({ className, classTeacher: "" });
+  };
+
+  const setRoom = (next: string) => {
+    if (idx < 0) return;
+    onChange({
+      className,
+      mappings: m.mappings.map((x, i) => (i === idx ? { ...x, room: next || undefined } : x)),
+    });
+  };
+
+  const label: React.CSSProperties = {
+    font: "800 8.5px/1 Inter, sans-serif", letterSpacing: "0.06em",
+    textTransform: "uppercase", color: "var(--ink-faint)", marginBottom: 3, display: "block",
+  };
+  const box: React.CSSProperties = {
+    padding: "4px 6px", border: "1px solid var(--line)", borderRadius: 6,
+    fontSize: 12, background: "var(--paper)", color: "var(--ink)",
+  };
+  const field = (name: string, control: React.ReactNode) => (
+    <label style={{ display: "block" }}>
+      <span style={label}>{name}</span>
+      {control}
+    </label>
+  );
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-end", gap: 8, flexWrap: "wrap",
+      padding: "4px 8px", borderRadius: 8,
+      background: "var(--offwhite)", border: "1px solid var(--line)",
+    }}>
+      {/* What is being edited, in the subject's own colour (§10.5) — a bar of
+          controls with no subject on it is a bar you have to look away from
+          the grid to make sense of. */}
+      <span style={{
+        font: "800 12px/1.5 Inter, sans-serif", padding: "3px 8px", borderRadius: 6,
+        whiteSpace: "nowrap", alignSelf: "center",
+        background: swatch?.bg ?? "var(--steel-pale)", color: swatch?.fg ?? "var(--brand)",
+      }}>
+        {section} · {subject}
+      </span>
+
+      {field("Periods", (
+        <input
+          type="number" min={0} max={60} value={periods}
+          onChange={(e) => setPeriods(Number(e.target.value))}
+          style={{ ...box, width: 52 }}
+          title={`A CLASS fact — ${className} has ${m.classes.find((c) => c.className === className)?.sections.length ?? 1} section(s) and they all get this`}
+        />
+      ))}
+
+      {field("Teacher", (
+        <select value={code} onChange={(e) => setTeacher(e.target.value)}
+          style={{ ...box, maxWidth: compact ? 150 : 200 }}
+          disabled={merged}
+          title={merged
+            ? "Taught as one merged group (§4.10) — change it in the full editor, where the other sections are listed"
+            : undefined}>
+          <option value="">Nobody yet</option>
+          {/* The load in the option text, exactly as the dialog shows it: the
+              question anybody picking a teacher is actually asking is "have
+              they got room?", and a name alone cannot answer it. */}
+          {offered.map((t) => {
+            const l = m.byCode.get(t.code);
+            return (
+              <option key={t.code} value={t.code}>
+                {t.name} ({m.initialsOf.get(t.code) ?? t.code}) — {l?.used ?? 0}/{l?.cap ?? 0}
+                {t.subjects.includes(subject) ? "" : " \u00b7 not listed for this subject"}
+              </option>
+            );
+          })}
+        </select>
+      ))}
+
+      {field("Room", (
+        <input value={room} onChange={(e) => setRoom(e.target.value)} disabled={idx < 0}
+          placeholder={idx < 0 ? "—" : "Home room"}
+          style={{ ...box, width: compact ? 84 : 110 }} />
+      ))}
+
+      {field("Together", (
+        <select
+          value={blockSize}
+          onChange={(e) => {
+            const size = Number(e.target.value);
+            onChange({
+              className,
+              block: {
+                size,
+                perWeek: size > 1 ? (cell?.consecutiveBlocksPerWeek ?? null) : null,
+                mayCrossBreak: size > 1 ? Boolean(cell?.blockMayCrossBreak) : false,
+              },
+            });
+          }}
+          style={{ ...box, width: 74 }}
+          /* A block needs a curriculum row to be written onto — `setBlock`
+             returns early without one, so an enabled control here would be a
+             control that silently does nothing. Give the cell periods first. */
+          disabled={periods <= 0}
+          title={periods <= 0
+            ? "Give this subject some periods first — a block is a property of the curriculum row."
+            : "§4.8 — how many periods of this subject run back to back. Placed atomically: all of them, or none."}>
+          <option value={1}>single</option>
+          <option value={2}>double</option>
+          <option value={3}>triple</option>
+        </select>
+      ))}
+
+      {/* Only once there is a block for a break to fall inside. A tick that can
+          never mean anything is a tick people try to work out. */}
+      {blockSize > 1 && (
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, alignSelf: "center", whiteSpace: "nowrap" }}
+          title="Yes — one period may sit before lunch and one after. It is permission, not a requirement.">
+          <input type="checkbox" checked={Boolean(cell?.blockMayCrossBreak)}
+            onChange={(e) => onChange({
+              className,
+              block: { size: blockSize, perWeek: cell?.consecutiveBlocksPerWeek ?? null, mayCrossBreak: e.target.checked },
+            })} />
+          break inside
+        </label>
+      )}
+
+      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, alignSelf: "center", whiteSpace: "nowrap" }}
+        title="Class teacher for this section. A section has one, so ticking here unticks whoever held it.">
+        <input type="checkbox" checked={isCT} disabled={!code}
+          onChange={(e) => onChange({ className, classTeacher: e.target.checked ? code : "" })} />
+        class tr.
+      </label>
+
+      <button className="btn" onClick={onMore} style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center" }}
+        title="The full editor — what this change does to every teacher's week, and the sections a merged group covers">
+        ⋯ More
+      </button>
+      {(periods > 0 || idx >= 0) && (
+        <button className="btn" onClick={onRemove}
+          style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center", color: "var(--signal)" }}
+          title="This class does not take this subject — deletes the curriculum row, not just its periods">
+          ✕ Not taught
+        </button>
+      )}
+
+      {refusal && (
+        <span style={{
+          fontSize: 11.5, color: "var(--signal)", alignSelf: "center",
+          maxWidth: 320, lineHeight: 1.3,
+        }}>{refusal}</span>
+      )}
+    </div>
+  );
+}
+
 export function CellDialog({ m, answers, section, subject, onClose, onSave, onRemove,
                              periodsOf, mappingIndexOf, classTeacherOf, totalOf }: {
   m: AllocModel;

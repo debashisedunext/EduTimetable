@@ -416,6 +416,23 @@ button { font-family: inherit; cursor: pointer; }
 /* The tray is a column beside the grid, so its cards stack rather than wrap. */
 .board-compact .tray { flex-wrap: nowrap; flex-direction: column; gap: 5px; padding: 7px; }
 
+/* §31.15 — one row of the Allocation grid's hamburger menu.
+
+   A button rather than a link: every one of them acts on this page, and none
+   of them navigates. Left-aligned with a hover fill, which is what makes a
+   column of them read as a menu rather than as four buttons that happen to be
+   stacked. */
+.menu-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; border: none; border-radius: 7px;
+  background: none; color: var(--ink); cursor: pointer;
+  font: 600 12.5px/1.3 Inter, sans-serif; white-space: nowrap;
+}
+.menu-item:hover { background: var(--offwhite); }
+.menu-item[aria-pressed="true"] { color: var(--brand); }
+/* Safari still draws its own marker unless the pseudo-element is removed too. */
+details > summary::-webkit-details-marker { display: none; }
+
 /* §31.6 — the cell the strip is explaining. An outline rather than a border,
    so selecting does not move the neighbours you are comparing it with, and
    `outline-offset` pulls it inside so the cell beside it cannot clip it. */

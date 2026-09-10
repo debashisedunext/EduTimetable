@@ -34,7 +34,8 @@ import {
 } from "@edutimetable/shared";
 import type { WeekAnswer } from "./Structure";
 import {
-  Advisor, CellDialog, HoverBody, MiniBar, RemoveSubject, ResetAllocation, type Hover,
+  Advisor, CellBar, CellDialog, HoverBody, MiniBar, RemoveSubject, ResetAllocation,
+  type CellSave, type Hover,
 } from "./AllocationParts";
 import { api } from "../../api";
 import { Heading } from "./ui";
@@ -456,6 +457,17 @@ export function StepAllocation({
   const [showAdvice, setShowAdvice] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [editing, setEditing] = useState<{ section: string; subject: string } | null>(null);
+  /**
+   * §31.15 — the digits typed into a cell, while they are still being typed.
+   *
+   * A ref rather than state: it must not cause a render (the value it produces
+   * already does, through `setPeriods`), and a state update scheduled between
+   * two fast keystrokes would let the second read the first's stale value.
+   */
+  const typing = useRef<{ key: string; value: string; at: number }>({ key: "", value: "", at: 0 });
+  /** How long two digits count as one number. Long enough to be deliberate,
+   *  short enough that returning to a cell later starts a new number. */
+  const TYPE_WINDOW_MS = 900;
   const [hover, setHover] = useState<{ what: Hover; x: number; y: number } | null>(null);
   const [hoverDetail, setHoverDetail] = useHoverDetail();
   const [resetting, setResetting] = useState(false);
@@ -543,6 +555,15 @@ export function StepAllocation({
    * every render does not re-fire this on every render.
    */
   const [stripCell, setStripCell] = useState<{ section: string; subject: string } | null>(null);
+  /*
+    §31.15 — a selection cannot outlive the wing it names.
+
+    The toolbar now EDITS the selected cell, so a stale one is worse than a
+    stale strip line: switching wing would leave a bar pointing at a section
+    the grid no longer shows, and typing in it would write to a class nobody
+    is looking at.
+  */
+  useEffect(() => setStripCell(null), [activeWing]);
   const emitCell = useRef(onSelectCell);
   emitCell.current = onSelectCell;
   useEffect(() => {
@@ -848,10 +869,32 @@ export function StepAllocation({
         return;
       }
       if (digit) {
+        /*
+          §31.15 — digits ACCUMULATE, so a two-digit answer is typeable.
+
+          Each press used to replace the value, so "12" ended as 2 and there
+          was no way to type ten from the grid at all — the dialog was the only
+          route to it, which is exactly the trip this change removes. Consecutive
+          presses on the same cell within `TYPE_WINDOW_MS` append; anything else
+          — a pause, a different cell, an arrow key — starts again.
+        */
+        const key = `${sec.id}\u0000${sub.name}`;
+        const now = Date.now();
+        const fresh = typing.current.key !== key || now - typing.current.at > TYPE_WINDOW_MS;
+        const buffer = fresh ? e.key : `${typing.current.value}${e.key}`.slice(-2);
+        typing.current = { key, value: buffer, at: now };
+        const want = Number(buffer);
         // Refused above 100%, as the screen refuses everywhere else: a class
         // asking for more periods than its week holds can never be timetabled.
-        const next = totalOf(sec.className) - periodsOf(sec.className, sub.name) + Number(e.key);
-        if (next <= m.capacity) setPeriods(sec.className, sub.name, Number(e.key));
+        const next = totalOf(sec.className) - periodsOf(sec.className, sub.name) + want;
+        if (next <= m.capacity) setPeriods(sec.className, sub.name, want);
+        // A refused second digit must not stay in the buffer, or the next press
+        // builds on a number the grid never accepted.
+        else typing.current = { key, value: String(periodsOf(sec.className, sub.name)), at: now };
+      } else {
+        // Any other key ends the number being typed. Without this, arrowing
+        // away and back inside the window would append to it.
+        typing.current = { key: "", value: "", at: 0 };
       }
     };
     window.addEventListener("keydown", onKey);
@@ -877,8 +920,62 @@ export function StepAllocation({
    * one inline, one for the host — is how a control ends up on one and not the
    * other, six months after anybody remembers there were two.
    */
+  /*
+    §31.15 — the toolbar in three parts, and the order is the point.
+
+    The SELECTED CELL first, because it is what somebody is doing; the filter
+    next, because it is what they reach for while doing it; and everything else
+    behind a menu, because "Start again" and "Clear saved data" are pressed once
+    in the life of a school and were taking the width the cell's fields needed.
+
+    The menu is a hamburger rather than three more buttons for the same reason
+    §31.1 made the Master Grid's tab rail vertical: the horizontal room on this
+    screen belongs to the grid.
+  */
+  /**
+   * §31.15 — what a `CellSave` does, defined once.
+   *
+   * The dialog and the toolbar's `CellBar` produce the same shape and must land
+   * the same rows in the same order: the periods before the block, so a cell
+   * this very save created has a curriculum row for the block to be written on.
+   * It was inline in the dialog's `onSave`; two copies of an order-dependent
+   * sequence is how the two doors come to disagree about a double period.
+   */
+  const applyCell = (sectionId: string, subjectName: string, next: CellSave) => {
+    if (next.periods !== undefined) setPeriods(next.className, subjectName, next.periods);
+    if (next.block) setBlock(next.className, subjectName, next.block);
+    if (next.mappings) setMappings(next.mappings);
+    if (next.classTeacher !== undefined) setClassTeacher(sectionId, next.classTeacher);
+    // §28 — the period LENGTH is step 5's key, so it is written back into step
+    // 5's answer. `commitWeeks(…, {changedOnly})` picks it up; nothing here
+    // writes to the server.
+    if (next.minutes !== undefined && m.wing) {
+      onChange({
+        weeks: {
+          ...(answers.weeks ?? {}),
+          [m.wing.name]: { ...(answers.weeks?.[m.wing.name] ?? {}), periodDurationMins: next.minutes },
+        },
+      });
+    }
+  };
+
   const controls = (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
+      {stripCell && (
+        <CellBar
+          m={m} answers={answers}
+          section={stripCell.section} subject={stripCell.subject}
+          periodsOf={periodsOf} mappingIndexOf={mappingIndexOf}
+          classTeacherOf={classTeacherOf} totalOf={totalOf}
+          compact={tight}
+          onMore={() => setEditing({ section: stripCell.section, subject: stripCell.subject })}
+          onRemove={() => setRemoving({
+            className: stripCell.section.replace(/-[^-]+$/, ""),
+            subject: stripCell.subject,
+          })}
+          onChange={(next) => applyCell(stripCell.section, stripCell.subject, next)}
+        />
+      )}
       {m.wings.length > 1 && !wing && (
         <div style={{ display: "flex", gap: 4 }}>
           {m.wings.map((w, i) => (
@@ -902,63 +999,99 @@ export function StepAllocation({
           padding: "5px 9px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12,
           background: "var(--paper)", color: "var(--ink)", width: 180,
         }} />
-      {(m.edited.mappings || m.edited.curriculum) && (
-        <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
-          title="Throw away the edits on this page and propose it again from the subjects, teachers and classes"
-          onClick={() => {
-            if (!window.confirm(
-              "Start this page again from the suggestion?\n\n" +
-              "The periods and teachers on this page are re-proposed from your subjects, " +
-              "teachers and classes. Nothing on any other step changes.",
-            )) return;
-            // `null`, not `undefined`. The wizard sends only the keys it
-            // touched, and `JSON.stringify` drops an undefined one — so the
-            // server would merge nothing and the stored plan would survive a
-            // reset that appeared to work. The server reads a non-array as
-            // "not edited" and re-proposes.
-            onChange({ curriculum: null, mappings: null, classTeachers: null });
-          }}>↺ Start again</button>
-      )}
       {/*
-        Two controls, and the difference between them is the whole point.
+        §31.15 — everything that is not the cell or the filter, behind one icon.
 
-        "Start again" rebuilds this page from your subjects, teachers and
-        classes and touches nothing that has been saved. "Clear saved data"
-        deletes the curriculum and the mappings out of the school. One is a
-        rethink, the other is a demolition, and a single button meaning both
-        would be the last thing anybody read before losing an afternoon.
+        Start again, Clear saved data and Help are pressed once in the life of a
+        school; Hover detail perhaps twice. They were four buttons taking the
+        width the selected cell's fields now need, and a toolbar's width on this
+        screen is width the grid is not getting.
+
+        A `<details>` rather than a hand-rolled popover: it opens on click,
+        closes on Escape, is reachable from the keyboard and needs no
+        outside-click handler to get right — the three things a bespoke menu
+        usually gets wrong. `list-style: none` on the summary is what removes
+        the disclosure triangle without removing the behaviour.
       */}
-      {m.wing && configIds[m.wing.name.toLowerCase()] !== undefined && (
-        <button className="btn" style={{
-          padding: "4px 9px", fontSize: 11.5,
-          borderColor: "color-mix(in srgb,var(--signal) 40%,var(--line))", color: "var(--signal)",
-        }}
-          title="Delete the curriculum, the mappings and the class teachers this timetable has saved"
-          onClick={() => setResetting(true)}>⌫ Clear saved data</button>
-      )}
-      {/*
-        `aria-pressed` rather than `role="checkbox"`: it is a toolbar toggle,
-        and the tick is the visible half of the same fact.
-      */}
-      <button className="btn" aria-pressed={hoverDetail}
-        style={{
-          padding: "4px 9px", fontSize: 11.5,
-          color: hoverDetail ? "var(--ink)" : "var(--ink-faint)",
-        }}
-        title={hoverDetail
-          ? "Stop showing the detail card when the pointer rests on a cell. Clicking a cell still opens it."
-          : "Show the detail card again when the pointer rests on a cell"}
-        onClick={() => {
-          setHoverDetail(!hoverDetail);
-          // The card on screen belongs to the setting that is being turned
-          // off — leaving it up until the next mouse move reads as the switch
-          // not having worked.
-          setHover(null);
+      <details style={{ position: "relative" }}>
+        <summary
+          aria-label="More actions"
+          title="Start again, clear saved data, help"
+          className="btn"
+          style={{
+            padding: "4px 10px", fontSize: 13, cursor: "pointer", listStyle: "none",
+            display: "inline-flex", alignItems: "center", lineHeight: 1.2,
+          }}
+        >
+          &#9776;
+        </summary>
+        <div style={{
+          position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 40,
+          minWidth: 226, padding: 6, borderRadius: 10,
+          background: "var(--paper)", border: "1px solid var(--line)",
+          boxShadow: "0 12px 30px rgba(11,31,68,.16)",
+          display: "flex", flexDirection: "column", gap: 2,
         }}>
-        {hoverDetail ? "☑" : "☐"} Hover detail
-      </button>
-      <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
-        aria-expanded={showHelp} onClick={() => setShowHelp(!showHelp)}>? Help</button>
+          {/*
+            `aria-pressed` rather than `role="checkbox"`: it is a toggle, and
+            the tick is the visible half of the same fact.
+          */}
+          <button className="menu-item" aria-pressed={hoverDetail}
+            onClick={() => {
+              setHoverDetail(!hoverDetail);
+              // The card on screen belongs to the setting being turned off —
+              // leaving it up until the next mouse move reads as the switch
+              // not having worked.
+              setHover(null);
+            }}>
+            {hoverDetail ? "\u2611" : "\u2610"} Hover detail
+          </button>
+          <button className="menu-item" onClick={() => setShowHelp(!showHelp)} aria-expanded={showHelp}>
+            ? Help
+          </button>
+          {/*
+            Two controls, and the difference between them is the whole point.
+
+            "Start again" rebuilds this page from your subjects, teachers and
+            classes and touches nothing that has been saved. "Clear saved data"
+            deletes the curriculum and the mappings out of the school. One is a
+            rethink, the other is a demolition, and a single item meaning both
+            would be the last thing anybody read before losing an afternoon.
+
+            Separated by a rule here rather than merely ordered, because a menu
+            makes two items look more alike than two buttons did.
+          */}
+          {((m.edited.mappings || m.edited.curriculum)
+            || (m.wing && configIds[m.wing.name.toLowerCase()] !== undefined)) && (
+            <span style={{ height: 1, background: "var(--line)", margin: "4px 2px" }} />
+          )}
+          {(m.edited.mappings || m.edited.curriculum) && (
+            <button className="menu-item"
+              title="Throw away the edits on this page and propose it again from the subjects, teachers and classes"
+              onClick={() => {
+                if (!window.confirm(
+                  "Start this page again from the suggestion?\n\n" +
+                  "The periods and teachers on this page are re-proposed from your subjects, " +
+                  "teachers and classes. Nothing on any other step changes.",
+                )) return;
+                // `null`, not `undefined`. Only touched keys are sent, and
+                // `JSON.stringify` drops an undefined one — so the server would
+                // merge nothing and the stored plan would survive a reset that
+                // appeared to work. A non-array reads as "not edited".
+                onChange({ curriculum: null, mappings: null, classTeachers: null });
+              }}>
+              &#8634; Start again from the suggestion
+            </button>
+          )}
+          {m.wing && configIds[m.wing.name.toLowerCase()] !== undefined && (
+            <button className="menu-item" style={{ color: "var(--signal)" }}
+              title="Delete the curriculum, the mappings and the class teachers this timetable has saved"
+              onClick={() => setResetting(true)}>
+              &#9003; Clear saved data
+            </button>
+          )}
+        </div>
+      </details>
       {onFocusMode && (
         <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
           title="Fold the step rail away and give the room to the grid"
@@ -1292,20 +1425,26 @@ export function StepAllocation({
                             // informative.
                             className={p > 0 && !code ? "alloc-unstaffed" : undefined}
                             onClick={() => {
+                              /*
+                                §31.15 — a click SELECTS. It used to open the
+                                dialog, and that is the whole change: somebody
+                                works across a row — Maths 6, English 6,
+                                Science 5 — and a popup that opens, takes one
+                                value and closes costs two clicks and a re-read
+                                of where they were, for every cell. It also
+                                covers the neighbours, which is the argument
+                                §31.6 already made for the strip.
+
+                                The number is typed straight into the grid from
+                                here; everything else is in the toolbar's
+                                `CellBar`, above a grid that stays visible.
+                              */
                               setCursor({ row: rowIndex, col });
-                              // §31.10 — the strip fills as the dialog opens.
-                              // Both, deliberately: the dialog is where the
-                              // cell is CHANGED and the strip is where it and
-                              // its context are read, and closing the dialog
-                              // leaves the reading behind.
                               setStripCell({ section: id, subject: s.name });
-                              // The hover card is the READING of this cell; the
-                              // dialog is the changing of it. Leaving the card
-                              // up puts two versions of the same facts on
-                              // screen at once, one of them already stale the
-                              // moment the dialog is touched.
+                              // The hover card is a second reading of the cell
+                              // now being edited in the bar — one of them stale
+                              // the moment anything is changed.
                               setHover(null);
-                              setEditing({ section: id, subject: s.name });
                             }}
                             {...peek({ kind: "cell", section: id, subject: s.name })}
                             style={{
@@ -1483,24 +1622,7 @@ export function StepAllocation({
           periodsOf={periodsOf} mappingIndexOf={mappingIndexOf} classTeacherOf={classTeacherOf}
           totalOf={totalOf}
           onSave={(next) => {
-            if (next.periods !== undefined) setPeriods(next.className, editing.subject, next.periods);
-            // After the periods, so a cell created by this same save has a row
-            // for the block to be written onto.
-            if (next.block) setBlock(next.className, editing.subject, next.block);
-            if (next.mappings) setMappings(next.mappings);
-            if (next.classTeacher !== undefined) setClassTeacher(editing.section, next.classTeacher);
-            // §28 — the period LENGTH is step 5's key, so it is written back
-            // into step 5's answer. `commitWeeks(…, {changedOnly})` picks it up
-            // on Next; nothing here writes to the server, as everywhere else in
-            // this wizard.
-            if (next.minutes !== undefined && m.wing) {
-              onChange({
-                weeks: {
-                  ...(answers.weeks ?? {}),
-                  [m.wing.name]: { ...(answers.weeks?.[m.wing.name] ?? {}), periodDurationMins: next.minutes },
-                },
-              });
-            }
+            applyCell(editing.section, editing.subject, next);
             setEditing(null);
           }}
         />

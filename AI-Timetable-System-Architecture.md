@@ -2729,6 +2729,23 @@ The guided setup was not. It read every `timetable_config` into one flat list of
 
 Proof: `pnpm test:pools` — the pool mode reaching the wizard, a draft saved without it getting it back on read, no cross-pool clash while a same-pool one still reports, the same cohort label as two rows in two pools, the step-4 commit refused unscoped and accepted scoped with nothing of the main school's landing in the individual pool, an unknown scope refused, and `elsewhere: 6` in the other grouped wing against `elsewhere: 0` in the individual one — which is what makes "shares nothing" true of capacity and not only of classes. Plus four unit tests in `wizard.spec.ts`.
 
+
+### 31.15 The Lesson Grid edits in the bar, not in a popup
+
+Clicking a cell opened a dialog. That is right for a decision made once and confirmed; it is wrong for this grid, where somebody works across a row — Maths 6, English 6, Science 5 — and a popup that opens, takes one value and closes costs two clicks and a re-read of where they were, per cell. It also covers the neighbours, which is the argument §31.6 already made for the strip being a strip.
+
+**A click now selects.** The number is typed straight into the grid — which the keyboard handler already did, with one bug that made it useless for anything above nine: each press *replaced* the value, so "12" ended as 2 and ten was unreachable without the dialog. Digits now accumulate within a 900ms window on the same cell; a pause, a different cell or any other key starts a new number, and a digit the capacity check refuses is dropped from the buffer rather than left for the next press to build on.
+
+**Everything the popup held is in the toolbar** (`CellBar`), in the bar the filter already lives in, above a grid that stays entirely visible. There is no Save in it: the dialog had one because it batched several fields behind a confirmation, and a toolbar that asked you to confirm each field would be a dialog wearing a different shape. Every edit lands in the draft as it is made — exactly as typing a digit already did — and the Master Grid's own Save is what writes it to the school. The refusals are the dialog's, unchanged and computed through the same `computeLoads` the load rail uses, so the bar and the chip two inches above it cannot disagree.
+
+`applyCell` is the one definition of what a `CellSave` does, and it exists because both doors produce that shape: the periods before the block, so a cell this very save created has a curriculum row for the block to be written onto. Two copies of an order-dependent sequence is how two doors come to disagree about a double period.
+
+The dialog is kept, reached by **Enter** or by **⋯ More**, for the two things that genuinely do not fit a bar: what a change does to every affected teacher's week, and the sections a §4.10 merged group covers. The teacher select in the bar still carries each candidate's load in the option text, because "have they got room?" is the question anybody picking a teacher is actually asking and a name alone cannot answer it.
+
+**Start again, Clear saved data, Hover detail and Help moved into a hamburger.** They are pressed once in the life of a school — twice for the toggle — and they were taking the width the cell's fields now need; on this screen the toolbar's width is width the grid is not getting. It is a `<details>` rather than a hand-rolled popover: it opens on click, closes on Escape and is keyboard-reachable without an outside-click handler, which are the three things a bespoke menu usually gets wrong. Start again and Clear saved data are separated by a rule, because a menu makes two items look more alike than two buttons did and the difference between a rethink and a demolition is the whole point.
+
+Two selections that must not go stale: the bar is cleared when the wing changes, since it now *edits* rather than merely describes — a bar pointing at a section the grid no longer shows would write to a class nobody is looking at — and the block control is disabled at zero periods, because `setBlock` returns early without a curriculum row and an enabled control there would silently do nothing.
+
 ## 25. Term-wise Timetables (Phase 26)
 
 A school currently has one timetable per wing per session. Many schools do not work that way: the week changes at the term boundary — a subject teacher moves, a games afternoon shifts, Class 6 gets a different shape after the October exams. Until now the only way to express that was to overwrite the timetable in November and lose what Term 1 actually was.
