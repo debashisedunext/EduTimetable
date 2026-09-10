@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots, SLOT,
-  type Coverage, type GridPivot, type SlotTuple,
+  blockSections, buildCoverage, cellEvents, initialsOf, pivotCellKey, pivotSlots,
+  rowWindow, scrollTopFor, SLOT,
+  type Coverage, type GridPivot, type RowWindow, type SlotTuple,
 } from "@edutimetable/shared";
 import { useApi, useConfigCtx } from "../hooks";
 import { useColors } from "../colors-context";
@@ -172,6 +173,125 @@ const shortSection = (label: string) => {
   return sec ? `${head}-${sec}` : head;
 };
 
+/**
+ * §31.8 — the two sticky header rows, which sit INSIDE the scrolling pane and
+ * therefore cover its first rows.
+ *
+ * 24 + 24. Not a new guess: the second header row's `top: 24` is already
+ * committed to the first one being 24 tall, so this is that same number read
+ * once more rather than a second opinion about it.
+ */
+const HEADER_H = 48;
+
+/**
+ * A first guess at a row's height, used for exactly one frame.
+ *
+ * Not a second opinion about the CSS — the measurement below always wins, and
+ * a wrong guess costs one corrected frame. What it buys is that the FIRST
+ * paint is already windowed: starting from "unmeasured" would draw the whole
+ * 6,832-cell grid once and then shrink it, which is the frame this stage
+ * exists to remove.
+ */
+const FALLBACK_ROW_H = 23;
+
+/**
+ * §31.8 — the scroll state the window arithmetic needs, and nothing else.
+ *
+ * Deliberately does NOT compute the window: the row count comes from the
+ * filtered list, which is not known until well past the component's early
+ * returns, and a hook cannot be called there. State here, arithmetic where the
+ * total exists.
+ *
+ * `rowHeight` is **measured from a rendered row**, and the measurement always
+ * wins. §10.6's rule: when a layout's correctness depends on two independently
+ * computed heights agreeing, pick the structure where only one height exists —
+ * and here the spacers must reserve exactly what the undrawn rows would have
+ * occupied, or the scrollbar lies. It starts at `FALLBACK_ROW_H` rather than at
+ * zero purely so the FIRST paint is already windowed; see the note there.
+ */
+function useRowViewport(paneRef: React.RefObject<HTMLDivElement | null>, layoutKey: unknown) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [rowHeight, setRowHeight] = useState(FALLBACK_ROW_H);
+  /*
+    Which layout the stored height was measured in.
+
+    The ref callback below is attached to whichever row is drawn first, and
+    that row CHANGES as the window slides — so React detaches and reattaches
+    the ref on every scroll frame. Reading `offsetHeight` there would force a
+    synchronous layout on every one of them, which is most of the cost this
+    whole stage exists to remove. The epoch makes it measure once per layout
+    instead: the observer below bumps it when the pane resizes, and only then
+    does the next attach take a reading.
+  */
+  const epoch = useRef(0);
+  const measuredAt = useRef(-1);
+
+  /*
+    The two tables have the same row height today, and this is what stops that
+    being an assumption. Switching tab swaps one table for another; re-measuring
+    then costs one `offsetHeight` and removes the coupling entirely.
+  */
+  useLayoutEffect(() => {
+    epoch.current += 1;
+  }, [layoutKey]);
+
+  /*
+    `useLayoutEffect`, not `useEffect` — §8.1d's lesson, for the same reason it
+    was learned there. A passive effect runs after paint, so the first frame
+    would be computed for a viewport of zero: seven rows, then thirty-six a
+    frame later, which reads as the grid filling itself in on every visit.
+  */
+  useLayoutEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const measure = () => {
+      setViewportHeight(el.clientHeight);
+      // A resize can change a row's height — a narrower pane wraps a long
+      // teacher name — so the stored height stops being trusted.
+      epoch.current += 1;
+    };
+    measure();
+    // The pane is `74vh`, so it changes with the window and with the browser's
+    // own chrome appearing. A one-off measurement would be wrong for the rest
+    // of the visit.
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [paneRef]);
+
+  return {
+    scrollTop,
+    viewportHeight,
+    rowHeight,
+    onScroll: () => setScrollTop(paneRef.current?.scrollTop ?? 0),
+    /** Ref callback for the first drawn row — the one height there is. */
+    measureRow: (el: HTMLTableRowElement | null) => {
+      if (!el || measuredAt.current === epoch.current) return;
+      const h = el.offsetHeight;
+      if (h <= 0) return;
+      measuredAt.current = epoch.current;
+      if (h !== rowHeight) setRowHeight(h);
+    },
+  };
+}
+
+/**
+ * The spacer standing in for rows that were not drawn.
+ *
+ * One `<td>` spanning the table rather than a bare `<tr>`: an empty row has no
+ * cells to give it height, and browsers collapse it — which puts the scrollbar
+ * back to the height of only the drawn rows.
+ */
+function Spacer({ height, span }: { height: number; span: number }) {
+  if (height <= 0) return null;
+  return (
+    <tr aria-hidden>
+      <td colSpan={span} style={{ height, padding: 0, border: 0 }} />
+    </tr>
+  );
+}
+
 /** An index that stays inside the list, or null when it would not — which is
  *  what makes an arrow key at the edge do nothing instead of wrapping. */
 const clamp = (i: number, len: number): number | null =>
@@ -189,6 +309,10 @@ export function MasterGrid() {
   // have; keeping it would leave the strip describing something invisible.
   const [selected, setSelected] = useState<Selection | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
+  // §31.8 — scroll state for the windowed body. A hook, so it sits with the
+  // other hooks and above every early return; the window itself is computed
+  // further down, where the filtered row count exists.
+  const view = useRowViewport(gridRef, tab);
 
   const { data: drafts } = useApi<DraftRow[]>(
     current ? `/timetable-configs/${current.id}/drafts` : null,
@@ -214,6 +338,16 @@ export function MasterGrid() {
     different week.
   */
   useEffect(() => setSelected(null), [tab, status, draftId]);
+  /*
+    ...and put the pane back to the top. Switching from 122 teachers scrolled
+    to the bottom to 20 subjects would otherwise leave the reader past the end
+    of the new list — the browser clamps the DOM scroll, but our copy of it
+    would stay stale until the next scroll event, so the window would be
+    computed for a position nothing is at.
+  */
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.scrollTop = 0;
+  }, [tab, status, draftId, search]);
 
   // One pass over the tuples, grouped by whichever field names the row for
   // this tab. The grouping itself is `pivotSlots` in `packages/shared`, where
@@ -309,6 +443,24 @@ export function MasterGrid() {
   };
 
   /**
+   * §31.8 — the arrowed-to row may not be in the DOM at all.
+   *
+   * The keys move the selection through the DATA; windowing means the row they
+   * land on can be outside the drawn slice. Without this, ArrowDown past the
+   * bottom of the screen selects a row nobody can see and the grid looks frozen
+   * while the strip changes underneath it.
+   */
+  const bringRowIntoView = (index: number) => {
+    const want = scrollTopFor(index, {
+      rowHeight: view.rowHeight,
+      scrollTop: view.scrollTop,
+      viewportHeight: view.viewportHeight,
+      headerHeight: HEADER_H,
+    });
+    if (want !== null && gridRef.current) gridRef.current.scrollTop = want;
+  };
+
+  /**
    * §31.6 — arrow keys move the selection.
    *
    * The strip explains one cell, and the useful reading is across a row: this
@@ -338,6 +490,7 @@ export function MasterGrid() {
         sectionId: visibleRows[nextRow].key,
         subjectId: context!.subjects[nextCol].id,
       });
+      bringRowIntoView(nextRow);
       return;
     }
 
@@ -359,7 +512,9 @@ export function MasterGrid() {
       day: selectable[nextCol].day,
       period: selectable[nextCol].period,
     });
+    bringRowIntoView(nextRow);
   };
+
 
   /**
    * §31.6 — the sentence under the grid.
@@ -695,6 +850,19 @@ export function MasterGrid() {
     figures on this screen cannot disagree about which periods are the week.
   */
   const coverage = buildCoverage({ slots: data.slots, teachingPeriods: teachingPeriodNumbers });
+  /*
+    §31.8 — which rows to draw. 122 teachers x 56 columns is 6,832 cells, and
+    the Matrix gets away with ~2,750; this does not. `rowWindow` is degenerate
+    for a list shorter than the pane, so a small school renders exactly what it
+    rendered before windowing existed — one code path, always exercised.
+  */
+  const win: RowWindow = rowWindow({
+    total: visibleRows.length,
+    rowHeight: view.rowHeight,
+    scrollTop: view.scrollTop,
+    viewportHeight: view.viewportHeight,
+    headerHeight: HEADER_H,
+  });
   const capacity = data.sections.length * days.length * teachingPeriodNumbers.size;
   const filled = data.slots.filter(
     (s) => s[SLOT.classSectionId] !== null && teachingPeriodNumbers.has(s[SLOT.period]),
@@ -782,6 +950,7 @@ export function MasterGrid() {
             ref={gridRef}
             tabIndex={0}
             onKeyDown={onKeyDown}
+            onScroll={view.onScroll}
           /* §31.6 — the strip is meant to be read ACROSS a row, and reaching
              for the mouse 55 times to do it is not reading. `tabIndex` makes
              the pane focusable so the arrow keys have somewhere to land; the
@@ -792,6 +961,8 @@ export function MasterGrid() {
           {tab === "lesson" ? (
             <LessonGrid
               coverage={coverage}
+              win={win}
+              measureRow={view.measureRow}
               context={context}
               visibleRows={visibleRows}
               colors={colors}
@@ -850,8 +1021,12 @@ export function MasterGrid() {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((row) => (
-                  <tr key={row.key}>
+                <Spacer height={win.padTop} span={1 + days.length * perDay} />
+                {visibleRows.slice(win.start, win.end).map((row, i) => (
+                  // The first drawn row is the one that is measured — see
+                  // `useRowViewport`. Any row would do; the first is the one
+                  // guaranteed to exist whenever the body is not empty.
+                  <tr key={row.key} ref={i === 0 ? view.measureRow : undefined}>
                     <th title={row.label} style={rowTh}>
                       {row.label}
                     </th>
@@ -885,6 +1060,7 @@ export function MasterGrid() {
                     )}
                   </tr>
                 ))}
+                <Spacer height={win.padBottom} span={1 + days.length * perDay} />
               </tbody>
             </table>
           )}
@@ -1079,6 +1255,8 @@ function Strip({ groups }: { groups: StripGroup[] | null }) {
  */
 function LessonGrid({
   coverage,
+  win,
+  measureRow,
   context,
   visibleRows,
   colors,
@@ -1086,6 +1264,8 @@ function LessonGrid({
   onSelect,
 }: {
   coverage: Coverage;
+  win: RowWindow;
+  measureRow: (el: HTMLTableRowElement | null) => void;
   context: ContextPayload | null;
   visibleRows: Array<{ key: number; label: string }>;
   colors: ReturnType<typeof useColors>;
@@ -1140,7 +1320,8 @@ function LessonGrid({
         </tr>
       </thead>
       <tbody>
-        {visibleRows.map((row) => {
+        <Spacer height={win.padTop} span={2 + subjects.length} />
+        {visibleRows.slice(win.start, win.end).map((row, rowIndex) => {
           const classId = classOfSection.get(row.key);
           const cells = subjects.map((s) => byClass.get(`${classId}:${s.id}`) ?? 0);
           const total = cells.reduce((a, b) => a + b, 0);
@@ -1164,7 +1345,7 @@ function LessonGrid({
           // somebody is looking at the row.
           const over = context.weekCapacity > 0 && total > context.weekCapacity;
           return (
-            <tr key={row.key}>
+            <tr key={row.key} ref={rowIndex === 0 ? measureRow : undefined}>
               <th title={row.label} style={rowTh}>{row.label}</th>
               {subjects.map((s, i) => {
                 const n = cells[i];
@@ -1226,6 +1407,7 @@ function LessonGrid({
             </tr>
           );
         })}
+        <Spacer height={win.padBottom} span={2 + subjects.length} />
       </tbody>
     </table>
   );

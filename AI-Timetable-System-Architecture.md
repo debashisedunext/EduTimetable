@@ -2585,11 +2585,45 @@ A placed lesson with **no** curriculum row is deliberately out of scope: it is a
 
 Validated against the reference school as well as the fixture: 844 (section, subject) pairs compared, 8 sections matching exactly, 8 correctly skipped as ungenerated — and **zero over-placed pairs**, which is the shape a merged-group or elective mis-count would take. The 444 under-placed pairs are that school's own curriculum genuinely exceeding its week (Class 1 is owed 67 periods in a 40-period week), which is the feature doing its job.
 
-### 31.8 What is left
+### 31.8 Windowing the grid body
 
-Stage 4 is virtualisation, which this screen makes due rather than theoretical: 122 teachers x 55 columns is **6,710 cells**, where the Matrix gets away with ~2,750 today. Measured against §14's 600ms render-to-usable before and after, rather than assumed.
+The Teachers tab on the reference school is **122 rows x 56 columns = 6,832 cells**, every one a `<td>`. The Allocation Matrix gets away with ~2,750 today; this does not, and CLAUDE.md has listed grid virtualisation as outstanding debt since §14 was written.
 
-Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, coverage on a clean week and after one deletion, and §17.8), `pivot.spec.ts` + `coverage.spec.ts` (25 unit tests), and the §17.8 sweep, which classified the new route with no help.
+#### Thirty lines, not `react-window`
+
+CLAUDE.md names `react-window` / AG Grid as the sanctioned answer, and for a generic grid it is. This grid is not generic in the one way that matters: `react-window` renders absolutely-positioned `<div>`s, and everything that makes §31 correct is table machinery — the `<colgroup>` of percentages that makes "no horizontal scroll" a property of the layout (§31.1), two `position: sticky` header rows with `colSpan` day grouping, and a `position: sticky` first column. Rebuilding those three as positioned divs to gain a dependency would trade a working layout for a library that cannot render a `<tr>`. Windowing a table body with two spacer rows keeps all of it, and the arithmetic (`viewport.ts`) is small enough to test exhaustively — thirteen tests, including a sweep over the whole scroll range asserting that everything visible was drawn.
+
+#### The row height is measured, never assumed
+
+The spacers stand in for the rows that are not drawn, so the height they reserve must be the height those rows would have had. That is two independently-computed heights having to agree, which §10.6 records as the shape to avoid: a CSS row height and a JavaScript constant drift the moment anybody adjusts padding, and the symptom is a scrollbar that lies. So the height is read from a rendered row and the module is pure arithmetic over it.
+
+Two details that cost a frame each if got wrong, both of them lessons already in this document:
+
+- **`useLayoutEffect`, not `useEffect`**, for measuring the pane — §8.1d's rule. A passive effect runs after paint, so the first frame would be computed for a viewport of zero: seven rows, then thirty-six a frame later, which reads as the grid filling itself in on every visit.
+- **A seeded fallback height** so the *first* paint is already windowed. Starting from "unmeasured" would draw the whole 6,832-cell grid once and then shrink it — the exact frame this stage exists to remove. The measurement always wins; the constant is a guess for one frame.
+
+And one that would have quietly undone the saving: the ref that measures is attached to whichever row is drawn first, and **that row changes as the window slides**, so React detaches and reattaches it on every scroll frame. Reading `offsetHeight` there forces a synchronous layout on each one. An epoch counter, bumped only by the resize observer, makes it measure once per layout instead of once per scroll.
+
+#### Arrow keys move through data the DOM may not hold
+
+§31.6's keys move the selection through the row *list*; windowing means the row they land on can be outside the drawn slice. `scrollTopFor` brings it into view — to the **bottom** when arrowing downwards, because jumping it to the top moves everything the reader was comparing it with. It returns null when the row is already visible rather than the current `scrollTop`, since assigning that on every keystroke fights any scroll already in flight.
+
+#### Measured
+
+| | cells | tree build + serialise |
+|---|---|---|
+| before | 6,832 | median **50.8 ms**, p95 **102.3 ms** |
+| after (700px pane) | 2,016 | median **10.5 ms**, p95 **13.8 ms** |
+
+**4.8x less work**, and 70% fewer cells at a typical pane height (75% at 560px, 52% at 1200px — the saving narrows as the pane grows, which is correct: a taller pane genuinely shows more).
+
+The honest limit of that table: it is `renderToString` in Node over the same cell shape, so it measures **building and serialising the element tree**, not browser layout and paint. §14's "render-to-usable ≤ 600ms" is a paint budget and this stack has no headless browser, so that budget remains unverified for this screen. What is verified is that the work which changed got 4.8x smaller, and that the node count — which layout and paint scale with — fell by 70%.
+
+### 31.9 What is left
+
+Nothing planned. The screen is read-only by design (§31.5), and the two things that would most naturally come next — editing, and showing several wings at once — are both refused there with reasons.
+
+Proof: `pnpm test:mastergrid` (live: initials, the pivots over real generated rows, the §4.10 collapse both ways, the strip's four facts, the cross-wing load, the cache, coverage on a clean week and after one deletion, and §17.8), `viewport.spec.ts` + `coverage.spec.ts` + `pivot.spec.ts` (**38 unit tests**), and the §17.8 sweep, which classified the new route with no help.
 
 ## 25. Term-wise Timetables (Phase 26)
 

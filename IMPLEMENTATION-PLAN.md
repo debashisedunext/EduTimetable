@@ -2768,8 +2768,62 @@ the feature working.
 Regression: shared **530**, api **216**, isolation **211 routes**, grids, groups, freeze, drafts,
 electives, guided setup, lint, typecheck, `vite build`.
 
-## Phase 44 stage 4 — not started
+## Phase 44 stage 4 — windowing the grid body
 
-- **Virtualisation.** `react-window`/AG Grid, measured against §14's 600ms render-to-usable before
-  and after rather than assumed. 122 teachers x 55 columns is 6,710 cells; the Matrix gets away with
-  ~2,750 today.
+**Landed.** 122 teachers x 56 columns is 6,832 `<td>`s; the Matrix gets away with ~2,750 and this
+does not.
+
+`packages/shared/src/timetable/viewport.ts` — `rowWindow` and `scrollTopFor`, pure, thirteen tests
+including a sweep over the whole scroll range asserting that everything visible was drawn.
+
+**Two spacer rows, deliberately not `react-window`.** CLAUDE.md names it as the sanctioned answer and
+for a generic grid it is; this grid's correctness is table machinery — the percentage `<colgroup>`
+that makes "no horizontal scroll" a layout property, two sticky `colSpan` header rows, a sticky first
+column — and `react-window` renders positioned divs. Adopting it means rebuilding all three to gain a
+library that cannot render a `<tr>`.
+
+**The row height is measured, never assumed** — §10.6's rule, since the spacers must reserve exactly
+what the undrawn rows would have occupied or the scrollbar lies. Three traps, each costing a frame or
+the whole saving, and each a lesson already in this repo:
+
+- **`useLayoutEffect`, not `useEffect`** for measuring the pane (§8.1d). A passive effect runs after
+  paint, so the first frame is computed for a viewport of zero: seven rows, then thirty-six.
+- **A seeded fallback height**, so the *first* paint is already windowed. Starting unmeasured draws
+  all 6,832 cells once and then shrinks — the exact frame this stage removes. The measurement always
+  wins.
+- **Measure once per layout, not once per scroll.** The ref sits on whichever row is drawn first, and
+  that row changes as the window slides, so React reattaches it every scroll frame; an unguarded
+  `offsetHeight` there forces a synchronous layout on each one. An epoch counter bumped only by the
+  resize observer fixes it.
+
+**Arrow keys move through the row list, which the DOM may not hold.** `scrollTopFor` brings the row
+into view — to the *bottom* when arrowing downwards, because jumping it to the top moves everything
+the reader was comparing it with — and returns null when it is already visible, since assigning
+`scrollTop` on every keystroke fights a scroll in flight.
+
+### Measured
+
+| | cells | tree build + serialise |
+|---|---|---|
+| before | 6,832 | median 50.8 ms · p95 102.3 ms |
+| after (700px pane) | 2,016 | median 10.5 ms · p95 13.8 ms |
+
+**4.8x less work**; 70% fewer cells at a typical pane height (75% at 560px, 52% at 1200px — the
+saving narrows as the pane grows, which is correct).
+
+**The honest limit:** that is `renderToString` in Node over the same cell shape, so it measures
+building and serialising the element tree, not browser layout and paint. §14's "render-to-usable ≤
+600ms" is a paint budget and there is no headless browser in this stack, so it remains **unverified**
+for this screen. What is verified is that the work which changed got 4.8x smaller and the node count
+— which layout and paint scale with — fell by 70%.
+
+Regression: shared **543**, api **216**, isolation **211 routes**, mastergrid, grids, groups, freeze,
+staffing, drafts, lint, typecheck, `vite build`.
+
+## Phase 44 — complete
+
+All four stages landed. The screen stays read-only by design (§31.5); the two things that would most
+naturally come next — editing, and several wings at once — are refused there with reasons.
+
+Outstanding debt this did NOT clear: the Allocation Matrix and the Draft Board are still unwindowed,
+and `viewport.ts` is now sitting there for whoever wants to.

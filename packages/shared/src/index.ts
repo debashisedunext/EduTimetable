@@ -190,6 +190,7 @@ export * from "./timetable/clash";
 export * from "./timetable/initials";
 export * from "./timetable/pivot";
 export * from "./timetable/coverage";
+export * from "./timetable/viewport";
 export * from "./onboarding/suggest";
 export * from "./onboarding/load";
 export * from "./ai/data-entry";
