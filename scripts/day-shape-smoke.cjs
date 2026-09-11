@@ -253,6 +253,35 @@ async function main() {
     "while a weekday reaches past Saturday's ceiling — the cap is per day, not a new week-wide one",
     `highest weekday period used: ${weekdayMax}`);
 
+  /*
+    §34.6 — and the printed card says which periods Saturday does not have.
+
+    The decision was ONE row axis: show all six days and hatch the cells a
+    short day never reaches, rather than splitting the card or growing a second
+    header. So the payload has to carry two things the renderer cannot work out
+    for itself — how far each day reaches, and that day's own clock where it
+    differs from the axis. A lesson printed against the wrong minutes is a
+    false statement on the one document a parent actually reads.
+  */
+  console.log("\nWhat the printed card says about Saturday:");
+  await call("PUT", `/timetable-configs/${cfg.id}/day-shapes`, S, {
+    day: SAT, full: false, periodsPerDay: 4, periodDurationMins: 30,
+  });
+  await call("POST", `/timetable-configs/${cfg.id}/publish`, S, {});
+  const card = (await call("GET", `/reports/class-section/${secId}`, S)).json;
+  check(card?.dayReach?.[SAT] === 4,
+    "it reaches period 4 on Saturday", `dayReach[6] = ${card?.dayReach?.[SAT]}`);
+  // The `[SAT] === 4` half is IN this one: "Monday is absent" is trivially
+  // true of an empty map, which is exactly what a payload that forwarded
+  // nothing would produce.
+  check(card?.dayReach?.[SAT] === 4 && card?.dayReach?.[1] === undefined,
+    "and says nothing about Monday — only a day that DIFFERS is described",
+    JSON.stringify(card?.dayReach ?? {}));
+  const satP2 = card?.dayClock?.[SAT]?.["2"] ?? card?.dayClock?.[SAT]?.[2];
+  check(Array.isArray(satP2) && satP2[0] === "08:30" && satP2[1] === "09:00",
+    "and Saturday's period 2 carries its OWN clock, not Monday's 08:40–09:20",
+    JSON.stringify(satP2));
+
   // ─────────────── 5. BACK TO A FULL DAY
   console.log("\nPutting Saturday back:");
   const back = await call("PUT", `/timetable-configs/${cfg.id}/day-shapes`, S, { day: SAT, full: true });

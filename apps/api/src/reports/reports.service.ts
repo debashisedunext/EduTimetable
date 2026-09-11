@@ -9,6 +9,7 @@ import { ForbiddenException, Inject, Injectable, NotFoundException } from "@nest
 import type Redis from "ioredis";
 import type { ViewScope } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
+import { breaksFromRows, clockForDay } from "../masters/structure.util";
 import { REDIS } from "../redis/redis.module";
 import { CacheKeysService } from "../redis/cache-keys.service";
 
@@ -252,6 +253,8 @@ export class ReportsService {
     if (ids.length === 0) {
       return {
         rows: [] as GridRow[], workingDays: [1, 2, 3, 4, 5],
+        dayReach: {} as Record<number, number>,
+        dayClock: {} as Record<number, Record<number, [string, string]>>,
         wings: [] as Array<{ id: number; name: string; effectiveFrom: string | null; effectiveTo: string | null }>,
       };
     }
@@ -274,12 +277,59 @@ export class ReportsService {
     });
     if (configs.length === 0) throw new NotFoundException("Timetable config not found");
 
+    /*
+      §34.6 — the days that run a shape of their own, and what their clock says.
+
+      The grid keeps ONE row axis, which is the decision: a short Saturday shows
+      all six days and hatches the periods it does not have, rather than
+      splitting the card or growing a second header. So the payload carries two
+      things the renderer cannot work out for itself — how far each day
+      reaches, and what its own clock says where that differs from the axis.
+
+      Only for days that DIFFER. A school with a uniform week sends nothing
+      extra and every renderer behaves exactly as it did.
+    */
+    const shapeRows = await this.prisma.timetableDayShape.findMany({
+      where: { timetableConfigId: { in: ids } },
+    });
+
     const rows: GridRow[] = [];
     // A day is a working day of the card if ANY of its wings teaches then —
     // intersecting would hide a Saturday that one wing really does run.
     const days = new Set<number>();
+    /** `day → last teaching period that exists`, and `day → period → [start,end]`. */
+    const dayReach: Record<number, number> = {};
+    const dayClock: Record<number, Record<number, [string, string]>> = {};
     for (const cfg of configs) {
       for (const d of ((cfg.workingDays as number[]) ?? [1, 2, 3, 4, 5])) days.add(d);
+      const mine = shapeRows.filter((r) => r.timetableConfigId === cfg.id);
+      if (mine.length > 0) {
+        const stored = cfg.periods.map((r) => ({
+          sortOrder: r.sortOrder, periodNumber: r.periodNumber,
+          startTime: r.startTime, endTime: r.endTime,
+          isBreak: r.isBreak, isExtra: r.isExtra, isActivity: r.isActivity,
+          activityId: r.activityId, breakName: r.breakName,
+        }));
+        const spec = {
+          startTime: cfg.startTime, periodsPerDay: cfg.periodsPerDay,
+          periodDurationMins: cfg.periodDurationMins, hasZeroPeriod: cfg.hasZeroPeriod,
+          breaks: breaksFromRows(stored),
+        };
+        for (const sh of mine) {
+          /*
+            A card can span two wings (§10.6), so the reach is the WIDEST any
+            of them runs that day: hatching a cell another wing really teaches
+            in would be a wrong answer rather than a smaller one.
+          */
+          dayReach[sh.dayOfWeek] = Math.max(dayReach[sh.dayOfWeek] ?? 0, sh.periodsPerDay);
+          const clock: Record<number, [string, string]> = dayClock[sh.dayOfWeek] ?? {};
+          for (const r of clockForDay(stored, spec, sh)) {
+            if (r.isBreak || r.periodNumber === null || r.endTime === null) continue;
+            clock[r.periodNumber] = [r.startTime, r.endTime];
+          }
+          dayClock[sh.dayOfWeek] = clock;
+        }
+      }
       for (const p of cfg.periods) {
         rows.push({
           key: rowKey(cfg.id, p.periodNumber),
@@ -302,6 +352,15 @@ export class ReportsService {
     return {
       rows,
       workingDays: [...days].sort((a, b) => a - b),
+      /*
+        §34.6 — how far each day reaches, and its own clock where that differs.
+
+        Both are empty for a school with a uniform week, which is every school
+        that has not set a §34 day shape — so the payload, and every renderer
+        reading it, is exactly what it was.
+      */
+      dayReach,
+      dayClock,
       /*
         §30.5 — the window travels with the WING, not with the card. A card can
         span two wings (§10.6), and those wings may apply over different dates;
@@ -449,6 +508,9 @@ export class ReportsService {
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
         periods: shape.rows,
         wings: shape.wings,
+        // §34.6 — a short day's reach and its own clock, for the hatching.
+        dayReach: shape.dayReach,
+        dayClock: shape.dayClock,
         grid,
       };
     });
@@ -559,6 +621,9 @@ export class ReportsService {
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
         periods: shape.rows,
         wings: shape.wings,
+        // §34.6 — a short day's reach and its own clock, for the hatching.
+        dayReach: shape.dayReach,
+        dayClock: shape.dayClock,
         grid,
       };
     });
@@ -636,6 +701,9 @@ export class ReportsService {
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
         periods: shape.rows,
         wings: shape.wings,
+        // §34.6 — a short day's reach and its own clock, for the hatching.
+        dayReach: shape.dayReach,
+        dayClock: shape.dayClock,
         grid,
       };
     });
@@ -721,6 +789,9 @@ export class ReportsService {
         dayNames: shape.workingDays.map((d) => DAY_NAMES[d]),
         periods: shape.rows,
         wings: shape.wings,
+        // §34.6 — a short day's reach and its own clock, for the hatching.
+        dayReach: shape.dayReach,
+        dayClock: shape.dayClock,
         grid,
       };
     });

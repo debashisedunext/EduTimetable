@@ -3774,8 +3774,18 @@ The `periods` rows have no day column: they are the shape of *a* day, written on
 
 `breaksFromRows` was extracted from the controller for this: the breaks are recorded only in the rows themselves, so anything rebuilding them for a different shape has to recover them, and a second copy of "which rows are breaks, and which period does each follow" would have been free to disagree.
 
-### 34.6 Still to build: one clock per column
+### 34.6 One row axis, and a short day is hatched
+
+**The decision: keep one row axis.** A timetable with a short Saturday shows all six days, and the periods Saturday does not have render **disabled, with diagonal hatching** — rather than splitting the card, growing a second header row, or hiding the day.
+
+That keeps everything §10.6 built on a single clock down the left, and it makes the missing periods a *statement* rather than an absence. Hatched and unlabelled, deliberately: *"Free"* would say the class is in school with nothing timetabled, which is a different and wronger claim than *"school has finished"*. The check runs **before** the cell lookup, so a stale slot at a period a day has since lost cannot print as a lesson.
+
+**The clock still has to be told the truth, and one axis cannot do it.** The row header shows the week's times; a Saturday running 30-minute periods finishes each one ten minutes earlier, and printing a lesson against Monday's minutes is a false statement on the one document a parent actually reads. So a day whose clock differs carries **its own time in the cell** — small, and only where it differs.
+
+The payload therefore gains two fields, both **empty for a uniform week**: `dayReach` (how far each day goes) and `dayClock` (that day's own times), computed from `clockForDay` so they cannot disagree with §34.5's occupancy comparison. A card spanning two wings takes the **widest** reach any of them runs that day — hatching a cell another wing really teaches in would be a wrong answer rather than a smaller one.
+
+### 34.7 Still to build: several spans on one card
 
 The **printed and on-screen grids still show one clock for the whole week.** A class timetable renders periods down the side and days across, so a Saturday on a different clock has no row header that can be true of it — and the wall (§10.6) keys its rows `c{configId}p{periodNumber}` for exactly the same reason, one clock per config.
 
-This is the cost §28.5 already named when it said tick-based occupancy *"means the Matrix and the Board can no longer have a single column header row, which is an information-design problem rather than a styling one"*. The same problem arrives here by a smaller door. It wants deciding rather than patching — per-cell times, a split header, or a separate card for a day that differs — and until it is decided, **a school that sets a short Saturday will see correct placements printed against the weekday's times.**
+§33.7 folds a **class** card into lessons, because one class has one span. A **teacher's** or a **room's** card sees several classes at once — Class 10's hour beside Class 1's half-hour in the same column — so there is no single fold that is true of the card. Those still print in base periods. The §34.6 answer above (one axis, per-cell truth where it differs) is the shape the solution should take, applied to spans rather than days.
