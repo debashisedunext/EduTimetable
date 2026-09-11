@@ -414,6 +414,101 @@ async function main() {
   const stranger = await call("GET", `/timetable-configs/${weekly.id}/context`, other);
   check(stranger.status === 404, "the individual timetable's context 404s for a stranger", String(stranger.status));
 
+  /*
+    §30.12 — the curriculum of a class two POOLS teach.
+
+    The reported symptom was on the Master Grid's Save: *"There are still 322
+    error(s) — nothing was written."* Every one was a duplicate row. Since
+    §30.9 two wings in different pools may both run Class 1, so `planClasses`
+    returns it twice and everything built by walking that list was emitted
+    twice — but `class_subjects` is keyed `(class, subject, year)` with no pool
+    column, so the second copy is the same row again. The §16 importer refuses
+    a sheet holding two rows on one natural key, which is why nothing was
+    written. The refusal was right; the sheet was wrong.
+
+    Asserted through the REAL step-9 preview rather than the shared unit tests,
+    because the failure was in what the server builds out of a stored draft —
+    which is exactly the layer a pure function test cannot reach.
+  */
+  /*
+    Placed LAST on purpose. It commits steps 6, 7 and 9, which create subjects
+    and teachers BY NAME — and an earlier check creates "ZZIP Maths" itself, so
+    running this before it turned that POST into a duplicate and left the check
+    with no subject id. A fixture that writes master data belongs after the
+    ones that assume they are writing it first.
+  */
+  console.log("\nA class taught by two pools has ONE curriculum:");
+  await call("PUT", "/onboarding/session", S, {
+    mode: "wizard",
+    currentStep: 9,
+    answers: {
+      /*
+        Deliberately small: ONE class (Class 1) taught by a grouped wing and by
+        the individual timetable. That overlap is the entire fixture — a wider
+        school only adds coverage gaps, which are a different failure and would
+        mask this one.
+      */
+      wings: [
+        { name: "ZZIP Main", fromIndex: 4, toIndex: 4, sections: 1 },
+        { name: "ZZIP Weekly", fromIndex: 4, toIndex: 4, sections: 1, individual: true },
+      ],
+      session: { name: "ZZIP 2026-27", startDate: "2026-04-01", endDate: "2027-03-31" },
+      subjects: [{ name: "ZZIP English" }, { name: "ZZIP Maths" }],
+      teachers: [
+        { name: "ZZIP One", employeeCode: "ZZIP-1", subjects: ["ZZIP English", "ZZIP Maths"], maxPeriodsPerWeek: 40 },
+        { name: "ZZIP Two", employeeCode: "ZZIP-2", subjects: ["ZZIP English", "ZZIP Maths"], maxPeriodsPerWeek: 40 },
+      ],
+    },
+  });
+  // Steps 6 and 7 first: the Subject Mapping sheet references teachers and
+  // subjects by name, and the importer validates cross-sheet references — so
+  // without them the step-9 errors are "no such teacher", which would mask
+  // exactly the duplicates this is here to assert are gone.
+  const six = await call("POST", "/onboarding/commit/6", S);
+  const seven = await call("POST", "/onboarding/commit/7", S);
+  check(six.status < 300 && seven.status < 300,
+    "its subjects and teachers exist", `${six.status} · ${seven.status}`);
+
+  const nine = await call("GET", "/onboarding/preview/9", S);
+  const dupes = (nine.json?.issues ?? []).filter((i) => /already on row/.test(i.message ?? ""));
+  // On failure, say WHAT failed. "12 errors" sends the next person to run the
+  // preview by hand; the grouped messages say whether they are duplicates
+  // (this bug) or coverage gaps (a fixture that outgrew its staff).
+  if ((nine.json?.totals?.errors ?? 0) > 0) {
+    const seen = new Map();
+    for (const i of (nine.json?.issues ?? [])) {
+      const k = String(i.message ?? "").replace(/\d+/g, "N");
+      seen.set(k, (seen.get(k) ?? 0) + 1);
+    }
+    console.log("        ", JSON.stringify([...seen.entries()].slice(0, 6)));
+  }
+  check(nine.json?.totals?.errors === 0 && dupes.length === 0,
+    "step 9 builds a sheet with no duplicate rows — Save is not refused",
+    `${nine.json?.totals?.errors} error(s) · ${dupes.length} duplicate(s)`);
+
+  /*
+    And the COMMIT, not only the dry run. A preview that passes while the write
+    refuses is the shape this whole bug had: the screen looked fine and Save
+    reported 322 errors.
+  */
+  const wrote = await call("POST", "/onboarding/commit/9", S);
+  check(wrote.status < 300,
+    "...and the write itself goes through",
+    wrote.status >= 300 ? (wrote.json?.message ?? "").slice(0, 80) : `created ${JSON.stringify(wrote.json?.created ?? {})}`);
+
+  const curriculumRows = await prisma.classSubject.groupBy({
+    by: ["classId", "subjectId"], where: { schoolId }, _count: { _all: true },
+  });
+  const doubled = curriculumRows.filter((r) => r._count._all > 1);
+  check(doubled.length === 0,
+    "with exactly one curriculum row per class and subject in the database",
+    `${curriculumRows.length} pairs · ${doubled.length} doubled`);
+
+  const again = await call("POST", "/onboarding/commit/9", S);
+  check(again.status < 300 && Object.keys(again.json?.created ?? {}).length === 0,
+    "and pressing Save twice creates nothing extra — still idempotent",
+    JSON.stringify(again.json?.created ?? {}));
+
   console.log("\nCleanup:");
   await purge();
   check(true, "test schools removed");

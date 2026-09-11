@@ -683,13 +683,70 @@ export function suggestCurriculum(
     totals.push({ className: c.className, total, capacity, over: total > capacity });
   }
 
-  return { cells, totals, dropped };
+  /*
+    §30.12 — deduped here as well as in `curriculumSheets`.
+
+    The sheet builder is what keeps the commit correct; this is what keeps the
+    SCREEN correct. Without it the Master Grid counted every shared class
+    twice — 1,168 allocated periods where the school has far fewer — and the
+    Load column compared a doubled total against one week's capacity.
+
+    `totals` is deduped by class for the same reason: a class taught by two
+    wings is one class with one week.
+  */
+  const byClass = new Map<string, CurriculumPlan["totals"][number]>();
+  for (const t of totals) {
+    const key = t.className.trim().toLowerCase();
+    const seen = byClass.get(key);
+    if (!seen || t.capacity < seen.capacity) byClass.set(key, t);
+  }
+  return { cells: dedupeCurriculumCells(cells), totals: [...byClass.values()], dropped };
 }
 
 /** The proposed curriculum, as an importer sheet. */
+/**
+ * §30.12 — one row per (class, subject), however many wings teach the class.
+ *
+ * `planClasses` returns one entry per **wing** per class, and since §30.9 two
+ * wings in different §30 pools may legitimately both run Class 1. Everything
+ * built by walking that list therefore carried Class 1 twice — and the
+ * curriculum is keyed `(class_id, subject_id, academic_year_id)` (§3.11), so
+ * the second copy is not a second row, it is the same row again.
+ *
+ * The §16 importer refuses a sheet with two rows on one natural key, which is
+ * how this surfaced: pressing Save on the Master Grid reported *"There are
+ * still 322 error(s) — nothing was written"*, every one of them a duplicate.
+ * The refusal was right. Nothing was written, and what would have been written
+ * was ambiguous.
+ *
+ * **The tighter row wins.** CLAUDE.md states the curriculum is deliberately
+ * shared across pools — `class_subjects` has no pool column, so an individual
+ * timetable running Class 5 inherits Class 5's periods-per-week. A shared row
+ * must therefore fit the *narrowest* week that teaches the class; keeping the
+ * larger one would propose a curriculum that cannot fit one of its own wings,
+ * and Readiness would report it against a wing nobody was editing.
+ *
+ * Deliberately NOT a fix in `planClasses`. A class taught by two wings in two
+ * pools is real, and step 4 needs both entries to create both pools' cohort
+ * rows (§30.9). What is not real is two curricula.
+ */
+export function dedupeCurriculumCells(cells: CurriculumCell[]): CurriculumCell[] {
+  const byKey = new Map<string, CurriculumCell>();
+  for (const c of cells) {
+    const key = `${c.className.trim().toLowerCase()}\u0000${c.subjectName.trim().toLowerCase()}`;
+    const seen = byKey.get(key);
+    if (!seen || c.periodsPerWeek < seen.periodsPerWeek) byKey.set(key, c);
+  }
+  return [...byKey.values()];
+}
+
 export function curriculumSheets(plan: CurriculumPlan, academicYear: string): RawSheet[] {
-  if (plan.cells.length === 0) return [];
-  const rows = plan.cells.map((c) => {
+  // The LAST gate before the importer, and it has to be here as well as in
+  // `suggestCurriculum`: a school that has edited the grid commits from
+  // `answers.curriculum`, which never passes through the suggestion at all.
+  const cells = dedupeCurriculumCells(plan.cells);
+  if (cells.length === 0) return [];
+  const rows = cells.map((c) => {
     const size = c.consecutiveBlockSize && c.consecutiveBlockSize > 1 ? c.consecutiveBlockSize : 1;
     return {
       "Class Name": c.className,
@@ -1069,13 +1126,20 @@ export function suggestMappings(
   // §4.7 first-period rule has a real lesson to attach to.
   const classTeachers: MappingPlan["classTeachers"] = [];
   const taken = new Set<string>();
+  const assigned = new Set<string>();
   for (const c of classes) {
     for (const section of c.sections) {
       const label = `${c.className}-${section}`;
+      // §30.12 — a class taught by two wings appears twice in `classes`, and a
+      // class-section has exactly ONE class teacher: the second visit is the
+      // same row again, not a second one. (24 of the 322 duplicate errors were
+      // this, being 6 shared classes x 4 sections.)
+      if (assigned.has(label)) continue;
       const candidate =
         staff.find((s) => s.sections.includes(label) && !taken.has(s.code)) ??
         staff.find((s) => s.sections.includes(label));
       if (!candidate) continue;
+      assigned.add(label);
       taken.add(candidate.code);
       classTeachers.push({ classSection: label, employeeCode: candidate.code });
     }
@@ -1168,8 +1232,44 @@ export function withCurriculumPeriods(
 
 export function mappingSheets(plan: MappingPlan): RawSheet[] {
   const out: RawSheet[] = [];
-  if (plan.mappings.length > 0) {
-    out.push(sheet("Subject Mapping", plan.mappings.map((m) => ({
+  /*
+    §30.12 — the last gate before the importer, for both sheets.
+
+    Same cause as `curriculumSheets`: a class taught by two wings in two §30
+    pools is visited twice, so every row built from it is emitted twice, and
+    the importer refuses a sheet holding two rows on one natural key. 209 of
+    the 322 errors were mappings and 24 were class teachers.
+
+    It has to be HERE and not only in `suggestMappings`, because a school that
+    has edited the grid commits from `answers.mappings` / `answers.classTeachers`
+    — those never pass through the suggestion.
+
+    **The natural key is the sheet's own, not a guess.** A mapping is keyed
+    `(subject, class-section)` — the teacher is a value, so two rows differing
+    only by teacher are still one row's worth of truth and the first wins. A
+    class teacher is keyed by the class-section alone.
+
+    Known limitation, stated rather than hidden: a class-section LABEL is not
+    unique across §30 pools — "Class 1-A" names one row in the main wing and a
+    different one in an individual timetable — and neither sheet carries a
+    timetable column, so the importer resolves the label to whichever row it
+    finds. Deduplicating by label is therefore right for the sheet as it exists
+    today, and giving the curriculum and its mappings a pool dimension is the
+    separate schema change CLAUDE.md already records as outstanding.
+  */
+  const onceBy = <T>(rows: T[], key: (r: T) => string): T[] => {
+    const seen = new Map<string, T>();
+    for (const r of rows) if (!seen.has(key(r))) seen.set(key(r), r);
+    return [...seen.values()];
+  };
+  const lc = (v: string) => String(v ?? "").trim().toLowerCase();
+
+  const mappings = onceBy(plan.mappings, (m) =>
+    `${lc(m.subjectName)}\u0000${m.classSections.map(lc).sort().join(",")}`);
+  const classTeachers = onceBy(plan.classTeachers, (c) => lc(c.classSection));
+
+  if (mappings.length > 0) {
+    out.push(sheet("Subject Mapping", mappings.map((m) => ({
       "Teacher Employee Code": m.employeeCode,
       Subject: m.subjectName,
       "Class-Sections": m.classSections.join(", "),
@@ -1181,8 +1281,8 @@ export function mappingSheets(plan: MappingPlan): RawSheet[] {
       Merged: m.merged && m.classSections.length > 1 ? "Yes" : "No",
     }))));
   }
-  if (plan.classTeachers.length > 0) {
-    out.push(sheet("Class Teachers", plan.classTeachers.map((c) => ({
+  if (classTeachers.length > 0) {
+    out.push(sheet("Class Teachers", classTeachers.map((c) => ({
       "Class-Section": c.classSection,
       "Teacher Employee Code": c.employeeCode,
     }))));

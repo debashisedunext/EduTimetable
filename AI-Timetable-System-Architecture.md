@@ -3546,6 +3546,32 @@ Two implementation notes worth keeping:
 - **`DataTable` wraps its table in an `overflow-x: auto` div**, and that div is what a sticky header sticks to — a container with no height of its own, which never scrolls vertically, so the header would never have stuck. The scrolling is handed to the pane instead (`.master-scroll > div { overflow: visible }`), which makes both axes work in one place.
 - **Below 1080px the panes stack and the page scrolls again.** That is the honest cost of the width: a 340px form squeezed beside a six-column table is unreadable in a different way.
 
+### 30.12 A Class Taught by Two Pools Is Still One Curriculum (Phase 47)
+
+Pressing **Save** on the Master Grid's Lesson Grid refused with *"There are still 322 error(s) — nothing was written. Run the preview to see them."* Every one of the 322 was a duplicate row:
+
+| count | sheet | message |
+|---|---|---|
+| 209 | Subject Mapping | This Subject + Class-Section is already on row N |
+| 89 | Curriculum | This Class + Subject + Year is already on row N |
+| 24 | Class Teachers | This Class-Section is already on row N |
+
+The refusal was **right**, and it is the only reason nothing was corrupted.
+
+Since §30.9, two wings in different §30 resource pools may legitimately both run Class 1 — a main wing and an individual timetable teaching the same grade. `planClasses` therefore returns one entry per *wing* per class, and everything built by walking that list emitted each shared class twice. But `class_subjects` is keyed `(class_id, subject_id, academic_year_id)` with **no pool column** — CLAUDE.md states the curriculum is deliberately shared across pools — so the second copy is not a second row, it is the same row again. The §16 importer refuses a sheet holding two rows on one natural key, and did.
+
+The 24 class-teacher duplicates are the cleanest confirmation of the diagnosis: exactly 6 shared classes × 4 sections.
+
+**`dedupeCurriculumCells` is the rule, and the tighter row wins.** A shared row must fit the *narrowest* week that teaches the class; keeping the larger one would propose a curriculum that cannot fit one of its own wings, and Readiness would report it against a wing nobody was editing.
+
+**Deduplicated in two places, deliberately.** `suggestCurriculum` and `suggestMappings` fix what the *screen* shows — the Master Grid was counting 1,168 allocated periods where the school has 846, and the Load column compared a doubled total against one week's capacity. `curriculumSheets` and `mappingSheets` fix what the *commit* writes, and that gate is the one that always runs: a school that has edited the grid commits from `answers.curriculum` and `answers.mappings`, which never pass through the suggester at all.
+
+**Not fixed in `planClasses`.** A class taught by two wings in two pools is real, and step 4 needs both entries to create both pools' cohort rows (§30.9). What is not real is two curricula.
+
+**A known limitation, stated rather than hidden.** A class-section *label* is not unique across pools — "Class 1-A" names one row in the main wing and a different one in an individual timetable — and neither the Subject Mapping nor the Class Teachers sheet carries a timetable column, so the importer resolves a label to whichever row it finds (`sections` is a `Map<label, id>`). Deduplicating by label is therefore correct for the sheet as it exists today, and it is also why an individual timetable cannot yet be given its own mappings through the guided setup. Giving the curriculum and its mappings a pool dimension is the schema change CLAUDE.md already records as outstanding.
+
+`pnpm test:pools` drives the real step-9 preview **and commit** over a class taught by two pools, because the failure was in what the server builds out of a stored draft — the layer a pure-function test cannot reach.
+
 ## 32. A Timetable Teaches the Subjects It Declares (Phase 46)
 
 `subjects` is school-wide, and until now there was no way to narrow it: every timetable saw every subject the school had ever entered. A Junior wing that does not teach Chemistry, an individual timetable set up for a handful of languages, a subject added for one wing only — none of them were expressible.
