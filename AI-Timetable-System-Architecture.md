@@ -3735,6 +3735,10 @@ Empty means **"the same as every other day"** (invariant 7), so the migration is
 
 The question is asked **where the day was ticked**, under the working-day toggles: picking Saturday is the moment "is it a half day?" becomes real, and an answer given anywhere else is one somebody has to go and look for.
 
-Offered for the **weekend only**. Monday to Friday being full is the assumption every school shares, and a half/full question against each of them is five questions nobody has. A weekday that genuinely differs is still shown and still editable — the row appears once its shape is not the week's, which also covers a shape arriving by clone — but it is not *asked*.
+Offered for the **weekend only**, and **only while the weekend is ticked**. Monday to Friday being full is the assumption every school shares, and a half/full question against each of them is five questions nobody has. A weekday that genuinely differs is still shown and still editable — the row appears once its shape is not the week's, which also covers a shape arriving by clone — but it is not *asked*.
+
+**Visibility follows the DRAFT's working days, not the config's.** The draft is ahead of the `timetable_config`, which only learns the week on Next, and filtering by the server's list got both directions wrong: unticking Saturday left its row on screen until the step was committed, and ticking Saturday showed nothing at all — so the question this control exists to ask never appeared. A weekend day the draft has and the server has not seen is synthesised as *full*, which is what an unanswered day is.
+
+That gap also reaches the write. The day-shape route refuses a day the timetable does not work — rightly, since a shape for a day nobody teaches is a row nothing would ever read — so answering the question would have failed with *"add it to the working days first"*, which is exactly what the person just did. The control therefore **commits the week first** when the server has not heard of the day, through the same guarded `commitWeeks(…, { changedOnly: true })` the wizard uses on Next. `pnpm test:dayshapes` asserts the server half of that sequence: refused, then accepted, with nothing between but the day joining the working week.
 
 Two buttons rather than a dropdown: there are exactly two answers, and the one being picked is the one you can see is not selected.

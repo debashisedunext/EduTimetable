@@ -862,21 +862,37 @@ function useDayShapes(wingName: string, workingDays: number[]) {
  * (`halfDayPeriods`), in a field they can change. A default is a starting
  * point; the school may run five on a Saturday out of eight.
  */
-function DayShapes({ wingName, week, onWeekChange }: {
+function DayShapes({ wingName, week, answers }: {
   wingName: string;
   week: WeekAnswer;
-  onWeekChange: (patch: Partial<WeekAnswer>) => void;
+  /** The whole draft — see `save` for why this step may have to commit first. */
+  answers: Record<string, any>;
 }) {
   const { rows, configId, reload } = useDayShapes(wingName, week.workingDays);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  void onWeekChange;
 
   const save = async (day: number, body: Record<string, unknown>) => {
     if (!configId) return;
     setBusy(day);
     setError(null);
     try {
+      /*
+        Push the WEEK first when the server has not heard of this day yet.
+
+        Ticking Saturday changes the draft; the `timetable_config` only learns
+        about it when the step is committed. The day-shape route refuses a day
+        the timetable does not work — rightly, since a shape for a day nobody
+        teaches is a row nothing would ever read — so without this, answering
+        the question this control exists to ask fails with "add it to the
+        working days first", which is precisely what the person just did.
+
+        `changedOnly` because `PUT /:id/structure` rewrites a wing's period
+        grid wholesale; this is the same guarded call the wizard makes on Next.
+      */
+      if (!(rows ?? []).some((r) => r.day === day)) {
+        await commitWeeks(answers, { changedOnly: true });
+      }
       await api(`/timetable-configs/${configId}/day-shapes`, {
         method: "PUT", body: JSON.stringify({ day, ...body }),
       });
@@ -891,14 +907,33 @@ function DayShapes({ wingName, week, onWeekChange }: {
   if (!rows || configId === null) return null;
 
   /*
-    The weekend days this timetable works, plus any OTHER day somebody has
-    already shortened. The second half matters: a school that shortened a
-    Wednesday through the API, or cloned a timetable that had one, must still
-    see and be able to change it — offering the question only for Sat/Sun
-    would hide a row that is shaping their week.
+    §34.4 — driven by the DRAFT's working days, not the server's.
+
+    `rows` is what the `timetable_config` currently says, and the draft is
+    ahead of it: the week is written on Next. Filtering by the server's list
+    got both directions wrong — unticking Saturday left its row on screen
+    until the step was committed, and ticking Saturday showed nothing at all,
+    so the question this control exists to ask never appeared.
+
+    A weekend day the draft has but the server has not seen is synthesised as
+    "full", which is what an unanswered day is.
   */
   const WEEKEND = [6, 7];
-  const shown = rows.filter((r) => WEEKEND.includes(r.day) || !r.full);
+  const working = week.workingDays ?? [];
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  const shown = working
+    .slice()
+    .sort((a, b) => a - b)
+    .map((day) => byDay.get(day) ?? {
+      day, periodsPerDay: week.periodsPerDay, periodDurationMins: week.periodDurationMins, full: true,
+    })
+    /*
+      The weekend, plus any OTHER day already shortened. The second half
+      matters: a Wednesday shortened through the API, or one arriving by
+      clone, must still be visible and changeable — offering the question for
+      Sat/Sun alone would hide a row that is shaping the week.
+    */
+    .filter((r) => WEEKEND.includes(r.day) || !r.full);
   if (shown.length === 0) return null;
 
   const dayName = (n: number) => DAYS.find((d) => d.n === n)?.label ?? `Day ${n}`;
@@ -1144,7 +1179,7 @@ export function StepWeek({ answers, onChange }: {
             question, and an answer given anywhere else is one somebody has to
             go and look for.
           */}
-          <DayShapes wingName={wing.name} week={week} onWeekChange={set} />
+          <DayShapes wingName={wing.name} week={week} answers={answers} />
 
           {/*
             Four numbers on one line rather than four stacked fields. They are

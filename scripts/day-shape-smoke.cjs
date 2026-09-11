@@ -268,6 +268,30 @@ async function main() {
   });
   check(notWorked.status >= 400,
     "a day the timetable does not work — a shape nothing would ever read", `${notWorked.status}`);
+
+  /*
+    §34.4 — and the sequence the screen performs when somebody ticks Sunday.
+
+    The draft is ahead of the `timetable_config`: ticking a day changes the
+    answers, and the week reaches the server on Next. So the control commits
+    the week first and then sets the shape, and this is the server half of
+    that — refused above, accepted here, with nothing between them but the day
+    joining the working week.
+  */
+  await call("PUT", `/timetable-configs/${cfg.id}/structure`, S, {
+    startTime: "08:00", periodsPerDay: 8, periodDurationMins: 40,
+    workingDays: [1, 2, 3, 4, 5, 6, 7], breaks: [],
+  });
+  const nowWorked = await call("PUT", `/timetable-configs/${cfg.id}/day-shapes`, S, {
+    day: 7, full: false, periodsPerDay: 2, periodDurationMins: 30,
+  });
+  check(nowWorked.status < 300,
+    "...but accepted once that day is part of the week — commit the week, then shape the day",
+    `${nowWorked.status}`);
+  const sun = ((await call("GET", `/timetable-configs/${cfg.id}/day-shapes`, S)).json?.days ?? [])
+    .find((d) => d.day === 7);
+  check(sun && !sun.full && sun.periodsPerDay === 2,
+    "and Sunday reads back as a half day of its own", `${sun?.periodsPerDay} × ${sun?.periodDurationMins}`);
   const zero = await call("PUT", `/timetable-configs/${cfg.id}/day-shapes`, S, {
     day: SAT, full: false, periodsPerDay: 0, periodDurationMins: 30,
   });
