@@ -940,6 +940,166 @@ export class TimetableConfigsController {
     return { ok: true, selected: narrows ? ids : null };
   }
 
+  /**
+   * §33 — how long one lesson is, per class, in this timetable.
+   *
+   * Returns the classes this timetable actually teaches, each with its span in
+   * base periods and the minutes that comes to. Minutes are **derived** and
+   * never stored: the base duration belongs to the config (§28), so
+   * `span × period_duration_mins` is the only figure that cannot drift from it.
+   *
+   * `allowed` is the set of lesson lengths this timetable can express — every
+   * whole multiple of the base that still fits the day. Sent rather than
+   * computed on the client so the divisibility rule (§33) has one author, and
+   * so the form can offer a list in which no invalid value exists.
+   */
+  @Get(":id/class-periods")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async classPeriods(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, periodsPerDay: true, periodDurationMins: true, startTime: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty list that reads as
+    // "this timetable teaches nobody".
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const [sections, spans, periods] = await Promise.all([
+      this.prisma.classSection.findMany({
+        where: { timetableConfigId: configId },
+        select: { classId: true, class: { select: { id: true, name: true, sequence: true } } },
+        orderBy: [{ class: { sequence: "asc" } }],
+      }),
+      this.prisma.timetableClassSpan.findMany({
+        where: { timetableConfigId: configId },
+        select: { classId: true, span: true },
+      }),
+      this.prisma.period.findMany({
+        where: { timetableConfigId: configId },
+        select: { startTime: true, endTime: true, isBreak: true, isExtra: true, isActivity: true },
+        orderBy: { sortOrder: "asc" },
+      }),
+    ]);
+
+    /*
+      When school closes — READ off the period rows rather than computed.
+
+      start + periods × duration + breaks + activities is the arithmetic, and
+      every one of those terms is already a row with a real end time. Adding
+      them up again would be a second answer, free to disagree with the grid
+      the school is looking at — and it would get §28.4 wrong, where an
+      activity before the first period makes the day start EARLIER rather than
+      pushing period 1 later.
+
+      The §18 extra window is excluded: it is teaching, but it is not the
+      school day, and the same exclusion is what the Matrix's fill rate makes.
+    */
+    const day = periods.filter((p) => !p.isExtra);
+    const opensAt = day.length > 0 ? day[0].startTime : config.startTime;
+    const closesAt = day.length > 0 ? day[day.length - 1].endTime : null;
+    const breaks = day.filter((p) => p.isBreak).length;
+    const activities = day.filter((p) => p.isActivity).length;
+    const spanBy = new Map(spans.map((r) => [r.classId, Math.max(1, r.span)]));
+    // One row per CLASS, not per class-section: a lesson's length is a fact
+    // about the class's week (§27's rule that periods are a class fact), and
+    // 5-A and 5-B are one answer shown twice.
+    const classes = [...new Map(sections.map((cs) => [cs.classId, cs.class])).values()];
+
+    return {
+      baseDurationMins: config.periodDurationMins,
+      periodsPerDay: config.periodsPerDay,
+      startTime: config.startTime,
+      /**
+       * §33 — when the day opens and closes, and what is in it besides
+       * lessons. One answer for every class: the grid is shared, which is the
+       * whole point of expressing a longer lesson as a double period rather
+       * than as a second clock.
+       */
+      opensAt,
+      closesAt,
+      breaks,
+      activities,
+      /** Every lesson length this grid can express, longest last. */
+      allowed: Array.from({ length: config.periodsPerDay }, (_, i) => i + 1)
+        .map((span) => ({ span, mins: span * config.periodDurationMins })),
+      classes: classes.map((c) => {
+        const span = spanBy.get(c.id) ?? 1;
+        return {
+          id: c.id,
+          name: c.name,
+          span,
+          durationMins: span * config.periodDurationMins,
+          /** How many lessons of that length the day holds. */
+          lessonsPerDay: Math.floor(config.periodsPerDay / span),
+          /**
+           * The day does not divide evenly by this span — the last lesson
+           * would run past the end of the grid. Reported rather than refused:
+           * it is a real state while somebody is mid-edit, and the screen says
+           * so where the number is.
+           */
+          leftover: config.periodsPerDay % span,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Set one class's lesson length.
+   *
+   * **A span, never minutes.** The solver wants a block size in base periods,
+   * and storing minutes would re-derive it at every call site and go stale the
+   * moment the config's own duration changed. See the model's own note.
+   *
+   * Span 1 deletes the row rather than storing it: "not stated" and "one base
+   * period" are the same answer (invariant 7), and storing the absence keeps
+   * the table a record of what was *changed* — so a school that never touches
+   * this screen has no rows at all.
+   *
+   * Deliberately not freeze-guarded, matching §29.1's treatment of the things
+   * that shape a future generation rather than the published week: it writes no
+   * slot.
+   */
+  @Put(":id/class-periods")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setClassPeriod(@Param("id") id: string, @Body() body: { classId?: unknown; span?: unknown }) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, name: true, periodsPerDay: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const classId = toInt(body?.classId, "classId");
+    const span = toInt(body?.span, "span");
+    if (span < 1 || span > config.periodsPerDay) {
+      throw new BadRequestException(
+        `A lesson is between 1 and ${config.periodsPerDay} periods long — this timetable's day is ${config.periodsPerDay} periods.`,
+      );
+    }
+    // Ours, and actually taught here. A class id from another school would
+    // otherwise be stored against our config and read back by the snapshot.
+    const taught = await this.prisma.classSection.findFirst({
+      where: { timetableConfigId: configId, classId }, select: { id: true },
+    });
+    if (!taught) throw new NotFoundException(`This timetable does not teach class ${classId}`);
+
+    if (span === 1) {
+      await this.prisma.timetableClassSpan.deleteMany({ where: { timetableConfigId: configId, classId } });
+    } else {
+      await this.prisma.timetableClassSpan.upsert({
+        where: { timetableConfigId_classId: { timetableConfigId: configId, classId } },
+        create: { timetableConfigId: configId, classId, span, schoolId: config.schoolId },
+        update: { span },
+      });
+    }
+    // §22 — swept by prefix: the snapshot, `/context` and every per-draft copy
+    // are keyed under this config, and a lesson's length changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}): class ${classId} lessons span ${span} period(s)`);
+    return { ok: true, classId, span };
+  }
+
   /** Readiness Dashboard data (§4) — Feasibility Engine over the live DB. */
   @Get(":id/readiness")
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)

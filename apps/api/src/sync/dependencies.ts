@@ -363,6 +363,16 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           (tx, ids) => tx.teacherClassEligibility.count({ where: { classId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherClassEligibility.deleteMany({ where: { classId: { in: ids } } }); },
         ),
+        // §33 — the per-class lesson length, in every timetable that set one.
+        // Named for the same reason as the row below: the FK cascades either
+        // way, and a cascade nobody was shown is what §23's confirmation
+        // exists to prevent.
+        step(
+          "per-class lesson lengths",
+          "deleted",
+          (tx, ids) => tx.timetableClassSpan.count({ where: { classId: { in: ids } } }),
+          async (tx, ids) => { await tx.timetableClassSpan.deleteMany({ where: { classId: { in: ids } } }); },
+        ),
         // §27.16 — the other end of the same table: a class going away takes
         // its name off every subject that named it.
         step(

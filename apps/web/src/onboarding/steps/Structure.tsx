@@ -28,6 +28,7 @@ import {
   type WingAnswer,
 } from "@edutimetable/shared";
 import { api } from "../../api";
+import { asMessage } from "../../components";
 import { DraftActivities, type ActivityRow } from "../../timetable/Activities";
 
 const DAYS = [
@@ -576,6 +577,159 @@ export const defaultWeek = (): WeekAnswer => ({
   ],
 });
 
+/**
+ * §33 — how long one lesson is, per class.
+ *
+ * A school running Class 1 on 30-minute periods and Class 10 on 60, same start
+ * and same finish, is **not** two clocks. 60 is exactly two 30s, so there is one
+ * grid of eight 30-minute periods and Class 10's lessons are *double periods*
+ * on it — a thing the solver has placed atomically since it was written.
+ *
+ * That distinction is the whole safety argument. §28.5 refuses two *unaligned*
+ * lengths because `uq_teacher_slot` compares period NUMBERS, so an overlap in
+ * wall clock is invisible to it. A double period has no such hole: one slot row
+ * is written per period in the span, so an hour holds period 1 *and* period 2
+ * and the same unique index refuses a teacher who is also in Class 1's second
+ * half-hour. It is stricter than the §30 wings route, where the equivalent
+ * collision is only a warning.
+ *
+ * **The form offers lengths, never a free number.** The server sends the
+ * multiples this grid can express, so a length that does not divide the day is
+ * not a value the screen can produce — the divisibility rule has one author and
+ * no invalid state exists to validate against.
+ *
+ * Live rows rather than draft answers, deliberately. A lesson's length is a
+ * property of a `timetable_config` that already exists, and it is read by the
+ * solver rather than committed through the §16 importer; putting it in the
+ * draft would mean it only took effect at the next Next.
+ */
+function ClassLengths({ wingName }: { wingName: string }) {
+  interface Shape {
+    baseDurationMins: number;
+    periodsPerDay: number;
+    opensAt: string;
+    closesAt: string | null;
+    breaks: number;
+    activities: number;
+    allowed: Array<{ span: number; mins: number }>;
+    classes: Array<{
+      id: number; name: string; span: number; durationMins: number;
+      lessonsPerDay: number; leftover: number;
+    }>;
+  }
+  const [shape, setShape] = useState<Shape | null>(null);
+  /** This wing's `timetable_config` id, resolved from its name. */
+  const [configId, setConfigId] = useState<number | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  /*
+    Found by NAME, as everything else in this wizard is: the draft describes
+    wings by name and has no ids in it at all.
+  */
+  const load = async () => {
+    try {
+      const configs = await api<Array<{ id: number; name: string }>>("/timetable-configs");
+      const cfg = configs.find((c) => c.name.trim().toLowerCase() === wingName.trim().toLowerCase());
+      if (!cfg) { setShape(null); setConfigId(null); return; }
+      setConfigId(cfg.id);
+      setShape(await api<Shape>(`/timetable-configs/${cfg.id}/class-periods`));
+      return cfg.id;
+    } catch { setShape(null); setConfigId(null); }
+  };
+  useEffect(() => { void load(); }, [wingName]);
+
+  const setSpan = async (classId: number, span: number) => {
+    if (!configId) return;
+    setBusy(classId);
+    setError(null);
+    try {
+      await api(`/timetable-configs/${configId}/class-periods`, {
+        method: "PUT", body: JSON.stringify({ classId, span }),
+      });
+      await load();
+    } catch (e) {
+      setError(asMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // A wing whose timetable does not exist yet (steps 3–5 have not run) or one
+  // that teaches nobody. Silent rather than an empty table: there is nothing
+  // to say, and saying it takes the room the week's own form wants.
+  if (!shape || shape.classes.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <label style={label}>How long is one lesson, per class</label>
+      <p style={{ fontSize: 12.3, color: "var(--ink-soft)", margin: "0 0 10px" }}>
+        The grid is {shape.periodsPerDay} × {shape.baseDurationMins} min, {shape.opensAt}
+        {shape.closesAt ? `–${shape.closesAt}` : ""}
+        {shape.breaks > 0 ? ` · ${shape.breaks} break${shape.breaks === 1 ? "" : "s"}` : ""}
+        {shape.activities > 0 ? ` · ${shape.activities} activit${shape.activities === 1 ? "y" : "ies"}` : ""}.
+        A class on longer lessons takes two or more of these at a time — the day still opens and
+        closes together.
+      </p>
+
+      <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "auto", maxHeight: 260 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead><tr>
+            {["Class", "One lesson", "Lessons a day", ""].map((h) => (
+              <th key={h} style={{
+                textAlign: "left", font: "600 10px/1.3 Inter", textTransform: "uppercase",
+                letterSpacing: "0.07em", color: "var(--steel)", padding: "8px 11px",
+                borderBottom: "1px solid var(--line)", background: "var(--offwhite)",
+                position: "sticky", top: 0,
+              }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {shape.classes.map((c) => (
+              <tr key={c.id}>
+                <td style={{ padding: "6px 11px", borderBottom: "1px solid var(--line)" }}>{c.name}</td>
+                <td style={{ padding: "4px 11px", borderBottom: "1px solid var(--line)" }}>
+                  <select
+                    value={c.span}
+                    disabled={busy === c.id}
+                    aria-label={`Lesson length for ${c.name}`}
+                    onChange={(e) => void setSpan(c.id, Number(e.target.value))}
+                    style={{
+                      padding: "3px 7px", border: "1px solid var(--line)", borderRadius: 6,
+                      fontSize: 12, background: "var(--paper)", color: "var(--ink)",
+                    }}
+                  >
+                    {shape.allowed.map((a) => (
+                      <option key={a.span} value={a.span}>
+                        {a.mins} min{a.span > 1 ? ` · ${a.span} periods` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td style={{ padding: "6px 11px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono, monospace)", fontSize: 11.5, color: "var(--ink-faint)" }}>
+                  {c.lessonsPerDay}
+                </td>
+                <td style={{ padding: "6px 11px", borderBottom: "1px solid var(--line)", fontSize: 11.5, color: "var(--amber)" }}>
+                  {/*
+                    The day does not divide by this length, so the last lesson
+                    would run past the end of the grid. Said where the number
+                    is rather than refused: it is a real state mid-edit, and the
+                    school may be about to change the period count next.
+                  */}
+                  {c.leftover > 0
+                    ? `${c.leftover} period${c.leftover === 1 ? "" : "s"} left over at the end of the day`
+                    : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {error && <Note tone="warn">{error}</Note>}
+    </div>
+  );
+}
+
 export function StepWeek({ answers, onChange }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -697,6 +851,8 @@ export function StepWeek({ answers, onChange }: {
         rooms={[]}
         workingDays={week.workingDays}
       />
+
+      <ClassLengths wingName={wing.name} />
 
       <Note tone="ok">
         <strong>Weekly capacity: {capacity} periods.</strong> {week.periodsPerDay} periods ×{" "}

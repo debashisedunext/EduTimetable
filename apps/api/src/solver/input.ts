@@ -37,6 +37,27 @@ export async function buildFeasibilitySnapshot(
   */
   const subjectSelection = await subjectSelectionFor(prisma, configId);
 
+  /*
+    §33 — how many BASE periods one of each class's lessons occupies.
+
+    A school running Class 1 at 30 minutes and Class 10 at 60, same start and
+    same finish, is ONE grid of eight 30-minute periods on which Class 10's
+    lessons are **double periods**. This map is that multiplier, and applying
+    it here — where the curriculum becomes the solver's requirements — is what
+    makes every downstream consumer agree: the solver places the block
+    atomically, `writer.ts` emits one slot row per period in it, and
+    `uq_teacher_slot` therefore refuses a teacher who is in Class 10's hour and
+    Class 1's second half-hour at once.
+
+    Absent means span 1 (invariant 7), which is every class in every school
+    today.
+  */
+  const spanRows = await prisma.timetableClassSpan.findMany({
+    where: { timetableConfigId: configId, classId: { in: classIds } },
+    select: { classId: true, span: true },
+  });
+  const spanByClass = new Map(spanRows.map((r) => [r.classId, Math.max(1, r.span)]));
+
   const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects, allSubjects] =
     await Promise.all([
       // Phase 19: the curriculum is year-scoped, and this filter is what keeps
@@ -277,7 +298,21 @@ export async function buildFeasibilitySnapshot(
       periodsPerWeek: r.periodsPerWeek,
       maxPeriodsPerDay: r.maxPeriodsPerDay,
       samePeriodAcrossWeek: r.samePeriodAcrossWeek,
-      consecutiveBlockSize: r.consecutiveBlockSize,
+      /*
+        §33 — the class's own lesson length, unless this row asks for more.
+
+        `max`, not "override": a class on 60-minute periods whose Science is a
+        double LAB wants two hours, which is four base periods, and the
+        curriculum row already says 2 in the class's own units. Taking the
+        larger keeps both statements true and keeps span 1 (every school today)
+        reading exactly as it does now.
+
+        Deliberately not multiplied. A curriculum row's block size is already
+        in BASE periods — it is what `writer.ts` counts — so multiplying here
+        would turn a school's existing double period into a quadruple the first
+        time anybody set a class span.
+      */
+      consecutiveBlockSize: Math.max(r.consecutiveBlockSize, spanByClass.get(r.classId) ?? 1),
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
       blockMayCrossBreak: r.blockMayCrossBreak,
     })),

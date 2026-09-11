@@ -316,6 +316,26 @@ export class CloneService {
         });
       }
 
+      /*
+        §33 — how long each class's lesson is. An INPUT by §3.12's test: it
+        shapes what a generation produces rather than being something a
+        generation produced, so it comes across with the settings and the
+        curriculum.
+
+        Class ids are school-wide, so there is nothing to remap. A source that
+        set none copies none, which is the same answer (span 1).
+      */
+      const spans = await tx.timetableClassSpan.findMany({
+        where: { timetableConfigId: c.id }, select: { classId: true, span: true },
+      });
+      if (spans.length > 0) {
+        await tx.timetableClassSpan.createMany({
+          data: spans.map((r) => ({
+            schoolId, timetableConfigId: config.id, classId: r.classId, span: r.span,
+          })),
+        });
+      }
+
       // ---- the one map everything else hangs off
       const sectionMap = new Map<number, number>();
       for (const s of src.sections) {

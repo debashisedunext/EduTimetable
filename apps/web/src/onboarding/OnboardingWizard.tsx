@@ -174,6 +174,10 @@ export const STEP_TITLES = [
  * harder. A set of step numbers rather than a guess inside each screen, so the
  * two kinds are visible side by side and a new step has to choose.
  *
+ * **Timetable (5) belongs here too.** §33 gives it a class-wise table — every
+ * class down the left, the shape of its day across — and that is a grid by any
+ * reading.
+ *
  * **Subjects (6) belongs here and was missing.** Its table is ten columns wide
  * — name, code, the classes chip, category, priority, placement, three flags
  * and the row control — and an 880px measure squeezed every one of them: the
@@ -181,7 +185,7 @@ export const STEP_TITLES = [
  * carried several hundred pixels of empty gutter on each side while doing it.
  * A measure is for prose. This is a spreadsheet.
  */
-const WIDE_STEPS = new Set([4, 6, 7, 8]);
+const WIDE_STEPS = new Set([4, 5, 6, 7, 8]);
 
 /**
  * The steps that want the pane's HEIGHT, not only its width (§28).

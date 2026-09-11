@@ -3636,3 +3636,54 @@ The step is also now in **`WIDE_STEPS`**, which it should always have been: its 
 **Deliberately not freeze-guarded** (§29.1). That section's "not frozen" list already names subjects, and this writes no slot: a frozen timetable's published week is untouched. What it changes is what the *next* generation would produce, which is what editing the curriculum does too.
 
 `pnpm test:subjects` is the proof, and its load-bearing assertion is a real generation: 8 lessons across 2 subjects where an unfiltered run gives 16 across 4.
+
+
+## 33. A Longer Lesson Is a Double Period (Phase 49)
+
+A school asked for **Class 1 on eight 30-minute periods and Class 10 on four 60-minute periods, same start time and same finish.** §28.5 refuses per-class period durations, so the first answer was no — and it was the wrong answer, because this case is not the one §28.5 is about.
+
+§28.5's example is **30 against 40**. Those do not line up, so "period 3" means two different windows, `uq_teacher_slot` compares period *numbers*, and a teacher overlapping from 09:00 to 09:20 is invisible to it. The database guard inverts: it accepts real collisions and refuses legal placements.
+
+**60 is exactly two 30s.** Nothing is unaligned. There is one grid of eight 30-minute periods, and Class 10's hour is a lesson that occupies two of them — which is a **double period**, placed atomically since the solver was written (invariant 10).
+
+The load-bearing fact is in `apps/api/src/solver/writer.ts`: a placement of span N emits **N slot rows, one per period number**. So Class 10's 08:00–09:00 hour holds period 1 *and* period 2, and a teacher who also has Class 1's 08:30–09:00 lesson collides on period 2 and is refused. Nothing is switched off — and this is **stricter than the §30 wings route**, where the same collision across two wings is only a §30.7 warning.
+
+`pnpm test:periods` asserts that against MySQL directly rather than by trusting the solver not to try: it takes a generated hour and attempts the colliding insert.
+
+### 33.1 The model
+
+`timetable_class_spans (timetable_config_id, class_id, span)`.
+
+- **A span in base periods, not minutes.** The solver wants a block size; storing minutes would mean re-deriving it at every call site and going stale whenever the config's own duration changed underneath. Minutes are what the *screen* shows — `span × period_duration_mins` — so changing the base from 30 to 35 moves every class proportionally, which is what a school means by "make the periods longer".
+- **Keyed by `(config, class)`**, because the base duration belongs to the config (§28) and §30.9 lets one class sit in two pools with different bases.
+- **Empty means "not stated", never span 0** (invariant 7), which is what makes the migration a bare `CREATE TABLE`: every class in every school today keeps span 1. Setting a span back to 1 **deletes the row** — "not stated" and "one base period" are the same answer, so the table records only what was changed.
+
+### 33.2 A floor, never a multiplier
+
+The span reaches the solver in `buildFeasibilitySnapshot`, as `Math.max(row.consecutiveBlockSize, span)`.
+
+`max`, not "override": a class on 60-minute lessons whose Science is a double *lab* wants two hours, and the curriculum row already says 2 in base periods. Taking the larger keeps both statements true.
+
+And deliberately **not multiplied**. A curriculum row's block size is already in base periods — it is what `writer.ts` counts — so multiplying would turn a school's existing double period into a quadruple the first time anybody set a class span.
+
+### 33.3 The screen
+
+The form offers **lengths, never a free number**: the server sends every whole multiple of the base that fits the day, so a length that does not divide the grid is not a value the screen can produce. The divisibility rule has one author and there is no invalid state to validate against.
+
+Where a span does not divide the day evenly, the leftover is **reported beside the number rather than refused** — it is a real state while somebody is mid-edit, and they may be about to change the period count next.
+
+**When school closes is read off the `periods` rows, never recomputed.** `start + periods × duration + breaks + activities` is the arithmetic, and every term is already a row with a real end time; adding them up again would be a second answer free to disagree with the grid on screen — and it would get §28.4 wrong, where an activity before the first period makes the day start *earlier* rather than pushing period 1 later. The §18 extra window is excluded, the same exclusion the Matrix's fill rate makes.
+
+The Timetable step joins `WIDE_STEPS` for this: it now carries a class-wise table, which is a grid by any reading.
+
+### 33.4 The limit, and when to use wings instead
+
+This works whenever every period length is a whole multiple of the shortest. 30/60 needs an 8-column grid; 30/45 needs a 15-minute base and 16 columns; **30/40 needs a 10-minute base and 24 columns before breaks**, at which point the §30 wings route is the better answer and §28.5 stands unchanged.
+
+The question to ask a school is therefore *"is every period length a multiple of the shortest one?"* — not *"do your classes have different period lengths?"*
+
+### 33.5 Still to build
+
+- **Entering the curriculum in lessons rather than base periods.** A class on 60-minute lessons that takes 3 English a week needs `periods_per_week = 6`; typing 6 today means six base periods, which is three hours. Until the translation exists, the number entered is in base periods.
+- **An odd count cannot be all doubles.** 5 base periods at span 2 is two doubles and one leftover single — a correct timetable for the data given, but not what the school meant. It should be reported.
+- **Printing a class's week as 4 rows, not 8.** The data is adjacent identical pairs; collapsing them is display-only work.

@@ -115,6 +115,7 @@ model School {
   teacherSubjects        TeacherSubject[]
   subjectClasses         SubjectClass[]
   timetableSubjects      TimetableSubject[]
+  timetableClassSpans    TimetableClassSpan[]
   staffingChanges        StaffingChange[]
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
@@ -348,6 +349,8 @@ model SchoolClass {
   eligibleTeachers TeacherClassEligibility[]
   /// §27.16 — the subjects DECLARED as taught to this class.
   subjectClasses   SubjectClass[]
+  /// §33 — how long one of this class's lessons is, per timetable.
+  periodSpans      TimetableClassSpan[]
 
   @@unique([schoolId, name])
   @@map("classes")
@@ -588,6 +591,52 @@ model TeacherClassEligibility {
   @@id([teacherId, classId])
   @@index([schoolId])
   @@map("teacher_class_eligibility")
+}
+
+/// §33 — how many BASE periods one of this class's lessons occupies.
+///
+/// A school running Class 1 on 30-minute periods and Class 10 on 60-minute
+/// periods, same start and same finish, is not two clocks: 60 is exactly two
+/// 30s, so there is one grid of eight 30-minute periods and Class 10's lessons
+/// are **double periods** on it. `span` is that multiplier — 1 for Class 1, 2
+/// for Class 10.
+///
+/// **Why this is safe where §28.5 is not.** §28.5 refuses two unaligned period
+/// lengths because `uq_teacher_slot` compares period NUMBERS, so a teacher in
+/// Class 9 P3 and Class 11 P2 overlaps in wall clock and the database cannot
+/// see it. A double period has no such hole: `writer.ts` emits **one slot row
+/// per period in the span**, so an hour holds period 1 *and* period 2 and the
+/// same unique index refuses the collision. It is stricter than the wings
+/// route (§30), where a shared teacher's cross-wing overlap is only a warning.
+///
+/// **A span, not a duration in minutes.** The solver needs a block size in base
+/// periods, and storing minutes would mean re-deriving it everywhere and
+/// refusing whenever the config's own duration changed underneath. Minutes are
+/// what the SCREEN shows — `span × timetable_config.period_duration_mins` — so
+/// changing the base from 30 to 35 moves every class proportionally, which is
+/// what a school means by "make the periods longer".
+///
+/// Keyed by `(timetable_config_id, class_id)` rather than on `classes`: the
+/// base duration belongs to the config (§28), so the same span means different
+/// minutes in different timetables, and §30.9 lets one class sit in two pools.
+///
+/// **Empty means "not stated", never span 0** (invariant 7) — every class in
+/// every school today has no row and therefore span 1, which is what it has
+/// now. That is what makes the migration a bare CREATE TABLE.
+model TimetableClassSpan {
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  classId           Int             @map("class_id")
+  class             SchoolClass     @relation(fields: [classId], references: [id], onDelete: Cascade)
+  /// Base periods per lesson. Always >= 1; 1 is the same as having no row.
+  span              Int             @default(1)
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, classId])
+  @@index([schoolId])
+  @@index([classId])
+  @@map("timetable_class_spans")
 }
 
 /// §32 — which subjects a TIMETABLE teaches, declared per `timetable_config`.
@@ -866,6 +915,8 @@ model TimetableConfig {
   staffingChanges             StaffingChange[]
   /// §32 — the subjects this timetable teaches. Empty = not stated = all.
   subjects                    TimetableSubject[]
+  /// §33 — per-class lesson length, in base periods. Empty = not stated = 1.
+  classSpans                  TimetableClassSpan[]
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]
