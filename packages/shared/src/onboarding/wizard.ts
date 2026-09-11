@@ -206,7 +206,63 @@ export interface PlannedClass {
   sequence: number;
   wing: string;
   sections: string[];
+  /**
+   * The sections of this class that ALREADY exist in this wing's pool.
+   *
+   * Always a prefix of `sections` — the letters are assigned in order and the
+   * importer never deletes, so what exists is `A..`. Carried so the grid can
+   * say which rows are records and which are a plan, and so "Remove" can be
+   * withheld from a class that has rows (see `floorFor`).
+   */
+  existing: string[];
+  /** The fewest sections this class may have — see `SchoolShape`. */
+  floor: number;
 }
+
+/**
+ * §3.10b — what the school ALREADY is, which step 4 must not contradict.
+ *
+ * The Classes step was a pure plan: slider range x "sections per class",
+ * computed entirely from the draft, never asking the database anything. That is
+ * wrong in a way that is hard to see, because the §16 importer skips by natural
+ * key and has no delete path — so a screen showing 2 sections for a class that
+ * has 4 creates nothing, deletes nothing, and reports success. The number is
+ * simply believed, and it is wrong.
+ *
+ * Two facts, deliberately separate:
+ *
+ *  - **`floors` is school-wide.** A class's section count is a fact about the
+ *    school — Class 1 runs four sections — so the floor is the most sections
+ *    any pool runs for it. A new timetable may add sections to a class and may
+ *    decline to teach it at all, but it may not run *fewer* than the school
+ *    does. That is a rule about the school's own record, not a §30
+ *    resource-sharing check: each pool still gets its own `class_sections`
+ *    rows, and nothing is shared between them.
+ *  - **`existing` is per pool**, keyed by wing name — which is the natural key
+ *    this whole flow already uses (`commitWings` skips by name, the §16
+ *    importer skips by name). It answers "is this row a record or a plan?",
+ *    which `floors` cannot: Class 1 having four sections school-wide says
+ *    nothing about whether *this* timetable has any.
+ *
+ * Optional throughout. Absent means "not stated" (invariant 7) and yields
+ * exactly the pre-§3.10b behaviour, which is what keeps the unit tests, the AI
+ * interviewer and any caller that has no database in reach working unchanged.
+ */
+export interface SchoolShape {
+  /** Class name → the most sections the school runs for it, in any pool. */
+  floors?: Record<string, number>;
+  /** Wing name → class name → the section letters that exist in that pool. */
+  existing?: Record<string, Record<string, string[]>>;
+}
+
+/** Case-insensitive lookup, because a wing's name is typed by a human. */
+const shapeFor = (shape: SchoolShape | undefined, wing: string): Record<string, string[]> => {
+  const want = wing.trim().toLowerCase();
+  for (const [name, classes] of Object.entries(shape?.existing ?? {})) {
+    if (name.trim().toLowerCase() === want) return classes;
+  }
+  return {};
+};
 
 /**
  * Expand the wings into the class rows they describe.
@@ -228,7 +284,7 @@ export interface PlannedClass {
  * second by natural key and files the SECTIONS in their own pools, which is the
  * behaviour `classSectionsInPool` exists for.
  */
-export function planClasses(wings: WingAnswer[]): {
+export function planClasses(wings: WingAnswer[], shape?: SchoolShape): {
   classes: PlannedClass[];
   /**
    * §30.11 — every issue names the POOL it belongs to.
@@ -258,12 +314,24 @@ export function planClasses(wings: WingAnswer[]): {
 
   for (const wing of wings ?? []) {
     const scope = wingScope(wing);
+    const here = shapeFor(shape, wing.name);
     const lo = Math.max(0, Math.min(CLASS_LADDER.length - 1, wing.fromIndex));
     const hi = Math.max(lo, Math.min(CLASS_LADDER.length - 1, wing.toIndex));
     for (let i = lo; i <= hi; i++) {
       const className = CLASS_LADDER[i];
       const over = wing.overrides?.[className];
-      if (over?.removed) continue;
+      const existing = here[className] ?? [];
+      /*
+        §3.10b — a class this pool already teaches cannot be removed here.
+
+        Removing it only drops it from the SHEET, and the §16 importer has no
+        delete path, so the rows survive either way. That is precisely the
+        problem: the grid would stop listing a class whose children are still
+        timetabled, and the next person to read this screen would believe it.
+        Deleting a cohort is the Classes master's job, where the count of what
+        is about to go is shown first (§27.11's rule).
+      */
+      if (over?.removed && existing.length === 0) continue;
 
       const owner = claimedBy.get(`${scope}\u0000${className}`);
       if (owner && owner !== wing.name) {
@@ -276,7 +344,23 @@ export function planClasses(wings: WingAnswer[]): {
       }
       claimedBy.set(`${scope}\u0000${className}`, wing.name);
 
-      const count = Math.max(1, Math.min(60, over?.sections ?? wing.sections ?? 1));
+      /*
+        §3.10b — the school's own record is the floor, and it is applied HERE.
+
+        Not in the screen. `planClasses` is what the grid draws *and* what
+        `classSheets` turns into importer rows, so a floor enforced only by an
+        `<input min>` would be a number the commit did not honour — the §10.6
+        lesson about never re-deriving at a call site, in its other form.
+
+        `existing.length` is in the max as well as `floors`, and not
+        redundantly: `floors` is what the caller could see across the school,
+        while `existing` is this pool's own rows. A stale or partial shape must
+        never produce a plan that is smaller than the rows already filed under
+        it.
+      */
+      const floor = Math.max(1, shape?.floors?.[className] ?? 1, existing.length);
+      const asked = Math.max(1, Math.min(60, over?.sections ?? wing.sections ?? 1));
+      const count = Math.max(asked, floor);
       classes.push({
         className,
         // The 1-based ladder position, and the ABSOLUTE number matters — see
@@ -285,6 +369,8 @@ export function planClasses(wings: WingAnswer[]): {
         sequence: i + 1,
         wing: wing.name,
         sections: sectionLetters(count),
+        existing,
+        floor,
       });
     }
   }
@@ -328,11 +414,11 @@ export function sessionSheets(session: SessionAnswer): RawSheet[] {
  * the right week — the same column an uploaded workbook uses, so the wizard
  * needs no attach step of its own.
  */
-export function classSheets(answers: WizardAnswers): {
+export function classSheets(answers: WizardAnswers, shape?: SchoolShape): {
   sheets: RawSheet[];
   issues: Array<{ message: string; fix: string; scope: string }>;
 } {
-  const { classes, issues } = planClasses(answers.wings ?? []);
+  const { classes, issues } = planClasses(answers.wings ?? [], shape);
   if (classes.length === 0) return { sheets: [], issues };
   const year = answers.session?.name ?? "";
 
@@ -350,12 +436,12 @@ export function classSheets(answers: WizardAnswers): {
 }
 
 /** What the grid and the summary line show, without touching the database. */
-export function planSummary(answers: WizardAnswers): {
+export function planSummary(answers: WizardAnswers, shape?: SchoolShape): {
   classes: number;
   sections: number;
   perWing: Array<{ wing: string; classes: number; sections: number }>;
 } {
-  const { classes } = planClasses(answers.wings ?? []);
+  const { classes } = planClasses(answers.wings ?? [], shape);
   const byWing = new Map<string, { classes: number; sections: number }>();
   for (const c of classes) {
     const e = byWing.get(c.wing) ?? { classes: 0, sections: 0 };

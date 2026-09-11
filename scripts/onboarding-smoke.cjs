@@ -579,9 +579,23 @@ async function newOwnerWithSchool(email, schoolName) {
   const annexe = (seeded.json?.answers?.wings ?? []).find((w) => w.name === "ZZOB Annexe");
   check(!!annexe, "the wing is in the draft by name",
     (seeded.json?.answers?.wings ?? []).map((w) => w.name).join(", "));
-  check(annexe && annexe.fromIndex === 4 && annexe.toIndex === 9 && annexe.sections === 2,
+  check(annexe && annexe.fromIndex === 4 && annexe.toIndex === 9,
     "with the SAME default range the Add-a-wing button uses — one definition, not two",
-    annexe ? `${annexe.fromIndex}–${annexe.toIndex} × ${annexe.sections}` : "missing");
+    annexe ? `${annexe.fromIndex}–${annexe.toIndex}` : "missing");
+  /**
+   * §3.10b — and the SECTION count comes from the school, not from a constant.
+   *
+   * This asserted `2` — `DEFAULT_WING_SECTIONS` — and passed for as long as
+   * the number was hardcoded. This school runs four sections for nine of its
+   * sixteen classes, so two was never a description of it: it was the guess
+   * that a person then pressed Next through, making it true.
+   *
+   * The commonest, deliberately, not the widest: Class 6–8 run three here and
+   * Class 9–12 run two, and each keeps its own floor in the grid.
+   */
+  check(annexe && annexe.sections === 4,
+    "and a section count taken from the school's own shape, not a hardcoded 2",
+    annexe ? `${annexe.sections} sections` : "missing");
 
   /**
    * §27.12 — the school's own answers must survive this write.

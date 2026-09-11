@@ -21,6 +21,7 @@ import {
   DEFAULT_WING_SECTIONS,
   planClasses,
   planSummary,
+  type SchoolShape,
   weeklyCapacity,
   WING_SUGGESTIONS,
   wingRangeFor,
@@ -355,6 +356,32 @@ export function StepClasses({ answers, onChange, startWing = null }: {
   startWing?: string | null;
 }) {
   const wings: WingAnswer[] = answers.wings ?? [];
+  /**
+   * §3.10b — what the school already is.
+   *
+   * This step used to be a pure plan: slider range x sections, computed from
+   * the draft and never checked against anything. The §16 importer skips by
+   * natural key and has no delete path, so a plan describing a smaller school
+   * than exists created nothing, deleted nothing and reported success — the
+   * number on screen was simply believed, and it was wrong.
+   *
+   * Fetched rather than stored in the draft, for the same reason `stampPools`
+   * re-reads the pool mode: a copy of a fact about the school, held in a
+   * half-finished setup, is a copy that goes stale.
+   *
+   * Empty on failure, which is the safe direction: the floor then falls back
+   * to 1 and this screen behaves exactly as it did before — it may plan too
+   * few, and the commit still cannot delete anything.
+   */
+  const [shape, setShape] = useState<SchoolShape>({});
+  const year: string | undefined = answers.session?.name;
+  useEffect(() => {
+    let live = true;
+    api<SchoolShape>(`/onboarding/classes-shape${year ? `?year=${encodeURIComponent(year)}` : ""}`)
+      .then((s) => { if (live) setShape(s ?? {}); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [year]);
   const [active, setActive] = useState(() => {
     const want = (startWing ?? "").trim().toLowerCase();
     if (!want) return 0;
@@ -371,10 +398,21 @@ export function StepClasses({ answers, onChange, startWing = null }: {
   */
   const idx = wings.length === 0 ? 0 : Math.min(active, wings.length - 1);
   const wing = wings[idx];
-  const { classes, issues } = useMemo(() => planClasses(wings), [wings]);
-  const summary = useMemo(() => planSummary({ wings }), [wings]);
+  const { classes, issues } = useMemo(() => planClasses(wings, shape), [wings, shape]);
+  const summary = useMemo(() => planSummary({ wings }, shape), [wings, shape]);
 
   if (!wing) return <Note tone="warn">Add a wing on the previous step first.</Note>;
+
+  /*
+    The tightest floor among the classes this wing runs.
+
+    One number, because "sections per class" is one number. It is a floor on
+    the box, not on each class: a class whose own floor is higher keeps it,
+    applied by `planClasses` and shown in its own row below. Raising the box to
+    the widest floor instead would silently widen every other class in the wing.
+  */
+  const mine = classes.filter((c) => c.wing === wing.name);
+  const wingFloor = mine.length === 0 ? 1 : Math.min(...mine.map((c) => c.floor));
 
   const update = (w: WingAnswer) => onChange({ wings: wings.map((x, i) => (i === idx ? w : x)) });
   const override = (className: string, patch: { sections?: number; removed?: boolean }) =>
@@ -410,8 +448,13 @@ export function StepClasses({ answers, onChange, startWing = null }: {
       <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", marginTop: 14 }}>
         <div>
           <label style={label}>Sections per class</label>
-          <input style={input} type="number" min={1} max={26} value={wing.sections}
+          <input style={input} type="number" min={wingFloor} max={26} value={wing.sections}
             onChange={(e) => update({ ...wing, sections: Number(e.target.value) })} />
+          {wingFloor > 1 && (
+            <p style={{ fontSize: 11, color: "var(--ink-faint)", margin: "4px 0 0" }}>
+              The school already runs {wingFloor} for some of these classes, so that is the fewest.
+            </p>
+          )}
         </div>
         <div>
           <label style={label}>This wing</label>
@@ -444,31 +487,58 @@ export function StepClasses({ answers, onChange, startWing = null }: {
             ))}
           </tr></thead>
           <tbody>
-            {classes.filter((c) => c.wing === wing.name).map((c) => (
+            {mine.map((c) => {
+              // Always a prefix — letters are assigned in order and nothing is
+              // ever deleted — so "which of these are records?" is a count.
+              const made = c.existing.length;
+              return (
               <tr key={c.className}>
                 <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)" }}>{c.className}</td>
-                <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)", color: "var(--ink-faint)", fontFamily: "var(--mono, monospace)", fontSize: 11.5 }}>
-                  {c.sections.join(", ")}
+                <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono, monospace)", fontSize: 11.5 }}>
+                  <span style={{ color: "var(--ink-soft)" }}>{c.existing.join(", ")}</span>
+                  {c.sections.length > made && (
+                    <span style={{ color: "var(--accent)" }}>
+                      {made > 0 ? ", " : ""}{c.sections.slice(made).join(", ")}
+                      <span style={{ fontFamily: "Inter", fontSize: 10.5, marginLeft: 5 }}>new</span>
+                    </span>
+                  )}
                 </td>
                 <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)", color: "var(--ink-faint)" }}>{c.wing}</td>
                 <td style={{ padding: "4px 11px", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" }}>
-                  <input type="number" min={1} max={26} value={c.sections.length} aria-label={`Sections for ${c.className}`}
+                  <input type="number" min={c.floor} max={26} value={c.sections.length} aria-label={`Sections for ${c.className}`}
                     onChange={(e) => override(c.className, { sections: Number(e.target.value) })}
                     style={{ width: 52, padding: "3px 6px", border: "1px solid var(--line)", borderRadius: 6, fontSize: 12 }} />
-                  <button onClick={() => override(c.className, { removed: true })}
-                    style={{ marginLeft: 6, border: "none", background: "none", color: "var(--signal)", cursor: "pointer", fontSize: 11.5 }}>
-                    Remove
-                  </button>
+                  {/*
+                    §3.10b — no Remove once this wing teaches the class.
+
+                    The button only dropped the class from the sheet; the §16
+                    importer cannot delete, so its rows survived and the grid
+                    simply stopped listing children who are still timetabled.
+                    A cohort is deleted on the Classes master, which counts
+                    what is about to go before it goes (§27.11).
+                  */}
+                  {made === 0 ? (
+                    <button onClick={() => override(c.className, { removed: true })}
+                      style={{ marginLeft: 6, border: "none", background: "none", color: "var(--signal)", cursor: "pointer", fontSize: 11.5 }}>
+                      Remove
+                    </button>
+                  ) : (
+                    <span title="Already created — remove it on the Classes master"
+                      style={{ marginLeft: 6, fontSize: 11, color: "var(--ink-faint)" }}>created</span>
+                  )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
       <p style={{ fontSize: 11.5, color: "var(--ink-faint)", margin: "8px 0 0" }}>
         A class with 6 sections next to classes with 4 is one edit here, not a reason to avoid the
-        slider. These are created when you press Next — and creating them twice is impossible, so
-        coming back is safe.
+        slider. Only the sections marked <span style={{ color: "var(--accent)" }}>new</span> are
+        created when you press Next — creating them twice is impossible, so coming back is safe.
+        Nothing on this screen deletes anything: a class or section that already exists is removed
+        on the Classes master.
       </p>
     </>
   );

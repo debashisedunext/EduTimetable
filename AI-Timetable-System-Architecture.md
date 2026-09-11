@@ -291,7 +291,30 @@ So the button now finishes step 3 and opens **step 4 (Classes)**. Nothing new is
 
 **Which wing step 4 opens on travels in the URL** (`/guided-setup?at=4&wing=…`), not in the draft. It is where somebody is being *sent*, not something they have said: stored as an answer it would keep forcing that tab on every later visit; in the URL it is spent as soon as they navigate. On a school already running three wings, landing on the first one's ladder read as the button having done nothing.
 
-The default range and section count for a brand-new wing (**Class 1 – Class 6, two sections**, or the matching entry in `WING_SUGGESTIONS` if the name is one of the three suggested ones) now live in `packages/shared` as `wingRangeFor` / `DEFAULT_WING_SECTIONS`. There are three doors that create a wing — step 3's *+ Add wing*, `answersFromSchool` rebuilding a wing that has no classes yet, and this button — and all three carried their own copy of `4`, `9` and `2`.
+The default range for a brand-new wing (**Class 1 – Class 6**, or the matching entry in `WING_SUGGESTIONS` if the name is one of the three suggested ones) lives in `packages/shared` as `wingRangeFor`. There are three doors that create a wing — step 3's *+ Add wing*, `answersFromSchool` rebuilding a wing that has no classes yet, and this button — and all three carried their own copy of `4`, `9` and `2`. The **section count** is no longer a constant at all: §3.10b asks the school what shape it is, and `DEFAULT_WING_SECTIONS` survives only as the answer for a school that has not told us yet.
+
+### 3.10b The Classes Step Cannot Describe a Smaller School Than Exists (Phase 44)
+
+Step 4 was a pure **plan**. `planClasses` expanded the slider range by "sections per class", applied the per-class overrides, and handed the result to the §16 importer. Nothing in the flow ever asked the database what the school already was.
+
+The reason that went unnoticed for so long is the reason it mattered. The importer **skips by natural key and has no delete path**, so a screen showing two sections for a class that runs four created nothing, deleted nothing, and reported success. Nothing broke. The number was simply believed — and *Remove* and the per-class counter both looked destructive while being incapable of destroying anything, which is the worst of both: it teaches the reader that this screen deletes, while lying about the school at the same time.
+
+Two places put the wrong number there:
+
+- **`recordWing`** (§3.10a) pushed `DEFAULT_WING_SECTIONS` — a hardcoded **2** — without looking at the school. In a school running four, pressing Next made the guess true.
+- **`answersFromSchool`** collapsed a wing's per-class counts to the commonest and rebuilt no `overrides`, so a wing running four sections to Class 8 and two above it was drawn entirely at four.
+
+**The rule: a class's section count is a fact about the SCHOOL, so the floor is the most sections any one §30 pool runs for that class.** A timetable may add sections, and may decline to teach the class at all; it may not run fewer than the school does.
+
+That is a rule about the school's own record, **not a §30 resource-sharing check**. Every pool still gets its own `class_sections` rows and shares nothing — an individual timetable is floored at four *and* gets four rows of its own, which `pnpm test:classfloor` asserts as one step, because the two are easy to conflate and the second is what §30.9 exists to protect.
+
+**The floor lives in `planClasses`, not in an `<input min>`.** That function is what the grid draws *and* what `classSheets` turns into importer rows, so a floor the screen showed and the commit ignored is impossible by construction — §10.6's rule about never re-deriving at a call site, in its other form. `GET /onboarding/classes-shape` supplies it, read fresh on every call rather than stored in the draft for the same reason `stampPools` re-reads the pool mode: a copy of a fact about the school, held in somebody's half-finished setup, is a copy that goes stale.
+
+`SchoolShape` carries two facts that look alike and are not. **`floors` is school-wide** — the widest any *one* pool runs, never the total, or an individual timetable would be floored at the main school's four *plus* its own two. **`existing` is per pool**, keyed by wing name, and answers the different question "is this row a record or a plan?", which `floors` cannot. Both are optional throughout: absent means "not stated" (invariant 7) and yields exactly the pre-§3.10b behaviour, which is what keeps the unit tests and the AI interviewer working unchanged.
+
+Two consequences on screen. **A class this wing already teaches loses its Remove button** — the button only dropped the class from the *sheet*, so its rows survived and the grid stopped listing children who are still timetabled; deleting a cohort belongs on the Classes master, which counts what is about to go before it goes (§27.11). And the grid **marks which sections are new**, since a step that creates rows and a step that describes rows look identical when everything is one colour.
+
+One default with two authors had one that won silently: `recordWing` asked the school, found four, and never used it — because `answersFromSchool` had already listed the new config as a wing with two, and the "already in the draft" guard skipped the write. `defaultSections` is now the single definition both doors call.
 
 ### 3.11 The Academic Year is Part of the Curriculum (Phase 19)
 

@@ -21,7 +21,7 @@ import {
   roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
   wingRangeFor, wingScope, withCurriculumPeriods,
-  type CurriculumCell, type MappingSuggestion, type SubjectAnswer, type SuggestedRoom,
+  type CurriculumCell, type MappingSuggestion, type SchoolShape, type SubjectAnswer, type SuggestedRoom,
   type TeacherAnswer, type WingAnswer, type WizardAnswers,
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
@@ -236,6 +236,107 @@ export class OnboardingService {
     };
   }
 
+  /**
+   * §3.10b — what the school already is, for the Classes step to respect.
+   *
+   * Read fresh on every call rather than stored in the draft, for exactly the
+   * reason `stampPools` is: a copy of a fact about the school, held in
+   * somebody's half-finished setup, is a copy that goes stale. Someone adding
+   * Class 1-D on the Classes master while a draft sits open at step 4 must not
+   * have that draft quietly plan a school without it.
+   *
+   * Scoped to ONE academic year (§3.11). A class has sections in every session
+   * it has ever run, so an unfiltered count would floor next year's timetable
+   * at the widest the school has ever been.
+   *
+   * Keyed by NAME on both axes — the wing's and the class's — because that is
+   * what the wizard's answers hold and what the §16 importer matches on. An id
+   * would be a second vocabulary for the same join.
+   */
+  async schoolShape(schoolId: number, yearName?: string): Promise<SchoolShape> {
+    const year = yearName
+      ? await this.prisma.academicYear.findFirst({ where: { schoolId, name: yearName } })
+      : await this.prisma.academicYear.findFirst({ where: { schoolId, isActive: true } });
+    if (!year) return { floors: {}, existing: {} };
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { schoolId, academicYearId: year.id },
+      select: {
+        resourceGroupId: true,
+        class: { select: { name: true } },
+        section: { select: { name: true } },
+        timetableConfig: { select: { name: true } },
+      },
+    });
+
+    /*
+      The floor is the widest any ONE pool runs, never the total.
+
+      Summing across pools would floor an individual timetable at the main
+      school's four *plus* its own two — six sections of Class 1 that nobody
+      has ever taught. The question being answered is "how many sections does
+      this school run for Class 1?", and the answer is four whether one
+      timetable teaches them or three do.
+    */
+    // Nested rather than a joined string key: "Class 1" contains a space and
+    // any separator picked here is one a school is free to type into a name.
+    const perPool = new Map<string, Map<number, number>>();
+    const existing: Record<string, Record<string, string[]>> = {};
+    for (const cs of sections) {
+      const className = cs.class.name;
+      const pool = cs.resourceGroupId ?? 0;
+      const counts = perPool.get(className) ?? new Map<number, number>();
+      counts.set(pool, (counts.get(pool) ?? 0) + 1);
+      perPool.set(className, counts);
+
+      // A section not yet attached to a timetable belongs to no wing's list —
+      // it is real, and it still counts towards the floor above, but there is
+      // no wing on screen it could be drawn under.
+      const wing = cs.timetableConfig?.name;
+      if (!wing) continue;
+      (existing[wing] ??= {})[className] ??= [];
+      existing[wing][className].push(cs.section.name);
+    }
+
+    const floors: Record<string, number> = {};
+    for (const [className, counts] of perPool) floors[className] = Math.max(...counts.values());
+    for (const classes of Object.values(existing)) {
+      for (const letters of Object.values(classes)) letters.sort();
+    }
+    return { floors, existing };
+  }
+
+  /**
+   * §3.10b — how many sections a wing with no classes yet should open on.
+   *
+   * `DEFAULT_WING_SECTIONS` is 2, and it was the answer in **two** places that
+   * both feed the Classes step: `answersFromSchool` rebuilding a wing that has
+   * no classes, and `recordWing` entering a brand-new timetable. The right
+   * default for a school that has told us nothing; the wrong one for a school
+   * already running four, where pressing Next made the guess true.
+   *
+   * The commonest, not the widest: one number has to stand for a whole wing,
+   * and a class that runs more keeps its own count — `planClasses` floors each
+   * class individually, so being modest here costs nothing and being greedy
+   * would silently widen every class in the wing.
+   *
+   * One method because there are two doors, and the two used to disagree in
+   * the way that is hardest to see: `recordWing` asked the school, found 4,
+   * and then never used it, because `answersFromSchool` had already listed the
+   * new config as a wing with 2 and the "already there" guard skipped the
+   * write. A default with two authors has one that wins silently.
+   */
+  private async defaultSections(schoolId: number, yearName?: string): Promise<number> {
+    const { floors } = await this.schoolShape(schoolId, yearName);
+    const counts = Object.values(floors ?? {});
+    if (counts.length === 0) return DEFAULT_WING_SECTIONS;
+    // Counted first, then sorted. Sorting in place while the comparator filters
+    // the same array reads from one that is being reordered underneath it.
+    const seen = new Map<number, number>();
+    for (const n of counts) seen.set(n, (seen.get(n) ?? 0) + 1);
+    return [...seen.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  }
+
   /** The half-finished setup, or null. */
   async draftFor(schoolId: number, userId: number) {
     const row = await this.prisma.onboardingSession.findFirst({
@@ -354,7 +455,24 @@ export class OnboardingService {
       (w) => String(w?.name ?? "").trim().toLowerCase() === cfg.name.trim().toLowerCase(),
     );
     if (!already) {
-      wings.push({ name: cfg.name, ...wingRangeFor(cfg.name), sections: DEFAULT_WING_SECTIONS });
+      /*
+        §3.10b — how many sections, asked of the school rather than guessed.
+
+        `DEFAULT_WING_SECTIONS` is 2, and it was reaching this line unconditionally
+        — so every timetable created through this door opened on "2 sections per
+        class" in a school that runs four, and pressing Next through step 4 made
+        that guess true. It is the right default for a school with no answer yet;
+        it is the wrong one for a school that has already told us.
+
+        The commonest floor, not the maximum: one number has to stand for the
+        whole wing, and a class that differs keeps its own count once the grid
+        applies its own floor per class.
+      */
+      wings.push({
+        name: cfg.name,
+        ...wingRangeFor(cfg.name),
+        sections: await this.defaultSections(schoolId, cfg.academicYear.name),
+      });
     }
 
     const session = base.session as { name?: string } | undefined;
@@ -494,6 +612,10 @@ export class OnboardingService {
     }
     for (const m of mappings) addSubject(m.teacherId, m.subjectId);
 
+    // Resolved before the loop, not after it: a wing with no classes yet asks
+    // the school what shape it is, and that question is year-scoped (§3.11).
+    const activeYear = years.find((y) => y.isActive) ?? years[0];
+
     const wings: Array<Record<string, unknown>> = [];
     const weeks: Record<string, unknown> = {};
     const skippedWings: string[] = [];
@@ -522,17 +644,40 @@ export class OnboardingService {
        * adjusts it. Nothing is created until Next, and step 4 shows exactly
        * what would be.
        */
-      const perClass = names.map((n) => mine.filter((cs) => cs.class.name === n).length);
+      const countOf = new Map(names.map((n) => [n, mine.filter((cs) => cs.class.name === n).length]));
+      const perClass = [...countOf.values()];
       const blank = wingRangeFor(cfg.name);
+      /*
+        §3.10b — a wing with no classes YET opens on the school's own shape.
+
+        `DEFAULT_WING_SECTIONS` here was the real source of the hardcoded 2 that
+        reached the Classes step: a timetable created a moment ago has no
+        class-sections, so `perClass` is empty and every brand-new wing — the
+        §3.10a "New Timetable" door included — was described as running two
+        sections in a school running four.
+      */
+      const commonest = perClass.length === 0
+        ? await this.defaultSections(schoolId, activeYear?.name)
+        : [...perClass.reduce((m, n) => m.set(n, (m.get(n) ?? 0) + 1), new Map<number, number>()).entries()]
+            .sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+      /*
+        §3.10b — a class that differs from the wing's usual count keeps its own.
+
+        One number has to stand for the wing, so the commonest wins — but a
+        school running four sections up to Class 8 and two above it was being
+        described by that one number alone, and the grid then drew twelve
+        classes at four. Nothing was created wrongly (the §16 importer skips by
+        natural key and never deletes), which is exactly why it went unnoticed:
+        the screen was simply wrong about the school it was describing.
+      */
+      const overrides: Record<string, { sections: number }> = {};
+      for (const [name, n] of countOf) if (n !== commonest) overrides[name] = { sections: n };
       wings.push({
         name: cfg.name,
         fromIndex: names.length > 0 ? Math.min(...indices) : blank.fromIndex,
         toIndex: names.length > 0 ? Math.max(...indices) : blank.toIndex,
-        // The commonest, since one number has to stand for the wing; a class
-        // that differs keeps its own count, because step 4 writes nothing over
-        // sections that already exist.
-        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0]
-          ?? DEFAULT_WING_SECTIONS,
+        sections: commonest,
+        ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
         /*
           §30.9 — which pool this wing competes in.
 
@@ -566,7 +711,7 @@ export class OnboardingService {
       }
     }
 
-    const year = years.find((y) => y.isActive) ?? years[0];
+    const year = activeYear;
 
     /**
      * §27.12 — the rooms, the curriculum and the mappings this school already
@@ -830,7 +975,17 @@ export class OnboardingService {
       case 2:
         return { sheets: answers.session?.name ? sessionSheets(answers.session) : [], issues };
       case 4: {
-        const built = classSheets(answers);
+        /*
+          §3.10b — the plan is floored by what the school already is.
+
+          Read here rather than taken from the request: the shape is a fact
+          about the database, and a client that sent its own would be deciding
+          how few sections it may create (§21's rule — a preview is not the
+          list of writes). `preview` and `commit` share this builder, so the
+          dry run cannot describe a smaller school than the write produces.
+        */
+        const shape = await this.schoolShape(schoolId, year || undefined);
+        const built = classSheets(answers, shape);
         return { sheets: built.sheets, issues: built.issues };
       }
       case 6:

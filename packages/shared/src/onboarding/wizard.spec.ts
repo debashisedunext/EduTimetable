@@ -281,6 +281,73 @@ describe("§15.3 the importer sheets it produces", () => {
   });
 });
 
+describe("§3.10b the school's own record is the floor", () => {
+  const primary = () => [wing("Primary Wing", 4, 6, 2)]; // Class 1 – Class 3, 2 each
+
+  it("raises a class to what the school already runs, and leaves the rest alone", () => {
+    const { classes } = planClasses(primary(), { floors: { "Class 1": 4 } });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toEqual(["A", "B", "C", "D"]);
+    expect(classes.find((c) => c.className === "Class 2")!.sections).toEqual(["A", "B"]);
+  });
+
+  it("never LOWERS a wing that asks for more than the school runs", () => {
+    // The floor is a floor. A new wing opening six sections of Class 1 is
+    // adding to the school, which is the one thing this step is for.
+    const { classes } = planClasses([wing("Primary Wing", 4, 4, 6)], { floors: { "Class 1": 4 } });
+    expect(classes[0].sections).toHaveLength(6);
+  });
+
+  it("floors a class by this pool's OWN rows even when `floors` has not caught up", () => {
+    // A stale or partial shape must never plan a school smaller than the rows
+    // already filed under it.
+    const { classes } = planClasses(primary(), {
+      existing: { "Primary Wing": { "Class 1": ["A", "B", "C"] } },
+    });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toHaveLength(3);
+  });
+
+  it("reports which sections are records and which are a plan", () => {
+    const { classes } = planClasses(primary(), {
+      floors: { "Class 1": 4 },
+      existing: { "Primary Wing": { "Class 1": ["A", "B"] } },
+    });
+    const c1 = classes.find((c) => c.className === "Class 1")!;
+    expect(c1.existing).toEqual(["A", "B"]);
+    expect(c1.sections.slice(c1.existing.length)).toEqual(["C", "D"]);
+  });
+
+  it("matches the wing by name case-insensitively, because a human typed it", () => {
+    const { classes } = planClasses(primary(), {
+      existing: { "primary wing": { "Class 1": ["A", "B", "C"] } },
+    });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toHaveLength(3);
+  });
+
+  it("refuses to remove a class this wing already teaches, and removes one it does not", () => {
+    const w = wing("Primary Wing", 4, 6, 2);
+    w.overrides = { "Class 1": { removed: true }, "Class 2": { removed: true } };
+    const { classes } = planClasses([w], {
+      existing: { "Primary Wing": { "Class 1": ["A", "B"] } },
+    });
+    expect(classes.map((c) => c.className)).toEqual(["Class 1", "Class 3"]);
+  });
+
+  it("floors the SHEETS too, not only the grid", () => {
+    // The whole point of the rule living in `planClasses`: a floor enforced
+    // only by an <input min> would be a number the commit did not honour.
+    const sections = classSheets(
+      { session: { name: "2026-27", startDate: "", endDate: "" }, wings: primary() },
+      { floors: { "Class 1": 4 } },
+    ).sheets.find((s) => s.name === "Class Sections")!;
+    expect(sections.rows.filter((r) => r.cells["Class Name"] === "Class 1")).toHaveLength(4);
+  });
+
+  it("changes nothing at all when no shape is supplied", () => {
+    const before = planClasses(primary()).classes.map((c) => c.sections.length);
+    expect(before).toEqual([2, 2, 2]);
+  });
+});
+
 describe("§15.3 what the screen shows", () => {
   it("counts classes and sections per wing", () => {
     const s = planSummary({ wings: [wing("Primary", 4, 6, 3), wing("Senior", 12, 13, 2)] });

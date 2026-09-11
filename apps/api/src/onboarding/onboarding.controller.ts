@@ -98,6 +98,19 @@ export class OnboardingController {
     return this.onboarding.recordWing(req.user.schoolId, req.user.sub, configId);
   }
 
+  /**
+   * §3.10b — what the school already is, for the Classes step to draw against.
+   *
+   * A GET because it is a question. Same permission as the rest of the guided
+   * setup: this is the shape of the masters it is about to add to, not a new
+   * kind of read.
+   */
+  @Get("onboarding/classes-shape")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  classesShape(@Req() req: AuthedRequest, @Query("year") year?: string) {
+    return this.onboarding.schoolShape(req.user.schoolId, year || undefined);
+  }
+
   /** What committing this step would create — same pipeline, dry. */
   @Get("onboarding/preview/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
