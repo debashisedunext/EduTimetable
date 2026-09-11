@@ -6,6 +6,7 @@ import {
   ladderSequence,
   wingScope,
   classSheets,
+  dayEndsAt,
   mergeShownWings,
   planClasses,
   planSummary,
@@ -279,6 +280,44 @@ describe("§15.3 the importer sheets it produces", () => {
   it("produces nothing at all when there is nothing to produce", () => {
     expect(sessionSheets({ name: "", startDate: "", endDate: "" })).toEqual([]);
     expect(classSheets({ wings: [] }).sheets).toEqual([]);
+  });
+});
+
+describe("§33.4 when the day would end", () => {
+  const base = { startTime: "08:00", periodsPerDay: 8, periodDurationMins: 30 };
+
+  it("adds the teaching periods to the start time", () => {
+    expect(dayEndsAt(base)).toBe("12:00");
+  });
+
+  it("adds the breaks", () => {
+    expect(dayEndsAt({ ...base, breaks: [{ durationMins: 20 }, { durationMins: 10 }] })).toBe("12:30");
+  });
+
+  it("adds an activity AFTER the day but not one before it", () => {
+    // §28.4 — a before-first activity makes the day start earlier; it never
+    // pushes period 1 later, so it cannot also push the finish out.
+    const acts = [
+      { durationMins: 15, placement: "before_first" },
+      { durationMins: 10, placement: "after_last" },
+    ];
+    expect(dayEndsAt({ ...base, activities: acts })).toBe("12:10");
+  });
+
+  it("says nothing rather than something confident and wrong", () => {
+    // A half-typed time field is an ordinary state; "ends at 00:40" is worse
+    // than a blank for one keystroke.
+    expect(dayEndsAt({ ...base, startTime: "0" })).toBeNull();
+    expect(dayEndsAt({ ...base, startTime: "" })).toBeNull();
+    expect(dayEndsAt({ ...base, startTime: "25:00" })).toBeNull();
+  });
+
+  it("refuses to wrap past midnight into a plausible-looking morning", () => {
+    expect(dayEndsAt({ startTime: "23:00", periodsPerDay: 8, periodDurationMins: 30 })).toBeNull();
+  });
+
+  it("handles a single-digit hour, which a time input can produce", () => {
+    expect(dayEndsAt({ ...base, startTime: "7:30" })).toBe("11:30");
   });
 });
 

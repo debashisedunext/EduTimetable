@@ -22,6 +22,7 @@ import {
   planClasses,
   planSummary,
   type SchoolShape,
+  dayEndsAt,
   weeklyCapacity,
   WING_SUGGESTIONS,
   wingRangeFor,
@@ -653,8 +654,9 @@ function useClassLengths(wingName: string) {
  * §33.3 — it was a table under the week's own form, and that is the wrong
  * place for it twice over: it is the *exception* rather than the setting (most
  * schools run one length for everybody), and it pushed the weekly-capacity
- * note — which every school reads — below the fold. A link beside the number
- * it qualifies costs one line and is where somebody looks when they want it.
+ * note — which every school reads — below the fold. It is a link under the
+ * fields it qualifies now, stating what it holds ("2 classes run longer
+ * lessons") so nobody has to open it to find out whether anything is there.
  *
  * **The form offers lengths, never a free number.** The server sends the
  * multiples this grid can express, so a length that does not divide the day is
@@ -793,6 +795,30 @@ function ClassLengthsDialog({ shape, configId, reload, onClose }: {
   );
 }
 
+/**
+ * §33.5 — the week on one screen.
+ *
+ * This step was a single column of full-width sections, each with a block
+ * label above it: working days, then four numbers, then breaks, then a
+ * three-line note about activities, then the activities, and finally — below
+ * the fold — the weekly-capacity readout that every one of those inputs exists
+ * to produce. Three problems, and the third is the one that mattered:
+ *
+ *  1. **The measure was the whole pane.** Since §33 put this step in
+ *     `WIDE_STEPS` it has the full width, and a single column simply left half
+ *     the screen empty while making the page twice as tall.
+ *  2. **Every field cost two lines.** A block label over a 150px input is the
+ *     right shape for a form of prose fields and the wrong one for four
+ *     numbers that belong on one line.
+ *  3. **The answer was last.** "40 periods a week" is what somebody is here to
+ *     decide, and it sat under everything, so the number moved while nobody
+ *     was looking at it.
+ *
+ * So: the shape of the day on the left, the things inside it on the right, and
+ * the readout in a strip at the TOP where it is next to the controls that
+ * change it. Nothing was removed — this is the same five inputs, the same
+ * breaks and the same activities.
+ */
 export function StepWeek({ answers, onChange }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -828,21 +854,37 @@ export function StepWeek({ answers, onChange }: {
   const differing = (shape?.classes ?? []).filter((c) => c.span > 1).length;
 
   const capacity = weeklyCapacity(week.periodsPerDay, week.workingDays);
+  const endsAt = dayEndsAt(week);
   const summary = planSummary({ wings });
   const mine = summary.perWing.find((p) => p.wing === wing.name);
 
+  /** A field label that sits ON one line with its input, not above it. */
+  const tight: React.CSSProperties = {
+    font: "600 10px/1.3 Inter", textTransform: "uppercase", letterSpacing: "0.06em",
+    color: "var(--steel)", display: "block", marginBottom: 4,
+  };
+  const box: React.CSSProperties = {
+    background: "var(--paper)", border: "1px solid var(--line)",
+    borderRadius: 11, padding: "14px 16px",
+  };
+  const heading: React.CSSProperties = {
+    font: "800 10px/1 Inter", letterSpacing: "0.08em", textTransform: "uppercase",
+    color: "var(--steel)", margin: "0 0 10px",
+  };
+
   return (
     <>
-      <h2 style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 22, margin: "0 0 4px" }}>
-        How does <span style={{ color: "var(--brand)" }}>{wing.name}</span>'s week run?
-      </h2>
-      <p style={{ fontSize: 13.5, color: "var(--ink-soft)", margin: "0 0 14px" }}>
-        This is the ceiling for everything after it — a week of {capacity} periods means no subject
-        can ask for {capacity + 1}. Filled in with the commonest answer; change what differs.
-      </p>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <h2 style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 21, margin: 0 }}>
+          How does <span style={{ color: "var(--brand)" }}>{wing.name}</span>'s week run?
+        </h2>
+        <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>
+          The ceiling for everything after it — no subject can ask for more than a week holds.
+        </span>
+      </div>
 
       {wings.length > 1 && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
           {wings.map((w, i) => (
             <button key={w.name} onClick={() => setActive(i)} className="btn"
               style={{
@@ -855,106 +897,172 @@ export function StepWeek({ answers, onChange }: {
         </div>
       )}
 
-      <label style={label}>Working days</label>
-      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
-        {DAYS.map((d) => {
-          const on = week.workingDays.includes(d.n);
-          return (
-            <button key={d.n} className="btn"
-              onClick={() => set({
-                workingDays: on
-                  ? week.workingDays.filter((x) => x !== d.n)
-                  : [...week.workingDays, d.n].sort((a, b) => a - b),
-              })}
-              style={{
-                padding: "5px 11px", fontSize: 12,
-                background: on ? "var(--brand)" : "var(--paper)",
-                color: on ? "#fff" : "var(--ink)",
-                borderColor: on ? "var(--brand)" : "var(--line)",
-              }}>{d.label}</button>
-          );
-        })}
-      </div>
-
-      <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
-        <div><label style={label}>Periods / day</label>
-          <input style={input} type="number" min={1} max={14} value={week.periodsPerDay}
-            onChange={(e) => set({ periodsPerDay: Number(e.target.value) })} /></div>
-        <div><label style={label}>Start time</label>
-          <input style={input} type="time" value={week.startTime}
-            onChange={(e) => set({ startTime: e.target.value })} /></div>
-        <div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <label style={{ ...label, marginBottom: 0 }}>Period duration</label>
-            {/*
-              §33.3 — the per-class exception, beside the number it qualifies.
-
-              It was a table under this form, which was wrong twice: most
-              schools run one length for everybody, so it is the exception
-              rather than the setting; and it pushed the weekly-capacity note —
-              which every school reads — below the fold.
-
-              Shown only once the wing IS a timetable and teaches somebody:
-              before step 5 there is no config to hold the answer, and a link
-              to an empty dialog is worse than no link.
-            */}
-            {shape && shape.classes.length > 0 && (
-              <LinkButton onClick={() => setLengthsOpen(true)}>
-                {differing > 0
-                  ? `${differing} class${differing === 1 ? "" : "es"} differ${differing === 1 ? "s" : ""}`
-                  : "Per class…"}
-              </LinkButton>
-            )}
-          </div>
-          <input style={{ ...input, marginTop: 5 }} type="number" min={20} max={120} value={week.periodDurationMins}
-            onChange={(e) => set({ periodDurationMins: Number(e.target.value) })} />
-        </div>
-        <div><label style={label}>Zero period</label>
-          <select style={input} value={week.hasZeroPeriod ? "yes" : "no"}
-            onChange={(e) => set({ hasZeroPeriod: e.target.value === "yes" })}>
-            <option value="no">No</option><option value="yes">Yes</option>
-          </select></div>
-      </div>
-
-      <label style={{ ...label, marginTop: 14 }}>Breaks</label>
-      {week.breaks.map((b, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-          <input style={{ ...input, flex: 2 }} value={b.name}
-            onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, name: e.target.value } : x)) })} />
-          <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>after P</span>
-          <input style={{ ...input, width: 66 }} type="number" min={1} max={week.periodsPerDay} value={b.afterPeriod}
-            onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, afterPeriod: Number(e.target.value) } : x)) })} />
-          <input style={{ ...input, width: 76 }} type="number" min={5} max={120} value={b.durationMins}
-            onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, durationMins: Number(e.target.value) } : x)) })} />
-          <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>min</span>
-          <button onClick={() => set({ breaks: week.breaks.filter((_, n) => n !== i) })}
-            style={{ border: "none", background: "none", color: "var(--signal)", cursor: "pointer", fontSize: 11.5 }}>Remove</button>
-        </div>
-      ))}
-      <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }}
-        onClick={() => set({ breaks: [...week.breaks, { afterPeriod: Math.min(week.periodsPerDay, week.breaks.length + 3), name: "Break", durationMins: 15 }] })}>
-        + Add a break
-      </button>
-
       {/*
-        §28.3/28.4 — beside the breaks, because that is what they are next to on
-        a real timetable. An assembly is not a rule about generation; it is part
-        of the shape of the day, and it changes the times printed against every
-        period below it.
+        The readout, at the TOP and beside the controls that change it.
+
+        It was the last thing on the page, under the activities — so the one
+        number this step exists to produce moved while nobody could see it.
       */}
-      <label style={{ ...label, marginTop: 18 }}>Before and after the day</label>
-      <p style={{ fontSize: 12, color: "var(--ink-faint)", margin: "0 0 9px" }}>
-        Assembly, attendance, bus dispersal — anything that happens outside the teaching periods.
-        Each one shows on the timetable with its duration and whoever is on duty. The solver never
-        places a lesson in them.
-      </p>
-      <DraftActivities
-        rows={week.activities ?? []}
-        onChange={(next: ActivityRow[]) => set({ activities: next })}
-        staff={[]}
-        rooms={[]}
-        workingDays={week.workingDays}
-      />
+      <div style={{
+        display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+        background: "var(--steel-pale)", border: "1px solid var(--steel-light)",
+        borderRadius: 11, padding: "10px 16px", marginBottom: 14,
+      }}>
+        <span style={{ font: "800 19px/1 Inter", color: "var(--brand-deep)" }}>
+          {capacity}
+        </span>
+        <span style={{ fontSize: 12.5, color: "var(--ink-soft)", marginLeft: -8 }}>
+          periods a week
+        </span>
+        <span style={{ color: "var(--steel-light)" }}>|</span>
+        <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>
+          {week.periodsPerDay} × {week.periodDurationMins} min · {week.workingDays.length} day
+          {week.workingDays.length === 1 ? "" : "s"}
+        </span>
+        {endsAt && (
+          <>
+            <span style={{ color: "var(--steel-light)" }}>|</span>
+            <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>
+              {week.startTime}–<strong style={{ color: "var(--ink)" }}>{endsAt}</strong>
+              {" "}school closes
+            </span>
+          </>
+        )}
+        {mine && (
+          <span style={{ fontSize: 12, color: "var(--ink-faint)", marginLeft: "auto" }}>
+            {mine.classes} classes · {mine.sections} sections
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(330px,1fr))", alignItems: "start" }}>
+
+        {/* ───────────────────────────── the shape of the day */}
+        <div style={box}>
+          <p style={heading}>The day</p>
+
+          <label style={tight}>Working days</label>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 13 }}>
+            {DAYS.map((d) => {
+              const on = week.workingDays.includes(d.n);
+              return (
+                <button key={d.n} className="btn"
+                  onClick={() => set({
+                    workingDays: on
+                      ? week.workingDays.filter((x) => x !== d.n)
+                      : [...week.workingDays, d.n].sort((a, b) => a - b),
+                  })}
+                  style={{
+                    padding: "4px 9px", fontSize: 11.5,
+                    background: on ? "var(--brand)" : "var(--paper)",
+                    color: on ? "#fff" : "var(--ink)",
+                    borderColor: on ? "var(--brand)" : "var(--line)",
+                  }}>{d.label}</button>
+              );
+            })}
+          </div>
+
+          {/*
+            Four numbers on one line rather than four stacked fields. They are
+            read together — "eight forties from eight o'clock" is one sentence
+            — and a block label over each turned that sentence into eight rows.
+          */}
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit,minmax(104px,1fr))" }}>
+            <div>
+              <label style={tight}>Periods</label>
+              <input style={input} type="number" min={1} max={14} value={week.periodsPerDay}
+                onChange={(e) => set({ periodsPerDay: Number(e.target.value) })} />
+            </div>
+            <div>
+              <label style={tight}>Starts</label>
+              <input style={input} type="time" value={week.startTime}
+                onChange={(e) => set({ startTime: e.target.value })} />
+            </div>
+            <div>
+              <label style={tight}>Each</label>
+              <input style={input} type="number" min={20} max={120} value={week.periodDurationMins}
+                onChange={(e) => set({ periodDurationMins: Number(e.target.value) })} />
+            </div>
+            <div>
+              <label style={tight}>Zero period</label>
+              <select style={input} value={week.hasZeroPeriod ? "yes" : "no"}
+                onChange={(e) => set({ hasZeroPeriod: e.target.value === "yes" })}>
+                <option value="no">No</option><option value="yes">Yes</option>
+              </select>
+            </div>
+          </div>
+
+          {/*
+            §33.3 — the per-class exception, under the number it qualifies
+            rather than squeezed into its label. Most schools run one length
+            for everybody, so this is the exception; it earns a line, not a
+            column.
+
+            Shown only once the wing IS a timetable and teaches somebody:
+            before step 5 there is no config to hold the answer, and a link to
+            an empty dialog is worse than no link.
+          */}
+          {shape && shape.classes.length > 0 && (
+            <div style={{ marginTop: 11, fontSize: 12, color: "var(--ink-faint)" }}>
+              {differing > 0
+                ? `${differing} class${differing === 1 ? "" : "es"} run longer lessons`
+                : "Every class runs the same length"}
+              {" · "}
+              <LinkButton onClick={() => setLengthsOpen(true)}>
+                {differing > 0 ? "review" : "set per class"}
+              </LinkButton>
+            </div>
+          )}
+        </div>
+
+        {/* ───────────────────────────── what sits inside it */}
+        <div style={box}>
+          <p style={heading}>Breaks</p>
+          {week.breaks.length === 0 && (
+            <p style={{ fontSize: 12, color: "var(--ink-faint)", margin: "0 0 9px" }}>
+              None yet — a lunch break is the usual one.
+            </p>
+          )}
+          {week.breaks.map((b, i) => (
+            <div key={i} style={{ display: "flex", gap: 6, marginBottom: 7, alignItems: "center" }}>
+              <input style={{ ...input, flex: 1, minWidth: 0 }} value={b.name} aria-label={`Break ${i + 1} name`}
+                onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, name: e.target.value } : x)) })} />
+              <span style={{ fontSize: 11.5, color: "var(--ink-faint)", whiteSpace: "nowrap" }}>after P</span>
+              <input style={{ ...input, width: 52 }} type="number" min={1} max={week.periodsPerDay} value={b.afterPeriod}
+                aria-label={`Break ${i + 1} follows which period`}
+                onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, afterPeriod: Number(e.target.value) } : x)) })} />
+              <input style={{ ...input, width: 58 }} type="number" min={5} max={120} value={b.durationMins}
+                aria-label={`Break ${i + 1} minutes`}
+                onChange={(e) => set({ breaks: week.breaks.map((x, n) => (n === i ? { ...x, durationMins: Number(e.target.value) } : x)) })} />
+              <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>min</span>
+              <button onClick={() => set({ breaks: week.breaks.filter((_, n) => n !== i) })}
+                aria-label={`Remove break ${i + 1}`}
+                style={{ border: "none", background: "none", color: "var(--signal)", cursor: "pointer", fontSize: 13, padding: "0 2px" }}>✕</button>
+            </div>
+          ))}
+          <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }}
+            onClick={() => set({ breaks: [...week.breaks, { afterPeriod: Math.min(week.periodsPerDay, week.breaks.length + 3), name: "Break", durationMins: 15 }] })}>
+            + Add a break
+          </button>
+
+          {/*
+            §28.3/28.4 — beside the breaks, because that is what they are next
+            to on a real timetable. An assembly is not a rule about generation;
+            it is part of the shape of the day.
+          */}
+          <p style={{ ...heading, marginTop: 18 }}>Before and after the day</p>
+          <p style={{ fontSize: 11.8, color: "var(--ink-faint)", margin: "0 0 9px" }}>
+            Assembly, attendance, dispersal. The solver never places a lesson in one.
+          </p>
+          <DraftActivities
+            rows={week.activities ?? []}
+            onChange={(next: ActivityRow[]) => set({ activities: next })}
+            staff={[]}
+            rooms={[]}
+            workingDays={week.workingDays}
+          />
+        </div>
+      </div>
 
       {lengthsOpen && shape && configId !== null && (
         <ClassLengthsDialog
@@ -964,13 +1072,6 @@ export function StepWeek({ answers, onChange }: {
           onClose={() => setLengthsOpen(false)}
         />
       )}
-
-      <Note tone="ok">
-        <strong>Weekly capacity: {capacity} periods.</strong> {week.periodsPerDay} periods ×{" "}
-        {week.workingDays.length} days
-        {mine ? ` · ${mine.classes} classes, ${mine.sections} sections in this wing` : ""}. Every
-        curriculum and mapping entry from here on is checked against this number.
-      </Note>
     </>
   );
 }

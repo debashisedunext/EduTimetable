@@ -3684,7 +3684,19 @@ This works whenever every period length is a whole multiple of the shortest. 30/
 
 The question to ask a school is therefore *"is every period length a multiple of the shortest one?"* — not *"do your classes have different period lengths?"*
 
-### 33.5 Still to build
+### 33.5 The week on one screen
+
+The Timetable step was a single column of full-width sections — working days, then four numbers, then breaks, then a three-line note, then the activities, and finally, below the fold, the weekly-capacity readout that every one of those inputs exists to produce. Three problems, and the third is the one that mattered:
+
+1. **The measure was the whole pane.** §33 put this step in `WIDE_STEPS`, so a single column left half the screen empty while making the page twice as tall.
+2. **Every field cost two lines.** A block label over a 150px input is right for a form of prose fields and wrong for four numbers that read as one sentence — *"eight forties from eight o'clock"* was eight rows.
+3. **The answer was last.** "40 periods a week" is what somebody is on this screen to decide, and it sat under everything, so the number moved while nobody was looking at it.
+
+The shape of the day on the left, the things inside it on the right, and the readout in a strip at the **top**, beside the controls that change it. Nothing was removed: the same five inputs, the same breaks, the same activities.
+
+The strip also carries **when school closes** — `dayEndsAt` in `packages/shared`, and it is deliberately a *second* function rather than a reuse of what `GET /:id/class-periods` returns. They answer different questions: the endpoint reads the `periods` rows, which is the authority for a timetable that exists and which gets §28.4 right; this answers *"what will this be when I press Next?"*, where no rows exist yet and arithmetic is the only answer available. Collapsing them would mean either showing a stale figure from the last save while somebody types, or the server recomputing what it can already read. It returns **null** rather than a confident wrong answer for a half-typed time, and refuses to wrap past midnight into a plausible-looking morning.
+
+### 33.6 Still to build
 
 - **Entering the curriculum in lessons rather than base periods.** A class on 60-minute lessons that takes 3 English a week needs `periods_per_week = 6`; typing 6 today means six base periods, which is three hours. Until the translation exists, the number entered is in base periods.
 - **An odd count cannot be all doubles.** 5 base periods at span 2 is two doubles and one leftover single — a correct timetable for the data given, but not what the school meant. It should be reported.

@@ -499,6 +499,56 @@ export function planSummary(answers: WizardAnswers, shape?: SchoolShape): {
 }
 
 /**
+ * §33.4 — when the day would end, given the week somebody is typing.
+ *
+ * **Prospective, not actual.** The authority for a timetable that exists is its
+ * `periods` rows, which is what `GET /:id/class-periods` reads: they carry real
+ * start and end times and they get §28.4 right, where an activity before the
+ * first period makes the day start *earlier* rather than pushing period 1
+ * later. This answers the different question the guided setup has to answer —
+ * *"what will this be when I press Next?"* — where no rows exist yet, so there
+ * is nothing to read and the arithmetic is the only answer available.
+ *
+ * Keeping them separate is deliberate. Collapsing them would mean either the
+ * step showing a stale figure from the last save while somebody edits, or the
+ * server recomputing what it can already read.
+ *
+ * Returns `HH:MM`, or null when the start time is unusable — a half-typed
+ * `"0"` in a time field is an ordinary state, and a confident "ends at 00:40"
+ * is worse than showing nothing for a keystroke.
+ */
+export function dayEndsAt(week: {
+  startTime: string;
+  periodsPerDay: number;
+  periodDurationMins: number;
+  breaks?: Array<{ durationMins: number }>;
+  activities?: Array<{ durationMins: number; placement?: string }>;
+}): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((week.startTime ?? "").trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+
+  const teaching = Math.max(0, Math.floor(week.periodsPerDay || 0)) * Math.max(0, Math.floor(week.periodDurationMins || 0));
+  const breaks = (week.breaks ?? []).reduce((n, b) => n + Math.max(0, b.durationMins || 0), 0);
+  /*
+    Only the activities that come AFTER the teaching day extend it. One before
+    the first period moves the START earlier (§28.4) and so does not push the
+    finish out; counting it here would add an assembly to both ends of the day.
+  */
+  const after = (week.activities ?? [])
+    .filter((a) => a.placement === "after_last")
+    .reduce((n, a) => n + Math.max(0, a.durationMins || 0), 0);
+
+  const total = h * 60 + min + teaching + breaks + after;
+  // A day that runs past midnight is nonsense a school would want to see
+  // rather than a wrapped time that looks plausible.
+  if (total >= 24 * 60) return null;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
  * The week's capacity: periods per day × working days.
  *
  * The same arithmetic `capacityForClassSections` does on the server, shown
