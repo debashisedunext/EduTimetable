@@ -22,10 +22,11 @@ import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
 import {
-  GROUPED_SCOPE, planClasses, wingScope,
+  GROUPED_SCOPE, mergeShownWings, planClasses, wingScope,
   type SubjectAnswer, type TeacherAnswer, type WingAnswer,
 } from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
+import { useConfigCtx } from "../hooks";
 import { DraftTerms, termProblems } from "../terms/TermsEditor";
 
 /**
@@ -150,6 +151,13 @@ function wellDone(step: number, created: Record<string, number> | undefined): st
 
   return `${CHEERS[(step - 1) % CHEERS.length]} ${clause} — ${remaining(step)}.`;
 }
+
+/**
+ * §30.13 — the step that CREATES wings, and therefore the one step that must
+ * still see all of them. Named rather than a bare 3, because "which step is
+ * Wings?" is exactly the kind of number a renumbering leaves behind.
+ */
+const WINGS_STEP = 3;
 
 export const STEP_TITLES = [
   "School", "Session", "Wings", "Classes", "Timetable", "Subjects",
@@ -526,7 +534,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * setting up its individual timetable was shown "Class 1 is in both Main
    * Timetable 2026-27 and New" — a real clash between two grouped wings,
    * raised while the main school was selected and still sitting there after the
-   * switch. `changeScope` clears it, but that is one of nine places this state
+   * switch. Changing the timetable clears it, but that is one of nine places
    * is written from, and "every writer remembers to clear it" is not a property
    * anybody can keep true. React Fast Refresh preserves state across a hot
    * reload too, so an error could even outlive the code that raised it.
@@ -614,6 +622,21 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * per-wing too, and a scope that changed between steps would be worse than
    * none.
    */
+  /**
+   * §30.13 — the pool this setup is working on, taken from the TOP BAR.
+   *
+   * It used to be its own `useState` behind a "Setting up" dropdown. That made
+   * three timetable selectors on one screen — the top bar's, this one, and the
+   * per-step wing tab strip — for what is one question, and nothing on the page
+   * said which of the three it was obeying. The top bar's selector is the one
+   * that was already there on every other screen, so it is the one that stays.
+   *
+   * Derived rather than stored, so it cannot drift from what the bar shows.
+   * `allWings` carries `individual` (stamped from the database on every read by
+   * `stampPools`), so the selected timetable's NAME is enough to identify its
+   * pool completely.
+   */
+  const { configs, current, setCurrentId, refetch } = useConfigCtx();
   const [scope, setScope] = useState<string>(GROUPED_SCOPE);
 
   /**
@@ -638,36 +661,43 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
   /** Shown only in the pool that raised it. */
   const error = errorAt && errorAt.scope === scope ? errorAt.message : null;
 
-  const changeScope = (next: string) => {
-    if (next === scope) return;
-    setScope(next);
-    setError(null);
-    setPraise(null);
-  };
 
   const allWings: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
-  /**
-   * The scopes this school actually has, in the order the wings are stored.
-   *
-   * `grouped` is always offered even when no wing is in it yet — it is where
-   * "+ Add wing" puts one, so a school with nothing but an individual
-   * timetable must still be able to reach it.
-   */
-  const scopes = (() => {
-    const out: Array<{ key: string; label: string; count: number }> = [];
-    const grouped = allWings.filter((w) => wingScope(w) === GROUPED_SCOPE);
-    out.push({
-      key: GROUPED_SCOPE,
-      label: grouped.length === 1 ? grouped[0].name : "Main school",
-      count: grouped.length,
-    });
-    for (const w of allWings) {
-      if (wingScope(w) === GROUPED_SCOPE) continue;
-      out.push({ key: wingScope(w), label: w.name, count: 1 });
-    }
-    return out;
-  })();
 
+  /**
+   * §30.13 — the wing the TOP BAR is pointing at, or null.
+   *
+   * Matched by NAME, which is what everything else in this wizard keys on:
+   * `answers.weeks` is keyed by wing name, `commitWings` skips by name, and the
+   * §16 importer matches by name. The id would be a second vocabulary for the
+   * same thing, and the draft has no ids in it at all.
+   *
+   * Null while the top bar has nothing to point at — a brand-new school on
+   * steps 1–3, where no `timetable_config` exists yet because step 5 is what
+   * creates them. Everything below falls back to the old whole-pool behaviour
+   * in that case, which is the only behaviour that can work when there is
+   * nothing to select.
+   */
+  const activeWing = current
+    ? allWings.find((w) => w.name.trim().toLowerCase() === current.name.trim().toLowerCase()) ?? null
+    : null;
+
+  /*
+    Kept in state rather than computed inline, because `patch` re-keys it when
+    somebody renames the wing they are working on — a rename changes the scope
+    key before the server (and therefore the top bar) has heard about it.
+  */
+  useEffect(() => {
+    const next = activeWing ? wingScope(activeWing) : GROUPED_SCOPE;
+    if (next === scope) return;
+    setScope(next);
+    // The banner and the praise line are about the timetable that produced
+    // them. "Class 1 is in both Main and New" means nothing while an
+    // individual timetable is on screen, but it is state, so without this it
+    // sat there after the switch looking like a fresh refusal.
+    setError(null);
+    setPraise(null);
+  }, [activeWing?.name, activeWing?.individual, current?.id]);
   /*
     The wings this scope owns — and therefore every wing any step can see.
 
@@ -676,7 +706,28 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     suggestion, the teacher pinning, `planClasses` and the summary boxes, and a
     filter at each of them is twenty-five chances to forget one.
   */
-  const wingsInScope = allWings.filter((w) => wingScope(w) === scope);
+  const inPool = allWings.filter((w) => wingScope(w) === scope);
+  /**
+   * §30.13 — **one timetable at a time**, which is the other half of having one
+   * selector.
+   *
+   * The pool narrowing alone was not enough: a grouped pool holds several
+   * wings, so step 4 still drew a tab strip and step 6 drew another, and the
+   * page was back to two controls answering one question. Handing every step a
+   * single wing removes them by construction — each already renders its strip
+   * only `wings.length > 1`.
+   *
+   * **Step 3 is the exception, and has to be.** It is the screen that CREATES
+   * wings and lists the ones that exist; narrowed to one it could never add a
+   * second, and the school would be stuck with whatever it first typed.
+   *
+   * The fallback to the whole pool is not a nicety: on a brand-new school
+   * nothing is selected because no `timetable_config` exists until step 5, and
+   * an empty list would render "add a wing first" on a school that has just
+   * added several.
+   */
+  const wingsInScope =
+    step === WINGS_STEP || !activeWing ? inPool : [activeWing];
 
   /**
    * What a step is handed: the draft, with `wings` narrowed to this scope.
@@ -694,17 +745,9 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * end of the tab strip for having been edited. A shorter list means a wing
    * was removed; a longer one means a wing was added, and it is appended.
    */
-  const mergeWings = (next: WingAnswer[]): WingAnswer[] => {
-    const incoming = [...next];
-    const out: WingAnswer[] = [];
-    for (const w of allWings) {
-      if (wingScope(w) !== scope) { out.push(w); continue; }
-      const take = incoming.shift();
-      if (take) out.push(take);
-    }
-    out.push(...incoming);
-    return out;
-  };
+  /** §30.13 — one definition, in `packages/shared`, where it can be tested. */
+  const mergeWings = (next: WingAnswer[]): WingAnswer[] =>
+    mergeShownWings(allWings, wingsInScope, next);
 
   /*
     §3.10a + §30.9 — arriving from "New Timetable" names the wing in the URL,
@@ -720,11 +763,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
   useEffect(() => {
     if (scopedToStart.current || !startWing) return;
     const want = startWing.trim().toLowerCase();
-    const found = allWings.find((w) => w.name.trim().toLowerCase() === want);
-    if (!found) return;
+    // §30.13 — point the TOP BAR at it, rather than a scope of our own. That
+    // is now the only selector, so "open the setup on this wing" and "show
+    // this wing in the bar" are one action instead of two that can disagree.
+    const cfg = configs.find((c) => c.name.trim().toLowerCase() === want);
+    if (!cfg) return;
     scopedToStart.current = true;
-    setScope(wingScope(found));
-  }, [startWing, answers.wings]);
+    if (cfg.id !== current?.id) setCurrentId(cfg.id);
+  }, [startWing, configs, current?.id]);
 
   const patch = (p: Record<string, any>) => {
     let payload = p;
@@ -908,7 +954,20 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     */
     const q = `?scope=${encodeURIComponent(scope)}`;
     if (n === 2) return (await api<Committed>(`/onboarding/commit/2${q}`, { method: "POST" })).created;
-    if (n === 3) return { configs: await commitWings(answers) };
+    if (n === 3) {
+      const made = await commitWings(answers);
+      /*
+        §30.13 — the top bar is the only timetable selector now, so it has to
+        learn about the ones this step just created.
+
+        Without it a brand-new school walks 1 → 2 → 3 creating its wings and
+        arrives at step 4 with an empty selector: `activeWing` stays null, the
+        narrowing falls back to the whole pool, and the bar offers nothing to
+        switch to until the page is reloaded.
+      */
+      refetch();
+      return { configs: made };
+    }
     if (n === 4) return (await api<Committed>("/onboarding/commit/4", { method: "POST" })).created;
     if (n === 5) { await commitWeeks(answers); return undefined; }
     /*
@@ -1171,48 +1230,29 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span>Step {stepIndex(visibleStep(step)) + 1} of {WIZARD_STEPS.length} · {STEP_TITLES[step - 1]} · {school.name}</span>
             {/*
-              §30.9 — which §30 pool this setup is working on.
+              §30.13 — there is ONE timetable selector, and it is the top bar's.
 
-              Shown ONLY when the school has more than one, which for almost
-              every school is never: an individual timetable is a deliberate,
-              unusual thing to create, and a selector offering one choice is a
-              control that teaches nothing and costs a glance on every step.
+              This line used to carry a second: a "Setting up" dropdown
+              choosing the §30 pool, beside a per-step wing tab strip choosing
+              the wing within it. Three controls for one question, two of them
+              inside the page and one above it, and nothing said which of the
+              three the screen was obeying.
 
-              Beside the step line rather than above the tab strip on step 4,
-              because it governs every step — the week, the teachers pinned to a
-              wing and the rooms are all per-wing too, and a scope that changed
-              between steps would be worse than none.
+              The top bar's selector now decides both. See `scope` and
+              `wingsInScope`.
             */}
-            {scopes.length > 1 && (
+            {activeWing && (
               <>
                 <span style={{ color: "var(--line)" }}>|</span>
-                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{
-                    font: "800 9px/1 Inter, sans-serif", letterSpacing: "0.07em",
-                    textTransform: "uppercase", color: "var(--ink-faint)",
-                  }}>
-                    Setting up
+                <span style={{ font: "700 11.5px/1 Inter, sans-serif", color: "var(--brand)" }}>
+                  {activeWing.name}
+                </span>
+                {activeWing.individual && (
+                  <span title="An individual timetable stands on its own — it shares no class, room or teacher with the rest of the school."
+                    style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+                    individual
                   </span>
-                  <select
-                    value={scope}
-                    onChange={(e) => changeScope(e.target.value)}
-                    disabled={busy}
-                    title="An individual timetable stands on its own — it shares no class, room or teacher with the rest of the school, so it is set up on its own too."
-                    style={{
-                      font: "700 11.5px/1 Inter, sans-serif", color: "var(--brand)",
-                      border: "1px solid var(--steel-pale)", background: "var(--steel-pale)",
-                      borderRadius: 7, padding: "4px 8px",
-                    }}
-                  >
-                    {scopes.map((sc) => (
-                      <option key={sc.key} value={sc.key}>
-                        {sc.key === GROUPED_SCOPE
-                          ? `${sc.label} · ${sc.count} timetable${sc.count === 1 ? "" : "s"}`
-                          : `${sc.label} · individual`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                )}
               </>
             )}
             <span style={{ flex: 1 }} />

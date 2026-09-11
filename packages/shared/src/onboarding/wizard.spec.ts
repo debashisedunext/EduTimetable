@@ -6,6 +6,7 @@ import {
   ladderSequence,
   wingScope,
   classSheets,
+  mergeShownWings,
   planClasses,
   planSummary,
   sectionLetters,
@@ -278,6 +279,53 @@ describe("§15.3 the importer sheets it produces", () => {
   it("produces nothing at all when there is nothing to produce", () => {
     expect(sessionSheets({ name: "", startDate: "", endDate: "" })).toEqual([]);
     expect(classSheets({ wings: [] }).sheets).toEqual([]);
+  });
+});
+
+describe("§30.13 merging back the wings a step was shown", () => {
+  const A = { name: "Main", fromIndex: 4, toIndex: 9, sections: 2 };
+  const B = { name: "New", fromIndex: 4, toIndex: 9, sections: 2 };
+  const C = { name: "Weekly", fromIndex: 4, toIndex: 6, sections: 1, individual: true };
+  const all = [A, B, C];
+
+  it("KEEPS the wings the step never saw — the bug that would have lost a timetable", () => {
+    // §30.13 hands a step ONE wing. The wizard's own version matched on the §30
+    // pool, so a grouped pool holding Main and New matched both rows, took the
+    // incoming wing for the first and `undefined` for the second — and dropped
+    // New out of the draft. A silent deletion on any save by such a school.
+    const edited = { ...A, sections: 4 };
+    const out = mergeShownWings(all, [A], [edited]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly"]);
+    expect(out[0].sections).toBe(4);
+  });
+
+  it("keeps each wing where it was, so an edit does not reorder the list", () => {
+    const out = mergeShownWings(all, [B], [{ ...B, sections: 5 }]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly"]);
+    expect(out[1].sections).toBe(5);
+  });
+
+  it("survives a RENAME, which is what positional matching is for", () => {
+    // The name is the key everything else in this flow uses, so a step comes
+    // back with a different one — matching by name would append a duplicate.
+    const out = mergeShownWings(all, [C], [{ ...C, name: "Weekly Timetable" }]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly Timetable"]);
+    expect(out).toHaveLength(3);
+  });
+
+  it("removes a wing the step gave back fewer of — step 3's job", () => {
+    const out = mergeShownWings(all, [A, B, C], [A, C]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "Weekly"]);
+  });
+
+  it("appends a wing the step added rather than splicing it into the middle", () => {
+    const D = { name: "Annexe", fromIndex: 4, toIndex: 9, sections: 2 };
+    const out = mergeShownWings(all, [A, B, C], [A, B, C, D]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly", "Annexe"]);
+  });
+
+  it("changes nothing when the step was shown nothing", () => {
+    expect(mergeShownWings(all, [], [])).toEqual(all);
   });
 });
 

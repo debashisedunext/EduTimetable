@@ -3572,6 +3572,31 @@ The 24 class-teacher duplicates are the cleanest confirmation of the diagnosis: 
 
 `pnpm test:pools` drives the real step-9 preview **and commit** over a class taught by two pools, because the failure was in what the server builds out of a stored draft — the layer a pure-function test cannot reach.
 
+### 30.13 One Timetable Selector, and One Timetable at a Time (Phase 48)
+
+The guided setup's Subjects step carried **three** controls answering one question: the app's top-bar *Viewing timetable* selector, a **"Setting up"** dropdown choosing the §30 pool (§30.9), and a **"Teaching"** wing tab strip choosing the wing within that pool (§32.3). Two of them inside the page, one above it, and nothing on the screen said which the step was obeying.
+
+**The top bar's selector is the one that stays.** It is the control that already exists on every other screen, so it is the one people reach for by memory — the same argument §31.14 made for docking the assistant's launcher there.
+
+Two halves, and the second is what removes the strips:
+
+- **`scope` is derived from the top bar, not stored.** `allWings` carries `individual`, stamped from the database on every read by `stampPools`, so the selected timetable's *name* identifies its pool completely. Switching the bar clears the error banner and the praise line, which are about the timetable that produced them (§30.10).
+- **Every step is handed exactly one wing.** Pool narrowing alone was not enough — a grouped pool holds several wings, so step 4 still drew a tab strip and step 6 drew another. Each already renders its strip only when `wings.length > 1`, so handing them one wing removes both by construction rather than by deleting markup.
+
+**Step 3 is the exception and has to be.** It is the screen that *creates* wings and lists the ones that exist; narrowed to one it could never add a second.
+
+**The fallback is not a nicety.** On a brand-new school nothing is selected, because no `timetable_config` exists until step 5 creates them — so `activeWing` is null and the old whole-pool behaviour applies, which is the only behaviour that can work when there is nothing to select. Step 3 therefore calls `refetch()` after `commitWings`, or a school walks 1 → 2 → 3, creates its wings, and arrives at step 4 with an empty selector.
+
+§3.10a's *New Timetable* now points the **top bar** at the wing it created rather than a scope of its own, so "open the setup on this wing" and "show this wing in the bar" are one action instead of two that can disagree.
+
+#### The bug this nearly shipped with
+
+`mergeWings` puts a step's edited wing list back into the stored draft, which must keep every wing. It matched on the **§30 pool** — correct only while a step saw every wing in its pool. Once it saw one, a grouped pool holding Main and New matched *both* rows, took the single incoming wing for the first and `undefined` for the second, and `if (take)` then dropped New out of the draft entirely: **a silent deletion of a timetable on any save by a school with two grouped wings.**
+
+It now merges against the wings the step was **shown**, by reference — `wingsInScope` is a `filter`/`find` over `allWings`, so the objects are the same ones, and the match stays *positional* because a rename is exactly what a step comes back with and the name is the key everything else in this flow uses.
+
+It moved to `packages/shared` as `mergeShownWings` for one reason: `apps/web` has no test harness, and this function can lose a school's timetable. Six unit tests cover it, the first being the deletion above.
+
 ## 32. A Timetable Teaches the Subjects It Declares (Phase 46)
 
 `subjects` is school-wide, and until now there was no way to narrow it: every timetable saw every subject the school had ever entered. A Junior wing that does not teach Chemistry, an individual timetable set up for a handful of languages, a subject added for one wing only — none of them were expressible.

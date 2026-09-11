@@ -199,6 +199,48 @@ export interface WizardAnswers {
   wings?: WingAnswer[];
 }
 
+/**
+ * §30.13 — put a step's edited wing list back into the whole one, in place.
+ *
+ * The guided setup hands a step only the wings it may edit — since §30.13 that
+ * is a single timetable, because the top bar is the one selector and editing is
+ * one timetable at a time — and the stored draft must keep every wing. Losing
+ * the others on a save would be a far worse bug than any this narrowing fixes.
+ *
+ * **Merged against what the step was SHOWN, by reference**, which is the whole
+ * subtlety. The wizard's own version matched on the §30 pool instead, and that
+ * was right only while a step saw every wing in its pool. Once it saw one, a
+ * grouped pool holding Main and New matched BOTH rows, took the single
+ * incoming wing for the first and `undefined` for the second — and dropped New
+ * out of the draft entirely. A silent deletion of a timetable, on any save by
+ * a school with two grouped wings.
+ *
+ * Positional rather than by name, because a rename is exactly what a step
+ * comes back with and the name is the key everything else in this flow uses
+ * (`answers.weeks`, `commitWings`, the §16 importer). Identity is therefore
+ * the array position among the shown wings, and `shown` must hold the same
+ * objects as `all` — which it does, being a `filter`/`find` over it.
+ *
+ * Fewer wings back than were shown means one was removed; more means one was
+ * added, and it is appended rather than spliced so a new wing does not jump
+ * into the middle of somebody's list.
+ *
+ * Lives here rather than in the wizard because `apps/web` has no test harness
+ * and this one can lose a school's timetable.
+ */
+export function mergeShownWings<T>(all: T[], shown: readonly T[], next: T[]): T[] {
+  const isShown = new Set<T>(shown);
+  const incoming = [...next];
+  const out: T[] = [];
+  for (const w of all) {
+    if (!isShown.has(w)) { out.push(w); continue; }
+    const take = incoming.shift();
+    if (take !== undefined) out.push(take);
+  }
+  out.push(...incoming);
+  return out;
+}
+
 /** One row of the grid under the slider. */
 export interface PlannedClass {
   className: string;
