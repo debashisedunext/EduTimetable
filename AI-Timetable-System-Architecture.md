@@ -3668,6 +3668,8 @@ And deliberately **not multiplied**. A curriculum row's block size is already in
 
 ### 33.3 The screen
 
+**It lives behind a link beside the period-duration field, not in a section under it.** A table under the week's own form was wrong twice over: most schools run one length for everybody, so per-class lengths are the *exception* rather than the setting, and the table pushed the weekly-capacity note — which every school reads — below the fold. The link carries its own summary ("2 classes differ" rather than a bare "Per class…"), because a control that never says whether there is anything behind it teaches nothing; the summary and the dialog are **one fetch**, so they cannot disagree about the number sitting next to them. It appears only once the wing *is* a timetable and teaches somebody — before step 5 there is no config to hold the answer, and a link to an empty dialog is worse than no link.
+
 The form offers **lengths, never a free number**: the server sends every whole multiple of the base that fits the day, so a length that does not divide the grid is not a value the screen can produce. The divisibility rule has one author and there is no invalid state to validate against.
 
 Where a span does not divide the day evenly, the leftover is **reported beside the number rather than refused** — it is a real state while somebody is mid-edit, and they may be about to change the period count next.
