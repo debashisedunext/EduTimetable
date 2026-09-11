@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { GROUPED_SCOPE, wingScope, type WingAnswer } from "@edutimetable/shared";
+import { api } from "../api";
 import { StepAllocation, type AllocationCellFacts } from "../onboarding/steps/Allocation";
 
 /**
@@ -41,6 +43,7 @@ export function AllocationTab({
   loading,
   error,
   wing,
+  configId,
   individual = false,
   onSelectCell,
   toolbarHost,
@@ -53,6 +56,14 @@ export function AllocationTab({
   error: string | null;
   /** The timetable the top bar has selected — this grid must not offer a second choice. */
   wing: string | null;
+  /**
+   * §33.6 — that timetable's id, for the per-class lesson lengths.
+   *
+   * Passed rather than looked up from the name: the host already holds it, and
+   * resolving it again here would be a second answer to "which timetable is
+   * this?" on a screen whose whole point is that there is one.
+   */
+  configId: number | null;
   /**
    * §30.9 — whether that timetable stands alone in a §30 resource pool.
    *
@@ -68,6 +79,35 @@ export function AllocationTab({
   /** §31.10 — the host's toolbar, so this tab does not draw a second one. */
   toolbarHost: HTMLElement | null;
 }) {
+  /*
+    §33.6 — how long one lesson is for each class, so the grid can ask for
+    LESSONS rather than base periods.
+
+    At the TOP of the component, above every early return below: React's hook
+    order is positional, so a render that bails out before these runs two
+    fewer hooks than one that does not, and the next render reads this
+    component's state out of the wrong slots.
+
+    Keyed by class NAME because that is what the grid works in; the endpoint
+    returns ids, so the map is built here. Empty on failure, which gives every
+    class a span of 1 — the behaviour before §33, and the safe direction to be
+    wrong in: the number typed is then the number stored.
+  */
+  const [spans, setSpans] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let live = true;
+    if (configId === null) { setSpans({}); return; }
+    api<{ classes: Array<{ name: string; span: number }> }>(`/timetable-configs/${configId}/class-periods`)
+      .then((r) => {
+        if (!live) return;
+        const out: Record<string, number> = {};
+        for (const c of r.classes ?? []) if (c.span > 1) out[c.name] = c.span;
+        setSpans(out);
+      })
+      .catch(() => { if (live) setSpans({}); });
+    return () => { live = false; };
+  }, [configId]);
+
   /*
     §31.10 — fills what the host leaves, rather than claiming 74vh of its own.
 
@@ -161,6 +201,7 @@ export function AllocationTab({
         here rather than linking to it.
       */}
       <StepAllocation
+        spanByClass={spans}
         answers={scoped}
         onChange={onChange}
         density="compact"

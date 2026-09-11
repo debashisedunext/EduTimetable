@@ -3696,11 +3696,20 @@ The shape of the day on the left, the things inside it on the right, and the rea
 
 The strip also carries **when school closes** — `dayEndsAt` in `packages/shared`, and it is deliberately a *second* function rather than a reuse of what `GET /:id/class-periods` returns. They answer different questions: the endpoint reads the `periods` rows, which is the authority for a timetable that exists and which gets §28.4 right; this answers *"what will this be when I press Next?"*, where no rows exist yet and arithmetic is the only answer available. Collapsing them would mean either showing a stale figure from the last save while somebody types, or the server recomputing what it can already read. It returns **null** rather than a confident wrong answer for a half-typed time, and refuses to wrap past midnight into a plausible-looking morning.
 
-### 33.6 Still to build
+### 33.6 The Lesson Grid asks for lessons, not base periods
 
-- **Entering the curriculum in lessons rather than base periods.** A class on 60-minute lessons that takes 3 English a week needs `periods_per_week = 6`; typing 6 today means six base periods, which is three hours. Until the translation exists, the number entered is in base periods.
-- **An odd count cannot be all doubles.** 5 base periods at span 2 is two doubles and one leftover single — a correct timetable for the data given, but not what the school meant. It should be reported.
+A class on 60-minute lessons that takes three English a week is six base periods. The cell asked for the six — so a person thinking in hours who typed `3` got one hour and a stray half-hour, and one who typed `6` got three hours by accident rather than by intent. Either way the number on screen and the number in somebody's head were in different units, and nothing said so.
+
+**The conversion happens at the cell's edge, and nowhere else.** `class_subjects.periods_per_week` is stored in base periods and stays that way: it is what `writer.ts` counts and what `uq_teacher_slot` protects, and switching the column to lessons would silently halve every school with an existing double period. `lessonsFromBase` / `baseFromLessons` in `packages/shared` are the arithmetic — one definition, because the grid needs it three times (to show the number, to seed the field somebody types into, and to read that field back) and three copies of a division is three chances to round one differently. For a class with no span, which is every class of every school today, both are the identity.
+
+**A remainder is reported, not rounded away.** Five base periods at a span of two is two lessons and a stray half-lesson — a correct timetable for the data given and not what anybody meant — so the cell prints a red `+1` beside the number. It can only arise from a row written before the span was set, or through the §16 importer, whose Curriculum sheet is still in base periods.
+
+The spans reach the grid as a class-name map from the Master Grid, which already holds the timetable id; resolving it again from the wing's name would be a second answer to "which timetable is this?" on a screen whose whole point is that there is one. Empty on failure, which gives every class a span of 1 — the safe direction, because then the number typed is the number stored.
+
+### 33.7 Still to build
+
 - **Printing a class's week as 4 rows, not 8.** The data is adjacent identical pairs; collapsing them is display-only work.
+- **The §16 Curriculum sheet is still in base periods**, so a spreadsheet round-trip and the grid now speak different units for a class with a span. The sheet is the one that should gain a column, since changing the existing one would break every workbook in the field.
 
 
 ## 34. A Weekday May Run a Shape of Its Own (Phase 50)

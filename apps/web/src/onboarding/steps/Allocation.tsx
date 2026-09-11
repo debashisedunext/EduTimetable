@@ -28,6 +28,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   assignInitials, assignSwatches, computeLoads, coverageGaps, defaultsFor, planClasses, relieveLoad,
+  baseFromLessons, lessonsFromBase,
   subjectAppliesTo, subjectsForWing, suggestCurriculum, suggestMappings, weeklyCapacity,
   withCurriculumPeriods,
   type CurriculumCell, type LoadRemedy, type MappingSuggestion, type SubjectAnswer,
@@ -458,6 +459,7 @@ function CellShell({
 
 export function StepAllocation({
   answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell, toolbarHost,
+  spanByClass,
 }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -481,6 +483,19 @@ export function StepAllocation({
    * exactly as they did before this prop.
    */
   density?: "comfortable" | "compact";
+  /**
+   * §33.6 — how many BASE periods one of each class's lessons occupies, by
+   * class name.
+   *
+   * A class on 60-minute lessons in a 30-minute grid has a span of 2, so "3
+   * English a week" is six base periods. `class_subjects.periods_per_week` is
+   * stored in base periods and stays that way — it is what `writer.ts` counts —
+   * so this cell converts at its own edge and nothing downstream changes.
+   *
+   * Absent, or 1, and the cell is exactly what it was: the number typed is the
+   * number stored, which is every school with no §33 spans.
+   */
+  spanByClass?: Record<string, number>;
   /**
    * §31.10 — which wing to show, when the HOST already picks one.
    *
@@ -689,6 +704,36 @@ export function StepAllocation({
   // ── reading the draft ──────────────────────────────────────────────────
   const periodsOf = (className: string, subject: string) =>
     m.cells.find((c) => c.className === className && c.subjectName === subject)?.periodsPerWeek ?? 0;
+
+  /**
+   * §33.6 — how many base periods one of this class's lessons takes.
+   *
+   * 1 for every class of every school that has not set a §33 span, which is
+   * what makes everything below identical to what it was.
+   */
+  const spanOf = (className: string) => Math.max(1, spanByClass?.[className] ?? 1);
+
+  /**
+   * The cell's number, in the unit the class is taught in.
+   *
+   * A class on 60-minute lessons in a 30-minute grid is asked for *lessons*,
+   * because "three English a week" is what a school says — while the row goes
+   * on storing six base periods, which is what the solver counts.
+   *
+   * `over` is the remainder, and it is the §33.6 warning: five base periods at
+   * a span of two is two hours and a stray half-hour. That is a correct
+   * timetable for the data given and not what anybody meant, so it is reported
+   * where the number is rather than discovered in the generated week. It can
+   * only arise from a row written before the span was set, or through the §16
+   * importer, whose Curriculum sheet is still in base periods.
+   */
+  const lessonsOf = (className: string, subject: string) => {
+    const base = periodsOf(className, subject);
+    const span = spanOf(className);
+    // One definition, in `packages/shared`, because this grid needs it three
+    // times — to show the number, to seed the field, and to read it back.
+    return { base, span, ...lessonsFromBase(base, span) };
+  };
 
   const mappingIndexOf = (section: string, subject: string) =>
     m.mappings.findIndex(
@@ -930,8 +975,11 @@ export function StepAllocation({
   useLayoutEffect(() => {
     if (!stripCell) return;
     const className = stripCell.section.replace(/-[^-]+$/, "");
-    const p = periodsOf(className, stripCell.subject);
-    setTyped(p > 0 ? String(p) : "");
+    // §33.6 — seeded in LESSONS, the unit `commitTyped` reads back. Seeding
+    // base periods here would show 6 in a field where typing 6 means six
+    // hours, and arrowing across a row would rewrite every cell it passed.
+    const { lessons } = lessonsOf(className, stripCell.subject);
+    setTyped(lessons > 0 ? String(lessons) : "");
     /*
       Focused here rather than with `autoFocus`, so arrowing from cell to cell
       moves the caret with the selection rather than only on the first mount —
@@ -950,7 +998,16 @@ export function StepAllocation({
     // here would drop the row's periods on the way to typing a two-digit
     // number, and the load rail would flash as they passed through.
     if (clean === "") return;
-    const want = Number(clean);
+    /*
+      §33.6 — typed in LESSONS, stored in base periods.
+
+      The conversion is here and only here: `setPeriods` goes on meaning base
+      periods, which is what `class_subjects` stores and what the solver
+      counts, so nothing downstream has to learn a second unit. For a class
+      with no span — every class of every school today — `span` is 1 and this
+      is the arithmetic it always was.
+    */
+    const want = baseFromLessons(Number(clean), spanOf(className));
     // Refused above the week, as the screen refuses everywhere else: a class
     // asking for more periods than its week holds can never be timetabled.
     const total = totalOf(className) - periodsOf(className, subject) + want;
@@ -1570,7 +1627,8 @@ export function StepAllocation({
                     </th>
 
                     {m.subjects.map((s, col) => {
-                      const p = periodsOf(c.className, s.name);
+                      const cell = lessonsOf(c.className, s.name);
+                      const p = cell.base;
                       const idx = mappingIndexOf(id, s.name);
                       const row = idx >= 0 ? m.mappings[idx] : null;
                       const code = row?.employeeCode ?? "";
@@ -1682,7 +1740,22 @@ export function StepAllocation({
                               />
                             ) : (
                               <span style={{ font: "700 13.5px/1 var(--font-mono, monospace)", display: "block", opacity: p <= 0 ? 0.5 : 1 }}>
-                                {p <= 0 ? "–" : p}
+                                {/*
+                                  §33.6 — shown in the unit the class is taught
+                                  in. A class on 60-minute lessons reads "3",
+                                  not the six base periods stored behind it.
+
+                                  A remainder is flagged rather than rounded
+                                  away: five base periods at a span of two is
+                                  two hours and a stray half-hour — a correct
+                                  timetable for the data given, and not what
+                                  anybody meant.
+                                */}
+                                {p <= 0 ? "–" : cell.span > 1 ? cell.lessons : p}
+                                {cell.over > 0 && (
+                                  <span title={`${p} periods do not divide into lessons of ${cell.span} — ${cell.over} would be left over`}
+                                    style={{ color: "var(--signal)" }}>+{cell.over}</span>
+                                )}
                               </span>
                             )}
                             <span style={{

@@ -246,6 +246,26 @@ async function main() {
     "and every Class 10 lesson is two ADJACENT periods — the span reached the solver",
     pairs.join(" · ") || "none");
 
+  /*
+    §33.6 — the STORED unit is unchanged, and that is the point of converting
+    in the cell rather than in the column.
+
+    The curriculum row still says 4 base periods; the Lesson Grid reads that
+    back as 2 lessons because Class 10's span is 2, and typing 2 stores 4
+    again. Were the column ever switched to lessons, every school with an
+    existing double period would silently halve — `writer.ts` counts base
+    periods and `uq_teacher_slot` protects them.
+  */
+  const stored10 = await prisma.classSubject.findFirst({
+    where: { classId: ten.id, subjectId: subject.id }, select: { periodsPerWeek: true },
+  });
+  check(stored10?.periodsPerWeek === 4,
+    "while the curriculum row still stores BASE periods — 4, read back as 2 lessons of an hour",
+    `periods_per_week ${stored10?.periodsPerWeek}`);
+  check(tenRows.length === 4 && pairs.length === 2,
+    "...so 4 base periods became 2 lessons on the timetable, not 4",
+    `${tenRows.length} base periods · ${pairs.length} lessons`);
+
   // ─────────────── 4. HOURS START ON AN HOUR
   check(pairs.length === 2 && pairs.every((p) => Number(p.split(":")[1].split("-")[0]) % 2 === 1),
     "each hour starts on an odd period, so it lines up with the clock rather than straddling",

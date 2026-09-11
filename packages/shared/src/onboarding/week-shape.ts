@@ -112,3 +112,39 @@ export function longestDay(cfg: WeekShapeConfig, workingDays: number[]): number 
 export function halfDayPeriods(periodsPerDay: number): number {
   return Math.max(1, Math.ceil(Math.max(1, Math.floor(periodsPerDay || 1)) / 2));
 }
+
+/**
+ * §33.6 — base periods read back as the lessons a school actually says.
+ *
+ * `class_subjects.periods_per_week` is stored in BASE periods and stays that
+ * way: it is what `writer.ts` counts and what `uq_teacher_slot` protects. But a
+ * class on 60-minute lessons in a 30-minute grid takes "three English a week",
+ * not six — and a cell that asks for six while a person is thinking in hours
+ * gets three hours when they meant three lessons, or one and a half when they
+ * type what they mean.
+ *
+ * So the conversion happens at the cell's own edge, and this is it. One
+ * definition because the grid needs it three times — to show the number, to
+ * seed the field somebody types into, and to read that field back — and three
+ * copies of a division is three chances to round one of them differently.
+ *
+ * **`over` is the warning, not a rounding error.** Five base periods at a span
+ * of two is two lessons and a stray half-lesson. That is a correct timetable
+ * for the data given and not what anybody meant, so it is reported where the
+ * number is rather than discovered in the generated week. It can only arise
+ * from a row written before the span was set, or through the §16 importer,
+ * whose Curriculum sheet is still in base periods.
+ *
+ * Lives here rather than in the component because `apps/web` has no test
+ * harness and this arithmetic decides what a school's curriculum means.
+ */
+export function lessonsFromBase(base: number, span: number): { lessons: number; over: number } {
+  const n = Math.max(0, Math.floor(base || 0));
+  const s = Math.max(1, Math.floor(span || 1));
+  return { lessons: Math.floor(n / s), over: n % s };
+}
+
+/** The base periods a school means by that many lessons. */
+export function baseFromLessons(lessons: number, span: number): number {
+  return Math.max(0, Math.floor(lessons || 0)) * Math.max(1, Math.floor(span || 1));
+}

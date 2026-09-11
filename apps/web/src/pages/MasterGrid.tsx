@@ -1327,6 +1327,8 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
               loading={allocLoading}
               error={allocError}
               wing={current?.name ?? null}
+              /* §33.6 — for the per-class lesson lengths the cells are typed in. */
+              configId={current?.id ?? null}
               /* §30.9 — an individual timetable shares no asset with the rest
                  of the school, so its grid must not be shown the rest of the
                  school's wings. `resourceMode` is on the config summary. */

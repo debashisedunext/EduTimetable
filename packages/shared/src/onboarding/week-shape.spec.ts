@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { durationOn, halfDayPeriods, longestDay, periodsOn, weekPeriods } from "./week-shape";
+import {
+  baseFromLessons, durationOn, halfDayPeriods, lessonsFromBase, longestDay, periodsOn, weekPeriods,
+} from "./week-shape";
 
 describe("§34 a weekday with a shape of its own", () => {
   const plain = { periodsPerDay: 8, periodDurationMins: 40 };
@@ -53,5 +55,38 @@ describe("§34 a weekday with a shape of its own", () => {
     expect(periodsOn({ periodsPerDay: 0 }, 1)).toBe(1);
     expect(periodsOn({ periodsPerDay: 8, dayShapes: [{ day: 6, periodsPerDay: 0, periodDurationMins: 0 }] }, 6)).toBe(8);
     expect(halfDayPeriods(0)).toBe(1);
+  });
+});
+
+describe("§33.6 lessons and the base periods behind them", () => {
+  it("reads six base periods at a span of two as three lessons", () => {
+    expect(lessonsFromBase(6, 2)).toEqual({ lessons: 3, over: 0 });
+  });
+
+  it("is the identity for a class that has not set a span", () => {
+    // Every class of every school today. The number typed is the number stored.
+    expect(lessonsFromBase(6, 1)).toEqual({ lessons: 6, over: 0 });
+    expect(baseFromLessons(6, 1)).toBe(6);
+  });
+
+  it("round-trips what somebody types", () => {
+    expect(lessonsFromBase(baseFromLessons(3, 2), 2).lessons).toBe(3);
+  });
+
+  it("REPORTS a remainder rather than rounding it away", () => {
+    // Five base periods at a span of two is two lessons and a stray half-lesson
+    // — a correct timetable for the data given, and not what anybody meant.
+    expect(lessonsFromBase(5, 2)).toEqual({ lessons: 2, over: 1 });
+    expect(lessonsFromBase(7, 3)).toEqual({ lessons: 2, over: 1 });
+  });
+
+  it("treats a missing or nonsense span as one rather than dividing by zero", () => {
+    expect(lessonsFromBase(6, 0)).toEqual({ lessons: 6, over: 0 });
+    expect(baseFromLessons(3, 0)).toBe(3);
+  });
+
+  it("never returns a negative", () => {
+    expect(lessonsFromBase(-4, 2)).toEqual({ lessons: 0, over: 0 });
+    expect(baseFromLessons(-2, 2)).toBe(0);
   });
 });
