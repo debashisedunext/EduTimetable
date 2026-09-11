@@ -49,6 +49,34 @@ export interface SubjectAnswer {
 }
 
 /**
+ * §32 — which subjects a WING teaches, read out of the draft.
+ *
+ * `subjectsByWing` is keyed by wing name and holds subject NAMES, for the same
+ * reason every other cross-reference in this flow does (§27.9): the draft
+ * describes a school that may not exist yet, so there are no ids to key on.
+ *
+ * **Absent means "not stated", which is all of them** (invariant 7) — not
+ * none. Every draft written before this feature has no entry, and every wing
+ * somebody has not opened the step for has none either; reading that as "this
+ * timetable teaches nothing" would empty the Lesson Grid of a school that had
+ * simply never been asked.
+ *
+ * One definition because three places need the same answer and each would get
+ * the absent case wrong differently: the Subjects step's tick boxes, the Lesson
+ * Grid's columns, and the commit that writes `timetable_subjects`.
+ */
+export function subjectsForWing(
+  subjects: SubjectAnswer[],
+  byWing: Record<string, unknown> | undefined | null,
+  wingName: string | null | undefined,
+): SubjectAnswer[] {
+  const stated = wingName ? (byWing ?? {})[wingName] : undefined;
+  if (!Array.isArray(stated)) return subjects;
+  const want = new Set(stated.map((n) => String(n).trim().toLowerCase()));
+  return subjects.filter((s) => want.has(s.name.trim().toLowerCase()));
+}
+
+/**
  * Which activity room a subject wants, if any.
  *
  * Matched on the subject NAME, which is what the admin typed — there is no

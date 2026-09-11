@@ -857,6 +857,89 @@ export class TimetableConfigsController {
     return { ok: true, frozenAt: null };
   }
 
+  /**
+   * §32 — which subjects this timetable teaches.
+   *
+   * `selected: null` means **not stated**, which behaves as all (invariant 7)
+   * — not the same as `[]`, and the two are returned differently so a client
+   * cannot collapse them. Every subject the school has comes back beside it,
+   * because the question the screen asks is "which of these?" and fetching the
+   * master list separately would let the two lists disagree about what exists.
+   */
+  @Get(":id/subjects")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async subjectsFor(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId }, select: { id: true, schoolId: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty list that reads as
+    // "this timetable teaches nothing".
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const [all, chosen] = await Promise.all([
+      this.prisma.subject.findMany({
+        where: { schoolId: config.schoolId },
+        select: { id: true, name: true, code: true },
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.timetableSubject.findMany({
+        where: { timetableConfigId: configId }, select: { subjectId: true },
+      }),
+    ]);
+    return {
+      subjects: all,
+      selected: chosen.length === 0 ? null : chosen.map((r) => r.subjectId),
+    };
+  }
+
+  /**
+   * Replace the selection.
+   *
+   * **Deliberately not freeze-guarded** (§29.1). Its "not frozen" list already
+   * names subjects, and this writes no slot: a frozen timetable's published
+   * week is untouched by it. What it changes is what the NEXT generation would
+   * produce, which is the same thing editing the curriculum does, and refusing
+   * that would leave a school unable to record a decision it has already taken.
+   *
+   * An empty array is accepted and means "no narrowing" — the same as never
+   * having stated one. See `applySubjectSelection` for why "all of them" is
+   * stored as nothing rather than as a row per subject.
+   */
+  @Put(":id/subjects")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setSubjectsFor(@Param("id") id: string, @Body() body: { subjectIds?: unknown }) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId }, select: { id: true, schoolId: true, name: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const asked = Array.isArray(body?.subjectIds) ? body.subjectIds.map(Number).filter(Number.isFinite) : [];
+    // Ours only. A subject id from another school would otherwise be stored
+    // against our config and read back by the snapshot as a subject we teach.
+    const mine = await this.prisma.subject.findMany({
+      where: { schoolId: config.schoolId, id: { in: asked } }, select: { id: true },
+    });
+    const total = await this.prisma.subject.count({ where: { schoolId: config.schoolId } });
+    const ids = mine.map((s) => s.id);
+    const narrows = ids.length > 0 && ids.length < total;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.timetableSubject.deleteMany({ where: { timetableConfigId: configId } });
+      if (narrows) {
+        await tx.timetableSubject.createMany({
+          data: ids.map((subjectId) => ({ timetableConfigId: configId, subjectId, schoolId: config.schoolId })),
+        });
+      }
+    });
+    // §22 — swept by PREFIX. The snapshot, `/context` and every per-draft copy
+    // are all keyed under this config, and the subject list changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}) now teaches ${narrows ? ids.length : "all"} subjects`);
+    return { ok: true, selected: narrows ? ids : null };
+  }
+
   /** Readiness Dashboard data (§4) — Feasibility Engine over the live DB. */
   @Get(":id/readiness")
   @RequirePermission(PERMISSIONS.TIMETABLE_GENERATE)

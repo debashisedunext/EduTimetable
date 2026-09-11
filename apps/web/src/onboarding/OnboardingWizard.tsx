@@ -160,13 +160,20 @@ export const STEP_TITLES = [
  * The steps whose content is a table or a grid, and so uses the full width of
  * the pane (§24.5d).
  *
- * Classes (the per-class section grid), Teachers and Rooms are the widest things
- * left here now that §31.13 has moved Allocation out; the other six are
- * ordinary forms, which a measure makes easier to read rather than harder.
- * A set of step numbers rather than a guess inside each screen, so the two
- * kinds are visible side by side and a new step has to choose.
+ * Classes (the per-class section grid), Subjects, Teachers and Rooms are the
+ * widest things left here now that §31.13 has moved Allocation out; the other
+ * five are ordinary forms, which a measure makes easier to read rather than
+ * harder. A set of step numbers rather than a guess inside each screen, so the
+ * two kinds are visible side by side and a new step has to choose.
+ *
+ * **Subjects (6) belongs here and was missing.** Its table is ten columns wide
+ * — name, code, the classes chip, category, priority, placement, three flags
+ * and the row control — and an 880px measure squeezed every one of them: the
+ * category read "Schola", the code "CHEM" was clipped to "CHEN", and the page
+ * carried several hundred pixels of empty gutter on each side while doing it.
+ * A measure is for prose. This is a spreadsheet.
  */
-const WIDE_STEPS = new Set([4, 7, 8]);
+const WIDE_STEPS = new Set([4, 6, 7, 8]);
 
 /**
  * The steps that want the pane's HEIGHT, not only its width (§28).

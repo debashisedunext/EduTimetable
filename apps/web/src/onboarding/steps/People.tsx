@@ -18,12 +18,13 @@
  * Nothing here writes a row. Both steps commit through `POST
  * /onboarding/commit/:step`, which builds the §16 importer's own sheets.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { defaultsFor, planClasses, proposeInitials, type SubjectAnswer, type TeacherAnswer, type WingAnswer } from "@edutimetable/shared";
 import { CategorySelect, LunchRules, PrioritySelect } from "../../subjects/Placement";
 import { Note } from "./Structure";
 import { ChipPicker } from "./ChipPicker";
 import { cell, Heading, LinkButton, pasteColumn, Scroll, td, th } from "./ui";
+import { api } from "../../api";
 
 // ────────────────────────────────────────────────────────── step 6: subjects
 
@@ -78,6 +79,73 @@ export function StepSubjects({ answers, onChange }: {
   const wings: WingAnswer[] = answers.wings ?? [];
   const ladder = useMemo(() => planClasses(wings).classes.map((c) => ({ name: c.className })), [JSON.stringify(wings)]);
   const set = (next: SubjectAnswer[]) => onChange({ subjects: next });
+
+  /**
+   * §32 — the tick boxes belong to ONE timetable, so the step has to say which.
+   *
+   * The same tab strip step 4 uses, and for the same reason: "which subjects
+   * does the school teach" is one question, but "which of them does *this*
+   * week run" is one question per wing. Without the strip the ticks would be
+   * an answer with no subject — and the wizard's own scope switcher narrows
+   * pools, not wings, so a grouped pool with three wings could not be
+   * expressed at all.
+   *
+   * Clamped, because the list can shrink under a stored index (§30.9).
+   */
+  const [activeWing, setActiveWing] = useState(0);
+  const wingIdx = wings.length === 0 ? 0 : Math.min(activeWing, wings.length - 1);
+  const wingName: string | null = wings[wingIdx]?.name ?? null;
+
+  const byWing: Record<string, string[]> = answers.subjectsByWing ?? {};
+  /**
+   * Which subjects this wing runs. Absent is **not stated**, which is all of
+   * them (invariant 7) — `subjectsForWing` in `packages/shared` is that rule,
+   * and the Lesson Grid reads it too so the two cannot disagree.
+   */
+  const teaches = (name: string) => {
+    const stated = wingName ? byWing[wingName] : undefined;
+    if (!Array.isArray(stated)) return true;
+    return stated.some((n) => n.trim().toLowerCase() === name.trim().toLowerCase());
+  };
+  /**
+   * Ticking writes the WHOLE list, never a delta.
+   *
+   * The stored value has to be a complete statement, because that is what the
+   * commit turns into rows; a delta would need the "not stated" list expanded
+   * somewhere else, which is a second place to get invariant 7 wrong.
+   */
+  const toggleTeaches = (name: string) => {
+    if (!wingName) return;
+    const named = rows.map((r) => r.name).filter((n) => n.trim());
+    const now = named.filter((n) => teaches(n));
+    const next = now.some((n) => n.trim().toLowerCase() === name.trim().toLowerCase())
+      ? now.filter((n) => n.trim().toLowerCase() !== name.trim().toLowerCase())
+      : [...now, name];
+    // Unticking the last one would store `[]`, which reads back as "not
+    // stated" and therefore as ALL of them — take one away and get everything
+    // back is the one behaviour nobody would predict. §27.9 and §27.16 refuse
+    // the same move for the same reason.
+    if (next.length === 0) return;
+    onChange({ subjectsByWing: { ...byWing, [wingName]: next } });
+  };
+
+  /**
+   * The subjects that are already `subjects` rows, by lowercased name.
+   *
+   * What decides whether this screen may take one off the list at all. Read
+   * from the server rather than derived from the draft, because a resumed or
+   * adopted setup has subjects in its answers that were committed long ago and
+   * a draft cannot tell you which. Empty on failure: nothing is then
+   * removable, which is the safe direction to be wrong in.
+   */
+  const [committed, setCommitted] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let live = true;
+    api<Array<{ name: string }>>("/subjects")
+      .then((all) => { if (live) setCommitted(new Set(all.map((x) => x.name.trim().toLowerCase()))); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
   const edit = (i: number, patch: Partial<SubjectAnswer>) =>
     set(subjects.map((s, n) => (n === i ? { ...s, ...patch } : s)));
 
@@ -130,8 +198,29 @@ export function StepSubjects({ answers, onChange }: {
         </div>
       )}
 
-      <Scroll>
+      {wings.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--steel)" }}>
+            Teaching
+          </span>
+          {wings.map((w, i) => (
+            <button key={w.name} onClick={() => setActiveWing(i)} className="btn"
+              style={{
+                padding: "5px 11px", fontSize: 12,
+                background: i === wingIdx ? "var(--brand)" : "var(--paper)",
+                color: i === wingIdx ? "#fff" : "var(--ink)",
+                borderColor: i === wingIdx ? "var(--brand)" : "var(--line)",
+              }}>{w.name}</button>
+          ))}
+        </div>
+      )}
+
+      <Scroll max={460}>
         <thead><tr>
+          {/* §32 — does THIS timetable teach it. First column, because it is
+              the question the row is answering before any of its settings
+              matter. */}
+          <th style={{ ...th, width: 40, textAlign: "center" }} title={wingName ? `Taught in ${wingName}` : "Taught"}>✓</th>
           <th style={{ ...th, width: "26%" }}>Subject</th>
           <th style={{ ...th, width: 74 }}>Code</th>
           {/* §26.2 — set from the subject's name as it is typed, and shown
@@ -156,7 +245,26 @@ export function StepSubjects({ answers, onChange }: {
         </tr></thead>
         <tbody>
           {rows.map((s, i) => (
-            <tr key={i}>
+            <tr key={i} style={teaches(s.name) ? undefined : { opacity: 0.5 }}>
+              {/*
+                §32 — unticking takes the subject out of THIS timetable only.
+
+                Not a deletion: the subject, its settings, its mappings and any
+                other timetable that teaches it are untouched. What it removes
+                is the demand — the snapshot stops loading this subject's
+                curriculum rows for this config, so the Lesson Grid drops the
+                column, generation places none of it, and Readiness stops
+                counting its periods.
+
+                Disabled with no wing to attach it to, rather than hidden: a
+                control that appears only sometimes is one people stop looking
+                for.
+              */}
+              <td style={{ ...td, textAlign: "center" }}>
+                <input type="checkbox" checked={teaches(s.name)} disabled={!wingName || !s.name.trim()}
+                  aria-label={wingName ? `${s.name || `Subject ${i + 1}`} is taught in ${wingName}` : "Taught"}
+                  onChange={() => toggleTeaches(s.name)} />
+              </td>
               <td style={td}>
                 <input style={{ ...cell, borderColor: duplicate(s.name, i) ? "var(--signal)" : "transparent" }}
                   value={s.name} placeholder="e.g. Mathematics" aria-label={`Subject ${i + 1}`}
@@ -209,7 +317,20 @@ export function StepSubjects({ answers, onChange }: {
                   onChange={(e) => edit(i, { requiresDoublePeriod: e.target.checked })} />
               </td>
               <td style={{ ...td, textAlign: "right" }}>
-                {rows.length > 1 && <LinkButton tone="danger" onClick={() => set(rows.filter((_, n) => n !== i))}>✕</LinkButton>}
+                {/*
+                  §32 — no ✕ once the subject is a `subjects` row.
+
+                  It only ever removed the row from the DRAFT: the §16 importer
+                  creates subjects and never deletes one, so the subject stayed
+                  in the database, kept its mappings and its curriculum, and
+                  went on being taught — while this screen stopped listing it.
+                  Deselecting is the honest control, and it is the tick in the
+                  first column. A row somebody has just typed is still theirs
+                  to take back.
+                */}
+                {rows.length > 1 && !committed.has(s.name.trim().toLowerCase())
+                  ? <LinkButton tone="danger" onClick={() => set(rows.filter((_, n) => n !== i))}>✕</LinkButton>
+                  : null}
               </td>
             </tr>
           ))}
@@ -220,9 +341,23 @@ export function StepSubjects({ answers, onChange }: {
         <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }}
           onClick={() => set([...rows, blankSubject()])}>+ Add a subject</button>
         <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
-          {rows.filter((s) => s.name.trim()).length} subjects · Enter on the last row adds another
+          {rows.filter((s) => s.name.trim()).length} subjects
+          {wingName && (() => {
+            const on = rows.filter((s) => s.name.trim() && teaches(s.name)).length;
+            const off = rows.filter((s) => s.name.trim()).length - on;
+            return off > 0 ? ` · ${on} taught in ${wingName}` : ` · all taught in ${wingName}`;
+          })()}
+          {" · Enter on the last row adds another"}
         </span>
       </div>
+
+      <Note>
+        The <strong>first column</strong> says whether {wingName ? <strong>{wingName}</strong> : "this timetable"} teaches
+        the subject. Unticking removes it from that timetable only — from its Lesson Grid, from
+        what gets generated and from what Readiness counts. The subject itself, its settings and
+        every other timetable that teaches it are untouched, which is why a subject the school has
+        already entered has no ✕: it is deselected here, and deleted on the Subjects master.
+      </Note>
 
       <Note>
         A <strong>lab</strong> subject is one that has to be taught in a particular room. The room

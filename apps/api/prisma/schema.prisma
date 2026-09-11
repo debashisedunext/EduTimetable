@@ -114,6 +114,7 @@ model School {
   dailyActivities        DailyActivity[]
   teacherSubjects        TeacherSubject[]
   subjectClasses         SubjectClass[]
+  timetableSubjects      TimetableSubject[]
   staffingChanges        StaffingChange[]
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
@@ -487,6 +488,8 @@ model Subject {
   unavailability  SubjectUnavailability[]
   /// §27.16 — the classes this subject is DECLARED for. Empty = not stated.
   classes         SubjectClass[]
+  /// §32 — the timetables that have DECLARED this subject. Empty = not stated.
+  timetables      TimetableSubject[]
 
   @@unique([schoolId, name])
   @@map("subjects")
@@ -585,6 +588,43 @@ model TeacherClassEligibility {
   @@id([teacherId, classId])
   @@index([schoolId])
   @@map("teacher_class_eligibility")
+}
+
+/// §32 — which subjects a TIMETABLE teaches, declared per `timetable_config`.
+///
+/// `subjects` is school-wide and stays that way: a subject is entered once and
+/// used for ever (§27.12). What differs between timetables is which of them a
+/// given week actually runs — a Junior wing that does not teach Chemistry, an
+/// individual timetable set up for a handful of languages. Before this, every
+/// timetable saw every subject the school had ever entered.
+///
+/// **Per `timetable_config`, deliberately not per §30 pool.** Two grouped wings
+/// share a pool and are exactly the case that motivates this: Junior and Senior
+/// are one resource group and teach different subjects. A pool-level answer
+/// could not say that.
+///
+/// **Empty means "not stated", never "teaches nothing"** (invariant 7). That is
+/// what makes the migration a bare `CREATE TABLE` with no backfill: every
+/// timetable that exists today has no rows and therefore keeps seeing every
+/// subject, which is what it sees now. It also means the table is only ever
+/// *written* by somebody actively choosing — a school that never opens the
+/// screen is never silently narrowed.
+///
+/// Selection only. The subject's own settings — code, category, priority,
+/// placement, lab, own room, double — are one answer per subject, school-wide,
+/// because they describe the subject rather than the week.
+model TimetableSubject {
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  subjectId         Int             @map("subject_id")
+  subject           Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, subjectId])
+  @@index([schoolId])
+  @@index([subjectId])
+  @@map("timetable_subjects")
 }
 
 /// §27.16 — which classes a subject is taught to, DECLARED rather than guessed.
@@ -824,6 +864,8 @@ model TimetableConfig {
   frozenById                  Int?                  @map("frozen_by_id")
   /// §29.2 — the staffing changes made against this timetable.
   staffingChanges             StaffingChange[]
+  /// §32 — the subjects this timetable teaches. Empty = not stated = all.
+  subjects                    TimetableSubject[]
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]

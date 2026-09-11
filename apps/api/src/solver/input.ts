@@ -7,6 +7,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { FeasibilitySnapshot, SolverInput } from "@edutimetable/shared";
 import { parsePins } from "@edutimetable/shared";
 import { daySegmentsFromRows, lunchAfterPeriodFromRows } from "../masters/structure.util";
+import { subjectSelectionFor } from "../masters/timetable-subjects.util";
 
 export async function buildFeasibilitySnapshot(
   prisma: PrismaClient,
@@ -25,34 +26,96 @@ export async function buildFeasibilitySnapshot(
   const classIds = [...new Set(classSections.map((c) => c.classId))];
   const sectionIds = classSections.map((c) => c.id);
 
+  /*
+    §32 — which subjects THIS timetable teaches, or null if it has not said.
+
+    Read here, once, because this snapshot is what the solver, the Feasibility
+    Engine, Readiness and the Master Grid's strip all read (CLAUDE.md: "read off
+    `buildFeasibilitySnapshot` so the strip cannot disagree with the solver or
+    Readiness"). Filtering anywhere else would be a second answer to "does this
+    timetable teach Chemistry?", free to disagree with this one.
+  */
+  const subjectSelection = await subjectSelectionFor(prisma, configId);
+
   const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects, allSubjects] =
     await Promise.all([
       // Phase 19: the curriculum is year-scoped, and this filter is what keeps
       // it so. `variables.ts` keys requirements by `classId:subjectId` in a
       // plain Map — two years' rows reaching the snapshot would collapse to
       // whichever loaded last, silently timetabling the wrong syllabus.
+      /*
+        §32 — and narrowed to the subjects this timetable teaches.
+
+        Applied to the CURRICULUM rather than to the subject list: the
+        curriculum is what states demand, so a subject this timetable does not
+        teach simply has no demand here — the solver never sees it, Check 1
+        never counts its periods, and Readiness never reports it missing. The
+        rows themselves are untouched, because another timetable may teach the
+        same class the same subject and deselecting is not a deletion.
+
+        `undefined` when nothing has been stated, which Prisma drops: that is
+        the "not stated means all" rule (invariant 7) expressed as a query
+        rather than as a branch somebody has to remember.
+      */
       prisma.classSubject.findMany({
-        where: { classId: { in: classIds }, academicYearId: config.academicYearId },
+        where: {
+          classId: { in: classIds },
+          academicYearId: config.academicYearId,
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { subject: true },
       }),
+      /*
+        §32 — the MAPPINGS have to be narrowed too, and this is the half that
+        is easy to miss.
+
+        Filtering the curriculum alone looked complete — `/context` dropped the
+        column, Readiness dropped the demand — and generation went on placing
+        the subject anyway. `solver/variables.ts` builds one variable per
+        MAPPING and takes the period count from `m.periodsPerWeek`; the
+        curriculum row only supplies the block size and the per-day cap. So a
+        mapping is a statement of demand in its own right, and a subject this
+        timetable does not teach must not have one here.
+      */
       prisma.teacherSubjectClassSection.findMany({
-        where: { classSectionId: { in: sectionIds } },
+        where: {
+          classSectionId: { in: sectionIds },
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { teacher: true, subject: true, classSection: { include: { class: true, section: true } } },
       }),
       prisma.teacher.findMany({
         where: { schoolId: config.schoolId, isActive: true },
         include: { unavailability: true, eligibility: true },
       }),
+      // §4.10 — a merged group carries its own `periodsPerWeek` as well, so it
+      // is demand on the same footing as a mapping.
       prisma.mergedTeachingGroup.findMany({
-        where: { members: { some: { classSectionId: { in: sectionIds } } } },
+        where: {
+          members: { some: { classSectionId: { in: sectionIds } } },
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { members: true, subject: true },
       }),
       // §4.9 split electives: any block one of this config's sections attends.
+      /*
+        §4.9 — and the OPTIONS inside an elective block.
+
+        Filtered at the option rather than at the block: a language block whose
+        school has taken German out of one wing still runs, with French and
+        Sanskrit. `options: { where }` narrows the include, so a block left
+        with none comes back with an empty `options` array — dropped below,
+        where the block would otherwise be a macro-variable with nothing to
+        place.
+      */
       prisma.electiveBlock.findMany({
         where: { members: { some: { classSectionId: { in: sectionIds } } } },
         include: {
           members: { include: { classSection: { include: { class: true, section: true } } } },
-          options: { include: { subject: true, teacher: true, room: true } },
+          options: {
+            where: subjectSelection ? { subjectId: { in: [...subjectSelection] } } : undefined,
+            include: { subject: true, teacher: true, room: true },
+          },
         },
       }),
       prisma.room.count({ where: { schoolId: config.schoolId, roomType: "lab" } }),
@@ -254,7 +317,11 @@ export async function buildFeasibilitySnapshot(
       periodsPerWeek: g.periodsPerWeek,
       memberClassSectionIds: g.members.map((m) => m.classSectionId),
     })),
-    electiveBlocks: electiveBlocks.map((b) => ({
+    // §32 — a block whose every option belongs to a subject this timetable
+    // does not teach is not a block any more. Dropped rather than emitted
+    // empty: the solver would otherwise hold a macro-variable it can never
+    // satisfy, and Readiness would report a block that cannot be filled.
+    electiveBlocks: electiveBlocks.filter((b) => b.options.length > 0).map((b) => ({
       id: b.id,
       name: b.name,
       periodsPerWeek: b.periodsPerWeek,

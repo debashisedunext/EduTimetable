@@ -103,6 +103,16 @@ export const DELETION_STEPS: Step[] = [
     (tx, id) => tx.period.count({ where: { timetableConfigId: id } }),
     async (tx, id) => { await tx.period.deleteMany({ where: { timetableConfigId: id } }); },
   ),
+  // §32 — which subjects this timetable declared. Counted rather than left to
+  // the FK cascade, for this file's stated reason: every step declares its
+  // count and its delete in one object so the confirmation cannot under-report
+  // the write.
+  step(
+    "declared subjects (§32)",
+    "deleted",
+    (tx, id) => tx.timetableSubject.count({ where: { timetableConfigId: id } }),
+    async (tx, id) => { await tx.timetableSubject.deleteMany({ where: { timetableConfigId: id } }); },
+  ),
   step(
     "auto-resolve history (§21)",
     "deleted",

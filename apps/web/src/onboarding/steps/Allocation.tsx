@@ -28,7 +28,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   assignInitials, assignSwatches, computeLoads, coverageGaps, defaultsFor, planClasses, relieveLoad,
-  subjectAppliesTo, suggestCurriculum, suggestMappings, weeklyCapacity, withCurriculumPeriods,
+  subjectAppliesTo, subjectsForWing, suggestCurriculum, suggestMappings, weeklyCapacity,
+  withCurriculumPeriods,
   type CurriculumCell, type LoadRemedy, type MappingSuggestion, type SubjectAnswer,
   type Swatch, type TeacherLoad, type TeacherAnswer, type WingAnswer,
 } from "@edutimetable/shared";
@@ -148,7 +149,29 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
   return useMemo(() => {
     const wings: WingAnswer[] = answers.wings ?? [];
     const weeks: Record<string, WeekAnswer> = answers.weeks ?? {};
-    const subjects: SubjectAnswer[] = (answers.subjects ?? []).filter((s: SubjectAnswer) => s.name?.trim());
+    /*
+      §32 — only the subjects THIS timetable teaches.
+
+      `subjectsForWing` in `packages/shared` is the one definition, shared with
+      the Subjects step's tick boxes and with the commit that writes
+      `timetable_subjects` — three readers of one rule, each of which would get
+      "absent means all" (invariant 7) wrong in its own way.
+
+      Narrowed by the ACTIVE wing rather than by the pool: two grouped wings
+      share a §30 pool and are exactly the case this exists for, since Junior
+      and Senior teach different subjects out of one resource group.
+
+      This also feeds `computeLoads`, `suggestMappings` and `coverageGaps`, so a
+      subject a wing does not teach stops being demand it is short of rather
+      than merely disappearing from the grid — which is what would have made
+      the column vanish while Readiness still reported it missing.
+    */
+    const named: SubjectAnswer[] = (answers.subjects ?? []).filter((s: SubjectAnswer) => s.name?.trim());
+    const subjects = subjectsForWing(
+      named,
+      answers.subjectsByWing,
+      (answers.wings ?? [])[activeWing]?.name ?? null,
+    );
     const teachers: TeacherAnswer[] = answers.teachers ?? [];
 
     const capacityByWing: Record<string, number> = {};
@@ -300,6 +323,9 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
     };
   }, [JSON.stringify([answers.wings, answers.weeks, answers.subjects, answers.teachers,
                       answers.curriculum, answers.mappings, answers.classTeachers, answers.rooms,
+                      // §32 — the grid's columns depend on it, so it has to be
+                      // in the key or a tick would not redraw the grid.
+                      answers.subjectsByWing,
                       answers.settings?.loadAlertPct]), activeWing]);
 }
 

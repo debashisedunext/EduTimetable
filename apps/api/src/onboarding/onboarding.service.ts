@@ -1186,8 +1186,76 @@ export class OnboardingService {
     // the school calendar is not master data. Matched by name so pressing Next
     // twice re-dates the same terms rather than replacing them.
     if (step === 2) await this.applyTerms(schoolId, answers);
+    // §32 — which subjects each timetable in scope teaches. Not a sheet, for
+    // the same reason the terms are not: §16 is master data, and "this week
+    // does not run Chemistry" is a property of the week.
+    if (step === 6) await this.applySubjectSelection(schoolId, answers);
     this.logger.log(`Onboarding step ${step} committed for school ${schoolId}: ${JSON.stringify(result.created)}`);
     return { ...result, issues };
+  }
+
+  /**
+   * §32 — record which subjects each wing in scope teaches.
+   *
+   * Keyed by wing NAME, like everything else in this flow: the draft names
+   * wings, the §16 importer matches wings by name, and a subject the admin has
+   * just typed has no id yet. Resolved to ids here, where both sides exist.
+   *
+   * ## "Everything ticked" stores NOTHING, on purpose
+   *
+   * Empty means "not stated", which behaves as *all* (invariant 7) — so a
+   * timetable that teaches every subject is describable two ways, and the two
+   * are indistinguishable today. They differ tomorrow: a subject added later
+   * through the Subjects master, an Excel upload or the §13.5 assistant belongs
+   * to a timetable that stated nothing, and belongs to no timetable that listed
+   * every subject it had at the time. Storing the absence is therefore the same
+   * answer with the better future, and the table ends up recording *narrowing*
+   * rather than restating the subject list once per timetable.
+   *
+   * The consequence worth knowing: once a timetable HAS narrowed, a subject
+   * added by another door is not in it until somebody ticks it here. That is
+   * the honest behaviour — the school said "these subjects" — but it is why
+   * this step lists every subject the school has rather than only the draft's.
+   *
+   * Silent for a wing the draft says nothing about: a draft written before this
+   * feature, or a school that never opened the step, must not have its existing
+   * selection deleted by pressing Next.
+   */
+  private async applySubjectSelection(schoolId: number, answers: WizardAnswers & Record<string, any>) {
+    const byWing = answers.subjectsByWing;
+    if (!byWing || typeof byWing !== "object") return;
+
+    const known = await this.prisma.subject.findMany({
+      where: { schoolId }, select: { id: true, name: true },
+    });
+    const idByName = new Map(known.map((s) => [s.name.trim().toLowerCase(), s.id]));
+
+    for (const wing of this.wingsIn(answers)) {
+      const wanted = (byWing as Record<string, unknown>)[wing.name];
+      if (!Array.isArray(wanted)) continue;
+
+      const config = await this.prisma.timetableConfig.findFirst({
+        where: { name: wing.name }, select: { id: true },
+      });
+      // A wing that is not a timetable yet — step 5 has not run. Nothing to
+      // attach the selection to, and it is written again on the next Next.
+      if (!config) continue;
+
+      const ids = [...new Set(
+        wanted.map((n) => idByName.get(String(n).trim().toLowerCase())).filter((x): x is number => !!x),
+      )];
+      // Every subject the school has = no narrowing = store nothing, per above.
+      const narrows = ids.length > 0 && ids.length < known.length;
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.timetableSubject.deleteMany({ where: { timetableConfigId: config.id } });
+        if (narrows) {
+          await tx.timetableSubject.createMany({
+            data: ids.map((subjectId) => ({ timetableConfigId: config.id, subjectId, schoolId })),
+          });
+        }
+      });
+    }
   }
 
   /**

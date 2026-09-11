@@ -287,6 +287,35 @@ export class CloneService {
         })),
       });
 
+      /*
+        §32 — the subject selection is an INPUT, so it comes across.
+
+        §3.12's rule is inputs yes, outputs no: settings, periods, cohorts,
+        curriculum, mappings and blocks are copied; slots, drafts and
+        publications are not. "This timetable does not teach Chemistry" is an
+        input by that test — it shapes what a generation produces rather than
+        being something a generation produced.
+
+        Leaving it out would be silent in the worst way: the clone would look
+        right on every screen and quietly teach subjects the source had been
+        set up to leave out, which is only discovered once a timetable comes
+        out wrong. A source that stated nothing copies nothing, which is the
+        same answer (§32.2).
+
+        Subject ids are school-wide, so there is no id to remap — unlike the
+        sections below, which is why this can be a plain `createMany`.
+      */
+      const declared = await tx.timetableSubject.findMany({
+        where: { timetableConfigId: c.id }, select: { subjectId: true },
+      });
+      if (declared.length > 0) {
+        await tx.timetableSubject.createMany({
+          data: declared.map((d) => ({
+            schoolId, timetableConfigId: config.id, subjectId: d.subjectId,
+          })),
+        });
+      }
+
       // ---- the one map everything else hangs off
       const sectionMap = new Map<number, number>();
       for (const s of src.sections) {

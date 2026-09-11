@@ -239,6 +239,18 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           (tx, ids) => tx.subjectClass.count({ where: { subjectId: { in: ids } } }),
           async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { subjectId: { in: ids } } }); },
         ),
+        // §32 — which timetables had declared this subject. Named for the same
+        // reason as the two rows above: the FK cascades either way, and a
+        // cascade nobody was shown is what §23's confirmation exists to
+        // prevent. It matters here more than it looks: removing a subject
+        // silently narrows nothing, but it does change what "all of them"
+        // means for every timetable that had listed it.
+        step(
+          "timetables' declared subjects",
+          "deleted",
+          (tx, ids) => tx.timetableSubject.count({ where: { subjectId: { in: ids } } }),
+          async (tx, ids) => { await tx.timetableSubject.deleteMany({ where: { subjectId: { in: ids } } }); },
+        ),
         step(
           "merged teaching groups",
           "deleted",

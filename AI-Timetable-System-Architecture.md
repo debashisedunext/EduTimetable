@@ -3545,3 +3545,43 @@ Two implementation notes worth keeping:
 
 - **`DataTable` wraps its table in an `overflow-x: auto` div**, and that div is what a sticky header sticks to — a container with no height of its own, which never scrolls vertically, so the header would never have stuck. The scrolling is handed to the pane instead (`.master-scroll > div { overflow: visible }`), which makes both axes work in one place.
 - **Below 1080px the panes stack and the page scrolls again.** That is the honest cost of the width: a 340px form squeezed beside a six-column table is unreadable in a different way.
+
+## 32. A Timetable Teaches the Subjects It Declares (Phase 46)
+
+`subjects` is school-wide, and until now there was no way to narrow it: every timetable saw every subject the school had ever entered. A Junior wing that does not teach Chemistry, an individual timetable set up for a handful of languages, a subject added for one wing only — none of them were expressible.
+
+The guided setup's Subjects step offered a red **✕** that looked like the answer and was not. It removed the row from the *draft*; the §16 importer creates subjects and never deletes one, so the subject stayed in the database, kept its curriculum and its mappings, and went on being taught by a timetable that had stopped listing it. That is the §3.10b shape exactly — a control that appears destructive, cannot destroy anything, and leaves the screen disagreeing with the school.
+
+**`timetable_subjects` is a declaration per `timetable_config`**, and **empty means "not stated", never "teaches nothing"** (invariant 7). That is what makes the migration a bare `CREATE TABLE` with no backfill: every timetable that exists today has no rows and keeps seeing every subject, which is what it sees now.
+
+**Per config, deliberately not per §30 pool.** Two grouped wings share a resource pool and are precisely the case that motivates this — Junior and Senior are one pool and teach different subjects, and a pool-level answer could not say so. An individual timetable gets its own list for free, since its pool holds exactly one timetable.
+
+**Selection only.** A subject's code, category, priority, placement, lab flag, own-room flag and double-period flag remain one answer per subject, school-wide: they describe the subject, not the week. A subject that is a lab is a lab in every timetable that teaches it.
+
+### 32.1 Where it is enforced, and the half that is easy to miss
+
+In **`buildFeasibilitySnapshot`**, because that snapshot is what the solver, the Feasibility Engine, Readiness, `/context` and the Master Grid's strip all read — filtering anywhere else would be a second answer to "does this timetable teach Chemistry?", free to disagree with the first.
+
+It is applied to **demand**, not to the subject list. A subject this timetable does not teach simply has none: the solver never sees it, Check 1 never counts its periods, Readiness never reports it missing. The rows themselves are untouched, because another timetable may teach the same class the same subject, and deselecting is not a deletion.
+
+**Four carriers of demand, not one.** Filtering `class_subjects` alone looked complete — `/context` dropped the column and Readiness dropped the periods — and **generation went on placing the subject anyway**. `solver/variables.ts` builds one variable per **mapping** and takes the period count from `m.periodsPerWeek`; the curriculum row only supplies the block size and the per-day cap. So the filter covers the curriculum, the **mappings**, the §4.10 **merged groups** (which carry their own `periodsPerWeek`) and the §4.9 **elective options** — filtered at the option, so a language block whose school has taken German out of one wing still runs with French and Sanskrit, while a block left with no options is dropped rather than emitted empty for the solver to fail on.
+
+### 32.2 "All of them" is stored as nothing
+
+A timetable that teaches every subject is describable two ways — every subject listed, or nothing listed — and the two are indistinguishable today. They differ tomorrow: a subject added later through the Subjects master, an Excel upload or the §13.5 assistant belongs to a timetable that stated nothing, and belongs to no timetable that listed every subject it had at the time. So "all" is stored as the absence, and the table records **narrowing** rather than restating the subject list once per timetable.
+
+The consequence worth knowing: once a timetable **has** narrowed, a subject added by another door is not in it until somebody ticks it. That is the honest behaviour — the school said "these subjects" — and it is why the step lists every subject the school has rather than only the draft's.
+
+### 32.3 The screen
+
+The Subjects step gains a **tick column in front of the subject**, and the same wing tab strip step 4 uses: "which subjects does the school teach" is one question, but "which of them does *this* week run" is one question per wing, and the wizard's own scope switcher narrows §30 pools rather than wings.
+
+Unticking the **last** subject is refused, for the reason §27.9 and §27.16 refuse the same move: `[]` reads back as "not stated" and therefore as *all*, so taking one away and getting everything back is the one behaviour nobody would predict.
+
+**A subject that is already a `subjects` row has no ✕.** Deselecting is the honest control; deletion belongs on the Subjects master. A row somebody has just typed is still theirs to take back. The committed set is read from the server rather than derived from the draft, because a resumed or adopted setup has subjects in its answers that were committed long ago and a draft cannot tell you which — empty on failure, so nothing is removable, which is the safe direction to be wrong in.
+
+The step is also now in **`WIDE_STEPS`**, which it should always have been: its table is ten columns and an 880px measure clipped "Scholastic" to "Schola" and "CHEM" to "CHEN" while carrying several hundred pixels of empty gutter on each side. A measure is for prose; this is a spreadsheet.
+
+**Deliberately not freeze-guarded** (§29.1). That section's "not frozen" list already names subjects, and this writes no slot: a frozen timetable's published week is untouched. What it changes is what the *next* generation would produce, which is what editing the curriculum does too.
+
+`pnpm test:subjects` is the proof, and its load-bearing assertion is a real generation: 8 lessons across 2 subjects where an unfiltered run gives 16 across 4.
