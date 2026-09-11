@@ -271,6 +271,29 @@ async function main() {
     "each hour starts on an odd period, so it lines up with the clock rather than straddling",
     pairs.join(" · ") || "no pairs");
 
+  /*
+    §33.7 — and the PRINTED card shows lessons, not base periods.
+
+    Published, because a report card reads the published week. Before this the
+    card printed eight rows for a four-lesson day — every lesson twice, since
+    §33 writes one slot row per period in a span — and a parent reading it saw
+    Maths at 08:00 and Maths again at 08:30 with no way to tell it was one
+    hour.
+  */
+  console.log("\nWhat the printed card shows:");
+  await call("POST", `/timetable-configs/${cfg.id}/publish`, S, {});
+  const card = (await call("GET", `/reports/class-section/${ten.secId}`, S)).json;
+  const teachRows = (card?.periods ?? []).filter((r) => !r.isBreak && r.periodNumber !== null);
+  check(teachRows.length === 4,
+    "Class 10's card has four rows, not eight — one per 60-minute lesson",
+    `${teachRows.length} rows`);
+  check(teachRows[0]?.startTime === "08:00" && teachRows[0]?.endTime === "09:00",
+    "and the first runs the whole hour", `${teachRows[0]?.startTime}–${teachRows[0]?.endTime}`);
+  const oneCard = (await call("GET", `/reports/class-section/${one.secId}`, S)).json;
+  check((oneCard?.periods ?? []).filter((r) => !r.isBreak && r.periodNumber !== null).length === 8,
+    "while Class 1's card still has eight — the fold is per class, not per timetable",
+    `${(oneCard?.periods ?? []).filter((r) => !r.isBreak && r.periodNumber !== null).length} rows`);
+
   // ─────────────── 5. THE SAFETY ARGUMENT, TESTED DIRECTLY
   //
   // Not "the solver did not do it" — that is a property of the search. This

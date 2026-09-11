@@ -44,6 +44,56 @@ export interface GridRow {
   activityRoom?: string | null;
 }
 
+/**
+ * §33.7 — a spanned class's week, in lessons rather than base periods.
+ *
+ * A class on 60-minute lessons in a 30-minute grid runs four lessons a day, and
+ * its card printed eight rows: every lesson twice, because §33 writes one slot
+ * row per period in a span and the grid has a row per period. A parent reading
+ * it saw Maths at 08:00 and Maths again at 08:30 and had no way to tell that
+ * was one hour.
+ *
+ * **The rows shrink; the keys do not move.** Each lesson keeps the `rowKey` of
+ * its FIRST base period, so `grid[day:key]` still finds exactly the cell it
+ * always found — §10.6's rule that a key is built in one place is untouched,
+ * and the cells for the periods that are folded away are simply never looked
+ * up. Re-keying would have been the §10.6 collision all over again.
+ *
+ * **A break resets the grouping**, and that is not defensive tidiness: a lesson
+ * cannot cross a break unless its curriculum row says so (§4.8), so a break
+ * mid-run means the run was never one lesson. The partial group is emitted as
+ * it stands rather than merged across, because printing an hour that does not
+ * exist is worse than printing two halves that do.
+ *
+ * Span 1 returns the rows untouched, by identity — every class of every school
+ * that has not set a §33 span.
+ */
+export function collapseToLessons(rows: GridRow[], span: number): GridRow[] {
+  const n = Math.max(1, Math.floor(span || 1));
+  if (n === 1) return rows;
+
+  const out: GridRow[] = [];
+  let run: GridRow[] = [];
+  const flush = () => {
+    for (let i = 0; i < run.length; i += n) {
+      const group = run.slice(i, i + n);
+      const first = group[0];
+      const last = group[group.length - 1];
+      // The lesson keeps the first period's key and identity, and takes the
+      // last one's finishing time — which is the only thing that changes.
+      out.push({ ...first, endTime: last.endTime ?? first.endTime });
+    }
+    run = [];
+  };
+
+  for (const r of rows) {
+    if (r.isBreak || r.isActivity || r.periodNumber === null) { flush(); out.push(r); continue; }
+    run.push(r);
+  }
+  flush();
+  return out;
+}
+
 /** The one place a row key is built, so the grid writer and the grid reader cannot disagree. */
 export const rowKey = (configId: number, periodNumber: number | null) => `c${configId}p${periodNumber}`;
 /** And the one place a grid key is built. */
@@ -295,6 +345,21 @@ export class ReportsService {
       // Exactly one config, by invariant 11 — so this card's rows can never be
       // the union of two wings, and it keeps the shape it has always had.
       const shape = await this.shapeFor([cs.timetableConfigId]);
+      /*
+        §33.7 — printed in the unit this class is taught in.
+
+        A class on 60-minute lessons ran four a day and printed eight rows,
+        every lesson twice, because §33 writes one slot row per period in a
+        span. This is the one card where that is unambiguous: it is ONE class,
+        so there is one span, and `invariant 11` already guarantees one config.
+        A teacher's or a room's card sees several classes at once and therefore
+        several spans, which is a different question and not this one.
+      */
+      const span = (await this.prisma.timetableClassSpan.findFirst({
+        where: { timetableConfigId: cs.timetableConfigId, classId: cs.classId },
+        select: { span: true },
+      }))?.span ?? 1;
+      shape.rows = collapseToLessons(shape.rows, span);
       const slots = await this.prisma.timetableSlot.findMany({
         where: { classSectionId, status: "published" },
       });

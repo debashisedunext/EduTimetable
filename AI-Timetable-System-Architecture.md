@@ -3706,9 +3706,18 @@ A class on 60-minute lessons that takes three English a week is six base periods
 
 The spans reach the grid as a class-name map from the Master Grid, which already holds the timetable id; resolving it again from the wing's name would be a second answer to "which timetable is this?" on a screen whose whole point is that there is one. Empty on failure, which gives every class a span of 1 — the safe direction, because then the number typed is the number stored.
 
-### 33.7 Still to build
+### 33.7 A spanned class prints in lessons
 
-- **Printing a class's week as 4 rows, not 8.** The data is adjacent identical pairs; collapsing them is display-only work.
+A class on 60-minute lessons runs four a day and its card printed **eight rows** — every lesson twice, because §33 writes one slot row per period in a span and the grid has a row per period. A parent read Maths at 08:00 and Maths again at 08:30 with no way to tell it was one hour.
+
+`collapseToLessons` folds the rows. **The rows shrink; the keys do not move** — each lesson keeps the `rowKey` of its *first* base period, so `grid[day:key]` finds exactly the cell it always found, and the cells for the folded-away periods are simply never looked up. Re-keying would have been §10.6's collision all over again.
+
+**A break resets the grouping**, and that is not defensive tidiness: a lesson cannot cross a break unless its curriculum row says so (§4.8), so a break mid-run means the run was never one lesson. The partial group is emitted as it stands, because printing an hour that does not exist is worse than printing two halves that do.
+
+Applied to the **class-section card only**, deliberately. That is the one card where a span is unambiguous: it is one class, so there is one span, and invariant 11 already guarantees one config. A teacher's or a room's card sees several classes at once and therefore several spans — a different question, and one the §34.6 design has to answer alongside per-day clocks.
+
+### 33.8 Still to build
+
 - **The §16 Curriculum sheet is still in base periods**, so a spreadsheet round-trip and the grid now speak different units for a class with a span. The sheet is the one that should gain a column, since changing the existing one would break every workbook in the field.
 
 
