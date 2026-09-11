@@ -3701,3 +3701,40 @@ The strip also carries **when school closes** — `dayEndsAt` in `packages/share
 - **Entering the curriculum in lessons rather than base periods.** A class on 60-minute lessons that takes 3 English a week needs `periods_per_week = 6`; typing 6 today means six base periods, which is three hours. Until the translation exists, the number entered is in base periods.
 - **An odd count cannot be all doubles.** 5 base periods at span 2 is two doubles and one leftover single — a correct timetable for the data given, but not what the school meant. It should be reported.
 - **Printing a class's week as 4 rows, not 8.** The data is adjacent identical pairs; collapsing them is display-only work.
+
+
+## 34. A Weekday May Run a Shape of Its Own (Phase 50)
+
+Schools run a short Saturday. Four periods of thirty minutes where Monday to Friday run eight of forty is not an exception to work around; it is what the day is — and the model could not say it, because `periods_per_day`, `period_duration_mins` and `start_time` all belong to the `timetable_config` and therefore to every working day at once.
+
+### 34.1 Why this is safe where §28.5 is not
+
+§28.5 refuses two period lengths **inside one day**: `uq_teacher_slot` compares period *numbers*, so on a 30-minute grid and a 40-minute one, Class 9 P3 and Class 11 P2 overlap in wall clock while the index sees 3 against 2 and accepts it. The guard inverts.
+
+**`day_of_week` is already part of that unique key.** Saturday's period 3 and Monday's period 3 are different cells today, and nobody is in two days at once — so a different shape per day creates no collision the index cannot see. §28.5's constraint is *within* a day; this never crosses one.
+
+That is the second time the answer has turned on reading the key rather than the prose: §33's double periods were safe because `writer.ts` emits one row per period in a span, and this is safe because the day is already in the key. **Ask what the unique index actually compares before refusing a request on §28.5's authority.**
+
+### 34.2 The rule the helpers exist to hold
+
+"Periods a week" stopped being `periodsPerDay × days` the moment one day could differ — and that product appeared in Check 1, in three branches of the teacher-capacity arithmetic, in the guided setup's ceiling and on screen. Six places multiplying is six places to forget one.
+
+`weekPeriods` in `packages/shared/src/onboarding/week-shape.ts` is the sum, and it is the only one. `periodsOn(day)` is the per-day count, `longestDay` is what a *per-day* cap must be read against (a rule like "at most 2 a day" is satisfiable on a full day even when a short Saturday could not hold it), and `halfDayPeriods` is the default a half day opens on — **half, rounded up**, because the extra period is easier to remove than to discover is missing.
+
+Getting the sum wrong would be wrong in the **dangerous direction**: a product over-states capacity, so Check 1 tells a school its curriculum fits when the week cannot hold it, and the failure surfaces as a solver that cannot place the last lessons. `pnpm test:dayshapes` asserts the engine's own `totalAvailableSlots` — 44, not 48 — rather than matching its prose, which is the difference between proving the arithmetic and proving that a sentence contains "44".
+
+### 34.3 What a day shape does and does not change
+
+`periodsPerDay` is a **solver** fact: it is how many cells exist that day, so a short Saturday prunes periods 5–8 from every domain before search (invariant 2). `domainFor`'s period loop was already nested inside its day loop, so this is the day's own ceiling replacing the week's — one line at the point the structure already provided.
+
+`periodDurationMins` is **not** a solver fact. The solver places into period numbers; a duration only decides what is printed against them. It is stored beside the count because a school that says "half day" means both.
+
+Empty means **"the same as every other day"** (invariant 7), so the migration is a bare `CREATE TABLE` and setting a day back to full **deletes the row** — storing the copy would freeze today's period count into a day that should follow the week when the week changes.
+
+### 34.4 The screen
+
+The question is asked **where the day was ticked**, under the working-day toggles: picking Saturday is the moment "is it a half day?" becomes real, and an answer given anywhere else is one somebody has to go and look for.
+
+Offered for the **weekend only**. Monday to Friday being full is the assumption every school shares, and a half/full question against each of them is five questions nobody has. A weekday that genuinely differs is still shown and still editable — the row appears once its shape is not the week's, which also covers a shape arriving by clone — but it is not *asked*.
+
+Two buttons rather than a dropdown: there are exactly two answers, and the one being picked is the one you can see is not selected.

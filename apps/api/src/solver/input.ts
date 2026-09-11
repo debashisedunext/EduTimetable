@@ -52,6 +52,20 @@ export async function buildFeasibilitySnapshot(
     Absent means span 1 (invariant 7), which is every class in every school
     today.
   */
+  /*
+    §34 — the weekdays that run a shape of their own (a short Saturday).
+
+    Loaded into the snapshot rather than read at each consumer, because the
+    consumers are the solver's domain construction AND the Feasibility Engine's
+    capacity arithmetic, and those two disagreeing is the shape of a school
+    that passes Readiness and then cannot be generated.
+  */
+  const dayShapeRows = await prisma.timetableDayShape.findMany({
+    where: { timetableConfigId: configId },
+    select: { dayOfWeek: true, periodsPerDay: true, periodDurationMins: true },
+    orderBy: { dayOfWeek: "asc" },
+  });
+
   const spanRows = await prisma.timetableClassSpan.findMany({
     where: { timetableConfigId: configId, classId: { in: classIds } },
     select: { classId: true, span: true },
@@ -277,6 +291,12 @@ export async function buildFeasibilitySnapshot(
       name: config.name,
       workingDays: (config.workingDays as number[]) ?? [1, 2, 3, 4, 5],
       periodsPerDay: config.periodsPerDay,
+      // §34 — read through `periodsOn`/`weekPeriods`, never indexed directly.
+      dayShapes: dayShapeRows.map((r) => ({
+        day: r.dayOfWeek,
+        periodsPerDay: r.periodsPerDay,
+        periodDurationMins: r.periodDurationMins,
+      })),
       daySegments: daySegmentsFromRows(periodRows),
       // §26.3 — which break was lunch. Null when the day has no break, which
       // switches the lunch rules off rather than attaching them to a guess.

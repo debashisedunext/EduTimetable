@@ -184,6 +184,7 @@ export * from "./optimize/model";
 export * from "./electives/pins";
 export * from "./import/contract";
 export * from "./terms/terms";
+export * from "./onboarding/week-shape";
 export * from "./onboarding/wizard";
 export * from "./timetable/window";
 export * from "./timetable/clash";

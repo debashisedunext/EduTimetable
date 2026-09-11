@@ -15,6 +15,7 @@
     "test:classfloor": "node scripts/classes-floor-smoke.cjs",
     "test:subjects": "node scripts/timetable-subjects-smoke.cjs",
     "test:periods": "node scripts/class-period-span-smoke.cjs",
+    "test:dayshapes": "node scripts/day-shape-smoke.cjs",
     "test:mastergrid": "node scripts/master-grid-smoke.cjs",
     "lint": "eslint ."
   },

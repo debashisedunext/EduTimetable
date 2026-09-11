@@ -941,6 +941,117 @@ export class TimetableConfigsController {
   }
 
   /**
+   * §34 — the weekdays that run a shape of their own.
+   *
+   * Returns one row per WORKING day, each carrying the shape it actually has —
+   * its own where it has one, the config's where it does not. The client never
+   * has to know which, and `full` says so explicitly rather than leaving it to
+   * be inferred from two numbers being equal.
+   */
+  @Get(":id/day-shapes")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async dayShapes(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, workingDays: true, periodsPerDay: true, periodDurationMins: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty week.
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const rows = await this.prisma.timetableDayShape.findMany({
+      where: { timetableConfigId: configId },
+    });
+    const own = new Map(rows.map((r) => [r.dayOfWeek, r]));
+    const days = ((config.workingDays as number[]) ?? []).slice().sort((a, b) => a - b);
+
+    return {
+      periodsPerDay: config.periodsPerDay,
+      periodDurationMins: config.periodDurationMins,
+      days: days.map((d) => {
+        const r = own.get(d);
+        return {
+          day: d,
+          periodsPerDay: r?.periodsPerDay ?? config.periodsPerDay,
+          periodDurationMins: r?.periodDurationMins ?? config.periodDurationMins,
+          /** Whether this day runs the same shape as the rest of the week. */
+          full: !r,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Give a weekday its own shape, or put it back on the week's.
+   *
+   * `full: true` **deletes the row** rather than storing the config's numbers:
+   * "the same as every other day" and "not stated" are one answer (invariant
+   * 7), and storing the copy would freeze today's period count into a day that
+   * should follow the week when the week changes.
+   *
+   * Refused for a day the timetable does not work — a shape for a day nobody
+   * teaches is a row the solver would never read and the screen would never
+   * show, and accepting it silently is how a school comes to believe it has
+   * configured a Saturday it does not run.
+   *
+   * Not freeze-guarded, matching §29.1's treatment of things that shape a
+   * future generation rather than the published week: it writes no slot.
+   */
+  @Put(":id/day-shapes")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setDayShape(
+    @Param("id") id: string,
+    @Body() body: { day?: unknown; full?: unknown; periodsPerDay?: unknown; periodDurationMins?: unknown },
+  ) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, name: true, workingDays: true, periodsPerDay: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const day = toInt(body?.day, "day");
+    const working = ((config.workingDays as number[]) ?? []);
+    if (!working.includes(day)) {
+      throw new BadRequestException(
+        `This timetable does not run on day ${day} — add it to the working days first.`,
+      );
+    }
+
+    if (body?.full === true) {
+      await this.prisma.timetableDayShape.deleteMany({ where: { timetableConfigId: configId, dayOfWeek: day } });
+      await this.keys.invalidateTimetable(configId);
+      return { ok: true, day, full: true };
+    }
+
+    const periodsPerDay = toInt(body?.periodsPerDay, "periodsPerDay");
+    const periodDurationMins = toInt(body?.periodDurationMins, "periodDurationMins");
+    /*
+      Bounded to the same range the week's own fields are, and for the same
+      reason: these numbers become the ceiling every curriculum entry is
+      checked against, so a zero or a negative is not a smaller week, it is a
+      week nothing can be placed in.
+    */
+    if (periodsPerDay < 1 || periodsPerDay > 14) {
+      throw new BadRequestException("A day has between 1 and 14 periods.");
+    }
+    if (periodDurationMins < 20 || periodDurationMins > 120) {
+      throw new BadRequestException("A period is between 20 and 120 minutes.");
+    }
+
+    await this.prisma.timetableDayShape.upsert({
+      where: { timetableConfigId_dayOfWeek: { timetableConfigId: configId, dayOfWeek: day } },
+      create: { timetableConfigId: configId, dayOfWeek: day, periodsPerDay, periodDurationMins, schoolId: config.schoolId },
+      update: { periodsPerDay, periodDurationMins },
+    });
+    // §22 — swept by prefix: the snapshot, `/context` and every per-draft copy
+    // are keyed under this config, and the week's shape changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}): day ${day} runs ${periodsPerDay} × ${periodDurationMins} min`);
+    return { ok: true, day, full: false, periodsPerDay, periodDurationMins };
+  }
+
+  /**
    * §33 — how long one lesson is, per class, in this timetable.
    *
    * Returns the classes this timetable actually teaches, each with its span in

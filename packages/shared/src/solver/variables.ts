@@ -6,6 +6,7 @@ import type { SnapshotTeacher } from "../feasibility/types";
 // §4.7b — the one definition of "null period means the whole day". It lives in
 // feasibility/ because the engine needs it too and must not import the solver.
 import { blockedCells } from "../feasibility/time-off";
+import { periodsOn } from "../onboarding/week-shape";
 import type { SolverInput, SolverVariable } from "./types";
 
 export interface TeacherCtx {
@@ -210,7 +211,19 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     const domain: Array<{ day: number; period: number }> = [];
     for (const day of days) {
       if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
-      for (let p = 1; p + span - 1 <= perDay; p++) {
+      /*
+        §34 — how many periods THIS day has.
+
+        A short Saturday has six where the rest of the week has eight, so
+        periods 7 and 8 do not exist on it and must be pruned before search
+        (invariant 2) rather than scored away. The loop was already nested
+        inside the day, so this is the day's own ceiling replacing the week's.
+
+        Identical to `perDay` for every school with no day shapes, which is
+        every school that has not said otherwise.
+      */
+      const dayPeriods = periodsOn(snapshot.config, day);
+      for (let p = 1; p + span - 1 <= dayPeriods; p++) {
         // §4.8 — a block sits inside one unbroken run, unless §31.10's flag
         // says this row may cross one. Span 1 never trips it either way.
         if (!mayCrossBreak && seg[p] !== seg[p + span - 1]) continue;

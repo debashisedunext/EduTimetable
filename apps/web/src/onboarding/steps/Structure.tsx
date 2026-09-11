@@ -23,6 +23,7 @@ import {
   planSummary,
   type SchoolShape,
   dayEndsAt,
+  halfDayPeriods,
   weeklyCapacity,
   WING_SUGGESTIONS,
   wingRangeFor,
@@ -796,6 +797,181 @@ function ClassLengthsDialog({ shape, configId, reload, onClose }: {
 }
 
 /**
+ * §34 — the weekdays that run a shape of their own.
+ *
+ * A school that works Saturday usually works a SHORT Saturday: four periods of
+ * thirty minutes where the rest of the week runs eight of forty. Until now the
+ * model could not say it — periods, duration and start time all belonged to the
+ * `timetable_config`, so they belonged to every working day at once.
+ *
+ * Safe where §28.5 is not, and the unique key already says why: `day_of_week`
+ * is part of `uq_teacher_slot`, so Saturday's period 3 and Monday's are
+ * different cells today and nobody is in two days at once. §28.5's collision is
+ * *within* a day; this never crosses one.
+ *
+ * Live rows rather than draft answers, for the same reason §33's class lengths
+ * are: it is a property of a `timetable_config` that already exists and the
+ * solver reads it, so putting it in the draft would mean it only took effect at
+ * the next Next.
+ */
+interface DayShapeRow {
+  day: number;
+  periodsPerDay: number;
+  periodDurationMins: number;
+  full: boolean;
+}
+
+function useDayShapes(wingName: string, workingDays: number[]) {
+  const [rows, setRows] = useState<DayShapeRow[] | null>(null);
+  const [configId, setConfigId] = useState<number | null>(null);
+
+  const reload = async () => {
+    if (!wingName.trim()) { setRows(null); setConfigId(null); return; }
+    try {
+      const configs = await api<Array<{ id: number; name: string }>>("/timetable-configs");
+      const cfg = configs.find((c) => c.name.trim().toLowerCase() === wingName.trim().toLowerCase());
+      if (!cfg) { setRows(null); setConfigId(null); return; }
+      setConfigId(cfg.id);
+      const got = await api<{ days: DayShapeRow[] }>(`/timetable-configs/${cfg.id}/day-shapes`);
+      setRows(got.days ?? []);
+    } catch { setRows(null); setConfigId(null); }
+  };
+  /*
+    Re-read when the WORKING DAYS change, not only when the wing does.
+
+    Ticking Saturday is what makes a Saturday shape askable at all, and the
+    server only returns rows for days the timetable works — so without this the
+    prompt below would have nothing to attach itself to until the step was
+    left and re-entered.
+  */
+  useEffect(() => { void reload(); }, [wingName, workingDays.join(",")]);
+
+  return { rows, configId, reload };
+}
+
+/**
+ * "Is Saturday a half day?" — asked where the day was just ticked.
+ *
+ * Only for the weekend, deliberately. Monday to Friday being full is the
+ * assumption every school shares, and a half/full question against each of them
+ * is five questions nobody has. A weekday that genuinely differs is still
+ * reachable — the row appears once its shape is not the week's — but it is not
+ * *asked*.
+ *
+ * The default when somebody picks "half" is half the week's periods rounded up
+ * (`halfDayPeriods`), in a field they can change. A default is a starting
+ * point; the school may run five on a Saturday out of eight.
+ */
+function DayShapes({ wingName, week, onWeekChange }: {
+  wingName: string;
+  week: WeekAnswer;
+  onWeekChange: (patch: Partial<WeekAnswer>) => void;
+}) {
+  const { rows, configId, reload } = useDayShapes(wingName, week.workingDays);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  void onWeekChange;
+
+  const save = async (day: number, body: Record<string, unknown>) => {
+    if (!configId) return;
+    setBusy(day);
+    setError(null);
+    try {
+      await api(`/timetable-configs/${configId}/day-shapes`, {
+        method: "PUT", body: JSON.stringify({ day, ...body }),
+      });
+      await reload();
+    } catch (e) {
+      setError(asMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!rows || configId === null) return null;
+
+  /*
+    The weekend days this timetable works, plus any OTHER day somebody has
+    already shortened. The second half matters: a school that shortened a
+    Wednesday through the API, or cloned a timetable that had one, must still
+    see and be able to change it — offering the question only for Sat/Sun
+    would hide a row that is shaping their week.
+  */
+  const WEEKEND = [6, 7];
+  const shown = rows.filter((r) => WEEKEND.includes(r.day) || !r.full);
+  if (shown.length === 0) return null;
+
+  const dayName = (n: number) => DAYS.find((d) => d.n === n)?.label ?? `Day ${n}`;
+
+  return (
+    <div style={{ marginTop: 13 }}>
+      {shown.map((r) => (
+        <div key={r.day} style={{
+          display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+          padding: "7px 10px", marginBottom: 6, borderRadius: 8,
+          background: r.full ? "var(--offwhite)" : "var(--amber-bg)",
+          border: `1px solid ${r.full ? "var(--line)" : "var(--amber)"}`,
+        }}>
+          <strong style={{ fontSize: 12.5, minWidth: 34 }}>{dayName(r.day)}</strong>
+
+          {/*
+            Two buttons rather than a dropdown: there are exactly two answers,
+            and the one somebody is picking is the one they can see is not
+            selected.
+          */}
+          <div style={{ display: "flex", gap: 4 }}>
+            {[true, false].map((full) => (
+              <button key={String(full)} className="btn" disabled={busy === r.day}
+                onClick={() => void save(r.day, full
+                  ? { full: true }
+                  : {
+                      full: false,
+                      periodsPerDay: halfDayPeriods(week.periodsPerDay),
+                      periodDurationMins: week.periodDurationMins,
+                    })}
+                style={{
+                  padding: "3px 10px", fontSize: 11.5,
+                  background: r.full === full ? "var(--brand)" : "var(--paper)",
+                  color: r.full === full ? "#fff" : "var(--ink)",
+                  borderColor: r.full === full ? "var(--brand)" : "var(--line)",
+                }}>{full ? "Full day" : "Half day"}</button>
+            ))}
+          </div>
+
+          {r.full ? (
+            <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+              same as the rest of the week — {r.periodsPerDay} × {r.periodDurationMins} min
+            </span>
+          ) : (
+            <>
+              <input style={{ ...input, width: 54 }} type="number" min={1} max={14}
+                value={r.periodsPerDay} disabled={busy === r.day}
+                aria-label={`Periods on ${dayName(r.day)}`}
+                onChange={(e) => void save(r.day, {
+                  full: false,
+                  periodsPerDay: Number(e.target.value),
+                  periodDurationMins: r.periodDurationMins,
+                })} />
+              <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>periods of</span>
+              <input style={{ ...input, width: 58 }} type="number" min={20} max={120}
+                value={r.periodDurationMins} disabled={busy === r.day}
+                aria-label={`Period length on ${dayName(r.day)}`}
+                onChange={(e) => void save(r.day, {
+                  full: false,
+                  periodsPerDay: r.periodsPerDay,
+                  periodDurationMins: Number(e.target.value),
+                })} />
+              <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>min</span>
+            </>
+          )}
+        </div>
+      ))}
+      {error && <Note tone="warn">{error}</Note>}
+    </div>
+  );
+}
+
+/**
  * §33.5 — the week on one screen.
  *
  * This step was a single column of full-width sections, each with a block
@@ -961,6 +1137,14 @@ export function StepWeek({ answers, onChange }: {
               );
             })}
           </div>
+
+          {/*
+            §34 — asked where the day was just ticked, not in a panel elsewhere.
+            Picking Saturday is the moment "is it a half day?" becomes a real
+            question, and an answer given anywhere else is one somebody has to
+            go and look for.
+          */}
+          <DayShapes wingName={wing.name} week={week} onWeekChange={set} />
 
           {/*
             Four numbers on one line rather than four stacked fields. They are

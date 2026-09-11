@@ -4,6 +4,7 @@
  * guarantee: Phase B (the solver) only runs when this returns zero blockers.
  */
 import { lunchAllows } from "../solver/variables";
+import { periodsOn, weekPeriods } from "../onboarding/week-shape";
 import { blockedCells, blockedSlotCount, timeOffCell } from "./time-off";
 import type {
   FeasibilityIssue,
@@ -22,7 +23,18 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
   const issues: FeasibilityIssue[] = [];
   const days = snap.config.workingDays.length;
   const perDay = snap.config.periodsPerDay;
-  const available = days * perDay;
+  /*
+    §34 — the SUM over the working days, not `days × perDay`.
+
+    The moment one weekday can have a shape of its own, that product is wrong,
+    and wrong in the dangerous direction: it over-states capacity, so Check 1
+    tells a school its curriculum fits when it does not and the failure
+    surfaces as a solver that cannot place the last lessons of the week.
+
+    `weekPeriods` returns exactly `days × perDay` for every school with no day
+    shapes, which is every school today.
+  */
+  const available = weekPeriods(snap.config, snap.config.workingDays);
 
   const sectionsByClass = new Map<number, typeof snap.classSections>();
   for (const cs of snap.classSections) {
@@ -1539,18 +1551,32 @@ export function teacherWeeklyCapacity(
   snap?: FeasibilitySnapshot,
 ): number {
   const effectiveDays = workingDays.filter((d) => !t.unavailableFullDays.includes(d));
+  /*
+    §34 — the week's shape, or a flat one built from `perDay`.
+
+    `snap` is optional on this helper (two callers pass none), and the honest
+    fallback is "every day is `perDay` long" — which is what the arithmetic
+    below assumed unconditionally before day shapes existed, so a caller
+    without a snapshot gets exactly the answer it used to get.
+  */
+  const cfg = snap?.config ?? { periodsPerDay: perDay };
   let pattern: number;
   switch (t.periodPattern) {
     case "alternate_period":
       // max non-adjacent periods per day = floor((n+1)/2)
-      pattern = effectiveDays.length * Math.floor((perDay + 1) / 2);
+      // §34 — per day, because a short Saturday holds fewer alternating
+      // periods than a full Monday and the half is taken of each day's own
+      // count rather than of the longest one.
+      pattern = effectiveDays.reduce((n, d) => n + Math.floor((periodsOn(cfg, d) + 1) / 2), 0);
       break;
     case "alternate_day": {
       if (t.alternateDaySet && t.alternateDaySet.length > 0) {
         const usable = t.alternateDaySet.filter((d) => effectiveDays.includes(d));
-        pattern = usable.length * perDay;
+        pattern = weekPeriods(cfg, usable);
       } else {
-        pattern = Math.ceil(effectiveDays.length / 2) * perDay;
+        // §34 — the days the solver would pick, summed. Taking the first half
+        // of the list keeps this the same answer as `alternatingDays` below.
+        pattern = weekPeriods(cfg, alternatingDays(effectiveDays));
         issues?.push({
           code: "ALT_DAY_UNSET",
           severity: "warning",
@@ -1571,9 +1597,8 @@ export function teacherWeeklyCapacity(
       break;
     }
     default:
-      pattern = effectiveDays.length * perDay;
+      pattern = weekPeriods(cfg, effectiveDays);
   }
-  void snap;
   return Math.max(0, Math.min(t.maxPeriodsPerWeek, pattern - t.unavailablePeriodCount));
 }
 

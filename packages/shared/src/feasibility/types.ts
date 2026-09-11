@@ -191,6 +191,15 @@ export interface SnapshotConfig {
   /** teaching periods per day (breaks & zero period excluded) */
   periodsPerDay: number;
   /**
+   * §34 — weekdays that run a different shape (a short Saturday).
+   *
+   * Absent or empty means every working day has `periodsPerDay`, which is every
+   * school that has not said otherwise. Read through `periodsOn` / `weekPeriods`
+   * in `packages/shared`, never by indexing this directly: "periods a week"
+   * stopped being a product the moment one day could differ.
+   */
+  dayShapes?: Array<{ day: number; periodsPerDay: number; periodDurationMins: number }>;
+  /**
    * lengths of contiguous teaching-period runs between breaks, e.g. a day of
    * P1-P3, break, P4-P7 → [3,4]. Empty means layout not yet built.
    */

@@ -116,6 +116,7 @@ model School {
   subjectClasses         SubjectClass[]
   timetableSubjects      TimetableSubject[]
   timetableClassSpans    TimetableClassSpan[]
+  timetableDayShapes     TimetableDayShape[]
   staffingChanges        StaffingChange[]
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
@@ -593,6 +594,44 @@ model TeacherClassEligibility {
   @@map("teacher_class_eligibility")
 }
 
+/// §34 — a weekday that runs a different shape from the rest of the week.
+///
+/// A short Saturday: six periods of thirty minutes where Monday to Friday run
+/// eight of forty. `periods_per_day`, `period_duration_mins` and `start_time`
+/// all belong to the `timetable_config`, so until now they belonged to every
+/// working day at once and this could not be said at all.
+///
+/// **Safe where §28.5 is not, and for a reason the key already states.**
+/// §28.5 refuses two period lengths inside ONE day, because `uq_teacher_slot`
+/// compares period numbers and two grids make period 3 mean two wall-clock
+/// windows. `day_of_week` is already part of that unique key, so Saturday's
+/// period 3 and Monday's are different cells today — and nobody is in two days
+/// at once. The constraint is within a day; this never crosses one.
+///
+/// `periods_per_day` is a SOLVER fact: it is how many cells exist that day, so
+/// a short Saturday prunes periods 7 and 8 from every domain and must not be
+/// counted as capacity. `period_duration_mins` is not — the solver places into
+/// period numbers — but a school that says "half day" means both, so it lives
+/// here beside it.
+///
+/// **Empty means "the same as every other day"** (invariant 7), which is why
+/// the migration is a bare CREATE TABLE: every day of every school today has
+/// no row and keeps the config's shape.
+model TimetableDayShape {
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// ISO day number, 1 = Monday.
+  dayOfWeek         Int             @map("day_of_week") @db.TinyInt
+  periodsPerDay     Int             @map("periods_per_day")
+  periodDurationMins Int            @map("period_duration_mins")
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, dayOfWeek])
+  @@index([schoolId])
+  @@map("timetable_day_shapes")
+}
+
 /// §33 — how many BASE periods one of this class's lessons occupies.
 ///
 /// A school running Class 1 on 30-minute periods and Class 10 on 60-minute
@@ -917,6 +956,8 @@ model TimetableConfig {
   subjects                    TimetableSubject[]
   /// §33 — per-class lesson length, in base periods. Empty = not stated = 1.
   classSpans                  TimetableClassSpan[]
+  /// §34 — weekdays that run a different shape. Empty = every day the same.
+  dayShapes                   TimetableDayShape[]
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]

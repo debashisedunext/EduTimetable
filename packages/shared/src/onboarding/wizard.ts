@@ -26,6 +26,7 @@
  * exist and already own that shape.
  */
 import type { RawSheet } from "../import/types";
+import { weekPeriods, type DayShape } from "./week-shape";
 
 /**
  * The class ladder: a fixed, ordered vocabulary.
@@ -556,6 +557,18 @@ export function dayEndsAt(week: {
  * ceiling every later periods/week entry is checked against, and a school that
  * finds out at step 9 has to come back to step 5.
  */
-export function weeklyCapacity(periodsPerDay: number, workingDays: number[]): number {
-  return Math.max(0, Math.floor(periodsPerDay)) * (workingDays?.length ?? 0);
+export function weeklyCapacity(
+  periodsPerDay: number,
+  workingDays: number[],
+  /**
+   * §34 — weekdays that run a shape of their own (a short Saturday).
+   *
+   * Optional, and absent means every working day is `periodsPerDay` long —
+   * which is every school that has not said otherwise, and is exactly the
+   * product this function used to return. Supplying it turns the product into
+   * the sum it has to be once one day can differ.
+   */
+  dayShapes?: DayShape[] | null,
+): number {
+  return weekPeriods({ periodsPerDay, dayShapes }, workingDays ?? []);
 }

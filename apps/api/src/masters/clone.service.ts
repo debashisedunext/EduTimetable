@@ -317,6 +317,31 @@ export class CloneService {
       }
 
       /*
+        §34 — the weekdays with a shape of their own. An INPUT by §3.12's test,
+        exactly as the class spans below are: a short Saturday shapes what a
+        generation produces rather than being something it produced.
+
+        Only the days the TARGET still works: §3.12 copies the week's settings,
+        so the working days come across too — but a shape for a day the clone
+        does not run would be a row nothing reads.
+      */
+      const shapes = await tx.timetableDayShape.findMany({
+        where: { timetableConfigId: c.id },
+        select: { dayOfWeek: true, periodsPerDay: true, periodDurationMins: true },
+      });
+      const cloneDays = new Set((config.workingDays as number[]) ?? []);
+      const keepShapes = shapes.filter((r) => cloneDays.has(r.dayOfWeek));
+      if (keepShapes.length > 0) {
+        await tx.timetableDayShape.createMany({
+          data: keepShapes.map((r) => ({
+            schoolId, timetableConfigId: config.id,
+            dayOfWeek: r.dayOfWeek, periodsPerDay: r.periodsPerDay,
+            periodDurationMins: r.periodDurationMins,
+          })),
+        });
+      }
+
+      /*
         §33 — how long each class's lesson is. An INPUT by §3.12's test: it
         shapes what a generation produces rather than being something a
         generation produced, so it comes across with the settings and the
