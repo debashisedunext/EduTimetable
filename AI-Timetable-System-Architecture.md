@@ -3751,3 +3751,22 @@ Offered for the **weekend only**, and **only while the weekend is ticked**. Mond
 That gap also reaches the write. The day-shape route refuses a day the timetable does not work — rightly, since a shape for a day nobody teaches is a row nothing would ever read — so answering the question would have failed with *"add it to the working days first"*, which is exactly what the person just did. The control therefore **commits the week first** when the server has not heard of the day, through the same guarded `commitWeeks(…, { changedOnly: true })` the wizard uses on Next. `pnpm test:dayshapes` asserts the server half of that sequence: refused, then accepted, with nothing between but the day joining the working week.
 
 Two buttons rather than a dropdown: there are exactly two answers, and the one being picked is the one you can see is not selected.
+
+
+### 34.5 The clock on a day with its own shape
+
+The `periods` rows have no day column: they are the shape of *a* day, written once per timetable. That was complete while every working day ran the same shape, and §34 made it possible for one not to — which left every reader of those times describing Saturday with Monday's clock.
+
+**This is not only a printing problem, and the correctness half is the urgent one.** §30.7 compares two live timetables by **wall clock** rather than by period number, precisely because Junior's P3 and Senior's P2 can start at the same minute. Its clock was keyed `(config, period)` with no day, so on a day with its own shape it was comparing the wrong minutes — and a wrong clock there does not degrade the check, it **inverts** it: a real overlap can be missed and an imaginary one reported. `occupancyOf` now keys `(config, day, period)`.
+
+`clockForDay` in `structure.util.ts` is how a day's times are derived, and it is built with **`buildPeriodRows`** — the same function `PUT /:id/structure` uses to write the stored rows. A shaped day and an ordinary one therefore cannot disagree about how a clock is derived. A day with no shape, or one whose shape matches the week, returns the stored rows by identity: same objects, no arithmetic repeated.
+
+**A break the short day never reaches is dropped.** A lunch after period 6 on a four-period Saturday is not a late lunch; `buildPeriodRows` would emit it as a break at the end of the day, and printing a lunch nobody takes is worse than printing none. A break the day *does* reach is kept and shifts what follows it.
+
+`breaksFromRows` was extracted from the controller for this: the breaks are recorded only in the rows themselves, so anything rebuilding them for a different shape has to recover them, and a second copy of "which rows are breaks, and which period does each follow" would have been free to disagree.
+
+### 34.6 Still to build: one clock per column
+
+The **printed and on-screen grids still show one clock for the whole week.** A class timetable renders periods down the side and days across, so a Saturday on a different clock has no row header that can be true of it — and the wall (§10.6) keys its rows `c{configId}p{periodNumber}` for exactly the same reason, one clock per config.
+
+This is the cost §28.5 already named when it said tick-based occupancy *"means the Matrix and the Board can no longer have a single column header row, which is an information-design problem rather than a styling one"*. The same problem arrives here by a smaller door. It wants deciding rather than patching — per-cell times, a split header, or a separate card for a day that differs — and until it is decided, **a school that sets a short Saturday will see correct placements printed against the weekday's times.**

@@ -29,6 +29,7 @@ import {
   type FeasibilityIssue, type Occupancy,
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
+import { breaksFromRows, clockForDay } from "../masters/structure.util";
 
 const DAY = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -309,13 +310,65 @@ export class ValidityService {
     });
     if (slots.length === 0) return [];
 
-    const periods = await this.prisma.period.findMany({
-      where: { timetableConfigId: { in: configIds }, isBreak: false },
-      select: { timetableConfigId: true, periodNumber: true, startTime: true, endTime: true },
-    });
-    const clock = new Map(
-      periods.map((p) => [`${p.timetableConfigId}:${p.periodNumber}`, p] as const),
-    );
+    /*
+      §34.5 — the clock is keyed by DAY as well as period.
+
+      `periods` has no day column: it is the shape of a day, stored once per
+      timetable. That was complete while every working day ran the same shape,
+      and §34 made it possible for one not to — so a Saturday running four
+      thirty-minute periods was being compared using Monday's forty-minute
+      times. This check exists precisely because period NUMBERS are not
+      comparable across timetables, so a wrong clock here does not degrade it,
+      it inverts it: a real overlap can be missed and an imaginary one
+      reported.
+
+      Built with the same `buildPeriodRows` the stored rows were written by, so
+      a shaped day and an ordinary one cannot disagree about how a clock is
+      derived. A config with no day shapes pays one Map lookup and reuses the
+      stored rows unchanged.
+    */
+    const [periods, shapes, configs] = await Promise.all([
+      this.prisma.period.findMany({
+        where: { timetableConfigId: { in: configIds } },
+        orderBy: { sortOrder: "asc" },
+      }),
+      this.prisma.timetableDayShape.findMany({
+        where: { timetableConfigId: { in: configIds } },
+      }),
+      this.prisma.timetableConfig.findMany({
+        where: { id: { in: configIds } },
+        select: {
+          id: true, startTime: true, periodsPerDay: true, periodDurationMins: true,
+          hasZeroPeriod: true, workingDays: true,
+        },
+      }),
+    ]);
+
+    const clock = new Map<string, { startTime: string; endTime: string }>();
+    for (const cfg of configs) {
+      const stored = periods
+        .filter((p) => p.timetableConfigId === cfg.id)
+        .map((p) => ({
+          sortOrder: p.sortOrder, periodNumber: p.periodNumber,
+          startTime: p.startTime, endTime: p.endTime,
+          isBreak: p.isBreak, isExtra: p.isExtra, isActivity: p.isActivity,
+          activityId: p.activityId, breakName: p.breakName,
+        }));
+      const spec = {
+        startTime: cfg.startTime,
+        periodsPerDay: cfg.periodsPerDay,
+        periodDurationMins: cfg.periodDurationMins,
+        hasZeroPeriod: cfg.hasZeroPeriod,
+        breaks: breaksFromRows(stored),
+      };
+      for (const day of ((cfg.workingDays as number[]) ?? [])) {
+        const shape = shapes.find((r) => r.timetableConfigId === cfg.id && r.dayOfWeek === day);
+        for (const r of clockForDay(stored, spec, shape)) {
+          if (r.isBreak || r.periodNumber === null) continue;
+          clock.set(`${cfg.id}:${day}:${r.periodNumber}`, { startTime: r.startTime, endTime: r.endTime });
+        }
+      }
+    }
 
     const teacherIds = [...new Set(slots.map((s) => s.teacherId).filter((x): x is number => x !== null))];
     const roomIds = [...new Set(slots.map((s) => s.roomId).filter((x): x is number => x !== null))];
@@ -329,7 +382,7 @@ export class ValidityService {
     const out: Occupancy[] = [];
     const seen = new Set<string>();
     for (const s of slots) {
-      const p = clock.get(`${s.timetableConfigId}:${s.periodNumber}`);
+      const p = clock.get(`${s.timetableConfigId}:${s.dayOfWeek}:${s.periodNumber}`);
       if (!p) continue;
       const startMin = minutesOf(p.startTime);
       const endMin = minutesOf(p.endTime);

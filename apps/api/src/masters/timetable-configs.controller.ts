@@ -10,7 +10,7 @@ import { CloneService } from "./clone.service";
 import { planDeletion, runDeletion } from "./config-deletion";
 import { planReset, runReset } from "./allocation-reset";
 import { planCellDelete, runCellDelete } from "./allocation-cell";
-import { buildPeriodRows } from "./structure.util";
+import { breaksFromRows, buildPeriodRows } from "./structure.util";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { FreezeService } from "../freeze/freeze.service";
 
@@ -598,21 +598,10 @@ export class TimetableConfigsController {
       where: { timetableConfigId: configId },
       orderBy: { sortOrder: "asc" },
     });
-    const out: Array<{ afterPeriod: number; name: string; durationMins: number }> = [];
-    let lastNumbered = 0;
-    for (const p of rows) {
-      if (p.isActivity || p.isExtra) continue;
-      if (p.periodNumber !== null && p.periodNumber > 0) { lastNumbered = p.periodNumber; continue; }
-      if (!p.isBreak) continue;
-      const [sh, sm] = p.startTime.split(":").map(Number);
-      const [eh, em] = p.endTime.split(":").map(Number);
-      out.push({
-        afterPeriod: lastNumbered,
-        name: p.breakName ?? "Break",
-        durationMins: (eh * 60 + em) - (sh * 60 + sm),
-      });
-    }
-    return out;
+    // §34.5 — one definition, in `structure.util`, shared with the per-day
+    // clock. Two copies would be free to disagree about which rows count as a
+    // break and which period each one follows.
+    return breaksFromRows(rows);
   }
 
 
