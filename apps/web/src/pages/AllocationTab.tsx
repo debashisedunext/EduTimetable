@@ -127,12 +127,14 @@ export function AllocationTab({
   const { current } = useConfigCtx();
   const yearId = current?.academicYearId ?? null;
   const [electives, setElectives] = useState<ElectiveBlockView[]>([]);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let live = true;
     api<Array<{
-      id: number; name: string; periodsPerWeek: number;
+      id: number; name: string; periodsPerWeek: number; maxPeriodsPerDay: number;
+      placement: "solver" | "same_period" | "fixed";
       members: Array<{ label: string }>;
-      options: Array<{ subjectName: string }>;
+      options: Array<{ subjectName: string; teacherName: string; roomName: string }>;
     }>>(yearId ? `/elective-blocks?academicYearId=${yearId}` : "/elective-blocks")
       .then((rows) => {
         if (!live) return;
@@ -140,13 +142,21 @@ export function AllocationTab({
           id: b.id,
           name: b.name,
           periodsPerWeek: b.periodsPerWeek,
+          maxPeriodsPerDay: b.maxPeriodsPerDay,
+          placement: b.placement,
           members: (b.members ?? []).map((m) => m.label),
-          options: (b.options ?? []).map((o) => ({ subjectName: o.subjectName })),
+          options: (b.options ?? []).map((o) => ({
+            subjectName: o.subjectName, teacherName: o.teacherName, roomName: o.roomName,
+          })),
         })));
       })
       .catch(() => { if (live) setElectives([]); });
     return () => { live = false; };
-  }, [yearId]);
+    // §31.19 — `tick` re-runs it after the grid writes a block's periods, so
+    // the column and the strip show what the server now holds rather than what
+    // was typed. A write that only updated local state would survive a failed
+    // PUT and read as saved.
+  }, [yearId, tick]);
 
   /*
     §31.10 — fills what the host leaves, rather than claiming 74vh of its own.
@@ -243,6 +253,7 @@ export function AllocationTab({
       <StepAllocation
         spanByClass={spans}
         electives={electives}
+        onElectivesChanged={() => setTick((n) => n + 1)}
         answers={scoped}
         onChange={onChange}
         density="compact"

@@ -9,6 +9,7 @@
  * dialog is only ever the second step.
  */
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../../api";
 import { asMessage } from "../../components";
 import {
@@ -541,7 +542,7 @@ export interface CellSave {
  */
 export function CellBar({
   m, answers, section, subject, periodsOf, mappingIndexOf, classTeacherOf,
-  onChange, onRemove, onMore, compact = false,
+  onChange, onRemove, onMore, compact = false, block = null, lockedBy = null,
 }: {
   m: AllocModel;
   answers: Record<string, any>;
@@ -557,6 +558,22 @@ export function CellBar({
    *  which genuinely do not fit in a bar. */
   onMore: () => void;
   compact?: boolean;
+  /**
+   * §31.19 — set when the selected cell is a §4.9 block column.
+   *
+   * The subject, the teacher, the room and the class-teacher role are then not
+   * this bar's to change: a block has three of each at once, and they are set
+   * on Split Electives. The bar disables them and says so rather than offering
+   * controls that would silently write nothing.
+   */
+  block?: { id: number; name: string; periodsPerWeek: number;
+            options: Array<{ subject: string; teacher: string; room: string }> } | null;
+  /**
+   * §31.19 — set when the selected cell is an ordinary subject that a block
+   * already teaches to this class. It HAS a teacher and a room; they just
+   * belong to the block's option rather than to a curriculum row here.
+   */
+  lockedBy?: string | null;
 }) {
   const className = section.replace(/-[^-]+$/, "");
   const idx = mappingIndexOf(section, subject);
@@ -573,6 +590,20 @@ export function CellBar({
   /* Cleared when the selection moves: a refusal is about the edit that was
      attempted, and carrying it to the next cell reads as that cell refusing. */
   useEffect(() => setRefusal(null), [section, subject]);
+
+  /**
+   * §31.19 — whether this bar may write anything but the number.
+   *
+   * ONE flag, read by every control below, rather than each of them repeating
+   * the two conditions: a control that forgot one would be an enabled select
+   * writing a mapping for a subject the block already teaches, which is the
+   * state this whole change exists to stop.
+   */
+  const owned = block !== null || lockedBy !== null;
+  const ownedBy = block ? block.name : lockedBy;
+  const ownedWhy = block
+    ? `${block.name} runs ${block.options.length} lessons at once — their subjects, teachers and rooms are set on Split Electives.`
+    : `${subject} is taught inside ${lockedBy}. Its teacher and room belong to that block's option.`;
 
   /** The same eligibility rule the dialog applies, for the same reasons. */
   const eligible = m.staff.filter((t) =>
@@ -657,6 +688,21 @@ export function CellBar({
       }}>
         {section} · {subject}
       </span>
+      {/*
+        §31.19 — why the controls to the right are grey.
+
+        Said here, once, beside the thing it is about. A row of disabled selects
+        with no explanation is a bar that reads as broken, and the reader's next
+        move is to try each one.
+      */}
+      {owned && (
+        <span style={{
+          font: "600 11px/1.4 Inter", padding: "3px 8px", borderRadius: 6, alignSelf: "center",
+          background: "var(--steel-pale)", color: "var(--brand-dark)", whiteSpace: "nowrap",
+        }} title={ownedWhy}>
+          🔒 {block ? "elective block" : `in ${ownedBy}`}
+        </span>
+      )}
 
       {/*
         §31.16 — the periods are NOT here.
@@ -674,19 +720,34 @@ export function CellBar({
       */}
       <span style={{ fontSize: 11.5, color: "var(--ink-soft)", alignSelf: "center", whiteSpace: "nowrap" }}
         title={`A CLASS fact — ${className} has ${m.classes.find((c) => c.className === className)?.sections.length ?? 1} section(s) and they all get this`}>
-        <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{periods}</strong>
-        {periods === 1 ? " period" : " periods"} a week
-        <span style={{ color: "var(--ink-faint)" }}> · type in the cell</span>
+        <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>
+          {block ? block.periodsPerWeek : periods}
+        </strong>
+        {(block ? block.periodsPerWeek : periods) === 1 ? " period" : " periods"} a week
+        <span style={{ color: "var(--ink-faint)" }}>
+          {/* §31.19 — the one thing a block cell CAN change, so the bar says
+              where: this is the number the grid exists to make add up, and
+              sending somebody to another screen for it is what made them type
+              it into the French column instead. */}
+          {block ? " · type in the cell — it updates Split Electives" : " · type in the cell"}
+        </span>
       </span>
 
       {field("Teacher", (
-        <select value={code} onChange={(e) => setTeacher(e.target.value)}
+        <select value={owned ? "" : code} onChange={(e) => setTeacher(e.target.value)}
           style={{ ...box, maxWidth: compact ? 150 : 200 }}
-          disabled={merged}
-          title={merged
+          disabled={merged || owned}
+          title={owned ? ownedWhy : merged
             ? "Taught as one merged group (§4.10) — change it in the full editor, where the other sections are listed"
             : undefined}>
-          <option value="">Nobody yet</option>
+          {/* §31.19 — a block has several teachers at once, so the empty
+              option says how many rather than "Nobody yet", which would be
+              false in the most misleading direction. */}
+          <option value="">
+            {block
+              ? `${block.options.length} teacher${block.options.length === 1 ? "" : "s"} — on Split Electives`
+              : lockedBy ? `set in ${lockedBy}` : "Nobody yet"}
+          </option>
           {/* The load in the option text, exactly as the dialog shows it: the
               question anybody picking a teacher is actually asking is "have
               they got room?", and a name alone cannot answer it. */}
@@ -703,8 +764,10 @@ export function CellBar({
       ))}
 
       {field("Room", (
-        <input value={room} onChange={(e) => setRoom(e.target.value)} disabled={idx < 0}
-          placeholder={idx < 0 ? "—" : "Home room"}
+        <input value={owned ? "" : room} onChange={(e) => setRoom(e.target.value)}
+          disabled={idx < 0 || owned}
+          placeholder={owned ? (block ? `${block.options.length} rooms` : "in the block") : idx < 0 ? "—" : "Home room"}
+          title={owned ? ownedWhy : undefined}
           style={{ ...box, width: compact ? 84 : 110 }} />
       ))}
 
@@ -726,8 +789,8 @@ export function CellBar({
           /* A block needs a curriculum row to be written onto — `setBlock`
              returns early without one, so an enabled control here would be a
              control that silently does nothing. Give the cell periods first. */
-          disabled={periods <= 0}
-          title={periods <= 0
+          disabled={periods <= 0 || owned}
+          title={owned ? ownedWhy : periods <= 0
             ? "Give this subject some periods first — a block is a property of the curriculum row."
             : "§4.8 — how many periods of this subject run back to back. Placed atomically: all of them, or none."}>
           <option value={1}>single</option>
@@ -752,20 +815,53 @@ export function CellBar({
 
       <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, alignSelf: "center", whiteSpace: "nowrap" }}
         title="Class teacher for this section. A section has one, so ticking here unticks whoever held it.">
-        <input type="checkbox" checked={isCT} disabled={!code}
+        <input type="checkbox" checked={!owned && isCT} disabled={!code || owned}
           onChange={(e) => onChange({ className, classTeacher: e.target.checked ? code : "" })} />
         class tr.
       </label>
 
-      <button className="btn" onClick={onMore} style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center" }}
-        title="The full editor — what this change does to every teacher's week, and the sections a merged group covers">
-        ⋯ More
-      </button>
-      {(periods > 0 || idx >= 0) && (
+      {/*
+        §31.19 — a block cell's ⋯ goes to the screen that owns it.
+
+        The full editor edits a curriculum row and a mapping, neither of which a
+        block has; opening it here would be a form with nothing behind it.
+      */}
+      {block ? (
+        <Link to="/electives" className="btn"
+          style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center", textDecoration: "none" }}
+          title="Options, teachers, rooms, who attends and when it runs — all on Split Electives">
+          ⋯ Split Electives
+        </Link>
+      ) : (
+        <button className="btn" onClick={onMore} style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center" }}
+          title="The full editor — what this change does to every teacher's week, and the sections a merged group covers">
+          ⋯ More
+        </button>
+      )}
+      {/*
+        §31.19 — the fix for a row that clashes with a block.
+
+        Same button, same confirmation (§27.15's `RemoveSubject`), different
+        words: here it is not "this class does not take French" — it does, five
+        periods a week, inside the block — it is "these extra periods are being
+        taught on top of it". Offered rather than applied, because it deletes a
+        row somebody entered and twenty-seven of them are already in the field.
+
+        A block cell gets neither: its members are Split Electives' to change.
+      */}
+      {!block && (periods > 0 || idx >= 0) && (
         <button className="btn" onClick={onRemove}
-          style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center", color: "var(--signal)" }}
-          title="This class does not take this subject — deletes the curriculum row, not just its periods">
-          ✕ Not taught
+          style={{
+            padding: "4px 8px", fontSize: 11.5, alignSelf: "center",
+            color: "var(--signal)",
+            ...(lockedBy && periods > 0 ? { borderColor: "var(--signal)", fontWeight: 700 } : {}),
+          }}
+          title={lockedBy && periods > 0
+            ? `${subject} is already taught inside ${lockedBy}. These ${periods} periods are on top of it — this deletes them.`
+            : "This class does not take this subject — deletes the curriculum row, not just its periods"}>
+          {lockedBy && periods > 0
+            ? `✕ Clear ${periods} duplicate period${periods === 1 ? "" : "s"}`
+            : "✕ Not taught"}
         </button>
       )}
 

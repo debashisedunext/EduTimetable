@@ -1001,6 +1001,60 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
     const groups: StripGroup[] = [];
     const swatch = colors.subject(f.subject);
 
+    /**
+     * §31.19 — a §4.9 block explains itself, rather than being described as a
+     * lesson it is not.
+     *
+     * The groups below assume one subject, one teacher, one room. A block has
+     * three of each running at the same moment, so reusing them would print
+     * "Nobody yet" under The teacher for a lesson three people are teaching —
+     * a confident wrong answer rather than a missing one.
+     *
+     * Every option is a chip in its OWN subject colour, the same colours the
+     * grid's bands are painted from (§10.5's one module), so a reader can match
+     * a stripe in the cell to a name in the strip without being told how.
+     */
+    if (f.block) {
+      const b = f.block;
+      groups.push({
+        label: "The elective",
+        primary: b.name,
+        lines: [
+          `${b.periodsPerWeek} period${b.periodsPerWeek === 1 ? "" : "s"} a week`,
+          b.attends ? `taught to ${f.section}` : `${f.section} does not attend`,
+          b.placement === "same_period" ? "Same period every day"
+            : b.placement === "fixed" ? "Pinned to chosen slots"
+              : "Placed wherever it fits",
+          b.maxPeriodsPerDay > 0 ? `at most ${b.maxPeriodsPerDay} a day` : "",
+        ].filter(Boolean),
+      });
+      groups.push({
+        label: b.options.length === 1 ? "The option" : `The ${b.options.length} options`,
+        chips: b.options.map((o) => ({
+          text: abbr(o.subject),
+          swatch: colors.subject(o.subject),
+          title: `${o.subject} · ${o.teacher || "nobody yet"} · ${o.room || "no room"}`,
+        })),
+        lines: [
+          "All run at the same moment — the class splits between them.",
+          // Said in full as well as in chips: at 27 pixels a chip is three
+          // characters, and "who takes German?" is the question somebody
+          // clicked this cell to answer.
+          ...b.options.map((o) => `${o.subject} — ${o.teacher || "nobody yet"}${o.room ? ` · ${o.room}` : ""}`),
+        ],
+      });
+      groups.push({
+        label: b.members.length === 1 ? "The class" : "The classes",
+        primary: b.members.length > 3 ? `${b.members.length} sections` : b.members.join(", "),
+        swatch: colors.classOf(f.section),
+        lines: [
+          b.members.length > 3 ? b.members.join(", ") : "",
+          "Type in the cell to change the periods. Everything else is on Split Electives.",
+        ].filter(Boolean),
+      });
+      return groups;
+    }
+
     // §31.7 — only when they differ, and only where the comparison is honest.
     const sectionId = context?.sections.find((x) => x.label === f.section)?.id ?? null;
     const subjectId = context?.subjects.find((x) => x.name === f.subject)?.id ?? null;
@@ -1015,13 +1069,30 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
       primary: f.subject,
       swatch,
       lines: [
-        f.periodsPerWeek > 0
-          ? `${f.periodsPerWeek} period${f.periodsPerWeek === 1 ? "" : "s"} a week`
-          : "Not taught to this class",
-        // Periods are a CLASS fact (§27) — the grid's rows are sections, and
-        // the strip is where that is said out loud rather than implied.
-        f.periodsPerWeek > 0 ? `for every section of ${f.className}` : "",
-        short ? `${placed} of ${f.periodsPerWeek} placed in the shown week` : "",
+        /*
+          §31.19 — a subject the block already teaches says so FIRST.
+
+          "Not taught to this class" is exactly backwards for French in a class
+          with a Third Language block: the children are in French right now, in
+          the slot next door. And a stored figure here is not a normal one — it
+          is periods being taught on top of the block, which is why it is named
+          as duplication rather than printed as a total.
+        */
+        f.lockedBy
+          ? (f.periodsPerWeek > 0
+            ? `Taught inside ${f.lockedBy} — and ${f.periodsPerWeek} more period${f.periodsPerWeek === 1 ? "" : "s"} on top of it`
+            : `Taught inside ${f.lockedBy}`)
+          : f.periodsPerWeek > 0
+            ? `${f.periodsPerWeek} period${f.periodsPerWeek === 1 ? "" : "s"} a week`
+            : "Not taught to this class",
+        f.lockedBy
+          ? (f.periodsPerWeek > 0
+            ? "Clear them from the toolbar — the block already covers this subject."
+            : "Its periods are set on that block.")
+          // Periods are a CLASS fact (§27) — the grid's rows are sections, and
+          // the strip is where that is said out loud rather than implied.
+          : f.periodsPerWeek > 0 ? `for every section of ${f.className}` : "",
+        short && !f.lockedBy ? `${placed} of ${f.periodsPerWeek} placed in the shown week` : "",
       ].filter(Boolean),
     });
 

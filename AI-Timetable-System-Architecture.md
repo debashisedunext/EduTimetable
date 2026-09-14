@@ -3869,3 +3869,40 @@ Reported from a school whose subject list had just grown to 39 through §35.
 **Read-only, and visibly so.** A block's periods, members, options and placement live on the Split Electives screen, which is their one writer — §27.11 already draws that line, counting and *naming* elective blocks on a reset and never removing them. A section that does not attend gets a dash rather than a zero: zero periods is a statement about a block this class is in, and these children are simply somewhere else. A class whose only teaching is a block is **exempt from §31.17's hiding rule**, since its options are not `class_subjects` rows and hiding it would take away the only row that counts its demand.
 
 Supplied by the Master Grid, which knows the academic year (the narrowing §3.12 clones require); the guided setup does not pass it, because a block is created after the setup has produced the class-sections it attaches to.
+
+
+## 31.19 A split elective owns its subjects
+
+§31.18 put a block column on the Lesson Grid, and that exposed a conflict the app had always permitted and never named: **a subject can be an elective option *and* a curriculum row for the same class, and it is then taught twice.** `solver/writer.ts` places the block; `solver/variables.ts` builds a variable per mapping. The reference school has twenty-seven such rows — French, Sanskrit and German each two periods of curriculum for Classes 5–12 on top of their five-period Third Language block, and Bio/Chem/Phy the same for another school's Class 9. §31.7's `coverage.ts` already marked such a subject *"not comparable"* rather than fixing it.
+
+### The rule, in one map
+
+A `(class, subject)` cell is **elective-locked** when the subject is an option of a block whose members cover **every section of that class the grid is showing**.
+
+*Every* section, not any. Periods are a class fact (§27) — one number covers 5-A, 5-B and 5-C — so if only half a class's sections attend the block the other half genuinely take the subject as curriculum, and refusing that one number would leave them with no way to be taught at all. Partial membership therefore does **not** lock; it is reported in the strip instead. Measured across the live databases the case does not currently arise (0 partial, 32 locked pairs, 27 of them already holding a row), but the rule has to be right before it does.
+
+`Model.electiveLock` is that map and `lockKey` is its one spelling. The cell's style, the typing guard, the toolbar and the strip all ask this question, and §10.6's rule is that four derivations of one fact are four chances to disagree.
+
+### Shown, never silently zeroed
+
+A locked cell with no row is greyed with a dashed edge and reads `0`. A locked cell **with periods stored** shows the real number in `--signal` — *not* zero. The row exists, Readiness counts it and the solver places it, so printing 0 would make the Lesson Grid the one screen telling a different story. The toolbar then offers `✕ Clear 2 duplicate periods`, which opens §27.15's existing `RemoveSubject` confirmation: offered rather than applied, because it deletes a row somebody entered and twenty-seven of them are already in the field.
+
+Typing into a locked cell is refused by name through §27.15's toast — *"French is one of the options in Class 5 Third Language. Its periods are set on that block."*
+
+### One column list
+
+`moveTo`, the in-cell arrow handler and the window key handler each clamped to `m.subjects.length` — three copies of "how wide is this grid?", and with §31.18's block columns on the end, three copies that were wrong. They now index one `columns` array whose order **is** the render order, so a column index means the same thing to the keyboard and to the `<td>` it lands on. `stripCell` gains an optional `blockId`; `subject` then carries the block's name, so every label site keeps working without narrowing a union at a dozen places that only want something to print.
+
+### The block cell edits exactly one thing
+
+Its number, typed in the cell, written straight to `PUT /elective-blocks/:id` on commit — the one write on this grid that does not go through the draft, and it has to be: a block is not in the wizard's answers, so there is no Save for it to ride on (§27.15's delete is the same exception for the same reason). **On commit, not per keystroke**, since the field accumulates digits over 900ms (§31.15) and "12" would otherwise PUT 1 and then 12. Lessons→base via `baseFromLessons` (§33.6). The host refetches rather than the grid patching its own copy — local state would survive a PUT the server refused and read as saved. Every rule stays on the server: `assertWithinWeek` caps it at the week, §29.1's freeze guard refuses a published timetable, and both come back into the same toast.
+
+Everything else is disabled behind **one** `owned` flag read by every control — Subject, Teacher, Room, Together and the class-teacher tick — with a 🔒 chip beside the cell's name saying why. A control that forgot the flag would be an enabled select writing a mapping for a subject the block already teaches, which is the state this exists to stop. A block's empty teacher option reads *"3 teachers — on Split Electives"*, never "Nobody yet", which would be false in the most misleading direction. `⋯ More` becomes a link to Split Electives, because the full editor edits a curriculum row and a mapping and a block has neither.
+
+### The strip
+
+A block returns early with its own three groups rather than being forced through the lesson groups, which assume one subject, one teacher and one room — reusing them would print "Nobody yet" for a lesson three people are teaching. Each option is a chip in **its own subject colour**, from the same module the cell's bands are painted from (§10.5), so a stripe in a 50-pixel cell can be matched to a name without being told how; the options are also listed in full, because at three characters a chip cannot answer "who takes German?". A locked subject cell says *"Taught inside Class 5 Third Language"* first — "Not taught to this class" is exactly backwards for children who are in French right now, in the slot next door.
+
+### Deliberately not in this change
+
+**No server refusal.** `POST /class-subjects` still accepts an option subject. Making it refuse is the real backstop, but it would also make the §16 importer, the §23 ERP sync and §13.5 AI drafting reject rows they accept today, and it needs its own decision about the twenty-seven already in the field. Until then this rule is client-side, which means the other three doors can still create the state. **Check 1 is unchanged**: the double count is real while the rows are, and the fix is to clear them.

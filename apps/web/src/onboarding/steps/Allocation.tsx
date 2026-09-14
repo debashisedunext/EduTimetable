@@ -40,6 +40,7 @@ import {
   type CellSave, type Hover,
 } from "./AllocationParts";
 import { api } from "../../api";
+import { asMessage } from "../../components";
 import { Heading } from "./ui";
 
 interface ClassTeacher { classSection: string; employeeCode: string }
@@ -114,10 +115,30 @@ interface Model {
     id: number;
     name: string;
     periodsPerWeek: number;
+    maxPeriodsPerDay: number;
+    placement: "solver" | "same_period" | "fixed";
     members: Set<string>;
-    options: string[];
+    options: Array<{ subject: string; teacher: string; room: string }>;
   }>;
+  /**
+   * §31.19 — the subjects a §4.9 block already owns, keyed `class::subject`.
+   *
+   * A block IS the teaching of its options: `solver/writer.ts` places the block
+   * and `solver/variables.ts` builds a variable per mapping, so a curriculum
+   * row for an option subject is that class taught the language twice. The
+   * reference school has twenty-four of them.
+   *
+   * One map rather than a predicate re-derived at each call site: the cell's
+   * style, the typing guard, the toolbar and the strip all ask this question,
+   * and §10.6's rule is that four derivations of one fact are four chances to
+   * disagree.
+   */
+  electiveLock: Map<string, { blockId: number; blockName: string }>;
 }
+
+/** The key `Model.electiveLock` is built and read with — never spelled twice. */
+export const lockKey = (className: string, subject: string) =>
+  `${className.trim().toLowerCase()}::${subject.trim().toLowerCase()}`;
 
 /**
  * §31.18 — one §4.9 split-elective block, as the Lesson Grid needs it.
@@ -130,10 +151,20 @@ export interface ElectiveBlockView {
   id: number;
   name: string;
   periodsPerWeek: number;
+  maxPeriodsPerDay: number;
+  placement: "solver" | "same_period" | "fixed";
   /** Class-section labels whose week this block occupies. */
   members: string[];
-  /** The parallel lessons inside the slot — one colour band each. */
-  options: Array<{ subjectName: string }>;
+  /**
+   * The parallel lessons inside the slot — one colour band each, and (§31.19)
+   * one strip chip each.
+   *
+   * Teacher and room ride along because the strip explains the block rather
+   * than merely naming it, and asking the server a second time for facts this
+   * payload already carried is how two screens start disagreeing about who
+   * takes French.
+   */
+  options: Array<{ subjectName: string; teacherName: string; roomName: string }>;
 }
 
 const label = (className: string, section: string) => `${className}-${section}`;
@@ -369,10 +400,37 @@ function useModel(answers: Record<string, any>, activeWing: number,
         id: b.id,
         name: b.name,
         periodsPerWeek: b.periodsPerWeek,
+        maxPeriodsPerDay: b.maxPeriodsPerDay,
+        placement: b.placement,
         members: new Set(b.members.map((x) => x.trim().toLowerCase())),
-        options: b.options.map((o) => o.subjectName),
+        options: b.options.map((o) => ({
+          subject: o.subjectName, teacher: o.teacherName, room: o.roomName,
+        })),
       }))
       .filter((b) => [...b.members].some((x) => wingSectionLabels.has(x)));
+
+    /**
+     * §31.19 — which `(class, subject)` pairs a block owns.
+     *
+     * **EVERY section of the class, not any.** Periods are a class fact (§27):
+     * one number covers all of 5-A, 5-B and 5-C. If only half a class's
+     * sections attend the block the other half genuinely take the subject as
+     * curriculum, and refusing that one number would leave them with no way to
+     * be taught at all. So partial membership does not lock — it is reported in
+     * the strip instead, which is the honest answer to a question the data
+     * model can ask and a single number cannot answer.
+     */
+    const electiveLock = new Map<string, { blockId: number; blockName: string }>();
+    for (const b of blocks) {
+      for (const c of all.filter((x) => x.wing === wing?.name)) {
+        const covered = c.sections.every((sec) =>
+          b.members.has(label(c.className, sec).trim().toLowerCase()));
+        if (!covered) continue;
+        for (const o of b.options) {
+          electiveLock.set(lockKey(c.className, o.subject), { blockId: b.id, blockName: b.name });
+        }
+      }
+    }
 
     const wingClasses = all.filter((c) => c.wing === wing?.name);
     const paired = subjects.filter((s) => wingClasses.some((c) => subjectAppliesTo(s, c.className)));
@@ -448,7 +506,7 @@ function useModel(answers: Record<string, any>, activeWing: number,
       */
       swatches: assignSwatches([...new Set([
         ...subjects.map((s) => s.name),
-        ...blocks.flatMap((b) => b.options),
+        ...blocks.flatMap((b) => b.options.map((o) => o.subject)),
       ])]),
       loads,
       byCode: new Map(loads.map((l) => [l.employeeCode, l])),
@@ -460,6 +518,7 @@ function useModel(answers: Record<string, any>, activeWing: number,
       stale,
       proposedGaps: coverageGaps(wings, curriculum, proposedMappings.mappings).length,
       blocks,
+      electiveLock,
     };
   }, [electives, JSON.stringify([answers.wings, answers.weeks, answers.subjects, answers.teachers,
                       answers.curriculum, answers.mappings, answers.classTeachers, answers.rooms,
@@ -552,6 +611,23 @@ export interface AllocationCellFacts {
   studies: Array<{ subject: string; periods: number }>;
   /** The week this wing offers, so a total has a denominator. */
   capacity: number;
+  /**
+   * §31.19 — the §4.9 block that already teaches this subject to this class,
+   * if one does. Its periods are set on the block, not here.
+   */
+  lockedBy?: string | null;
+  /** §31.19 — present only for a block column's cell. */
+  block?: {
+    id: number;
+    name: string;
+    periodsPerWeek: number;
+    maxPeriodsPerDay: number;
+    placement: "solver" | "same_period" | "fixed";
+    options: Array<{ subject: string; teacher: string; room: string }>;
+    members: string[];
+    /** Whether the selected section is one of them. */
+    attends: boolean;
+  };
 }
 
 /**
@@ -598,7 +674,7 @@ function CellShell({
 
 export function StepAllocation({
   answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell, toolbarHost,
-  spanByClass, electives = [],
+  spanByClass, electives = [], onElectivesChanged,
 }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -645,6 +721,16 @@ export function StepAllocation({
    * show. Absent is exactly the grid as it was.
    */
   electives?: ElectiveBlockView[];
+  /**
+   * §31.19 — re-read the blocks, after this grid has changed one.
+   *
+   * A block's periods are the one thing here that writes straight to the
+   * server: blocks are not in the wizard's draft, so there is no Save for them
+   * to ride on (§27.15's delete is the same exception for the same reason).
+   * The host refetches rather than this component patching its own copy —
+   * local state would survive a PUT the server refused and read as saved.
+   */
+  onElectivesChanged?: () => void;
   /**
    * §31.10 — which wing to show, when the HOST already picks one.
    *
@@ -763,6 +849,52 @@ export function StepAllocation({
         .map((c) => ({ subject: c.subjectName, periods: c.periodsPerWeek }))
         .sort((a, b) => b.periods - a.periods),
       capacity: m.capacity,
+      // §31.19 — which §4.9 block already owns this subject for this class.
+      lockedBy: m.electiveLock.get(lockKey(className, subject))?.blockName ?? null,
+    };
+  };
+
+  /**
+   * §31.19 — the same facts for a §4.9 block cell.
+   *
+   * It fills `AllocationCellFacts` rather than inventing a parallel shape,
+   * because the strip's contract is one callback and one payload — §31.10's
+   * rule that the strip is fed finished facts from the screen's OWN model, so
+   * that it cannot describe a cell the grid is not showing. What a block does
+   * not have — a teacher, a room, one subject — is null, and the `block` field
+   * is what tells the strip to draw the other groups instead.
+   */
+  const blockFactsFor = (section: string, blockId: number): AllocationCellFacts | null => {
+    const b = m.blocks.find((x) => x.id === blockId);
+    if (!b) return null;
+    const className = section.replace(/-[^-]+$/, "");
+    return {
+      section,
+      className,
+      subject: b.name,
+      periodsPerWeek: b.members.has(section.trim().toLowerCase()) ? b.periodsPerWeek : 0,
+      teacherCode: "",
+      teacherName: null,
+      teacherInitials: null,
+      room: null,
+      sharedWith: [section],
+      isClassTeacher: false,
+      studies: m.cells
+        .filter((c) => c.className === className && c.periodsPerWeek > 0)
+        .map((c) => ({ subject: c.subjectName, periods: c.periodsPerWeek }))
+        .sort((a, b2) => b2.periods - a.periods),
+      capacity: m.capacity,
+      lockedBy: null,
+      block: {
+        id: b.id,
+        name: b.name,
+        periodsPerWeek: b.periodsPerWeek,
+        maxPeriodsPerDay: b.maxPeriodsPerDay,
+        placement: b.placement,
+        options: b.options,
+        members: [...b.members],
+        attends: b.members.has(section.trim().toLowerCase()),
+      },
     };
   };
 
@@ -775,7 +907,16 @@ export function StepAllocation({
    * avoid. The callback is held in a ref so a host that passes a fresh arrow
    * every render does not re-fire this on every render.
    */
-  const [stripCell, setStripCell] = useState<{ section: string; subject: string } | null>(null);
+  /**
+   * §31.19 — the selected cell, which is a subject cell OR a §4.9 block cell.
+   *
+   * `blockId` set is the whole difference; `subject` then carries the block's
+   * NAME so every label site keeps working unchanged. A discriminated union
+   * would be tidier in the type and would have meant narrowing at a dozen
+   * places that only ever want something to print.
+   */
+  const [stripCell, setStripCell] =
+    useState<{ section: string; subject: string; blockId?: number } | null>(null);
   /*
     §31.15 — a selection cannot outlive the wing it names.
 
@@ -788,7 +929,11 @@ export function StepAllocation({
   const emitCell = useRef(onSelectCell);
   emitCell.current = onSelectCell;
   useEffect(() => {
-    emitCell.current?.(stripCell ? factsFor(stripCell.section, stripCell.subject) : null);
+    emitCell.current?.(stripCell
+      ? (stripCell.blockId !== undefined
+        ? blockFactsFor(stripCell.section, stripCell.blockId)
+        : factsFor(stripCell.section, stripCell.subject))
+      : null);
     // Deps are `stripCell` and `m` deliberately: `factsFor` is rebuilt every
     // render and listing it would re-fire this on renders that changed nothing,
     // while `m` is what actually changes its answer.
@@ -843,8 +988,8 @@ export function StepAllocation({
    * be written on, so `var(--ink)` reads on every one of them — which matters
    * because no single `fg` can be right across three different bands.
    */
-  const bandsFor = (options: string[]): string => {
-    const fills = options.map((o) => m.swatches[o]?.bg ?? "var(--steel-pale)");
+  const bandsFor = (options: Array<{ subject: string }>): string => {
+    const fills = options.map((o) => m.swatches[o.subject]?.bg ?? "var(--steel-pale)");
     if (fills.length === 0) return "var(--steel-pale)";
     if (fills.length === 1) return fills[0];
     const step = 100 / fills.length;
@@ -899,6 +1044,21 @@ export function StepAllocation({
     () => m.classes.flatMap((c) => c.sections.map((s) => ({ id: label(c.className, s), className: c.className }))),
     [m.classes],
   );
+
+  /**
+   * §31.19 — every column the cursor can land on, subjects then blocks.
+   *
+   * `moveTo`, the in-cell arrow handler and the window key handler each clamped
+   * to `m.subjects.length`, which was three copies of "how wide is this grid?"
+   * — and with §31.18's block columns on the end, three copies that were wrong.
+   * One list, indexed by all three, and the order here IS the order the row
+   * renders in, so a column index means the same thing to the keyboard and to
+   * the `<td>` it lands on.
+   */
+  const columns = useMemo(() => [
+    ...m.subjects.map((s) => ({ kind: "subject" as const, name: s.name, blockId: undefined as number | undefined })),
+    ...m.blocks.map((b) => ({ kind: "block" as const, name: b.name, blockId: b.id })),
+  ], [m.subjects, m.blocks]);
 
   // ── reading the draft ──────────────────────────────────────────────────
   const periodsOf = (className: string, subject: string) =>
@@ -1146,10 +1306,10 @@ export function StepAllocation({
    */
   const moveTo = (row: number, col: number) => {
     const r = Math.max(0, Math.min(sections.length - 1, row));
-    const c = Math.max(0, Math.min(m.subjects.length - 1, col));
+    const c = Math.max(0, Math.min(columns.length - 1, col));
     setCursor({ row: r, col: c });
-    const sec = sections[r], sub = m.subjects[c];
-    if (sec && sub) setStripCell({ section: sec.id, subject: sub.name });
+    const sec = sections[r], cur = columns[c];
+    if (sec && cur) setStripCell({ section: sec.id, subject: cur.name, blockId: cur.blockId });
   };
 
   /**
@@ -1177,7 +1337,13 @@ export function StepAllocation({
     // §33.6 — seeded in LESSONS, the unit `commitTyped` reads back. Seeding
     // base periods here would show 6 in a field where typing 6 means six
     // hours, and arrowing across a row would rewrite every cell it passed.
-    const { lessons } = lessonsOf(className, stripCell.subject);
+    // §31.19 — a block's number comes off the block, not the curriculum.
+    const base = stripCell.blockId !== undefined
+      ? (m.blocks.find((b) => b.id === stripCell.blockId)?.periodsPerWeek ?? 0)
+      : null;
+    const lessons = base !== null
+      ? lessonsFromBase(base, spanOf(className)).lessons
+      : lessonsOf(className, stripCell.subject).lessons;
     setTyped(lessons > 0 ? String(lessons) : "");
     /*
       Focused here rather than with `autoFocus`, so arrowing from cell to cell
@@ -1187,12 +1353,73 @@ export function StepAllocation({
     */
     cellInput.current?.focus();
     cellInput.current?.select();
-  }, [stripCell?.section, stripCell?.subject]);
+  }, [stripCell?.section, stripCell?.subject, stripCell?.blockId]);
+
+  /**
+   * §31.19 — the block's periods a week, written straight to the server.
+   *
+   * The one write on this grid that does not go through the draft, and it has
+   * to be: a §4.9 block is not in the wizard's answers, so there is no Save for
+   * it to ride on (§27.15's delete is the same exception for the same reason).
+   *
+   * On COMMIT rather than per keystroke — the field accumulates digits over
+   * 900ms (§31.15), so "12" would otherwise be a PUT of 1 followed by a PUT of
+   * 12, and a school watching Split Electives would see the first.
+   *
+   * The server owns every rule here: `assertWithinWeek` caps it at the week and
+   * §29.1's freeze guard refuses a published timetable. Both come back as
+   * ordinary messages, into the same toast §27.15 already uses, so this screen
+   * does not need its own copy of either rule to get them wrong with.
+   */
+  const setBlockPeriods = async (blockId: number, className: string, lessons: number) => {
+    const b = m.blocks.find((x) => x.id === blockId);
+    if (!b) return;
+    const want = baseFromLessons(lessons, spanOf(className));
+    if (want <= 0 || want === b.periodsPerWeek) return;
+    try {
+      await api(`/elective-blocks/${blockId}`, {
+        method: "PUT", body: JSON.stringify({ periodsPerWeek: want }),
+      });
+      setRefused(null);
+      onElectivesChanged?.();
+    } catch (e) {
+      setRefused(asMessage(e));
+      onElectivesChanged?.();
+    }
+  };
 
   /** Digits in, a refusal or a write out. */
   const commitTyped = (className: string, subject: string, raw: string) => {
     const clean = raw.replace(/[^0-9]/g, "").slice(0, 2);
     setTyped(clean);
+    /*
+      §31.19 — a block column writes to the block, not to the curriculum.
+
+      Checked before the empty-string guard below returns, because the two
+      paths share this one field and the block id is the only thing that says
+      which of them the digits belong to.
+    */
+    if (stripCell?.blockId !== undefined) {
+      if (clean !== "") void setBlockPeriods(stripCell.blockId, className, Number(clean));
+      return;
+    }
+    /*
+      §31.19 — a subject the block already teaches is refused, by name.
+
+      The block IS the teaching of French: `writer.ts` places it and
+      `variables.ts` builds a variable per mapping, so a curriculum row here
+      would be this class taught French twice. Refused rather than quietly
+      ignored — the reference school has twenty-four rows that were entered
+      exactly this way.
+    */
+    const owner = m.electiveLock.get(lockKey(className, subject));
+    if (owner) {
+      setRefused(
+        `${subject} is one of the options in ${owner.blockName}. Its periods are set on that `
+        + `block — open the ${owner.blockName} column to change them.`,
+      );
+      return;
+    }
     // An empty field is somebody mid-edit, not a request for zero. Writing 0
     // here would drop the row's periods on the way to typing a two-digit
     // number, and the load rail would flash as they passed through.
@@ -1310,9 +1537,9 @@ export function StepAllocation({
         // field. Without it here, Enter on a grid nobody has typed into yet
         // would be the one key that does nothing.
         cursor.row + (e.key === "ArrowDown" || e.key === "Enter" ? 1 : e.key === "ArrowUp" ? -1 : 0)));
-      const col = Math.max(0, Math.min(m.subjects.length - 1,
+      const col = Math.max(0, Math.min(columns.length - 1,
         cursor.col + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0)));
-      const sec = sections[row], sub = m.subjects[col];
+      const sec = sections[row], sub = columns[col];
       if (!sec || !sub) return;
       // §31.10 — the keyboard cursor moves the strip too, so a row can be read
       // across without reaching for the mouse for every cell.
@@ -1322,6 +1549,10 @@ export function StepAllocation({
       // grid for anybody arrowing around without having typed anything.
       if (e.key === "Enter") return;
       if (remove) {
+        // §31.19 — a block column holds no curriculum row to remove, and its
+        // members and options are Split Electives' to change. Delete here would
+        // otherwise land on whatever `sub.name` happened to match.
+        if (sub.kind === "block") return;
         // Nothing there is nothing to remove — and the confirmation would have
         // no counts on it, which reads as a broken dialog rather than a no-op.
         if (periodsOf(sec.className, sub.name) > 0 || mappingIndexOf(sec.id, sub.name) >= 0) {
@@ -1413,6 +1644,19 @@ export function StepAllocation({
           periodsOf={periodsOf} mappingIndexOf={mappingIndexOf}
           classTeacherOf={classTeacherOf}
           compact={tight}
+          /*
+            §31.19 — the bar is told WHY it may not edit, never left to work it
+            out. Two different reasons, and they read differently in the bar: a
+            block cell has no subject, teacher or room of its own to change,
+            while a locked subject cell has all three and they belong to a block
+            somewhere else.
+          */
+          block={stripCell.blockId !== undefined
+            ? m.blocks.find((b) => b.id === stripCell.blockId) ?? null
+            : null}
+          lockedBy={stripCell.blockId === undefined
+            ? m.electiveLock.get(lockKey(stripCell.section.replace(/-[^-]+$/, ""), stripCell.subject))?.blockName ?? null
+            : null}
           onMore={() => setEditing({ section: stripCell.section, subject: stripCell.subject })}
           onRemove={() => setRemoving({
             className: stripCell.section.replace(/-[^-]+$/, ""),
@@ -1827,7 +2071,7 @@ export function StepAllocation({
               */}
               {m.blocks.map((b) => (
                 <th key={`b${b.id}`}
-                  title={`${b.name} — ${b.periodsPerWeek} periods a week · ${b.options.join(", ") || "no options yet"}`}
+                  title={`${b.name} — ${b.periodsPerWeek} periods a week · ${b.options.map((o) => o.subject).join(", ") || "no options yet"}`}
                   style={{
                     position: "sticky", top: 0, zIndex: 3, background: "var(--brand)", color: "#fff",
                     font: "600 10.5px/1.2 Inter", padding: tight ? "6px 2px" : "6px 5px",
@@ -1938,8 +2182,23 @@ export function StepAllocation({
                          rather than `isCursor`: the cursor exists from the
                          first render, and an input focused before anybody has
                          clicked would steal the page's focus on arrival. */
-                      const picked = stripCell?.section === id && stripCell?.subject === s.name;
+                      const picked = stripCell?.section === id && stripCell?.subject === s.name
+                        && stripCell?.blockId === undefined;
                       const dim = (selected && code !== selected) || !matches(id, s.name, code);
+                      /*
+                        §31.19 — a subject a §4.9 block already teaches to this
+                        class. Its periods live on the block, so this cell is
+                        not an entry point; it is a statement about where the
+                        entry point is.
+
+                        A stored row is drawn in `--signal` and NOT zeroed. The
+                        row exists, Readiness counts it and the solver places
+                        it, so printing 0 would make this the one screen telling
+                        a different story — and the reference school has
+                        twenty-four of them to tell it about.
+                      */
+                      const owner = m.electiveLock.get(lockKey(c.className, s.name));
+                      const clash = !!owner && p > 0;
 
                       return (
                         <td key={s.name} style={{
@@ -1977,6 +2236,7 @@ export function StepAllocation({
                               */
                               setCursor({ row: rowIndex, col });
                               setStripCell({ section: id, subject: s.name });
+                              setRefused(null);
                               // The hover card is a second reading of the cell
                               // now being edited in the bar — one of them stale
                               // the moment anything is changed.
@@ -1988,7 +2248,25 @@ export function StepAllocation({
                               padding: tight ? "2px 1px" : "3px 2px", display: "block",
                               cursor: "pointer", opacity: dim ? 0.16 : 1,
                               boxShadow: isCursor ? "0 0 0 2px var(--brand)" : undefined,
-                              ...(p <= 0
+                              ...(clash
+                                // Stored, and taught by the block as well — the
+                                // one state on this grid that is a contradiction
+                                // rather than a gap, so it takes the signal
+                                // colour a missing teacher would have had.
+                                ? {
+                                  background: "var(--signal-bg)", color: "var(--signal)",
+                                  border: "1.5px dashed var(--signal)",
+                                }
+                                : owner
+                                  // Owned and empty: the ordinary, correct state.
+                                  // Dashed rather than plain, so a reader can see
+                                  // at a glance which columns this class's
+                                  // elective has taken over.
+                                  ? {
+                                    background: "var(--offwhite)", color: "var(--ink-faint)",
+                                    border: "1px dashed var(--steel-light)",
+                                  }
+                                  : p <= 0
                                 ? { background: "var(--offwhite)", color: "var(--ink-faint)", border: "1px solid var(--line)" }
                                 : !code
                                   ? {
@@ -2006,7 +2284,12 @@ export function StepAllocation({
                                     border: "1.5px solid transparent",
                                   }
                                   : { background: sw?.bg, color: sw?.fg, border: `1px solid ${sw?.border ?? "transparent"}` }),
-                            }}>
+                            }}
+                            title={owner
+                              ? (clash
+                                ? `${s.name} is an option in ${owner.blockName}, and this class also has ${p} periods of it in the curriculum — it is being taught twice. Clear them from the toolbar.`
+                                : `${s.name} is taught inside ${owner.blockName}. Its periods are set on that block.`)
+                              : undefined}>
                             {picked ? (
                               /*
                                 §31.16 — the number, typed where it is read.
@@ -2100,36 +2383,90 @@ export function StepAllocation({
                       zero: zero periods is a statement about a block this class
                       is in, and these children are simply somewhere else.
                     */}
-                    {m.blocks.map((b) => {
+                    {m.blocks.map((b, bi) => {
                       const member = b.members.has(id.trim().toLowerCase());
+                      const col = m.subjects.length + bi;
+                      const rowIndex = sections.findIndex((x) => x.id === id);
+                      const isCursor = cursor.row === rowIndex && cursor.col === col;
+                      const picked = stripCell?.section === id && stripCell?.blockId === b.id;
                       return (
                         <td key={`b${b.id}`} style={{
                           padding: 1.5, borderBottom: "1px solid var(--line)", textAlign: "center",
                           borderTop: i === 0 ? "2px solid var(--steel-light)" : undefined,
                         }}>
-                          <div
+                          {/*
+                            §31.19 — selectable, and its NUMBER is editable.
+
+                            Everything else about a block — its options, their
+                            teachers and rooms, who attends, when it runs — is
+                            Split Electives' to change, and the toolbar disables
+                            those fields rather than pretending otherwise. The
+                            periods are here because this is the screen where
+                            "does Class 5's week add up?" is being asked, and
+                            sending somebody to another page to change one
+                            number is what made them type it into the French
+                            column instead.
+
+                            `CellShell` again, so the selected cell is a div
+                            holding a real input and an unselected one is a
+                            button — the same invalid-HTML rule §31.16 wrote
+                            down, not a second answer to it.
+                          */}
+                          <CellShell
+                            editing={picked && member}
+                            onClick={() => {
+                              setCursor({ row: rowIndex, col });
+                              setStripCell({ section: id, subject: b.name, blockId: b.id });
+                              setRefused(null);
+                              setHover(null);
+                            }}
                             title={member
-                              ? `${b.name} — ${b.periodsPerWeek} periods a week, split across ${b.options.join(", ") || "no options yet"}. Edit it on the Split Electives screen.`
+                              ? `${b.name} — ${b.periodsPerWeek} periods a week, split across ${b.options.map((o) => o.subject).join(", ") || "no options yet"}. Type to change how many; everything else is on Split Electives.`
                               : `${shortLabel(id)} does not take ${b.name}`}
                             style={{
-                              minHeight: tight ? 30 : 38, borderRadius: 6, display: "grid",
-                              placeItems: "center", padding: "2px 1px",
-                              background: member ? bandsFor(b.options) : "transparent",
+                              width: "100%", minWidth: tight ? 0 : 58, borderRadius: 6,
+                              padding: tight ? "2px 1px" : "3px 2px", display: "block",
+                              cursor: "pointer",
+                              boxShadow: isCursor ? "0 0 0 2px var(--brand)" : undefined,
+                              background: member ? bandsFor(b.options) : "var(--offwhite)",
                               // A dashed edge, the §4.9 mark for "several
                               // lessons in one slot", kept from the Board so the
                               // two screens say the same thing about a block.
-                              border: member ? "1px dashed var(--steel)" : "1px solid transparent",
+                              border: member ? "1px dashed var(--steel)" : "1px solid var(--line)",
                               color: member ? "var(--ink)" : "var(--ink-faint)",
                             }}>
-                            <span style={{ font: `700 ${tight ? 12 : 13}px/1 var(--font-mono, monospace)` }}>
-                              {member ? lessonsFromBase(b.periodsPerWeek, spanOf(c.className)).lessons : "—"}
-                            </span>
-                            {member && !tight && (
-                              <span style={{ font: "400 8.5px/1.1 Inter", opacity: 0.75, marginTop: 1 }}>
-                                {b.options.length} option{b.options.length === 1 ? "" : "s"}
+                            {picked && member ? (
+                              <input
+                                ref={cellInput}
+                                value={typed}
+                                inputMode="numeric"
+                                aria-label={`Periods a week of ${b.name} for ${c.className}`}
+                                onChange={(e) => commitTyped(c.className, b.name, e.target.value)}
+                                onFocus={(e) => e.currentTarget.select()}
+                                onKeyDown={(e) => onCellKey(e, rowIndex, col, c.className, b.name)}
+                                style={{
+                                  font: "700 13.5px/1 var(--font-mono, monospace)",
+                                  display: "block", width: "100%", textAlign: "center",
+                                  border: "none", background: "transparent", color: "inherit",
+                                  padding: 0, margin: 0, outline: "none",
+                                  height: 13.5, minWidth: 0,
+                                }}
+                              />
+                            ) : (
+                              <span style={{ font: "700 13.5px/1 var(--font-mono, monospace)", display: "block" }}>
+                                {member ? lessonsFromBase(b.periodsPerWeek, spanOf(c.className)).lessons : "—"}
                               </span>
                             )}
-                          </div>
+                            {!tight && (
+                              <span style={{
+                                font: "400 8.5px/1.1 Inter", opacity: 0.75, marginTop: 1, display: "block",
+                              }}>
+                                {member
+                                  ? `${b.options.length} option${b.options.length === 1 ? "" : "s"}`
+                                  : " "}
+                              </span>
+                            )}
+                          </CellShell>
                         </td>
                       );
                     })}
