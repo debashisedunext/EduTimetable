@@ -12,6 +12,7 @@ import { ElectiveBlocksController } from "./electives.controller";
 import { ExtraClassesController } from "./extra-classes.controller";
 import { TimetableConfigsController } from "./timetable-configs.controller";
 import { AiModule } from "../ai/ai.module";
+import { ImportModule } from "../import/import.module";
 import { ReadinessService } from "../readiness/readiness.service";
 import { CloneService } from "./clone.service";
 import { InstructionService } from "./instruction.service";
@@ -25,7 +26,16 @@ import { InstructionService } from "./instruction.service";
   // §26.5: a teacher's plain-English instruction is translated by the §13.2
   // provider contract — the same neutral one the chat and the interviewer use,
   // never a vendor's shape.
-  imports: [AiModule],
+  /*
+    §35 — `ImportModule` for the board catalogue's Apply.
+
+    Applying a catalogue subject writes through `commitSheets`, the §16
+    committer, rather than through a write path of its own — so the Subjects
+    controller needs that service, and it is exported for exactly this reason
+    (the §13.5 AI data-entry path is the other caller). No cycle: `ImportModule`
+    imports nothing from masters.
+  */
+  imports: [AiModule, ImportModule],
   controllers: [
     SchoolController,
     AcademicYearsController,

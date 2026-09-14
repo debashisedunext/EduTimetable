@@ -594,6 +594,52 @@ model TeacherClassEligibility {
   @@map("teacher_class_eligibility")
 }
 
+/// §35 — the board's own subject list, as REFERENCE DATA.
+///
+/// "Which subjects does CBSE run, and for which classes" is the same answer for
+/// every school in the country, so it is seeded once per database and read by
+/// all of them. That is what makes it the one master in this schema with **no
+/// `school_id`**: invariant 18 scopes rows a school OWNS, and nobody owns the
+/// CBSE scheme of studies.
+///
+/// Read through `PrismaBaseService` — the sanctioned way out of §17's ambient
+/// scoping, for exactly this kind of genuinely cross-school work. It is
+/// **read-only in the app**: the only writer is the seed, so "one table,
+/// updated centrally" stays true and there is no write path for the scoping
+/// extension to have an opinion about.
+///
+/// `fromSeq`/`toSeq` are inclusive `CLASS_LADDER` positions (`ladderSequence`),
+/// which is the same vocabulary `classes.sequence` uses (§31.12) — so Biology
+/// at 15–16 means Classes 11 and 12 and can mean nothing else. That range is
+/// the whole point of the table: applying it writes `subject_classes` (§27.16),
+/// and §27.16 is what then REFUSES Biology to Class 5 for ever after.
+model BoardSubjectCatalog {
+  id         Int             @id @default(autoincrement())
+  /// "CBSE" today. A column rather than a table name, so a second board is
+  /// rows rather than a migration.
+  board      String          @db.VarChar(20)
+  /// The scheme this row came from, e.g. "2026-27". Shown on screen, so a
+  /// school can see how old the recommendation is.
+  version    String          @db.VarChar(20)
+  name       String          @db.VarChar(60)
+  code       String?         @db.VarChar(10)
+  category   SubjectCategory @default(scholastic)
+  isLab      Boolean         @default(false) @map("is_lab")
+  /// Inclusive CLASS_LADDER positions. 5 = Class 1, 16 = Class 12.
+  fromSeq    Int             @map("from_seq")
+  toSeq      Int             @map("to_seq")
+  /// §35 — a language is OFFERED, never recommended. CBSE lists 45 and a
+  /// school runs two or three; pre-ticking them would create 45 subjects.
+  isLanguage Boolean         @default(false) @map("is_language")
+  /// "Core", "Science Stream", "Languages" — the heading it sits under.
+  groupLabel String          @map("group_label") @db.VarChar(40)
+  sortOrder  Int             @default(0) @map("sort_order")
+
+  @@unique([board, version, name])
+  @@index([board, version])
+  @@map("board_subject_catalog")
+}
+
 /// §34 — a weekday that runs a different shape from the rest of the week.
 ///
 /// A short Saturday: six periods of thirty minutes where Monday to Friday run
