@@ -102,6 +102,13 @@ interface Model {
   stale: Array<{ label: string; why: string }>;
   /** How many cells nobody teaches if the plan were re-proposed from scratch. */
   proposedGaps: number;
+  /**
+   * §31.17 — what the intersection rule removed from the grid.
+   *
+   * Counted rather than merely applied, because a column or a row that quietly
+   * is not there reads as data somebody has lost.
+   */
+  hidden: { subjects: number; classes: number };
 }
 
 const label = (className: string, section: string) => `${className}-${section}`;
@@ -111,7 +118,7 @@ const shortLabel = (l: string) => l.replace(/^Class\s+/i, "");
 /**
  * §31.10 — "Pre-Nursery-A" → "PNA", for a column that has to be narrow.
  *
- * The row header is 11% of a fixed-layout table, and a full label spends it on
+ * The row header is seven characters wide (§31.17), and a full label spends them on
  * a name the reader already knows from the row above. The class's words become
  * their initials and the section is appended: multi-word names shrink hardest,
  * which is exactly where the width was going.
@@ -285,13 +292,64 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
       }
     }
 
+    /**
+     * §31.17 — the grid is the INTERSECTION, not the cross product.
+     *
+     * A subject is a column if some class in this timetable takes it; a class
+     * is a row if it takes some subject in this timetable. One rule read twice,
+     * because the two halves are the same statement — §27.16's declaration of
+     * which classes a subject is taught to — and answering it differently for
+     * rows and columns would draw a row whose every cell the server refuses.
+     *
+     * That is not a tidying. A cell where the two do not meet is not an empty
+     * cell somebody might fill: `assertSubjectApplies` REFUSES it, so it is a
+     * cell that can only ever say no. A primary wing given the CBSE catalogue
+     * gets Biology, Accountancy and eighteen more senior columns it can never
+     * use, each one squeezing the subjects it does teach below the width where
+     * a period count is legible.
+     *
+     * **Display only, and deliberately after every engine has run.** The
+     * proposal, the loads and the coverage gaps above are computed from the
+     * unfiltered list on purpose — a subject dropped from the columns must
+     * stop being drawn, never stop being demand the school is short of, which
+     * is the mistake §32's own note warns about. Nothing is deleted either: a
+     * curriculum cell for a hidden pair stays in `answers.curriculum` and is
+     * still committed. This decides what is drawn and nothing else.
+     *
+     * **Empty means "not stated", so this cannot bite a school that has not
+     * declared anything** (invariant 7): `subjectAppliesTo` returns true for a
+     * subject with no classes listed, so a school that never used §27.16 sees
+     * exactly the grid it saw before. Only a stated exclusion removes anything.
+     *
+     * The guard is the last line. If the rule would empty the grid — every
+     * subject declared, none of them for any class here — it does not apply:
+     * a blank grid reads as broken, and it would hide the only screen from
+     * which the declarations can be put right.
+     */
+    const wingClasses = all.filter((c) => c.wing === wing?.name);
+    const paired = subjects.filter((s) => wingClasses.some((c) => subjectAppliesTo(s, c.className)));
+    const pairedClasses = wingClasses.filter((c) => paired.some((s) => subjectAppliesTo(s, c.className)));
+    const usable = paired.length > 0 && pairedClasses.length > 0;
+
     return {
       wings,
       wing,
       wingName: wing?.name ?? "",
-      subjects,
+      subjects: usable ? paired : subjects,
       staff,
-      classes: all.filter((c) => c.wing === wing?.name).map((c) => ({ className: c.className, sections: c.sections })),
+      classes: (usable ? pairedClasses : wingClasses).map((c) => ({ className: c.className, sections: c.sections })),
+      /**
+       * What the rule above took away, so that it is never a silent narrowing.
+       *
+       * A column that quietly is not there reads as a subject the school
+       * forgot to create, and a class row that quietly is not there reads as
+       * children who have been lost. Both are stated on the rail instead, with
+       * the reason, because the fix is on the Subjects master and somebody has
+       * to know to go there.
+       */
+      hidden: usable
+        ? { subjects: subjects.length - paired.length, classes: wingClasses.length - pairedClasses.length }
+        : { subjects: 0, classes: 0 },
       capacity: capacityByWing[wing?.name ?? ""] ?? 40,
       days: daysByWing[wing?.name ?? ""] ?? 5,
       daysByWing,
@@ -646,33 +704,40 @@ export function StepAllocation({
   }, [stripCell, m]);
 
   /**
-   * §31.10 — fitting every subject, and the width below which it stops trying.
+   * §31.17 — the two fixed columns, and the floor the subjects share.
    *
-   * At `compact` the columns are percentages of a fixed-layout table, so N
-   * subjects share whatever is there. `minWidth` is the honest floor: below
-   * about 56px a cell cannot hold a period count and two initials, and a grid
-   * that shrinks past that is claiming to show something it does not. A school
-   * with more subjects than the pane can hold gets a scrollbar instead of an
-   * illegible row — the rule §31.1 set for the timetable tabs.
+   * Both edges are **pixels now, not percentages**, and that is what makes the
+   * widths sayable. "Seven characters" is an absolute statement about a
+   * class-section label; as a percentage of a table whose own width grows with
+   * the subject count it was not one, and at forty subjects the header was
+   * taking 11% of 2,700px — a third of the pane — for a cell holding "NurA".
+   *
+   * It also removes a disagreement rather than restating it. The old
+   * `tightMinWidth` had to be derived backwards from the column percentage,
+   * because the edges were percentages of the very number being computed; with
+   * the edges fixed, the honest sum below IS the only arithmetic and there is
+   * no second one to drift from it.
+   *
+   * The subject columns are given no width at all: under `table-layout: fixed`
+   * the unclaimed space divides equally between them, so they are exactly "the
+   * rest", and `minWidth` is the point at which a scrollbar appears instead of
+   * a cell too narrow to read — the rule §31.1 set for the timetable tabs.
    */
   const tight = density === "compact";
-  const HEAD_PCT = 11;
-  const LOAD_PCT = 6;
+  /**
+   * Seven characters of a class-section label, plus the class-teacher badge.
+   *
+   * 19px of padding + ~48px for seven characters at 11.5px Inter + a 6px gap +
+   * the 18px initials circle. "Class-section" in the header fits the same box
+   * once its own padding is tightened.
+   */
+  const HEAD_PX = 92;
+  /** Wide enough for "40/40" and the bar under it; it no longer scrolls away. */
+  const LOAD_PX = 88;
   /** The narrowest a cell may be and still hold a period count and two initials. */
-  const MIN_COL_PX = 56;
+  const MIN_COL_PX = 50;
   const subjectCols = m.subjects.length;
-  const colPct = subjectCols > 0 ? (100 - HEAD_PCT - LOAD_PCT) / subjectCols : 1;
-  /*
-    DERIVED from `colPct`, not measured out separately.
-
-    The obvious version — `112 + cols * 56 + 86` — is a second arithmetic for
-    the same fact, and it disagrees: the row header and the Load column are
-    percentages here, so they take more than their old fixed minimums and the
-    subject columns end up under the floor the number was supposed to defend.
-    This is the width at which a subject column is exactly `MIN_COL_PX`, so the
-    scrollbar appears at precisely the point the cells would stop being legible.
-  */
-  const tightMinWidth = Math.ceil((MIN_COL_PX * 100) / colPct);
+  const tightMinWidth = HEAD_PX + LOAD_PX + Math.max(1, subjectCols) * MIN_COL_PX;
 
   /**
    * The load rail's bar and gap, sized so every teacher fits inside its 340px.
@@ -1035,9 +1100,24 @@ export function StepAllocation({
       );
       return;
     }
+    /*
+      §31.17 — Enter moves DOWN a row; it no longer opens the dialog.
+
+      §31.15 kept the dialog behind Enter for the two things a toolbar cannot
+      hold — the whole-week impact preview and §4.10 merged-group members — but
+      the cell became a field in the same phase, and in a field of numbers Enter
+      means "done, next one". Typing a column of periods down a class list put a
+      modal over the grid on every single value.
+
+      Down rather than right because the cell is a CLASS fact: the number is
+      recorded against the class and every section of it (§27), so a column is
+      what somebody actually fills in. `⋯ More` in the toolbar is now the only
+      way to the dialog, which is the §31.15 shape anyway — every field the
+      dialog holds except two is already in the bar.
+    */
     if (e.key === "Enter") {
       e.preventDefault();
-      setEditing({ section: sections[row].id, subject });
+      moveTo(row + 1, col);
       return;
     }
     if (e.key === "Escape") {
@@ -1092,7 +1172,10 @@ export function StepAllocation({
       if (!nav && !remove) return;
       e.preventDefault();
       const row = Math.max(0, Math.min(sections.length - 1,
-        cursor.row + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0)));
+        // §31.17 — Enter steps down, exactly as it does inside the cell's own
+        // field. Without it here, Enter on a grid nobody has typed into yet
+        // would be the one key that does nothing.
+        cursor.row + (e.key === "ArrowDown" || e.key === "Enter" ? 1 : e.key === "ArrowUp" ? -1 : 0)));
       const col = Math.max(0, Math.min(m.subjects.length - 1,
         cursor.col + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0)));
       const sec = sections[row], sub = m.subjects[col];
@@ -1100,7 +1183,10 @@ export function StepAllocation({
       // §31.10 — the keyboard cursor moves the strip too, so a row can be read
       // across without reaching for the mouse for every cell.
       moveTo(row, col);
-      if (e.key === "Enter") { setEditing({ section: sec.id, subject: sub.name }); return; }
+      // §31.17 — Enter moves down, as it does inside the field. `moveTo` above
+      // has already done it; opening the dialog here would put one over the
+      // grid for anybody arrowing around without having typed anything.
+      if (e.key === "Enter") return;
       if (remove) {
         // Nothing there is nothing to remove — and the confirmation would have
         // no counts on it, which reads as a broken dialog rather than a no-op.
@@ -1486,6 +1572,21 @@ export function StepAllocation({
               {answers.settings?.loadAlertPct ?? 75}%+</span>}
             {m.gaps > 0 && <span style={{ color: "var(--signal)" }}>
               <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{m.gaps}</strong> unstaffed</span>}
+            {/* §31.17 — what the intersection rule removed, and why. Not a
+                warning: a primary wing not drawing Biology is the grid being
+                right. It is here so that "where has Nursery gone?" has an
+                answer on the screen it went missing from. */}
+            {(m.hidden.subjects > 0 || m.hidden.classes > 0) && (
+              <span title={
+                "Only the subjects this timetable's classes are taught, and only the classes that are "
+                + "taught something, are drawn. Set which classes take a subject on the Subjects master."
+              }>
+                {[
+                  m.hidden.subjects > 0 ? `${m.hidden.subjects} subject${m.hidden.subjects === 1 ? "" : "s"}` : null,
+                  m.hidden.classes > 0 ? `${m.hidden.classes} class${m.hidden.classes === 1 ? "" : "es"}` : null,
+                ].filter(Boolean).join(" · ")} not taught here
+              </span>
+            )}
           </div>
 
           <button className="btn" style={{ padding: "4px 9px", fontSize: 11.5 }}
@@ -1544,17 +1645,23 @@ export function StepAllocation({
         }}>
           {tight && (
             <colgroup>
-              <col style={{ width: `${HEAD_PCT}%` }} />
-              {m.subjects.map((s2) => <col key={s2.name} style={{ width: `${colPct}%` }} />)}
-              <col style={{ width: `${LOAD_PCT}%` }} />
+              <col style={{ width: HEAD_PX }} />
+              {/* No width: under `table-layout: fixed` the columns with none
+                  divide whatever the two fixed edges leave, which is exactly
+                  "the rest" and needs no arithmetic to say. */}
+              {m.subjects.map((s2) => <col key={s2.name} />)}
+              <col style={{ width: LOAD_PX }} />
             </colgroup>
           )}
           <thead>
             <tr>
               <th style={{
                 position: "sticky", top: 0, left: 0, zIndex: 5, background: "var(--brand)", color: "#fff",
-                font: "600 10.5px/1 Inter", padding: "6px 5px 6px 11px", textAlign: "left", minWidth: 112,
-                whiteSpace: "nowrap",
+                font: "600 10.5px/1 Inter", textAlign: "left", whiteSpace: "nowrap",
+                // §31.17 — tighter padding at compact density, so the heading
+                // still fits the seven-character column it now labels.
+                padding: tight ? "6px 4px 6px 8px" : "6px 5px 6px 11px",
+                ...(tight ? { width: HEAD_PX, overflow: "hidden" } : { minWidth: 112 }),
               }}>Class-section</th>
               {m.subjects.map((s) => (
                 <th key={s.name}
@@ -1574,9 +1681,23 @@ export function StepAllocation({
                   </span>
                 </th>
               ))}
+              {/*
+                §31.17 — Load sticks to the RIGHT edge, the mirror of the
+                class-section column on the left.
+
+                It is the one number the row exists to produce, and with forty
+                subjects it sat 2,700px off the side of a 900px pane: to read
+                "is Class 5 full?" you scrolled to the end, by which time the
+                class-section column was the only thing telling you whose row
+                it was. Both anchors present, the subjects scroll between them.
+
+                zIndex 5, not 3 — the same as the left corner — so the subject
+                headers pass UNDER it rather than over.
+              */}
               <th style={{
-                position: "sticky", top: 0, zIndex: 3, background: "var(--brand)", color: "#fff",
-                font: "600 10.5px/1 Inter", padding: "6px 5px", minWidth: 86,
+                position: "sticky", top: 0, zIndex: tight ? 5 : 3, background: "var(--brand)", color: "#fff",
+                font: "600 10.5px/1 Inter", padding: "6px 5px",
+                ...(tight ? { right: 0, width: LOAD_PX } : { minWidth: 86 }),
               }}>Load</th>
             </tr>
           </thead>
@@ -1795,7 +1916,13 @@ export function StepAllocation({
                         style={{
                           borderLeft: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
                           borderTop: "2px solid var(--steel-light)", background: "var(--offwhite)",
-                          verticalAlign: "middle", padding: "4px 8px", minWidth: 86,
+                          verticalAlign: "middle", padding: "4px 8px",
+                          /* §31.17 — sticky right, matching the header above.
+                             The background must stay opaque or the subject
+                             cells show through as they scroll beneath it. */
+                          ...(tight
+                            ? { position: "sticky" as const, right: 0, zIndex: 2, width: LOAD_PX }
+                            : { minWidth: 86 }),
                         }}>
                         <div style={{ font: "700 12px/1 var(--font-mono, monospace)", color: colour }}>
                           {total}/{m.capacity}
