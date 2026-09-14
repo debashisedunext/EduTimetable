@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { GROUPED_SCOPE, wingScope, type WingAnswer } from "@edutimetable/shared";
 import { api } from "../api";
-import { StepAllocation, type AllocationCellFacts } from "../onboarding/steps/Allocation";
+import { useConfigCtx } from "../hooks";
+import { StepAllocation, type AllocationCellFacts, type ElectiveBlockView } from "../onboarding/steps/Allocation";
 
 /**
  * §31.10 — the Master Grid's Lesson Grid tab: the Allocation grid itself.
@@ -108,6 +109,45 @@ export function AllocationTab({
     return () => { live = false; };
   }, [configId]);
 
+  /**
+   * §31.18 — the §4.9 elective blocks this timetable runs.
+   *
+   * The grid had no idea they existed, and that was not only a missing column:
+   * a block's periods are real demand on every member section — Check 1 counts
+   * them — so a class spending five periods a week on a language block read
+   * "35/40 · 5 free" here while Readiness had it full. Two screens, two answers
+   * to "does this class's week fit?".
+   *
+   * By academic YEAR, the same narrowing the Electives screen uses: a §3.12
+   * clone gives a school the same block name in two sessions, and the year is
+   * what tells them apart. Empty on failure, which is exactly the behaviour
+   * before this existed — the safe direction, since a column that fails to
+   * appear is better than a Load figure built from half the blocks.
+   */
+  const { current } = useConfigCtx();
+  const yearId = current?.academicYearId ?? null;
+  const [electives, setElectives] = useState<ElectiveBlockView[]>([]);
+  useEffect(() => {
+    let live = true;
+    api<Array<{
+      id: number; name: string; periodsPerWeek: number;
+      members: Array<{ label: string }>;
+      options: Array<{ subjectName: string }>;
+    }>>(yearId ? `/elective-blocks?academicYearId=${yearId}` : "/elective-blocks")
+      .then((rows) => {
+        if (!live) return;
+        setElectives(rows.map((b) => ({
+          id: b.id,
+          name: b.name,
+          periodsPerWeek: b.periodsPerWeek,
+          members: (b.members ?? []).map((m) => m.label),
+          options: (b.options ?? []).map((o) => ({ subjectName: o.subjectName })),
+        })));
+      })
+      .catch(() => { if (live) setElectives([]); });
+    return () => { live = false; };
+  }, [yearId]);
+
   /*
     §31.10 — fills what the host leaves, rather than claiming 74vh of its own.
 
@@ -202,6 +242,7 @@ export function AllocationTab({
       */}
       <StepAllocation
         spanByClass={spans}
+        electives={electives}
         answers={scoped}
         onChange={onChange}
         density="compact"

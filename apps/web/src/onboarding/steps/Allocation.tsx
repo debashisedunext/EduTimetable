@@ -109,6 +109,31 @@ interface Model {
    * is not there reads as data somebody has lost.
    */
   hidden: { subjects: number; classes: number };
+  /** §31.18 — the elective blocks that touch this wing, one column each. */
+  blocks: Array<{
+    id: number;
+    name: string;
+    periodsPerWeek: number;
+    members: Set<string>;
+    options: string[];
+  }>;
+}
+
+/**
+ * §31.18 — one §4.9 split-elective block, as the Lesson Grid needs it.
+ *
+ * Labels rather than ids for the members, because that is the vocabulary this
+ * grid works in throughout (`Class 6-A`), and resolving ids to labels a second
+ * time is a second chance to disagree with the row headers.
+ */
+export interface ElectiveBlockView {
+  id: number;
+  name: string;
+  periodsPerWeek: number;
+  /** Class-section labels whose week this block occupies. */
+  members: string[];
+  /** The parallel lessons inside the slot — one colour band each. */
+  options: Array<{ subjectName: string }>;
 }
 
 const label = (className: string, section: string) => `${className}-${section}`;
@@ -153,7 +178,8 @@ const BAND_BG: Record<string, string> = {
 
 // ─────────────────────────────────────────────────────────────── the model
 
-function useModel(answers: Record<string, any>, activeWing: number): Model {
+function useModel(answers: Record<string, any>, activeWing: number,
+                  electives: ElectiveBlockView[]): Model {
   return useMemo(() => {
     const wings: WingAnswer[] = answers.wings ?? [];
     const weeks: Record<string, WeekAnswer> = answers.weeks ?? {};
@@ -326,9 +352,45 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
      * a blank grid reads as broken, and it would hide the only screen from
      * which the declarations can be put right.
      */
+    /**
+     * §31.18 — the elective blocks that touch this wing.
+     *
+     * Matched by member LABEL against the sections this wing actually runs, so
+     * a block belonging to another wing of the same pool does not appear here
+     * and a block only half in this wing does — with the sections that are not
+     * in it left blank, which is the truth about who attends.
+     */
+    const wingSectionLabels = new Set(
+      all.filter((c) => c.wing === wing?.name)
+        .flatMap((c) => c.sections.map((sec) => label(c.className, sec).trim().toLowerCase())),
+    );
+    const blocks = (electives ?? [])
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        periodsPerWeek: b.periodsPerWeek,
+        members: new Set(b.members.map((x) => x.trim().toLowerCase())),
+        options: b.options.map((o) => o.subjectName),
+      }))
+      .filter((b) => [...b.members].some((x) => wingSectionLabels.has(x)));
+
     const wingClasses = all.filter((c) => c.wing === wing?.name);
     const paired = subjects.filter((s) => wingClasses.some((c) => subjectAppliesTo(s, c.className)));
-    const pairedClasses = wingClasses.filter((c) => paired.some((s) => subjectAppliesTo(s, c.className)));
+    /*
+      §31.18 — a class in an elective block is taught something.
+
+      §31.17 drops a class no subject is declared for, on the grounds that every
+      one of its cells would be refused. A block is the exception and has to be
+      named: its options are not `class_subjects` rows, so a class whose only
+      teaching is a language block looks undeclared to the rule above — and
+      hiding it would take away the row that shows the block, the row whose Load
+      figure is the only place that demand is counted.
+    */
+    const inABlock = (className: string) =>
+      blocks.some((b) => [...b.members].some((x) => x.startsWith(`${className.trim().toLowerCase()}-`)));
+    const pairedClasses = wingClasses.filter(
+      (c) => inABlock(c.className) || paired.some((s) => subjectAppliesTo(s, c.className)),
+    );
     const usable = paired.length > 0 && pairedClasses.length > 0;
 
     return {
@@ -369,7 +431,25 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
       // Set-aware, so twenty subjects do not collide the way a bare hash would
       // (§10.5) — and the same module the Board and Matrix use, so Maths is one
       // colour everywhere.
-      swatches: assignSwatches(subjects.map((s) => s.name)),
+      /*
+        §31.18 — the option subjects are in the SET, not coloured separately.
+
+        `assignSwatches` is set-aware on purpose (§10.5): it hashes to a
+        preferred slot and probes forward, so the answer for one name depends
+        on every other name in the call. Colouring the elective options in a
+        second call would let French and Maths land on the same swatch — the
+        collision the set-awareness exists to prevent — and the two bands of a
+        language block would then be indistinguishable, which is precisely what
+        this column is for.
+
+        An option's subject may not be a column here at all (not ticked for this
+        wing, or taken out by §31.17), and it still belongs in the set: the
+        timetable does teach it, through the block.
+      */
+      swatches: assignSwatches([...new Set([
+        ...subjects.map((s) => s.name),
+        ...blocks.flatMap((b) => b.options),
+      ])]),
       loads,
       byCode: new Map(loads.map((l) => [l.employeeCode, l])),
       gaps: coverageGaps(wings, curriculum, mappings).length,
@@ -379,8 +459,9 @@ function useModel(answers: Record<string, any>, activeWing: number): Model {
       },
       stale,
       proposedGaps: coverageGaps(wings, curriculum, proposedMappings.mappings).length,
+      blocks,
     };
-  }, [JSON.stringify([answers.wings, answers.weeks, answers.subjects, answers.teachers,
+  }, [electives, JSON.stringify([answers.wings, answers.weeks, answers.subjects, answers.teachers,
                       answers.curriculum, answers.mappings, answers.classTeachers, answers.rooms,
                       // §32 — the grid's columns depend on it, so it has to be
                       // in the key or a tick would not redraw the grid.
@@ -517,7 +598,7 @@ function CellShell({
 
 export function StepAllocation({
   answers, onChange, onFocusMode, density = "comfortable", wing, onSelectCell, toolbarHost,
-  spanByClass,
+  spanByClass, electives = [],
 }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
@@ -554,6 +635,16 @@ export function StepAllocation({
    * number stored, which is every school with no §33 spans.
    */
   spanByClass?: Record<string, number>;
+  /**
+   * §31.18 — the §4.9 elective blocks this timetable runs, one column each.
+   *
+   * Supplied by the Master Grid, which knows the academic year; the guided
+   * setup does not pass it, and that is deliberate rather than an omission —
+   * a block is created on the Electives screen after the setup has produced
+   * the class-sections it attaches to, so during setup there is nothing to
+   * show. Absent is exactly the grid as it was.
+   */
+  electives?: ElectiveBlockView[];
   /**
    * §31.10 — which wing to show, when the HOST already picks one.
    *
@@ -644,7 +735,7 @@ export function StepAllocation({
     : -1;
   const shownWing = forcedWing >= 0 ? forcedWing : activeWing;
 
-  const m = useModel(answers, shownWing);
+  const m = useModel(answers, shownWing, electives);
 
   /** §31.10 — one cell, as the strip needs it. */
   const factsFor = (section: string, subject: string): AllocationCellFacts | null => {
@@ -736,8 +827,51 @@ export function StepAllocation({
   const LOAD_PX = 88;
   /** The narrowest a cell may be and still hold a period count and two initials. */
   const MIN_COL_PX = 50;
-  const subjectCols = m.subjects.length;
+  const subjectCols = m.subjects.length + m.blocks.length;
   const tightMinWidth = HEAD_PX + LOAD_PX + Math.max(1, subjectCols) * MIN_COL_PX;
+
+  /**
+   * §31.18 — a block's cell, painted with one band per option.
+   *
+   * The rule §10.5 set for a class row was a dashed steel tint, because a block
+   * is several subjects at once and no single colour is true of it. A gradient
+   * with hard stops says the same thing without giving up the information: the
+   * cell IS several subjects, and here they are, in the same colours those
+   * subjects wear in every other column of this grid and on the Board.
+   *
+   * `bg` rather than `border`: these are the pale fills the palette designed to
+   * be written on, so `var(--ink)` reads on every one of them — which matters
+   * because no single `fg` can be right across three different bands.
+   */
+  const bandsFor = (options: string[]): string => {
+    const fills = options.map((o) => m.swatches[o]?.bg ?? "var(--steel-pale)");
+    if (fills.length === 0) return "var(--steel-pale)";
+    if (fills.length === 1) return fills[0];
+    const step = 100 / fills.length;
+    return `linear-gradient(105deg, ${fills
+      .map((c, i) => `${c} ${(i * step).toFixed(3)}% ${((i + 1) * step).toFixed(3)}%`)
+      .join(", ")})`;
+  };
+
+  /**
+   * §31.18 — the block periods that press on a class's week.
+   *
+   * The MAX across the class's sections, never the sum: Check 1 measures each
+   * section's week separately, so a block covering only 5-A is five periods on
+   * 5-A and none on 5-B, and the binding number for "does Class 5 fit?" is the
+   * tightest section. Summing would double-count the ordinary case where every
+   * section attends, which would report a full class as over by the width of
+   * its own elective.
+   */
+  const electivePeriodsOf = (className: string) => {
+    const cls = m.classes.find((c) => c.className === className);
+    if (!cls) return 0;
+    return cls.sections.reduce((worst, sec) => {
+      const id = label(className, sec).trim().toLowerCase();
+      const n = m.blocks.reduce((t, b) => t + (b.members.has(id) ? b.periodsPerWeek : 0), 0);
+      return Math.max(worst, n);
+    }, 0);
+  };
 
   /**
    * The load rail's bar and gap, sized so every teacher fits inside its 340px.
@@ -1650,6 +1784,7 @@ export function StepAllocation({
                   divide whatever the two fixed edges leave, which is exactly
                   "the rest" and needs no arithmetic to say. */}
               {m.subjects.map((s2) => <col key={s2.name} />)}
+              {m.blocks.map((b) => <col key={`b${b.id}`} />)}
               <col style={{ width: LOAD_PX }} />
             </colgroup>
           )}
@@ -1682,6 +1817,30 @@ export function StepAllocation({
                 </th>
               ))}
               {/*
+                §31.18 — one column per §4.9 block, after the subjects.
+
+                A column rather than a marker inside an existing one, because a
+                block has its own periods-a-week and its own members: two blocks
+                — a language block and an activity block — are two different
+                demands on the same class, and folding them together would give
+                back one number that is true of neither.
+              */}
+              {m.blocks.map((b) => (
+                <th key={`b${b.id}`}
+                  title={`${b.name} — ${b.periodsPerWeek} periods a week · ${b.options.join(", ") || "no options yet"}`}
+                  style={{
+                    position: "sticky", top: 0, zIndex: 3, background: "var(--brand)", color: "#fff",
+                    font: "600 10.5px/1.2 Inter", padding: tight ? "6px 2px" : "6px 5px",
+                    textAlign: "center", whiteSpace: "nowrap",
+                    ...(tight ? { overflow: "hidden" } : {}),
+                  }}>
+                  {b.name.length > 6 ? b.name.slice(0, 5) : b.name}
+                  <span style={{ display: "block", font: "500 9px/1 var(--font-mono, monospace)", opacity: 0.7, marginTop: 2 }}>
+                    elect
+                  </span>
+                </th>
+              ))}
+              {/*
                 §31.17 — Load sticks to the RIGHT edge, the mirror of the
                 class-section column on the left.
 
@@ -1703,7 +1862,24 @@ export function StepAllocation({
           </thead>
           <tbody>
             {m.classes.map((c) => {
-              const total = totalOf(c.className);
+              /*
+                §31.18 — the curriculum PLUS the elective blocks.
+
+                Check 1 counts a block's periods as real demand on every member
+                section, so without this a class spending five periods a week on
+                a language block read "35/40 · 5 free" here while Readiness had
+                it full. Adding the column without adding this would have been
+                worse than the old silence: the five would now be on screen,
+                one cell away from a Load figure that ignored it.
+
+                `totalOf` itself is deliberately left alone — it is the
+                curriculum sum, and the typing guard that refuses a cell above
+                the week uses it. Blocks belong in what the row REPORTS, not in
+                what it refuses: a keystroke that silently does nothing because
+                of periods in a different column is the worst way to find out.
+              */
+              const elective = electivePeriodsOf(c.className);
+              const total = totalOf(c.className) + elective;
               const state = total > m.capacity ? "over" : total < m.capacity ? "under" : "exact";
               const colour = state === "over" ? "var(--signal)" : state === "under" ? "var(--amber)" : "var(--accent)";
               return c.sections.map((sec, i) => {
@@ -1910,6 +2086,54 @@ export function StepAllocation({
                       );
                     })}
 
+                    {/*
+                      §31.18 — the block's cell for THIS section.
+
+                      Read-only, and visibly so: a block's periods, members,
+                      options and placement all live on the Electives screen
+                      (§4.9), which is the one writer for them. §27.11 already
+                      draws that line — a reset counts and NAMES elective blocks
+                      and never removes them — and an editable-looking cell here
+                      would be a second door onto rows this grid cannot express.
+
+                      A section that does not attend gets a dash rather than a
+                      zero: zero periods is a statement about a block this class
+                      is in, and these children are simply somewhere else.
+                    */}
+                    {m.blocks.map((b) => {
+                      const member = b.members.has(id.trim().toLowerCase());
+                      return (
+                        <td key={`b${b.id}`} style={{
+                          padding: 1.5, borderBottom: "1px solid var(--line)", textAlign: "center",
+                          borderTop: i === 0 ? "2px solid var(--steel-light)" : undefined,
+                        }}>
+                          <div
+                            title={member
+                              ? `${b.name} — ${b.periodsPerWeek} periods a week, split across ${b.options.join(", ") || "no options yet"}. Edit it on the Split Electives screen.`
+                              : `${shortLabel(id)} does not take ${b.name}`}
+                            style={{
+                              minHeight: tight ? 30 : 38, borderRadius: 6, display: "grid",
+                              placeItems: "center", padding: "2px 1px",
+                              background: member ? bandsFor(b.options) : "transparent",
+                              // A dashed edge, the §4.9 mark for "several
+                              // lessons in one slot", kept from the Board so the
+                              // two screens say the same thing about a block.
+                              border: member ? "1px dashed var(--steel)" : "1px solid transparent",
+                              color: member ? "var(--ink)" : "var(--ink-faint)",
+                            }}>
+                            <span style={{ font: `700 ${tight ? 12 : 13}px/1 var(--font-mono, monospace)` }}>
+                              {member ? lessonsFromBase(b.periodsPerWeek, spanOf(c.className)).lessons : "—"}
+                            </span>
+                            {member && !tight && (
+                              <span style={{ font: "400 8.5px/1.1 Inter", opacity: 0.75, marginTop: 1 }}>
+                                {b.options.length} option{b.options.length === 1 ? "" : "s"}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+
                     {i === 0 && (
                       <td rowSpan={c.sections.length}
                         {...peek({ kind: "load", className: c.className })}
@@ -1933,6 +2157,17 @@ export function StepAllocation({
                             : state === "under" ? `${m.capacity - total} free`
                               : `${total - m.capacity} over`}
                           <br />
+                          {/* Named rather than folded in silently: a class
+                              whose total jumped by five wants to know which
+                              five, and the answer is a screen away. */}
+                          {elective > 0 && (
+                            <>
+                              <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                                incl. {elective} elective
+                              </span>
+                              <br />
+                            </>
+                          )}
                           {/* Periods are the unit the solver places; MINUTES are
                               the unit a head teacher is accountable for. Both,
                               because the conversion is not obvious at a glance. */}
