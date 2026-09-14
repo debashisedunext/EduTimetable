@@ -260,6 +260,14 @@ export interface PlannedClass {
   existing: string[];
   /** The fewest sections this class may have — see `SchoolShape`. */
   floor: number;
+  /**
+   * §3.10c — this class is outside the wing's range and is here anyway,
+   * because the wing already teaches it.
+   *
+   * The grid says so on the row; without it the class springs back the moment
+   * the slider passes it and the slider reads as broken.
+   */
+  outsideRange?: boolean;
 }
 
 /**
@@ -416,7 +424,68 @@ export function planClasses(wings: WingAnswer[], shape?: SchoolShape): {
         floor,
       });
     }
+
+    /*
+      §3.10c — a class this wing ALREADY teaches is kept, even when the range
+      has moved off it.
+
+      §3.10b floored the *sections* and withheld Remove from a class that has
+      rows, on the grounds that the §16 importer has no delete path so the
+      screen must not describe a school it is not going to produce. The RANGE
+      was the hole in that: dragging the slider from Class 3 back to Class 2
+      simply dropped Class 3 out of this loop, the sheet went out with two
+      classes, the importer skipped both because they exist, and the commit
+      answered *"Everything here already exists — nothing to add."* — which is
+      true, and reads as success to somebody who has just removed a class.
+      Class 3 was still there, still timetabled, and no longer on the screen
+      that claims to list the school's classes.
+
+      Kept rather than refused, because the range is a control for describing
+      what a wing teaches and narrowing it is a reasonable thing to try. What
+      it cannot do is un-teach children who are already in a timetable — that
+      is the Classes master's job, where the count of what is about to go is
+      shown first (§27.11's rule). `outsideRange` is how the grid says so
+      rather than silently springing the class back and looking broken.
+
+      In `planClasses` and not in the screen, for §3.10b's own reason: this
+      function is what the grid draws AND what `classSheets` turns into
+      importer rows, so a rule enforced only in a slider is a rule the commit
+      does not honour.
+    */
+    for (const [className, existing] of Object.entries(here)) {
+      if (existing.length === 0) continue;
+      const i = (CLASS_LADDER as readonly string[]).indexOf(className);
+      if (i < 0 || (i >= lo && i <= hi)) continue;
+      const owner = claimedBy.get(`${scope}\u0000${className}`);
+      if (owner && owner !== wing.name) continue;
+      claimedBy.set(`${scope}\u0000${className}`, wing.name);
+      const over = wing.overrides?.[className];
+      const floor = Math.max(1, shape?.floors?.[className] ?? 1, existing.length);
+      classes.push({
+        className,
+        sequence: i + 1,
+        wing: wing.name,
+        sections: sectionLetters(Math.max(Math.max(1, Math.min(60, over?.sections ?? existing.length)), floor)),
+        existing,
+        floor,
+        outsideRange: true,
+      });
+    }
   }
+  /*
+    Ladder order WITHIN each wing, because the loop above appends the kept
+    classes after the range rather than in place — and the grid reads this list
+    top to bottom, where a Class 3 printed under Class 8 is a list nobody
+    trusts.
+
+    Keyed on the wing's position rather than compared for equality: a
+    comparator returning 0 for two different wings leans on sort stability to
+    keep the groups together, which is true today and is not a thing to rely on
+    in a function that decides what gets written to the database.
+  */
+  const wingOrder = new Map((wings ?? []).map((w, i) => [w.name, i]));
+  classes.sort((a, b) =>
+    (wingOrder.get(a.wing) ?? 0) - (wingOrder.get(b.wing) ?? 0) || a.sequence - b.sequence);
   return { classes, issues };
 }
 

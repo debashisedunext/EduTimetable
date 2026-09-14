@@ -620,6 +620,33 @@ export class OnboardingService {
     const weeks: Record<string, unknown> = {};
     const skippedWings: string[] = [];
 
+    /**
+     * §32 — which subjects each timetable RUNS, read back from the database.
+     *
+     * This was missing, and the effect was a screen that told a school
+     * something untrue about itself. `subjectsByWing` absent means "not
+     * stated", which the Subjects step reads as *every subject ticked*
+     * (invariant 7) — so a school that had narrowed Main to three subjects,
+     * come back later and found the draft rebuilt from its own data, was shown
+     * all thirty-nine ticked again. Unticking two from there would then store a
+     * set computed from a starting point that was never true.
+     *
+     * Read for every wing that has narrowed, and only those: a config with no
+     * `timetable_subjects` rows has not narrowed, and writing an explicit list
+     * for it here would turn "not stated" into "exactly these", which is the
+     * one distinction §32's table exists to keep.
+     */
+    const narrowed = await this.prisma.timetableSubject.findMany({
+      where: { schoolId },
+      select: { timetableConfigId: true, subject: { select: { name: true } } },
+    });
+    const subjectsByWing: Record<string, string[]> = {};
+    for (const row of narrowed) {
+      const cfg = configs.find((c) => c.id === row.timetableConfigId);
+      if (!cfg) continue;
+      (subjectsByWing[cfg.name] ??= []).push(row.subject.name);
+    }
+
     for (const cfg of configs) {
       const mine = sections.filter((cs) => cs.timetableConfigId === cfg.id);
       const names = [...new Set(mine.map((cs) => cs.class.name))];
@@ -791,6 +818,10 @@ export class OnboardingService {
         : {}),
       ...(wings.length > 0 ? { wings } : {}),
       ...(Object.keys(weeks).length > 0 ? { weeks } : {}),
+      /* §32 — absent unless a wing has actually narrowed, because absent means
+         "not stated" and writing a list for an unnarrowed timetable would turn
+         that into "exactly these". */
+      ...(Object.keys(subjectsByWing).length > 0 ? { subjectsByWing } : {}),
       ...(rooms.length > 0 ? { rooms } : {}),
       ...(curriculum.length > 0 ? { curriculum } : {}),
       ...(mappingAnswers.length > 0 ? { mappings: mappingAnswers } : {}),
@@ -1174,7 +1205,32 @@ export class OnboardingService {
       // reporting nothing wrong with the others.
       sheets = rebuilt.sheets;
     }
-    if (sheets.length === 0) throw new BadRequestException("There is nothing to create yet.");
+    if (sheets.length === 0) {
+      /*
+        §32 — the subject SELECTION is not master data, and must not be gated
+        behind the importer having something to create.
+
+        "This week does not run Chemistry" is a property of the week; it is
+        written by `applySubjectSelection`, not by a sheet. But that call sat
+        below this throw, so a step-6 commit carrying only a changed selection
+        — no new subjects, nothing for the importer — was refused with "there
+        is nothing to create yet" and the narrowing was silently lost. The
+        person had just unticked two subjects and pressed Next.
+
+        Returned rather than thrown, and truthfully: nothing was created, and
+        something was changed.
+      */
+      if (step === 6 && answers.subjectsByWing) {
+        await this.applySubjectSelection(schoolId, answers);
+        return {
+          ok: true as const,
+          created: {},
+          message: "Which subjects this timetable teaches was updated.",
+          issues,
+        };
+      }
+      throw new BadRequestException("There is nothing to create yet.");
+    }
 
     const result = await this.importer.commitSheets(schoolId, sheets);
     // §19: a lab with no subjects listed is GENERAL and serves everything, so
@@ -1230,12 +1286,30 @@ export class OnboardingService {
     });
     const idByName = new Map(known.map((s) => [s.name.trim().toLowerCase(), s.id]));
 
-    for (const wing of this.wingsIn(answers)) {
-      const wanted = (byWing as Record<string, unknown>)[wing.name];
+    /*
+     * §32 — which wings to write, and why there is a fallback.
+     *
+     * The draft's own wing list when it has one, because that is what
+     * `narrowToScope` filters and it is how `?scope=` narrows a commit to one
+     * §30 pool. But it silently wrote NOTHING when the draft named no wings —
+     * and `subjectsByWing` is keyed by wing name, so that draft was a complete
+     * instruction being thrown away for want of a list it did not need.
+     *
+     * A key that names a real `timetable_config` is unambiguous; falling back
+     * to the keys is not a guess. It only ever runs when there is no wing list
+     * to narrow, so no scoped commit can widen through it.
+     */
+    const named = this.wingsIn(answers);
+    const targets = named.length > 0
+      ? named.map((w) => w.name)
+      : Object.keys(byWing as Record<string, unknown>);
+
+    for (const wingName of targets) {
+      const wanted = (byWing as Record<string, unknown>)[wingName];
       if (!Array.isArray(wanted)) continue;
 
       const config = await this.prisma.timetableConfig.findFirst({
-        where: { name: wing.name }, select: { id: true },
+        where: { name: wingName }, select: { id: true },
       });
       // A wing that is not a timetable yet — step 5 has not run. Nothing to
       // attach the selection to, and it is written again on the next Next.

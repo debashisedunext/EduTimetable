@@ -496,8 +496,26 @@ export function StepClasses({ answers, onChange, startWing = null }: {
               // ever deleted — so "which of these are records?" is a count.
               const made = c.existing.length;
               return (
-              <tr key={c.className}>
-                <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)" }}>{c.className}</td>
+              <tr key={c.className} style={c.outsideRange ? { background: "var(--amber-bg)" } : undefined}>
+                <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)" }}>
+                  {c.className}
+                  {/*
+                    §3.10c — why this class is here when the slider is not on it.
+
+                    Without the note it simply reappears the moment the range
+                    passes it, which reads as a slider that does not work. The
+                    range describes what the wing teaches; it cannot un-teach
+                    children who are already in a timetable, and the screen that
+                    can is named.
+                  */}
+                  {c.outsideRange && (
+                    <span title={`${c.className} is outside this wing's range, but it already has class-sections here. Delete them on the Classes master.`}
+                      style={{
+                        marginLeft: 7, font: "600 10px/1.5 Inter", color: "var(--amber)",
+                        border: "1px solid var(--amber)", borderRadius: 5, padding: "1px 5px",
+                      }}>outside the range · already taught</span>
+                  )}
+                </td>
                 <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono, monospace)", fontSize: 11.5 }}>
                   <span style={{ color: "var(--ink-soft)" }}>{c.existing.join(", ")}</span>
                   {c.sections.length > made && (

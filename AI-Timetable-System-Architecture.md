@@ -3919,3 +3919,30 @@ A block returns early with its own three groups rather than being forced through
 **The field is genuinely disabled.** §31.19 refused on commit, which still focused an input and accepted keystrokes. A locked cell never becomes one now — `CellShell` keeps rendering its button, so there is nothing to type into, and the refusal message stays as the backstop for the keyboard path.
 
 **One press clears them all.** The per-cell ✕ was the whole answer until the numbers were counted: twenty-seven rows across eight blocks is twenty-seven confirmations to reach a Readiness score. `ClearDuplicates` lists every row with its periods and the block that owns it (§27.11's rule that a count and its delete are declared together) and deletes through the **same `/allocation-cell/delete` endpoint the single ✕ uses** — one call per pair, sequentially, rather than a new bulk route: the rule about what a delete does belongs in one place on the server, and firing twenty-seven transactions at a server also recomputing readiness is how a deadlock gets found by a school instead of here. It deletes the **server** rows, because Check 1 reads the database and a grid that tidied only its own plan would go on showing 0%; the caller then cleans the draft, or the §16 importer writes every row straight back on the next Save. A 404 is tolerated — that pair exists only in the draft — while anything else stops with the rows so far deleted and the plan untouched, so the button can simply be pressed again.
+
+
+## 3.10c The guided setup, opened a second time
+
+Reported as one sentence — *"I go back to the guided setup, minimise the classes, uncheck some subjects, save, and the data is not saving; it shows the old data"* — and three separate faults sat behind it. None of them reported anything: every one returned `201 ok: true` with no issues.
+
+### A class could be removed by narrowing the range, and nothing happened
+
+§3.10b floored the section COUNT and withheld Remove from a class that has rows, on the grounds that the §16 importer has no delete path so the screen must not describe a school it is not going to produce. **The range slider was the hole left in it.** Dragging from Class 3 back to Class 2 simply dropped Class 3 out of `planClasses`' loop; the sheet went out with two classes, the importer skipped both because they exist, and the commit answered *"Everything here already exists — nothing to add."* Class 3 was still there, still timetabled, and no longer on the screen that claims to list the school's classes.
+
+A class the wing already teaches is now **kept in the plan even when the range has moved off it**, and marked `outsideRange` so the grid can say why rather than springing it back and looking broken. Kept rather than refused: narrowing the range is a reasonable thing to try, and what it cannot do is un-teach children who are already in a timetable — that is the Classes master's job, where the count of what is about to go is shown first (§27.11). Enforced in `planClasses` and not in the slider, for §3.10b's own reason: that function is what the grid draws **and** what `classSheets` turns into importer rows, so a rule enforced only in an `<input min>` is a rule the commit does not honour.
+
+This also repairs something quieter. The Class Sections sheet is the only door that fills a NULL `timetable_config_id` (§16.1), so a plan that dropped Class 3 left that link unrepairable for ever after.
+
+### The reopened Subjects step showed every subject ticked
+
+`answersFromSchool` rebuilds the draft from the school (§27.12) and **never read `timetable_subjects`**. Absent means "not stated", which the Subjects step reads as *every subject ticked* (invariant 7) — so a school that had narrowed Main to three subjects, come back later and found its draft rebuilt, was shown all of them again. That is exactly "it shows the old data". Worse than a display bug: unticking two from there stores a set computed from a starting point that was never true.
+
+It is read back now, for every wing that has narrowed and only those — a config with no rows has not narrowed, and writing an explicit list for it would turn "not stated" into "exactly these", which is the one distinction §32's table exists to keep.
+
+### The selection was gated behind the importer having work
+
+`applySubjectSelection` ran *after* `commitSheets`, below `if (sheets.length === 0) throw`. A step-6 commit carrying only a changed selection — no new subjects, nothing for the importer — was therefore refused with *"there is nothing to create yet"* and the narrowing was lost. "This week does not run Chemistry" is a property of the week, not master data, and does not depend on a sheet having rows; it is written before that throw now, and returns truthfully (nothing created, something changed).
+
+It also iterated the draft's `wings` and wrote **nothing at all** when the draft named none. `subjectsByWing` is keyed by wing name, so such a draft was a complete instruction being thrown away for want of a list it did not need; it falls back to the selection's own keys, which only runs when there is no wing list to narrow, so no `?scope=`-ed commit can widen through it.
+
+`pnpm test:rerun` drives the whole second pass — build, narrow the range, untick, discard the draft, reopen, untick again — and asserts against the database rather than the response, because every one of these faults passed every "did it error?" test there is.
