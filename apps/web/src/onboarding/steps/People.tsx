@@ -25,6 +25,7 @@ import { Note } from "./Structure";
 import { ChipPicker } from "./ChipPicker";
 import { cell, Heading, LinkButton, pasteColumn, Scroll, td, th } from "./ui";
 import { api } from "../../api";
+import { BoardCatalogDialog, classesFor } from "../../subjects/BoardCatalog";
 
 // ────────────────────────────────────────────────────────── step 6: subjects
 
@@ -165,6 +166,18 @@ export function StepSubjects({ answers, onChange }: {
     edit(i, { classes: next.length === ladder.length ? [] : ladder.filter((c) => next.includes(c.name)).map((c) => c.name) });
   };
 
+  /**
+   * §35 — the board catalogue, on this door too.
+   *
+   * It does NOT call `POST /subjects/catalog/apply` here. Nothing in this
+   * wizard writes a row: the step commits through `POST /onboarding/commit/:6`,
+   * which builds the §16 importer's own sheets — so the catalogue seeds DRAFT
+   * rows and the existing commit turns them into exactly the subjects the
+   * master's button would have created. Writing directly would put rows in the
+   * database that this screen's own list did not show.
+   */
+  const [catalogOpen, setCatalogOpen] = useState(false);
+
   const rows = subjects.length > 0 ? subjects : [blankSubject()];
   const duplicate = (name: string, at: number) =>
     name.trim() !== "" && rows.some((s, i) => i !== at && s.name.trim().toLowerCase() === name.trim().toLowerCase());
@@ -187,16 +200,64 @@ export function StepSubjects({ answers, onChange }: {
         it decides which rooms the next step proposes.
       </Heading>
 
-      {subjects.length === 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+      {catalogOpen && (
+        <BoardCatalogDialog
+          ladder={ladder.map((c) => c.name)}
+          /*
+            What this school "has" is the DRAFT's own list, not `/subjects`.
+            The draft is what the commit will write, so a name already typed
+            here is one the catalogue must not offer to add again — and a
+            subject committed by an earlier run is in the draft too, because
+            `answersFromSchool` rebuilt it (§27.12).
+          */
+          have={rows.map((r) => r.name).filter((n) => n.trim())}
+          verb="Add"
+          onClose={() => setCatalogOpen(false)}
+          onCreate={async (chosen) => {
+            const known = new Set(rows.map((r) => r.name.trim().toLowerCase()));
+            const add = chosen
+              .filter((c) => !known.has(c.name.trim().toLowerCase()))
+              .map((c): SubjectAnswer => ({
+                name: c.name,
+                code: c.code ?? "",
+                isLab: c.isLab,
+                requiresDoublePeriod: false,
+                category: c.category,
+                // §27.16 through the one rule both doors share: every class is
+                // stored as `[]` — "not stated" — never as today's class list.
+                classes: classesFor(c, ladder.map((x) => x.name)),
+              }));
+            // The blank starter row is a placeholder, not an answer: keeping it
+            // would leave an empty subject at the top of a freshly filled list.
+            const keep = rows.filter((r) => r.name.trim() !== "");
+            set([...keep, ...add]);
+            return `${add.length} subject${add.length === 1 ? "" : "s"} added to the list`
+              + (chosen.length > add.length ? ` · ${chosen.length - add.length} already listed` : "");
+          }}
+        />
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {subjects.length === 0 && (
           <button className="btn btn-primary" style={{ fontSize: 12.5 }} onClick={() => set(USUAL)}>
             Start from the usual eight
           </button>
-          <span style={{ fontSize: 12, color: "var(--ink-faint)", alignSelf: "center" }}>
+        )}
+        {/*
+          Offered whatever is in the list, unlike "the usual eight" — that one
+          replaces the list wholesale and so only makes sense when it is empty,
+          while this one adds, and a school part-way through its subjects is
+          exactly who wants the senior stream filled in.
+        */}
+        <button className="btn" style={{ fontSize: 12.5 }} onClick={() => setCatalogOpen(true)}>
+          📗 Recommended CBSE subjects
+        </button>
+        {subjects.length === 0 && (
+          <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
             …or type your own below. You can paste a column straight from a spreadsheet.
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {wings.length > 1 && (
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>

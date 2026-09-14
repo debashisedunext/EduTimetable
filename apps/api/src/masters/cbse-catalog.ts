@@ -127,6 +127,32 @@ const CORE: CatalogRow[] = [
   { name: "Data Science", code: "DS", isLab: true, from: "Class 11", to: "Class 12", group: "Tech elective" },
 ];
 
+/**
+ * Which groups open TICKED in the recommendation dialog.
+ *
+ * The class range already answers "does this subject apply to this class"; it
+ * cannot answer "does this school run a Humanities stream", because that is a
+ * choice rather than a fact about the scheme. A school offering Science and
+ * Commerce only, given the whole senior list, gets Sociology, Psychology and
+ * Legal Studies as real subjects — in the Allocation grid's columns, in the
+ * colour palette, and in what Readiness counts — and has to find and delete
+ * three rows it never asked for.
+ *
+ * So the streams are offered by the group rather than the row: one click ticks
+ * a whole stream, which is the unit a school actually decides in. Languages are
+ * the same argument at larger scale (forty-five of them, a school runs two).
+ *
+ * It lives here rather than in the screen because the group labels are defined
+ * in this file, and a predicate over strings defined somewhere else is a rename
+ * away from silently ticking nothing.
+ */
+export const OPT_IN_GROUPS: ReadonlySet<string> = new Set([
+  "Science stream", "Commerce stream", "Humanities stream", "Tech elective", "Languages",
+]);
+
+/** True for the rows nearly every CBSE school runs, whatever streams it offers. */
+export const isRecommended = (groupLabel: string): boolean => !OPT_IN_GROUPS.has(groupLabel);
+
 /** Every row the seed writes, languages last and marked as offered. */
 export function cbseCatalogRows() {
   const rows = [

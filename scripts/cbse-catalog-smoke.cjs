@@ -130,6 +130,29 @@ async function main() {
     "and 45 languages are OFFERED, never recommended — a school runs two or three",
     `${(cat?.subjects ?? []).filter((s) => s.isLanguage).length} languages`);
 
+  /*
+    §35 — `recommended` is what the dialog opens ticked, and it is the SERVER's
+    answer: the group labels are defined in `cbse-catalog.ts`, so a screen
+    carrying its own list of which groups are streams is one rename away from
+    silently ticking nothing.
+
+    Asserted in both directions on purpose. A field that were always true would
+    pass "Mathematics is ticked" while quietly creating forty-five languages and
+    twenty stream subjects for every school that pressed the button.
+  */
+  check(by("Mathematics")?.recommended === true && by("Physical Education")?.recommended === true,
+    "Maths and PE open TICKED — every CBSE school runs them");
+  check(by("Biology")?.recommended === false && by("Accountancy")?.recommended === false,
+    "...while the senior streams do not — a school offering Science and Commerce "
+    + "must not have to delete Sociology");
+  check((cat?.subjects ?? []).filter((s) => s.isLanguage).every((s) => s.recommended === false),
+    "...and not one of the 45 languages does",
+    `${(cat?.subjects ?? []).filter((s) => s.isLanguage && s.recommended).length} ticked`);
+  const ticked = (cat?.subjects ?? []).filter((s) => s.recommended);
+  check(ticked.length > 0 && ticked.length < (cat?.subjects ?? []).length,
+    "so pressing the button proposes a school, not a catalogue",
+    `${ticked.length} of ${(cat?.subjects ?? []).length} ticked`);
+
   // ─────────────── 2 & 3. APPLY, AND THE CLASS RULE
   console.log("\nCreating Mathematics, Biology, Accountancy and English:");
   const applied = await call("POST", "/subjects/catalog/apply", S, {

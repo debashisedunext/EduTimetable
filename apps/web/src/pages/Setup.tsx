@@ -11,6 +11,7 @@ import { CategorySelect, LunchRules, lunchSummary, PrioritySelect } from "../sub
 import { ChipPicker } from "../onboarding/steps/ChipPicker";
 import { defaultsFor } from "@edutimetable/shared";
 import { MasterPane, PaneActions, PaneField } from "../masters/MasterPane";
+import { BoardCatalogDialog } from "../subjects/BoardCatalog";
 
 /**
  * §26.2 — the placement fields the admin has actually set.
@@ -561,6 +562,15 @@ export function StepSubjects() {
     setForm({ ...form, classIds: next.length === ladder.length ? [] : next });
   };
 
+  /**
+   * §35 — the board catalogue, behind a button rather than a section.
+   *
+   * A school presses it once, on the day it is set up. A panel that lived on
+   * the page permanently would take width from the list every other day of the
+   * school's life, for a control nobody is going to press again.
+   */
+  const [catalogOpen, setCatalogOpen] = useState(false);
+
   const shown = { ...defaultsFor(form.name ?? ""), ...clean(form) };
   const reset = () => { setForm({ name: "", isLab: false, requiresDoublePeriod: false, classIds: [] }); setEditId(null); };
   const save = async () => {
@@ -577,10 +587,46 @@ export function StepSubjects() {
   };
 
   return (
+    <>
+    {catalogOpen && (
+      <BoardCatalogDialog
+        ladder={ladder.map((c) => c.name)}
+        have={(data ?? []).map((s) => s.name)}
+        verb="Create"
+        onClose={() => { setCatalogOpen(false); refetch(); }}
+        /*
+          §35 — through `POST /subjects/catalog/apply`, which builds a Subjects
+          sheet and hands it to the §16 committer. No write path of its own:
+          the validation, the skip-by-natural-key and the `Classes` column that
+          writes §27.16 all come free, and pressing Create twice adds nothing.
+
+          The NAMES go up, never the classes. §21's rule — a preview is not the
+          list of writes — so the server reads each subject's classes back out
+          of the catalogue rather than believing this screen.
+        */
+        onCreate={async (chosen) => {
+          const r = await api<{ created?: Record<string, number>; skipped?: number }>(
+            "/subjects/catalog/apply",
+            { method: "POST", body: JSON.stringify({ names: chosen.map((c) => c.name) }) },
+          );
+          refetch();
+          const made = r.created?.subjects ?? 0;
+          return `${made} subject${made === 1 ? "" : "s"} created`
+            + (r.skipped ? ` · ${r.skipped} skipped — no matching class` : "");
+        }}
+      />
+    )}
     <MasterPane
       title="Subjects"
       sub="Flag lab subjects — they must land in a lab room."
-      actions={<span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{(data ?? []).length} subject(s)</span>}
+      actions={
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button className="btn" style={{ fontSize: 12.5 }} onClick={() => setCatalogOpen(true)}>
+            📗 Recommended CBSE subjects
+          </button>
+          <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{(data ?? []).length} subject(s)</span>
+        </div>
+      }
       formTitle={editId ? `Editing ${data?.find((x) => x.id === editId)?.name ?? "subject"}` : "Add a subject"}
       formSub={editId ? undefined : "Everything except the name has a sensible default worked out from it."}
       form={
@@ -698,5 +744,6 @@ export function StepSubjects() {
         />
       }
     />
+    </>
   );
 }

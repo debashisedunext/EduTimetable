@@ -5,7 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
 import { ImportService } from "../import/import.service";
-import { CBSE_BOARD } from "./cbse-catalog";
+import { CBSE_BOARD, isRecommended } from "./cbse-catalog";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
 const CATEGORIES = ["scholastic", "co_scholastic"] as const;
@@ -104,6 +104,12 @@ export class SubjectsController {
         isLab: r.isLab,
         isLanguage: r.isLanguage,
         group: r.groupLabel,
+        /**
+         * Whether this row opens ticked. A property of its GROUP, decided in
+         * `cbse-catalog.ts` beside the labels it names — the screen must not
+         * carry a second copy of which groups are streams.
+         */
+        recommended: isRecommended(r.groupLabel),
         /** Inclusive, by name — what the `Classes` column will carry. */
         classes: ladder.slice(r.fromSeq - 1, r.toSeq),
         fromClass: ladder[r.fromSeq - 1],

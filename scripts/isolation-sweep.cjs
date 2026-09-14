@@ -320,6 +320,19 @@ const NO_ID = {
   "POST /auth/switch-school": { how: "body", reason: "names a school the session was never granted" },
   "POST /import/dry-run": { how: "body", reason: "resolves names against the caller's school only" },
 
+  /*
+    §35 — applying the board catalogue. Takes NO id from the request: the body
+    is a list of catalogue subject NAMES, the classes come from the catalogue
+    rather than the caller (§21 — a preview is not the list of writes), and the
+    write goes through the §16 committer against the session's own school.
+
+    So there is nothing here that could name another school's row. The thing
+    worth proving is the one this sweep cannot see — that a class the school
+    does not have is dropped rather than created — and cbse-catalog-smoke.cjs
+    drives exactly that with a second school stopping at Class 8.
+  */
+  "POST /subjects/catalog/apply": { how: "effect", reason: "§35 takes catalogue subject NAMES only; classes come from the catalogue and the write goes through the §16 committer against the session's own school — cbse-catalog-smoke.cjs drives two schools" },
+
   // §23 — the ERP sync takes NO id from the request: it reads the ERP with the
   // session school's own code and writes through the scoped client. Covered by
   // erp-sync-smoke.cjs step 13, which runs two schools against one stand-in ERP
@@ -412,6 +425,20 @@ const LIST_NO_IDS = {
   "GET /import/template": "an empty workbook, identical for every school",
   "GET /import/export": "a workbook, checked by name below rather than by id",
   "GET /notifications/unread-count": "a count, carrying no ids",
+  /*
+    §35 — the board catalogue is REFERENCE DATA, and its being identical for
+    every school is the design rather than a leak: `board_subject_catalog` is
+    the one table with no `school_id`, because nobody owns the CBSE scheme of
+    studies.
+
+    Classified here rather than left to the id comparison, which would pass this
+    route for the wrong reason — the payload carries subject NAMES and no ids,
+    so `idsIn` finds nothing and reports "nothing could have leaked" whatever the
+    endpoint returned. The one school-specific field it does carry, `alreadyHave`,
+    is asserted by cbse-catalog-smoke.cjs: two schools read the same 76 rows
+    while each sees only its own subject names beside them.
+  */
+  "GET /subjects/catalog": "§35 reference data — the same scheme for every school, by design; cbse-catalog-smoke.cjs asserts `alreadyHave` does not cross",
 };
 
 (async () => {

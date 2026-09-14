@@ -3789,3 +3789,56 @@ The payload therefore gains two fields, both **empty for a uniform week**: `dayR
 The **printed and on-screen grids still show one clock for the whole week.** A class timetable renders periods down the side and days across, so a Saturday on a different clock has no row header that can be true of it — and the wall (§10.6) keys its rows `c{configId}p{periodNumber}` for exactly the same reason, one clock per config.
 
 §33.7 folds a **class** card into lessons, because one class has one span. A **teacher's** or a **room's** card sees several classes at once — Class 10's hour beside Class 1's half-hour in the same column — so there is no single fold that is true of the card. Those still print in base periods. The §34.6 answer above (one axis, per-cell truth where it differs) is the shape the solution should take, applied to spans rather than days.
+
+
+## 35. The Board Subject Catalogue (Phase 51)
+
+Setting up a school's subject list is a page of typing that every CBSE school in the country does identically — and the part that gets skipped is the part that matters. "Which classes take this subject" is a §27.16 declaration, and a school in a hurry leaves it blank, which reads as *every class* (invariant 7) and quietly offers Accountancy to Class 3.
+
+So: **one button that proposes the board's own scheme, and writes the class ranges with it.**
+
+### 35.1 A master with no `school_id`
+
+`board_subject_catalog` is 76 rows — 31 subjects with class ranges, and the 45 languages CBSE lists — seeded once per database. It is the **only table in this schema without a `school_id`**, and deliberately so: invariant 18 scopes rows a school *owns*, and nobody owns the CBSE scheme of studies. It is read through `PrismaBaseService`, the sanctioned way out of §17's ambient scoping, and written only by the seed. `pnpm test:catalog` asserts that a second school reads the same rows and that this is a classification rather than a leak.
+
+**Seeded, not fetched.** A government HTML page is not an API: it carries the year in its own URL, it is a directory of PDFs rather than a table, and a parser pointed at it is a button that breaks silently the first time the site is redesigned. Written down, the catalogue is reviewable in a diff, works with no egress, and is corrected by editing one file — which is also how a school's own amendments survive.
+
+**`fromSeq`/`toSeq` are inclusive `CLASS_LADDER` positions**, the same vocabulary `classes.sequence` uses (§31.12). That range is the point of the entire table.
+
+### 35.2 Two documented departures from the scheme
+
+**Physical Education is one subject, not four.** The scheme names it by stage — "& Play" (1–2), "& Health" (3–5), "& Well-being" (6–8), "Health &" (9–10). Taken literally that is four rows in the Subjects master, four colours on the grid, and four things to staff and timetable separately, for a lesson that has been PE all along. Same for Art Education. A school that wants the stage names renames the row.
+
+**"Language 1 / 2 / 3" are not subjects.** The scheme describes *slots*; a school cannot timetable "Language 1". So the 45 languages are **offered** — `isLanguage`, never pre-ticked — and the school picks the two or three it runs.
+
+### 35.3 Apply writes through the §16 committer, and nothing else
+
+The Subjects sheet already carries `Subject Name`, `Code`, `Category`, `Is Lab` and — the one that matters — `Classes`, which writes `subject_classes`. So `POST /subjects/catalog/apply` needs no write path of its own: it builds a sheet and hands it to `commitSheets`. That buys the importer's validation, its skip-by-natural-key idempotence (pressing Create twice adds nothing) and §16.1's link-filling for free.
+
+**The classes come from the CATALOGUE, never from the request** — §21's rule that a preview is not the list of writes. A caller asking for Biology in Class 5 would otherwise get it, and §27.16 would then be enforcing a statement nobody made.
+
+**A class the school does not have is dropped, never created.** This is the Subjects screen; inventing Class 11 because a catalogue row mentions it would be a second door onto the Classes master. The count comes back as `skipped` so nothing vanishes silently.
+
+The chain the smoke asserts end to end: the catalogue says 11–12 → Apply writes 11–12 and nothing else → `POST /class-subjects` for Class 5 Biology is **refused by `assertSubjectApplies`**. The rule is enforced at the layer that owns it, not by the screen that proposed it.
+
+### 35.4 The screen: subjects down, this school's classes across
+
+A list of names cannot show the class dimension, and that dimension is the whole feature. So the subject is a row, **the school's own classes are the columns**, and a dot marks where it applies — which is exactly the `subject_classes` rows the button is about to write, drawn before it writes them.
+
+The columns are the classes this school *has*, never `CLASS_LADDER` (§3.10b: a screen must not describe a school it is not looking at). A school stopping at Class 8 therefore sees that Biology lands nowhere — marked and unselectable **before** Create, rather than discovering afterwards that it was skipped.
+
+**What opens ticked is a property of the GROUP, decided in `cbse-catalog.ts` beside the labels and served as `recommended` on each row** — never a second list of stream names held by the screen, which is one rename away from silently ticking nothing. Core, co-scholastic and skill subjects open ticked; the senior streams and the languages are offered with a per-group *tick all*, because a stream is the unit a school actually decides in. A school offering Science and Commerce must not have to find and delete Sociology, Psychology and Legal Studies. On the reference catalogue that is 11 of 76 ticked — a school, not a catalogue.
+
+**The 45 languages are a list, not grid rows.** All of them span the whole ladder, so as rows they would be 45 identical lines of dots, burying the one thing the grid exists to show. What a school needs there is to find two names among forty-five, so it is a filtered list.
+
+### 35.5 One dialog, two doors, one rule about classes
+
+The Create button is a **callback**, so the dialog is never a second writer. On the Subjects master it posts to `/subjects/catalog/apply`; in the guided setup it seeds **draft** rows, which that wizard's own `POST /onboarding/commit/6` turns into the same importer sheets. Writing directly from the wizard would put rows in the database that its own list did not show.
+
+`classesFor` is the one rule both doors share, and it **stores the explicit list even when it covers every class the school has**. The tempting shortcut is `[]` — invariant 7's "not stated", which reads back as every class, and which is what the Subjects master's own picker stores when somebody ticks them all. It is wrong here twice over. It throws away the fact the button exists to record: *"Mathematics: Classes 1–12"* is a statement from the scheme, *"not stated"* is the absence of one, and they part company the moment that school adds a Nursery — where `[]` hands Mathematics to four-year-olds. And the server writes the explicit list, so collapsing on the client would make the two doors store different things for the same click. The cost is that a subject taught everywhere lists its classes rather than reading "Every class", which is more accurate, not less.
+
+### 35.6 Still to build
+
+The catalogue holds **no periods per week**. The scheme's annual instructional hours are in the PDFs, per subject per class, and turning them into a week needs the school's own working days — so the curriculum is still entered on the Lesson Grid. A `Periods` column on the catalogue is the natural next row of the table, and would let the button propose `class_subjects` as well as `subject_classes`.
+
+Only CBSE is seeded. `board` is a column and the endpoint takes `?board=`, so ICSE or a state board is a second block of rows in the same file rather than a schema change.
