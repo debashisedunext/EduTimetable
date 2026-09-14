@@ -36,7 +36,7 @@ import {
 } from "@edutimetable/shared";
 import type { WeekAnswer } from "./Structure";
 import {
-  Advisor, CellBar, CellDialog, HoverBody, MiniBar, RemoveSubject, ResetAllocation,
+  Advisor, CellBar, CellDialog, ClearDuplicates, HoverBody, MiniBar, RemoveSubject, ResetAllocation,
   type CellSave, type Hover,
 } from "./AllocationParts";
 import { api } from "../../api";
@@ -1106,8 +1106,40 @@ export function StepAllocation({
   /** What a cell shows for a teacher: their initials, never the employee code. */
   const initialsOf = (code: string) => m.initialsOf.get(code) ?? code;
 
+  /**
+   * §31.19a — the class's curriculum periods, WITHOUT the ones a block teaches.
+   *
+   * `electivePeriodsOf` adds the block's own periods, so counting a locked
+   * subject here as well is the same lessons counted twice — reported as
+   * *"45/40 · 5 over"* for a class whose week is exactly full, which then puts
+   * Readiness at 0% for a school that has done nothing wrong except enter its
+   * languages before it built the block.
+   *
+   * Excluded rather than deleted: the row is still there, still counted by
+   * Check 1, and still the thing to clear. `duplicatePeriods` is how the rail
+   * says so, and the cell keeps showing it. What changes is only that this
+   * screen's arithmetic stops agreeing with the double count.
+   */
   const totalOf = (className: string) =>
-    m.cells.filter((c) => c.className === className).reduce((n, c) => n + c.periodsPerWeek, 0);
+    m.cells
+      .filter((c) => c.className === className && !m.electiveLock.has(lockKey(className, c.subjectName)))
+      .reduce((n, c) => n + c.periodsPerWeek, 0);
+
+  /**
+   * §31.19a — periods sitting in a curriculum row that a block already teaches.
+   *
+   * The number the rail offers to clear, and the reason it can: every one of
+   * them is a lesson the children are already getting inside the block.
+   */
+  const duplicates = useMemo(() => m.cells
+    .filter((c) => c.periodsPerWeek > 0 && m.electiveLock.has(lockKey(c.className, c.subjectName)))
+    .map((c) => ({
+      className: c.className,
+      subject: c.subjectName,
+      periods: c.periodsPerWeek,
+      blockName: m.electiveLock.get(lockKey(c.className, c.subjectName))!.blockName,
+    })), [m]);
+  const duplicatePeriods = duplicates.reduce((n, d) => n + d.periods, 0);
 
   /**
    * The hover handlers for one thing — and, switched off, no handlers at all.
@@ -1321,6 +1353,9 @@ export function StepAllocation({
    * input to `periodsOf` would put a 0 back under the caret the instant the last
    * digit was deleted — and then "12" typed over it would read as "012".
    */
+  /** §31.19a — the bulk-clear confirmation. */
+  const [clearing, setClearing] = useState(false);
+
   const [typed, setTyped] = useState("");
   const cellInput = useRef<HTMLInputElement>(null);
 
@@ -1954,6 +1989,26 @@ export function StepAllocation({
                 warning: a primary wing not drawing Biology is the grid being
                 right. It is here so that "where has Nursery gone?" has an
                 answer on the screen it went missing from. */}
+            {/*
+              §31.19a — the duplicates, and the press that clears them.
+
+              On the rail rather than in a cell because it is a property of the
+              whole grid: eight blocks' worth of them is not something anybody
+              finds by clicking through a 40-column row. The count is periods,
+              not cells, because periods are what Check 1 refuses over.
+            */}
+            {duplicatePeriods > 0 && (
+              <span style={{ color: "var(--amber)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>{duplicatePeriods}</strong>
+                {" "}duplicate period{duplicatePeriods === 1 ? "" : "s"}
+                <button onClick={() => setClearing(true)}
+                  title="These subjects are already taught inside an elective block. This deletes the extra curriculum rows."
+                  style={{
+                    border: "1px solid var(--amber)", background: "var(--amber-bg)", color: "var(--amber)",
+                    borderRadius: 6, padding: "1px 7px", cursor: "pointer", font: "700 11px/1.5 Inter",
+                  }}>Clear</button>
+              </span>
+            )}
             {(m.hidden.subjects > 0 || m.hidden.classes > 0) && (
               <span title={
                 "Only the subjects this timetable's classes are taught, and only the classes that are "
@@ -2217,8 +2272,12 @@ export function StepAllocation({
                             style object is shared rather than written twice.
                           */}
                           <CellShell
-                            editing={picked}
-                            className={p > 0 && !code ? "alloc-unstaffed" : undefined}
+                            editing={picked && !owner}
+                            /* §31.19a — never the unstaffed animation on a
+                               locked cell: it has no teacher because it should
+                               have no periods, and the moving edge says "give
+                               this one somebody" — the opposite of the truth. */
+                            className={p > 0 && !code && !owner ? "alloc-unstaffed" : undefined}
                             onClick={() => {
                               /*
                                 §31.15 — a click SELECTS. It used to open the
@@ -2249,18 +2308,30 @@ export function StepAllocation({
                               cursor: "pointer", opacity: dim ? 0.16 : 1,
                               boxShadow: isCursor ? "0 0 0 2px var(--brand)" : undefined,
                               ...(clash
-                                // Stored, and taught by the block as well — the
-                                // one state on this grid that is a contradiction
-                                // rather than a gap, so it takes the signal
-                                // colour a missing teacher would have had.
+                                /*
+                                  §31.19a — AMBER, not signal red.
+
+                                  The first version painted this `signal-bg` on
+                                  `signal` with a dashed edge, which is what
+                                  `.alloc-unstaffed` already looks like — so on a
+                                  school where every cell is unstaffed (a fresh
+                                  one: every cell red, every cell "none") the
+                                  lock was invisible. A state nobody can tell
+                                  apart from its neighbour is a state that was
+                                  not communicated.
+
+                                  Amber is also the truer colour: this is not an
+                                  error in the timetable, it is a duplicate to
+                                  tidy — Check 1 is what will refuse it.
+                                */
                                 ? {
-                                  background: "var(--signal-bg)", color: "var(--signal)",
-                                  border: "1.5px dashed var(--signal)",
+                                  background: "var(--amber-bg)", color: "var(--amber)",
+                                  border: "1.5px solid var(--amber)",
                                 }
                                 : owner
                                   // Owned and empty: the ordinary, correct state.
-                                  // Dashed rather than plain, so a reader can see
-                                  // at a glance which columns this class's
+                                  // Flat grey with a dashed edge, so a reader can
+                                  // see at a glance which columns this class's
                                   // elective has taken over.
                                   ? {
                                     background: "var(--offwhite)", color: "var(--ink-faint)",
@@ -2290,7 +2361,7 @@ export function StepAllocation({
                                 ? `${s.name} is an option in ${owner.blockName}, and this class also has ${p} periods of it in the curriculum — it is being taught twice. Clear them from the toolbar.`
                                 : `${s.name} is taught inside ${owner.blockName}. Its periods are set on that block.`)
                               : undefined}>
-                            {picked ? (
+                            {picked && !owner ? (
                               /*
                                 §31.16 — the number, typed where it is read.
 
@@ -2331,7 +2402,16 @@ export function StepAllocation({
                                   timetable for the data given, and not what
                                   anybody meant.
                                 */}
-                                {p <= 0 ? "–" : cell.span > 1 ? cell.lessons : p}
+                                {/*
+                                  §31.19a — a locked cell with nothing in it
+                                  reads 0, not "–".
+
+                                  The dash means "nobody has said" and invites a
+                                  number; 0 is the statement the block makes on
+                                  this class's behalf, and it is the number this
+                                  cell will hold for ever.
+                                */}
+                                {owner && p <= 0 ? 0 : p <= 0 ? "–" : cell.span > 1 ? cell.lessons : p}
                                 {cell.over > 0 && (
                                   <span title={`${p} periods do not divide into lessons of ${cell.span} — ${cell.over} would be left over`}
                                     style={{ color: "var(--signal)" }}>+{cell.over}</span>
@@ -2348,8 +2428,18 @@ export function StepAllocation({
                                   borderRadius: "50%", border: "1.5px solid currentColor", font: "700 7.5px/1 monospace",
                                 }}>●</span>
                               )}
-                              {p <= 0 ? " " : code ? initialsOf(code) : tight ? "none" : "no teacher"}
-                              {merged && <span title="taught as one lesson">⛓</span>}
+                              {/*
+                                §31.19a — the second line says WHY, not "none".
+
+                                A locked cell has no teacher because it should
+                                have no periods, and "no teacher" sends somebody
+                                to find one. `dup` is the state and the action in
+                                three characters, which is all the column has.
+                              */}
+                              {owner
+                                ? (clash ? "dup" : "in block")
+                                : p <= 0 ? " " : code ? initialsOf(code) : tight ? "none" : "no teacher"}
+                              {merged && !owner && <span title="taught as one lesson">⛓</span>}
                             </span>
                             {/* §31.10 — the room is the third line, and the
                                 twelve pixels a column that let twenty subjects
@@ -2538,6 +2628,49 @@ export function StepAllocation({
             classTeacherOf={classTeacherOf} totalOf={totalOf} nameOf={nameOf}
           />
         </Tip>
+      )}
+
+      {/*
+        §31.19a — clearing every duplicate at once.
+
+        The per-cell ✕ was the whole answer until the numbers were counted: the
+        reference school has twenty-seven of them across eight blocks, which is
+        twenty-seven confirmations to reach a Readiness score. And it is the
+        SERVER rows that matter — Check 1 reads the database, so a draft this
+        screen tidied would still leave the school at 0%.
+
+        Behind a confirmation that lists them, because it deletes curriculum
+        rows somebody entered: §27.11's rule that a count and its delete are
+        declared together, so the dialog cannot under-report the write.
+      */}
+      {clearing && (
+        <ClearDuplicates
+          rows={duplicates}
+          configId={m.wing ? configIds[m.wing.name.toLowerCase()] : undefined}
+          onClose={() => setClearing(false)}
+          onDone={() => {
+            setClearing(false);
+            /*
+              The draft has to lose them too, or the next Save writes them
+              straight back — the §16 importer creates by natural key and the
+              rows would simply reappear. `onChange` marks `curriculum` touched,
+              which is what gets the cleaned list up to the server at all.
+            */
+            const gone = new Set(duplicates.map((d) => lockKey(d.className, d.subject)));
+            onChange({
+              curriculum: m.cells.filter((c) => !gone.has(lockKey(c.className, c.subjectName))),
+              /*
+                `every`, not `some`. A §4.10 merged group can span two classes,
+                and only one of them may be locked — dropping the whole mapping
+                would unstaff a class whose teaching is perfectly legitimate.
+                Left alone unless the entire group is duplicate.
+              */
+              mappings: m.mappings.filter(
+                (x) => !x.classSections.every((cs) => gone.has(lockKey(cs.replace(/-[^-]+$/, ""), x.subjectName))),
+              ),
+            });
+          }}
+        />
       )}
 
       {resetting && m.wing && configIds[m.wing.name.toLowerCase()] !== undefined && (

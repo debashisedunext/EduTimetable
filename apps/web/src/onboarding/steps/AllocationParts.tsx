@@ -1773,3 +1773,147 @@ export function RemoveSubject({ configId, className, subjectName, sectionCount, 
     </div>
   );
 }
+
+
+/**
+ * §31.19a — clear every curriculum row a §4.9 block already teaches.
+ *
+ * The per-cell ✕ is right for one; the reference school has twenty-seven across
+ * eight blocks, and a Readiness score that needs twenty-seven confirmations is
+ * a score nobody reaches.
+ *
+ * **It deletes the SERVER rows, not just the draft.** Check 1 counts what is in
+ * the database, so a grid that only tidied its own plan would go on showing 0%
+ * and the person who pressed the button would have no way to tell why. The
+ * draft is cleaned by the caller afterwards, or the §16 importer would write
+ * every row straight back on the next Save.
+ *
+ * Every row is listed with its periods and the block that owns it — §27.11's
+ * rule that a count and its delete are declared together, so the confirmation
+ * cannot under-report what it is about to do. Reuses the same
+ * `/allocation-cell/delete` endpoint the single ✕ uses: one call per pair, not
+ * a new bulk route, because the rule about what a delete does belongs in one
+ * place on the server.
+ */
+export function ClearDuplicates({ rows, configId, onDone, onClose }: {
+  rows: Array<{ className: string; subject: string; periods: number; blockName: string }>;
+  /** Absent until the wing is committed — then there is nothing saved to delete. */
+  configId?: number;
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(0);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const total = rows.reduce((n, r) => n + r.periods, 0);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (configId !== undefined) {
+        /*
+          Sequential, not `Promise.all`. Each delete runs inside its own
+          transaction on the same class rows, and firing twenty-seven at a
+          server that is also recomputing readiness is how a deadlock gets
+          found by a school rather than here.
+        */
+        for (const r of rows) {
+          try {
+            await api(`/timetable-configs/${configId}/allocation-cell/delete`, {
+              method: "POST",
+              body: JSON.stringify({ className: r.className, subjectName: r.subject }),
+            });
+          } catch (e) {
+            /*
+              A 404 here is "that class or subject is not committed in this
+              timetable yet", which is the ordinary case for a row that exists
+              only in the draft — and the draft is cleaned by the caller either
+              way. Aborting the whole run over it would leave the earlier rows
+              deleted and the plan untouched, which is the one outcome worse
+              than doing nothing. Anything else still stops.
+            */
+            if (!/not found|no class/i.test(asMessage(e))) throw e;
+          }
+          setDone((n) => n + 1);
+        }
+      }
+      onDone();
+    } catch (e) {
+      // Named, and the draft is NOT cleaned: some rows are gone and some are
+      // not, so the honest thing is to leave the grid showing what is left and
+      // let the button be pressed again. Every delete is idempotent.
+      setError(asMessage(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Clear duplicate periods"
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 500, background: "rgba(11,31,68,.45)",
+        display: "grid", placeItems: "center", padding: 18,
+      }}>
+      <div style={{
+        background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14,
+        boxShadow: "0 24px 64px rgba(11,31,68,.3)", width: "min(520px,100%)",
+        maxHeight: "88vh", display: "flex", flexDirection: "column",
+      }}>
+        <header style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--line)" }}>
+          <h3 style={{ margin: 0, fontFamily: "Fraunces, Georgia, serif", fontSize: 18 }}>
+            Clear {total} duplicate period{total === 1 ? "" : "s"}?
+          </h3>
+          <p style={{ fontSize: 12.3, color: "var(--ink-soft)", margin: "6px 0 0" }}>
+            Each of these subjects is already taught inside an elective block, so these curriculum
+            rows are the same lessons counted a second time. Deleting them leaves the block —
+            and the children&rsquo;s teaching — exactly as it is.
+          </p>
+        </header>
+
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "10px 18px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.3 }}>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={`${r.className}::${r.subject}`}>
+                  <td style={{ padding: "3px 0", whiteSpace: "nowrap" }}><strong>{r.className}</strong> {r.subject}</td>
+                  <td style={{ padding: "3px 8px", textAlign: "right", fontFamily: "var(--font-mono, monospace)" }}>
+                    {r.periods}
+                  </td>
+                  <td style={{ padding: "3px 0", color: "var(--ink-faint)", fontSize: 11 }}>
+                    in {r.blockName}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <footer style={{
+          borderTop: "1px solid var(--line)", padding: "11px 18px",
+          display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
+        }}>
+          <span style={{ flex: 1, minWidth: 160, fontSize: 11.5 }}>
+            {error
+              ? <span style={{ color: "var(--signal)" }}>{error}</span>
+              : busy
+                ? <span style={{ color: "var(--ink-faint)" }}>{done} of {rows.length} cleared…</span>
+                : <span style={{ color: "var(--ink-faint)" }}>{rows.length} curriculum row(s)</span>}
+          </span>
+          <button className="btn" style={{ fontSize: 12.5, border: "1px solid var(--line)" }}
+            disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" style={{ fontSize: 12.5 }} disabled={busy} onClick={run}>
+            {busy ? "Clearing…" : `Clear ${total} period${total === 1 ? "" : "s"}`}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
