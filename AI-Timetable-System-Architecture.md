@@ -3967,3 +3967,18 @@ Three places now express one decision and must agree, which is why the flag live
 Draft lessons for a detached section **are** removed, in the same transaction. They are regenerated wholesale by the next Generate, and a draft card for a class this timetable no longer runs is not a lesson — it is a row the Board would draw against a section its own list no longer contains.
 
 The commit reports `detached: { sections, refused }`, so none of it is silent, and `pnpm test:rerun` asserts the whole loop: narrow, detach, report, widen, re-attach, and both refusals.
+
+
+### 3.10e Where a timetable's class and subject selections actually live
+
+Asked directly by a school: *"maintain the class & subject selection separately for each timetable; only the master gets created if a new class or subject is added during the guided setup."* That is the model the app already implements, stored two different ways, and it is worth writing down which is which.
+
+**Subjects: a table.** `timetable_subjects` (§32) is one row per subject per `timetable_config`. The guided setup creates a subject in the master only when the name is new, and unticking writes only to that table — a committed subject has no ✕ on the step at all. Empty means **not stated**, which reads as *every* subject.
+
+**Classes: a column.** There is no `timetable_classes` table, because `class_sections.timetable_config_id` already is one. `buildFeasibilitySnapshot` builds the entire solver and Readiness view from `where: { timetableConfigId }`, so that column *is* "which classes does this timetable cover". NULL means **no** timetable — the opposite sense to the subjects table, deliberately in each case and a genuine asymmetry in the model.
+
+Keeping it a column rather than promoting it to a join table is a decision, not an omission: the column both selects *and* enforces invariant 11, one cohort per timetable. A join table would give the second half up, and the school's own statement of the rule is why that matters — *"an individual timetable can have the same class another timetable already uses; wing-wise timetables cannot share classes."* §30's resource pools already express exactly that: `class_sections` is unique on `(class, section, academic_year, resource_group_id)`, so an individual pool holds its own cohort row for Class 4 while the main wing holds its own, and neither can take the other's.
+
+That last point is the one §3.10d could have got badly wrong. `detachLeavingClasses` filters on `timetableConfigId: config.id`; had it matched on class *name*, narrowing a wing would have taken a second timetable's children out of a week nobody was editing. `pnpm test:rerun` asserts it, because the filter that makes it safe is one line and its absence would look entirely reasonable.
+
+Moving a class between timetables therefore stays two passes — narrow the first so it detaches, widen the second so it picks the cohort up (§16.1 allows filling a NULL link and refuses overwriting one that has an answer). Each pass is visible, reported and reversible, which was judged better than a single step that moves children between timetables on one press.

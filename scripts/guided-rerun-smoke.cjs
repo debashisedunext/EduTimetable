@@ -222,6 +222,75 @@ async function main() {
   await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 7, sections: 3 }] });
   await commit(4);
 
+  // ─────────────── 2b. AN INDIVIDUAL TIMETABLE IS NOT TOUCHED
+  /*
+    §30.9 — the rule the school stated in its own words: *"an individual
+    timetable can have the same class another timetable already uses; wing-wise
+    timetables cannot share classes."*
+    
+    That makes it the one case §3.10d could get badly wrong. `class_sections` is
+    unique on (class, section, year, **resource_group_id**), so an individual
+    pool holds its OWN Class 4-A row pointing at its own timetable — and a
+    detach that matched on class NAME rather than on the timetable would take a
+    second timetable's children out of a week nobody was editing.
+    
+    Asserted rather than reasoned about, because the filter that makes it safe
+    (`timetableConfigId: config.id`) is one line and its absence would look
+    entirely reasonable.
+  */
+  console.log("\nAn individual timetable running the same class:");
+  const solo = await call("POST", "/timetable-configs", S, {
+    name: "Solo", academicYearId: yearId, mode: "individual",
+  });
+  check(solo.status < 300, "an individual timetable is created", `${solo.status}`);
+  const soloId = solo.json?.id;
+  // Give it Class 4 — the very class the main wing is about to let go.
+  /*
+    Written straight to the database, with the pool read off the config — the
+    same thing `individual-pool-smoke.cjs` does and for the same reason.
+    `PUT /class-sections` attaches an EXISTING row; what is needed here is a
+    SECOND row for the same class in another pool, which only exists because
+    `resource_group_id` is part of the unique key. The section letter differs
+    because `sections` is keyed by (class, name); the CLASS is what the detach
+    matches on, so that is what the test turns on.
+
+    The first version of this block made the direct write a fallback behind an
+    API call that does not take this shape — so the call failed, the fallback
+    ran, and the assertion passed while proving nothing about the route it
+    appeared to be testing. Written as the one path, it cannot do that.
+  */
+  const soloCfg = await prisma.timetableConfig.findUnique({
+    where: { id: soloId }, select: { resourceGroupId: true, academicYearId: true },
+  });
+  const cls4 = await prisma.schoolClass.findFirst({ where: { schoolId, name: "Class 4" } });
+  const soloSection = await prisma.section.create({
+    data: { schoolId, classId: cls4.id, name: "S1" },
+  });
+  await prisma.classSection.create({
+    data: {
+      schoolId, classId: cls4.id, sectionId: soloSection.id,
+      academicYearId: soloCfg.academicYearId, timetableConfigId: soloId,
+      resourceGroupId: soloCfg.resourceGroupId,
+    },
+  });
+  const soloRows = await prisma.classSection.count({ where: { schoolId, timetableConfigId: soloId } });
+  check(soloCfg.resourceGroupId !== null,
+    "it is filed in a pool of its own", `pool ${soloCfg.resourceGroupId}`);
+  check(soloRows === 1, "and it holds its own Class 4 cohort there", `${soloRows} row(s)`);
+
+  // Now narrow the MAIN wing off Class 4 again.
+  await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 6, sections: 3 }] });
+  await commit(4);
+  check((await prisma.classSection.count({ where: { schoolId, timetableConfigId: soloId } })) === 1,
+    "narrowing the main wing leaves the individual timetable's Class 4 alone",
+    "still 1 row");
+  check((await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: cfgRow.id, class: { name: "Class 4" } },
+  })) === 0, "...while the main wing's own Class 4 sections did leave", "0 attached to Main");
+  // Back to the full range for the rest of the file.
+  await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 7, sections: 3 }] });
+  await commit(4);
+
   // ─────────────── 3. UNTICKING SUBJECTS IS WRITTEN
   console.log("\nUnticking two subjects:");
   await save(7, { subjectsByWing: { Main: ["Mathematics", "English", "Hindi"] } });
