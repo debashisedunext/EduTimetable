@@ -3982,3 +3982,20 @@ Keeping it a column rather than promoting it to a join table is a decision, not 
 That last point is the one §3.10d could have got badly wrong. `detachLeavingClasses` filters on `timetableConfigId: config.id`; had it matched on class *name*, narrowing a wing would have taken a second timetable's children out of a week nobody was editing. `pnpm test:rerun` asserts it, because the filter that makes it safe is one line and its absence would look entirely reasonable.
 
 Moving a class between timetables therefore stays two passes — narrow the first so it detaches, widen the second so it picks the cohort up (§16.1 allows filling a NULL link and refuses overwriting one that has an answer). Each pass is visible, reported and reversible, which was judged better than a single step that moves children between timetables on one press.
+
+
+## 27.17 One fact's edit must not switch off another fact's proposal
+
+The Allocation grid arrives full — periods, teachers and class teachers all proposed from the school's own masters — and §27.15 made the "stop proposing once they edit" judgement **per wing**, so that adding a second wing does not leave it empty while an edited wing keeps its edits.
+
+That judgement was computed once, from the stored **curriculum**, and applied to the curriculum, the mappings and the class teachers alike. Reported from a live school, with two screenshots:
+
+> The wing ran UKG–Class 2 while the draft's stored curriculum still covered Class 4–12 — because the wing had just been narrowed. No stored cell belonged to this wing, so the gate was open and the grid filled in completely: periods, teachers, class-teacher badges. Then one digit was typed into Class 1-A English. The write puts the whole cell list back, so the wing's own classes entered the stored curriculum, the gate shut — **and shut for the mappings too**, which nobody had touched. Fifty-seven cells went from staffed to "nobody" on a single keystroke, and every class-teacher badge with them. Unstaffed went 27 → 57.
+
+**"Has this wing got a curriculum?" and "has this wing got any staffing?" are different questions, and a school answers them at different moments.** Each fact now brings its own accessor and gets its own answer.
+
+`mergeByWing` in `packages/shared/src/onboarding/fallback.ts` is that merge, called three times. It lives in `packages/shared` for the reason `mergeShownWings` does — `apps/web` has no test harness, and a function that can silently un-staff a school's entire week should not be the one thing nobody can run.
+
+`wingsOf` returns a **list**, not a wing: a curriculum cell belongs to one class and therefore one wing, but a §4.10 merged group spans several class-sections and may span wings, and a proposal is kept only when *every* wing it touches is still unplanned. That `every` is the grid's own rule, preserved rather than reinvented at the call site. An `undefined` wing — a stored row naming a class the plan does not know — never marks a wing as planned and never blocks a proposal.
+
+**Known edge, stated rather than hidden:** clearing the *last* teacher in a wing leaves it with no stored mappings, so the proposal returns. That is §27.15's "emptied on purpose" problem in its other form, and much the smaller one — it takes clearing every cell in a wing to reach, rather than typing a single digit.

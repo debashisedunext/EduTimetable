@@ -281,8 +281,41 @@ function useModel(answers: Record<string, any>, activeWing: number,
      * the fallback filled any class with no rows.
      */
     const wingOfClass = new Map(planClasses(wings).classes.map((c) => [c.className, c.wing]));
-    const plannedWings = new Set((stored ?? []).map((c) => wingOfClass.get(c.className)).filter(Boolean));
-    const fresh = (className: string) => !plannedWings.has(wingOfClass.get(className));
+    /**
+     * §27.17 — THREE gates, one per fact, each asking about its own data.
+     *
+     * There was one `fresh`, computed from the stored CURRICULUM and applied to
+     * the curriculum, the mappings and the class teachers alike. That is wrong
+     * in a way that only shows up on a school whose stored plan does not yet
+     * cover the wing being looked at — which is every school that has just
+     * narrowed a wing, and is what one reported:
+     *
+     *   The wing ran UKG–Class 2 while the draft's curriculum covered Class
+     *   4–12, so no stored cell belonged to this wing, the gate was open and
+     *   the proposal filled the grid in — periods, teachers, class teachers.
+     *   Then one digit was typed. `setPeriods` writes the whole cell list back,
+     *   so the wing's own classes entered the stored curriculum, the gate shut
+     *   — and shut for the MAPPINGS too, which nobody had touched. Fifty-seven
+     *   cells went from staffed to "none" on a single keystroke, and every
+     *   class-teacher badge with them.
+     *
+     * The intent (§27.15) is per wing and still right: a wing somebody has
+     * planned keeps what they planned, a wing nobody has touched gets the
+     * proposal. It just has to be asked three times, because "has this wing got
+     * a curriculum?" and "has this wing got any staffing?" are different
+     * questions and a school answers them at different moments.
+     *
+     * Known edge, stated rather than hidden: clearing the LAST teacher in a
+     * wing leaves it with no stored mappings, so the proposal returns. That is
+     * the §27.15 "emptied on purpose" problem in its other form — and much the
+     * smaller one, since it takes clearing every cell in a wing to reach it
+     * rather than typing a single digit.
+     */
+    const wingOf = (className: string) => wingOfClass.get(className);
+    const gate = (planned: Set<string | undefined>) =>
+      (className: string) => !planned.has(wingOf(className));
+
+    const fresh = gate(new Set((stored ?? []).map((c) => wingOf(c.className)).filter(Boolean)));
 
     const cells: CurriculumCell[] = stored
       ? [...stored, ...proposedCurriculum.cells.filter((c) => fresh(c.className))]
@@ -295,15 +328,23 @@ function useModel(answers: Record<string, any>, activeWing: number,
     const classOfSection = (cs: string) => cs.replace(/-[^-]+$/, "").trim();
     const storedMappings: MappingSuggestion[] | null =
       Array.isArray(answers.mappings) ? answers.mappings : null;
+    /** §27.17 — has THIS wing been staffed? Not "has it got a curriculum?". */
+    const freshStaff = gate(new Set((storedMappings ?? [])
+      .flatMap((x) => x.classSections.map((cs) => wingOf(classOfSection(cs))))
+      .filter(Boolean)));
     const mappings = withCurriculumPeriods(curriculum, storedMappings
       ? [...storedMappings,
-         ...proposedMappings.mappings.filter((x) => x.classSections.every((cs) => fresh(classOfSection(cs))))]
+         ...proposedMappings.mappings.filter((x) => x.classSections.every((cs) => freshStaff(classOfSection(cs))))]
       : proposedMappings.mappings);
     const storedCTs: ClassTeacher[] | null =
       Array.isArray(answers.classTeachers) ? answers.classTeachers : null;
+    /** §27.17 — and again for the class-teacher role, which is its own answer. */
+    const freshCT = gate(new Set((storedCTs ?? [])
+      .map((c) => wingOf(classOfSection(c.classSection)))
+      .filter(Boolean)));
     const classTeachers: ClassTeacher[] = storedCTs
       ? [...storedCTs,
-         ...proposedMappings.classTeachers.filter((c) => fresh(classOfSection(c.classSection)))]
+         ...proposedMappings.classTeachers.filter((c) => freshCT(classOfSection(c.classSection)))]
       : proposedMappings.classTeachers;
 
     const shownInitials = assignInitials(teachers);
