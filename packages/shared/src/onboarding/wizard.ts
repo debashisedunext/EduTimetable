@@ -534,8 +534,26 @@ export function classSheets(answers: WizardAnswers, shape?: SchoolShape): {
   if (classes.length === 0) return { sheets: [], issues };
   const year = answers.session?.name ?? "";
 
-  const classRows = classes.map((c) => ({ "Class Name": c.className, Sequence: c.sequence }));
-  const sectionRows = classes.flatMap((c) =>
+  /*
+    §3.10d — a class the range has moved off is NOT in the sheet.
+
+    §3.10c kept it in the plan so the grid could show it rather than letting it
+    vanish silently, and that is still right: the row is on screen, marked, and
+    says what pressing Next will do to it. But the sheet is the thing that
+    ATTACHES a class-section to this timetable (§16.1 — it is the only door that
+    fills a NULL `timetable_config_id`), so leaving it here would re-attach
+    exactly the sections the commit is about to detach. The two would fight,
+    and the sheet would win because it runs first.
+
+    So: shown in the grid, absent from the sheet, detached by the commit. One
+    decision expressed in three places that agree, rather than three places
+    each deciding for themselves (§10.6).
+  */
+  const teaching = classes.filter((c) => !c.outsideRange);
+  if (teaching.length === 0) return { sheets: [], issues };
+
+  const classRows = teaching.map((c) => ({ "Class Name": c.className, Sequence: c.sequence }));
+  const sectionRows = teaching.flatMap((c) =>
     c.sections.map((s) => ({
       "Class Name": c.className,
       "Section Name": s,
@@ -547,6 +565,23 @@ export function classSheets(answers: WizardAnswers, shape?: SchoolShape): {
   return { sheets: [asSheet("Classes", classRows), asSheet("Class Sections", sectionRows)], issues };
 }
 
+/**
+ * §3.10d — the classes each wing has stopped teaching, by name.
+ *
+ * What `commit(4)` detaches. Read off the same `planClasses` the grid drew, so
+ * the badge somebody saw and the rows the commit moves cannot disagree — the
+ * whole reason `outsideRange` is a field on the plan rather than a comparison
+ * redone on the server.
+ */
+export function classesLeavingWing(
+  answers: WizardAnswers,
+  shape?: SchoolShape,
+): Array<{ wing: string; className: string }> {
+  return planClasses(answers.wings ?? [], shape).classes
+    .filter((c) => c.outsideRange)
+    .map((c) => ({ wing: c.wing, className: c.className }));
+}
+
 /** What the grid and the summary line show, without touching the database. */
 export function planSummary(answers: WizardAnswers, shape?: SchoolShape): {
   classes: number;
@@ -555,15 +590,23 @@ export function planSummary(answers: WizardAnswers, shape?: SchoolShape): {
 } {
   const { classes } = planClasses(answers.wings ?? [], shape);
   const byWing = new Map<string, { classes: number; sections: number }>();
-  for (const c of classes) {
+  /*
+    §3.10d — the classes this wing is about to LET GO are not counted.
+
+    They are in the plan so the grid can show them and say what Next will do
+    (§3.10c), but "this wing runs N classes" is a statement about the week that
+    is being built, and a class the commit is about to detach is not part of it.
+  */
+  for (const c of classes.filter((x) => !x.outsideRange)) {
     const e = byWing.get(c.wing) ?? { classes: 0, sections: 0 };
     e.classes += 1;
     e.sections += c.sections.length;
     byWing.set(c.wing, e);
   }
+  const teaching = classes.filter((c) => !c.outsideRange);
   return {
-    classes: classes.length,
-    sections: classes.reduce((n, c) => n + c.sections.length, 0),
+    classes: teaching.length,
+    sections: teaching.reduce((n, c) => n + c.sections.length, 0),
     perWing: [...byWing.entries()].map(([wing, v]) => ({ wing, ...v })),
   };
 }

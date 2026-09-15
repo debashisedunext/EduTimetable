@@ -3946,3 +3946,24 @@ It is read back now, for every wing that has narrowed and only those — a confi
 It also iterated the draft's `wings` and wrote **nothing at all** when the draft named none. `subjectsByWing` is keyed by wing name, so such a draft was a complete instruction being thrown away for want of a list it did not need; it falls back to the selection's own keys, which only runs when there is no wing list to narrow, so no `?scope=`-ed commit can widen through it.
 
 `pnpm test:rerun` drives the whole second pass — build, narrow the range, untick, discard the draft, reopen, untick again — and asserts against the database rather than the response, because every one of these faults passed every "did it error?" test there is.
+
+
+### 3.10d Narrowing a wing's range detaches, rather than doing nothing
+
+§3.10c stopped a removal being silent. It did not make one possible: the range still could not take a class out of a timetable, because the §16 importer only creates. A school narrowing to three classes saw the other twelve stay, which was honest and still not what it asked for.
+
+**A class the range has moved off now leaves the timetable.** `class_sections.timetable_config_id` goes to NULL — which invariant 11 already defines as "belongs to no timetable yet". The class, its sections, its curriculum, its mappings and its children are untouched; one column says this week no longer covers them. **Widening the range again re-attaches them**, through §16.1's own repair path, and that reversibility is what makes it safe to happen on a Next press rather than behind a typed confirmation. Deleting a cohort remains the Classes master's job, where the count of what is about to go is shown first (§27.11).
+
+Three places now express one decision and must agree, which is why the flag lives on the plan rather than being recomputed:
+
+- `planClasses` **keeps** the class, marked `outsideRange`, so the grid can show it and say what Next will do.
+- `classSheets` **drops** it. The Class Sections sheet is the only door that fills a NULL `timetable_config_id`, so leaving it in would re-attach exactly the rows the commit is about to detach — and the sheet would win, because it runs first.
+- `commit(4)` **detaches** it, reading `classesLeavingWing` off the same plan the grid drew.
+
+`planSummary` excludes them too: "this wing runs N classes" is a statement about the week being built, and a class about to be let go is not part of it.
+
+**Two refusals, both by name.** A section with **published** lessons is kept — those rows are on a wall somewhere and referenced by `substitution_log`, so taking their class out would leave lessons belonging to a cohort the timetable does not teach; the way out is §3.14's withdrawal, which is a decision somebody makes on purpose. A **frozen** timetable is refused, and through this door §29.1 refuses the whole commit upstream anyway (the guided setup is the blunt exception that refuses while any wing is frozen) — the detach carries its own check for any caller that did not pass the importer. One frozen or published wing never blocks the others: refusals are collected and reported against the class they belong to, §30.11's rule.
+
+Draft lessons for a detached section **are** removed, in the same transaction. They are regenerated wholesale by the next Generate, and a draft card for a class this timetable no longer runs is not a lesson — it is a row the Board would draw against a section its own list no longer contains.
+
+The commit reports `detached: { sections, refused }`, so none of it is silent, and `pnpm test:rerun` asserts the whole loop: narrow, detach, report, widen, re-attach, and both refusals.

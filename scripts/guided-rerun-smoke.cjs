@@ -135,26 +135,92 @@ async function main() {
   await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 6, sections: 3 }] });
   const narrowed = await commit(4);
   /*
-    The COUNT in the database, not the message.
+    §3.10d — the range now TAKES EFFECT, and it does so by detaching.
 
-    The old behaviour passed every "did it error?" test there is: status 201,
-    `ok: true`, no issues. What it did not do was keep the school's own record
-    and its screen saying the same thing.
+    Counted in the database, never read off the message: the old behaviour
+    passed every "did it error?" test there is — 201, `ok: true`, no issues —
+    while doing nothing at all.
   */
   const after = {
     classes: await prisma.schoolClass.count({ where: { schoolId } }),
     sections: await prisma.classSection.count({ where: { schoolId } }),
+    attached: await prisma.classSection.count({ where: { schoolId, timetableConfigId: { not: null } } }),
   };
   check(after.classes === 3 && after.sections === 9,
-    "Class 3 is still there — the importer cannot delete, so the plan keeps it",
-    JSON.stringify(after));
+    "nothing is DELETED — the class, its sections and its children stay in the school",
+    JSON.stringify({ classes: after.classes, sections: after.sections }));
+  check(after.attached === 6,
+    "but the three sections of the class that left ARE detached",
+    `${after.attached} of 9 still attached`);
+  check((narrowed.json?.detached?.sections ?? []).length === 3,
+    "and the commit SAYS so rather than letting it happen quietly",
+    (narrowed.json?.detached?.sections ?? []).join(", ") || "reported nothing");
+
   /*
-    And the SHEET still carries it. This is the half that matters: a plan that
-    dropped Class 3 would leave its `timetable_config_id` unrepaired for ever
-    after (§16.1), because the only door that fills that link is this sheet.
+    The other direction, which is what makes this safe enough to do on a Next
+    press: widening puts them back, through §16.1's own repair path.
   */
-  const sheetRows = narrowed.json?.plan?.sheets?.find((x) => x.sheet === "Class Sections")?.read ?? 0;
-  check(sheetRows === 9, "and the Class Sections sheet still lists all nine", `${sheetRows} rows`);
+  await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 7, sections: 3 }] });
+  await commit(4);
+  check((await prisma.classSection.count({ where: { schoolId, timetableConfigId: { not: null } } })) === 9,
+    "widening the range again re-attaches them — it is reversible", "9 of 9");
+
+  // ─────────────── 2a. WHAT IT REFUSES
+  /*
+    The ladder is 0-indexed and `fromIndex: 5` is Class 2, so this wing runs
+    Class 2, Class 3, Class 4 — and narrowing to `toIndex: 6` is what drops
+    **Class 4**. Named here because getting it wrong is how a refusal test
+    passes for the wrong reason: a fixture on a class that was never leaving
+    would assert nothing at all.
+  */
+  console.log("\nA published lesson blocks the detach:");
+  const cfgRow = await prisma.timetableConfig.findFirst({ where: { schoolId } });
+  const sec3 = await prisma.classSection.findFirst({
+    where: { schoolId, class: { name: "Class 4" } }, select: { id: true },
+  });
+  const subj = await prisma.subject.findFirst({ where: { schoolId } });
+  const tch = await prisma.teacher.create({
+    data: { schoolId, name: "ZZRR Cover", employeeCode: "ZZRR-1" },
+  });
+  await prisma.timetableSlot.create({
+    data: {
+      schoolId, timetableConfigId: cfgRow.id,
+      classSectionId: sec3.id, subjectId: subj.id, teacherId: tch.id,
+      dayOfWeek: 1, periodNumber: 1, status: "published",
+      teacherOccupancyKey: `T-${tch.id}`,
+    },
+  });
+  await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 6, sections: 3 }] });
+  const blocked = await commit(4);
+  check((blocked.json?.detached?.refused ?? []).some((r) => r.includes("Class 4")),
+    "refused BY NAME — those lessons are on a wall somewhere",
+    (blocked.json?.detached?.refused ?? []).join(" · ") || "nothing refused");
+  check((await prisma.classSection.count({ where: { id: sec3.id, timetableConfigId: { not: null } } })) === 1,
+    "...and the section is still attached", "still in the timetable");
+  await prisma.timetableSlot.deleteMany({ where: { timetableConfigId: cfgRow.id } });
+
+  /*
+    §29.1 — a frozen timetable refuses the WHOLE commit, upstream of this.
+
+    The guided setup is the blunt exception: it resolves names inside one
+    transaction, so it refuses while any wing is frozen rather than per row.
+    The detach carries its own frozen check as well — a second caller reaching
+    it directly would not have passed the importer's — but through this door
+    the right assertion is that nothing happens at all, which is stronger.
+  */
+  console.log("\nA frozen timetable refuses the whole commit (§29.1):");
+  const attachedBefore = await prisma.classSection.count({
+    where: { schoolId, timetableConfigId: { not: null } },
+  });
+  await prisma.timetableConfig.update({ where: { id: cfgRow.id }, data: { frozenAt: new Date() } });
+  const frozen = await commit(4);
+  check(frozen.status >= 400, "the commit is refused", `${frozen.status} ${(frozen.json?.message ?? "").slice(0, 60)}`);
+  check((await prisma.classSection.count({ where: { schoolId, timetableConfigId: { not: null } } })) === attachedBefore,
+    "...and not one section moved", `${attachedBefore} attached, unchanged`);
+  await prisma.timetableConfig.update({ where: { id: cfgRow.id }, data: { frozenAt: null } });
+  // Back to the full range for the rest of the file.
+  await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 7, sections: 3 }] });
+  await commit(4);
 
   // ─────────────── 3. UNTICKING SUBJECTS IS WRITTEN
   console.log("\nUnticking two subjects:");

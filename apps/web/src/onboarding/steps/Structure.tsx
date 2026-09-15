@@ -509,11 +509,11 @@ export function StepClasses({ answers, onChange, startWing = null }: {
                     can is named.
                   */}
                   {c.outsideRange && (
-                    <span title={`${c.className} is outside this wing's range, but it already has class-sections here. Delete them on the Classes master.`}
+                    <span title={`Next will take ${c.className}'s sections out of this timetable. The class, its sections and its curriculum stay in the school — widen the range again to bring them back. A published lesson blocks it, and is named.`}
                       style={{
                         marginLeft: 7, font: "600 10px/1.5 Inter", color: "var(--amber)",
                         border: "1px solid var(--amber)", borderRadius: 5, padding: "1px 5px",
-                      }}>outside the range · already taught</span>
+                      }}>leaving this timetable on Next</span>
                   )}
                 </td>
                 <td style={{ padding: "7px 11px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono, monospace)", fontSize: 11.5 }}>

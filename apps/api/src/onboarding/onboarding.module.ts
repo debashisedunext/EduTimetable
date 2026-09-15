@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AiModule } from "../ai/ai.module";
 import { ImportModule } from "../import/import.module";
 import { TermsModule } from "../terms/terms.module";
+import { ReadinessService } from "../readiness/readiness.service";
 import { DevInterviewController, OnboardingController } from "./onboarding.controller";
 import { OnboardingService } from "./onboarding.service";
 import { InterviewService } from "./interview.service";
@@ -16,7 +17,10 @@ import { InterviewService } from "./interview.service";
   // DevInterviewController is dev-gated: it exists so the interview's merge step
   // can be asserted without an LLM in the loop (§17.8).
   controllers: [OnboardingController, DevInterviewController],
-  providers: [OnboardingService, InterviewService],
+  // §3.10d — detaching a class-section changes what Readiness has to say, so
+  // the cached score is dropped at the point of the write. Provided directly,
+  // as `ImportModule`, `AiModule` and `SyncModule` all do.
+  providers: [OnboardingService, InterviewService, ReadinessService],
   exports: [OnboardingService],
 })
 export class OnboardingModule {}

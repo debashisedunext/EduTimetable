@@ -17,7 +17,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   CLASS_LADDER,
-  classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
+  classesLeavingWing, classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
   roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
   wingRangeFor, wingScope, withCurriculumPeriods,
@@ -26,6 +26,7 @@ import {
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
 import { TermsService } from "../terms/terms.service";
+import { ReadinessService } from "../readiness/readiness.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { stepFrom } from "./interview.answers";
 
@@ -90,6 +91,8 @@ export class OnboardingService {
     private readonly prisma: PrismaService,
     private readonly importer: ImportService,
     private readonly terms: TermsService,
+    /** §3.10d — the score is dropped when a wing lets go of a class. */
+    private readonly readiness: ReadinessService,
   ) {}
 
   /**
@@ -1233,6 +1236,25 @@ export class OnboardingService {
     }
 
     const result = await this.importer.commitSheets(schoolId, sheets);
+    /*
+      §3.10d — a wing that has stopped teaching a class lets go of its sections.
+
+      The range said what this timetable covers, and until now narrowing it did
+      nothing at all: the §16 importer only creates, so the rows stayed attached
+      and the commit answered "everything here already exists". §3.10c stopped
+      that being silent; this is the other half — the narrowing actually takes
+      effect.
+
+      DETACHED, never deleted. `class_sections.timetable_config_id` already
+      means "which timetable teaches this cohort", and NULL already means "not
+      attached yet" (invariant 11). So the children, their class, their sections
+      and their curriculum all stay exactly where they are; one column says this
+      week no longer covers them, and widening the range again re-attaches them
+      through the very sheet that was just told to skip them. Deleting a cohort
+      is the Classes master's job, where the count of what is about to go is
+      shown first (§27.11).
+    */
+    const detached = step === 4 ? await this.detachLeavingClasses(schoolId, answers) : undefined;
     // §19: a lab with no subjects listed is GENERAL and serves everything, so
     // creating "Science Lab" without mapping Science to it produces a second
     // general-purpose room the solver will put Hindi in. The Rooms sheet has no
@@ -1247,7 +1269,99 @@ export class OnboardingService {
     // does not run Chemistry" is a property of the week.
     if (step === 6) await this.applySubjectSelection(schoolId, answers);
     this.logger.log(`Onboarding step ${step} committed for school ${schoolId}: ${JSON.stringify(result.created)}`);
-    return { ...result, issues };
+    return { ...result, issues, ...(detached ? { detached } : {}) };
+  }
+
+  /**
+   * §3.10d — let go of the class-sections a wing no longer covers.
+   *
+   * ## What it does, and the three things it refuses to do
+   *
+   * **It detaches, it does not delete.** `timetable_config_id` goes to NULL,
+   * which invariant 11 already defines as "belongs to no timetable yet". The
+   * class, its sections, its curriculum, its mappings and its children are
+   * untouched, and widening the range re-attaches them through §16.1's own
+   * repair path. That is what makes this safe enough to happen on a Next press
+   * rather than behind a typed confirmation.
+   *
+   * **It will not touch a frozen timetable** (§29.1). A published week that
+   * quietly stopped covering four classes is the failure §29.1 exists to
+   * prevent, and the guard belongs here rather than in the screen because a
+   * second door — the §24.6 interview, a future API client — would not know to
+   * ask.
+   *
+   * **It will not detach a section with PUBLISHED lessons.** Those rows are on
+   * a wall somewhere and in somebody's `substitution_log`; taking their class
+   * out of the timetable would leave lessons belonging to a cohort the
+   * timetable does not teach. Refused by NAME, and the way out is §3.14's
+   * withdrawal, which is a decision somebody makes on purpose.
+   *
+   * Draft lessons for a detached section ARE removed, in the same transaction.
+   * They are regenerated wholesale by the next Generate, and a draft card for a
+   * class this timetable no longer runs is not a lesson — it is a row the Board
+   * would draw against a section its own list no longer contains.
+   */
+  private async detachLeavingClasses(
+    schoolId: number,
+    answers: WizardAnswers & Record<string, any>,
+  ): Promise<{ sections: string[]; refused: string[] } | undefined> {
+    const year = String(answers.session?.name ?? "");
+    const shape = await this.schoolShape(schoolId, year || undefined);
+    const leaving = classesLeavingWing(answers, shape);
+    if (leaving.length === 0) return undefined;
+
+    const sections: string[] = [];
+    const refused: string[] = [];
+
+    for (const { wing, className } of leaving) {
+      const config = await this.prisma.timetableConfig.findFirst({
+        where: { name: wing }, select: { id: true, frozenAt: true, name: true },
+      });
+      if (!config) continue;
+      /*
+        Named rather than thrown. One frozen wing must not stop the others
+        letting go — §30.11's rule that a refusal is reported against the thing
+        it belongs to, not turned into a blanket failure.
+      */
+      if (config.frozenAt) {
+        refused.push(`${className} — ${config.name} is frozen`);
+        continue;
+      }
+
+      const rows = await this.prisma.classSection.findMany({
+        where: { schoolId, timetableConfigId: config.id, class: { name: className } },
+        select: { id: true, section: { select: { name: true } } },
+      });
+      if (rows.length === 0) continue;
+
+      const ids = rows.map((r) => r.id);
+      const published = await this.prisma.timetableSlot.count({
+        where: { timetableConfigId: config.id, status: "published", classSectionId: { in: ids } },
+      });
+      if (published > 0) {
+        refused.push(`${className} — ${published} published lesson(s) in ${config.name}`);
+        continue;
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        // Draft rows only: the published count above is already zero here, and
+        // `deleteMany` with the status spelled out says so at the call site.
+        await tx.timetableSlot.deleteMany({
+          where: { timetableConfigId: config.id, status: "draft", classSectionId: { in: ids } },
+        });
+        await tx.classSection.updateMany({
+          where: { id: { in: ids } }, data: { timetableConfigId: null },
+        });
+      });
+      sections.push(...rows.map((r) => `${className}-${r.section.name}`));
+      this.logger.warn(
+        `Onboarding: ${rows.length} section(s) of ${className} detached from ${config.name} (school ${schoolId})`,
+      );
+    }
+
+    if (sections.length === 0 && refused.length === 0) return undefined;
+    await this.readiness.invalidate(schoolId);
+    return { sections, refused };
   }
 
   /**
