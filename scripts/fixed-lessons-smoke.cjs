@@ -182,6 +182,26 @@ async function main() {
   const cap = (read.json?.caps ?? []).find((c) => c.classId === c1.id && c.subjectId === maths.id);
   check(cap?.periodsPerWeek === 5, "with the curriculum cap the toolbar counts against", `${cap?.periodsPerWeek}`);
 
+  /*
+    §36 — the pickers are told what is legal, they do not work it out.
+
+    The Whole tab's Subject and Teacher lists ARE `options`, already filtered by
+    the server: only real mappings, no elective-owned subject, no §4.8
+    double-period row, no guest. Asserted because a picker that can offer what
+    the save refuses is a picker that teaches people to distrust the screen —
+    and because it is the one part of this feature a typecheck cannot see.
+  */
+  const opts = (read.json?.options ?? []).filter((o) => o.classSectionId === s1a.id);
+  check(opts.length === SUBJECTS.length,
+    "and the options a picker may offer — one per mapped subject",
+    `${opts.length} of ${SUBJECTS.length}`);
+  const mathOpt = opts.find((o) => o.subjectId === maths.id);
+  check(mathOpt?.teacherId === mathTeacher.id && !!mathOpt?.subject,
+    "each naming its subject and the teacher who takes it",
+    `${mathOpt?.subject} → ${mathOpt?.teacher}`);
+  check((read.json?.rooms ?? []).length === sections.length,
+    "with the rooms the third picker offers", `${(read.json?.rooms ?? []).length} rooms`);
+
   // ─────────────── 2 & 3. A REAL GENERATION HONOURS IT
   console.log("\nGenerating:");
   const generate = async () => {

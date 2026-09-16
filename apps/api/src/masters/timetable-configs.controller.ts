@@ -1096,7 +1096,61 @@ export class TimetableConfigsController {
       select: { classId: true, subjectId: true, periodsPerWeek: true },
     });
 
+    /*
+      §36 — what the pickers may OFFER, decided by the server.
+
+      A mapping is what a pin attaches to (`variables.ts` matches on
+      section+subject+teacher), so the list of legal (subject, teacher) pairs
+      for a section IS its mapping list — minus the two things the save
+      refuses anyway: a subject an elective block already owns (§31.19) and a
+      row taught as §4.8 double periods, which has no single occurrence to pin.
+
+      Sent rather than derived on the client for the reason the Electives
+      screen's teacher list is: a picker that can offer something the save
+      refuses is a picker that teaches people to distrust the screen.
+    */
+    const mappings = await this.prisma.teacherSubjectClassSection.findMany({
+      where: { classSectionId: { in: sections.map((s) => s.id) } },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        subject: { select: { name: true } },
+        teacher: { select: { name: true, initials: true, isActive: true, employmentType: true } },
+      },
+    });
+    const blockOwned = new Set(
+      (await this.prisma.electiveOption.findMany({
+        where: { electiveBlock: { members: { some: { classSectionId: { in: sections.map((s) => s.id) } } } } },
+        select: { subjectId: true, electiveBlock: { select: { members: { select: { classSectionId: true } } } } },
+      })).flatMap((o) => o.electiveBlock.members.map((m) => `${m.classSectionId}:${o.subjectId}`)),
+    );
+    const classOf = new Map(sections.map((s) => [s.id, s.classId]));
+    const doubled = new Set(
+      (await this.prisma.classSubject.findMany({
+        where: {
+          classId: { in: [...new Set(sections.map((s) => s.classId))] },
+          academicYearId: config.academicYearId,
+          consecutiveBlockSize: { gt: 1 },
+        },
+        select: { classId: true, subjectId: true },
+      })).map((c) => `${c.classId}:${c.subjectId}`),
+    );
+
     return {
+      options: mappings
+        .filter((m) => m.teacher.isActive && m.teacher.employmentType !== "guest")
+        .filter((m) => !blockOwned.has(`${m.classSectionId}:${m.subjectId}`))
+        .filter((m) => !doubled.has(`${classOf.get(m.classSectionId)}:${m.subjectId}`))
+        .map((m) => ({
+          classSectionId: m.classSectionId,
+          subjectId: m.subjectId,
+          subject: m.subject.name,
+          teacherId: m.teacherId,
+          teacher: m.teacher.name,
+          initials: m.teacher.initials,
+        })),
+      rooms: (await this.prisma.room.findMany({
+        select: { id: true, name: true }, orderBy: { name: "asc" },
+      })).map((r) => ({ id: r.id, name: r.name })),
       lessons: rows.map((r) => ({
         id: r.id,
         classSectionId: r.classSectionId,

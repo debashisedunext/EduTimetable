@@ -13,6 +13,8 @@ import { commitAllocation } from "../onboarding/commit-allocation";
 import { AllocationTab } from "./AllocationTab";
 import { Board } from "./Board";
 import type { StripGroup } from "./strip";
+import { useFixedLessons, type Pin } from "./fixed-lessons";
+import { FixedLessonBar } from "./FixedLessonBar";
 import type { AllocationCellFacts } from "../onboarding/steps/Allocation";
 import { useColors } from "../colors-context";
 
@@ -381,6 +383,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
 }) {
   const { current } = useConfigCtx();
   const colors = useColors();
+
   /*
     §31.13 — which tab to open on can be asked for in the URL.
 
@@ -414,6 +417,32 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
   // other hooks and above every early return; the window itself is computed
   // further down, where the filtered row count exists.
   const view = useRowViewport(paneEl, tab);
+
+  /**
+   * §36 — the Whole tab's second mode: pinning lessons before generation.
+   *
+   * A MODE rather than a separate tab, because it is the same grid answering a
+   * different question about the same cells — "what will be here" instead of
+   * "what is here". A seventh tab would have meant a seventh pivot of a payload
+   * that has nothing to pivot, and the reader would have had to hold two
+   * pictures of one week.
+   *
+   * Only on `section`, which is the one pivot whose rows are class-sections —
+   * the thing a pin belongs to. Switching tabs turns it off rather than
+   * carrying it, so a teacher pivot never renders half a mode it cannot express.
+   */
+  const [pinMode, setPinMode] = useState(false);
+  const pinning = pinMode && tab === "section";
+  const fixed = useFixedLessons(current?.id ?? null, pinning);
+  /** Which cell the pin bar is editing. Cleared when the mode is left. */
+  const [pinCell, setPinCell] = useState<
+    { classSectionId: number; dayOfWeek: number; periodNumber: number } | null>(null);
+  /*
+    Leaving the mode drops the selection. A bar still pointing at a cell the
+    grid is no longer drawing is a control editing something invisible, which
+    §31.15 already settled for the Lesson grid's own bar on a wing change.
+  */
+  useEffect(() => { if (!pinning) setPinCell(null); }, [pinning]);
 
   /*
     §31.10 — the Allocation grid's draft, held HERE rather than in the tab.
@@ -1194,6 +1223,19 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
     : tab === "subject" ? named(data.subjects)
     : (context?.sections ?? []).map((s) => ({ key: s.id, label: s.label }));
   const visibleRows = q ? rows.filter((r) => r.label.toLowerCase().includes(q)) : rows;
+  /*
+    §36 — row key → label, for the pin bar's heading.
+
+    Built from `rows` rather than from the filter, so searching the grid does
+    not leave the bar unable to name the cell it is editing.
+
+    A plain Map, not a `useMemo`: this sits below the early returns above, and
+    a hook there is a hook that runs on some renders and not others — the
+    Rules-of-Hooks violation this file has been caught by before. Building a
+    map of the section list on each render costs nothing at this size, and
+    correctness is not the place to save it.
+  */
+  const rowLabels = new Map(rows.map((r) => [String(r.key), r.label]));
 
   const teachingPeriodNumbers = new Set(
     columns.filter((p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== null)
@@ -1294,8 +1336,71 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
           {(tab === "lesson" || tab === "board") && (
             <div ref={setToolbarSlot} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} />
           )}
+          {/*
+            §36 — the mode switch, on the Whole tab only.
+
+            Named "Fix lessons" rather than "Edit": the grid is read-only in
+            every other sense and stays so, and what this turns on is one
+            specific kind of writing. Turning it OFF with unsaved pins would
+            throw them away silently, so it refuses while `dirty` and says so.
+          */}
+          {tab === "section" && canEdit && (
+            <button
+              onClick={() => { if (!fixed.dirty) setPinMode(!pinMode); }}
+              aria-pressed={pinning}
+              title={fixed.dirty
+                ? "Save or discard the fixed lessons first"
+                : "Pin a lesson to a day and period — the generator will honour it"}
+              style={{
+                border: `1px solid ${pinning ? "var(--brand)" : "var(--line)"}`,
+                background: pinning ? "var(--brand)" : "var(--paper)",
+                color: pinning ? "#fff" : "var(--ink)",
+                borderRadius: 8, padding: "6px 11px", font: "700 12px/1 Inter, sans-serif",
+                cursor: fixed.dirty ? "not-allowed" : "pointer",
+                opacity: fixed.dirty && !pinning ? 0.5 : 1,
+              }}>
+              📌 Fix lessons
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/*
+            §36 — the pin bar and its Save.
+
+            One deliberate act, like the Lesson grid's (§31.10): a grid that
+            wrote every click straight to the server would put a hard constraint
+            on the timetable for a mis-click, and the whole set is validated
+            together anyway, so there is nothing to save until the set is what
+            somebody meant.
+          */}
+          {pinning && (
+            <>
+              {fixed.error && (
+                <span className="chip mono" title={fixed.error}
+                  style={{ background: "var(--signal-bg)", color: "var(--signal)", maxWidth: 380 }}>
+                  {fixed.error.slice(0, 120)}
+                </span>
+              )}
+              {fixed.dirty && (
+                <button onClick={fixed.revert} className="btn"
+                  style={{ fontSize: 12, border: "1px solid var(--line)" }}>Discard</button>
+              )}
+              <button
+                onClick={() => { void fixed.save().then((ok) => { if (ok) refetchReadiness(); }); }}
+                disabled={!fixed.dirty || fixed.savingNow}
+                style={{
+                  border: "none", borderRadius: 8, padding: "8px 15px",
+                  font: "700 12.5px/1 Inter, sans-serif",
+                  background: fixed.dirty ? "var(--brand)" : "var(--steel-pale)",
+                  color: fixed.dirty ? "#fff" : "var(--ink-faint)",
+                  cursor: fixed.dirty && !fixed.savingNow ? "pointer" : "default",
+                }}>
+                {fixed.savingNow ? "Saving…" : fixed.dirty
+                  ? `Save ${fixed.pins.length} fixed lesson${fixed.pins.length === 1 ? "" : "s"}`
+                  : `${fixed.pins.length} fixed`}
+              </button>
+            </>
+          )}
           {tab === "lesson" ? (
             <>
               {allocError && (
@@ -1517,6 +1622,62 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
                           }} />;
                         }
                         const here = grid?.get(pivotCellKey(row.key, d, p.periodNumber)) ?? [];
+                        /*
+                          §36 — in pin mode the cell shows what WILL be there.
+
+                          The row key on this pivot is the class-section id, so
+                          it is the pin's own key too. The generated lesson
+                          underneath is deliberately not drawn as well: two
+                          answers in one 27-pixel cell is no answer, and the
+                          question being asked in this mode is what the school
+                          is about to require, not what one draft happens to
+                          hold.
+                        */
+                        if (pinning) {
+                          const sectionId = Number(row.key);
+                          const pin = fixed.at(sectionId, d, p.periodNumber as number);
+                          const opt = pin
+                            ? fixed.optionsFor(sectionId).find(
+                              (o) => o.subjectId === pin.subjectId && o.teacherId === pin.teacherId)
+                            : null;
+                          const isHere = pinCell?.classSectionId === sectionId
+                            && pinCell.dayOfWeek === d && pinCell.periodNumber === p.periodNumber;
+                          const sw = opt ? colors.subject(opt.subject) : null;
+                          return (
+                            <td key={`${d}:${i}`} style={{
+                              padding: 1, borderRight: "1px solid var(--line)",
+                              borderBottom: "1px solid var(--line)",
+                            }}>
+                              <button
+                                onClick={() => setPinCell({
+                                  classSectionId: sectionId, dayOfWeek: d,
+                                  periodNumber: p.periodNumber as number,
+                                })}
+                                title={pin
+                                  ? `${opt?.subject ?? "Fixed"} · ${opt?.teacher ?? ""} — fixed here`
+                                  : "Click to fix a lesson here"}
+                                style={{
+                                  width: "100%", minHeight: 22, borderRadius: 4, cursor: "pointer",
+                                  display: "block", padding: "2px 1px", lineHeight: 1.15,
+                                  background: sw?.bg ?? "var(--paper)",
+                                  color: sw?.fg ?? "var(--ink-faint)",
+                                  border: pin ? "1px solid var(--brand-dark)" : "1px dashed var(--line)",
+                                  boxShadow: isHere ? "0 0 0 2px var(--brand)" : undefined,
+                                }}>
+                                {pin ? (
+                                  <>
+                                    <span style={{ display: "block", font: "700 9.5px/1.1 Inter" }}>
+                                      {abbr(opt?.subject ?? "?")}
+                                    </span>
+                                    <span style={{ display: "block", font: "500 8px/1.1 var(--font-mono, monospace)", opacity: 0.85 }}>
+                                      {opt?.initials ?? ""}
+                                    </span>
+                                  </>
+                                ) : <span style={{ fontSize: 9 }}>·</span>}
+                              </button>
+                            </td>
+                          );
+                        }
                         return (
                           <Cell
                             key={`${d}:${i}`}
@@ -1546,6 +1707,40 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
           )}
           </div>
           )}
+          {/*
+            §36 — in pin mode the bar REPLACES the strip rather than joining it.
+
+            §31.6's strip explains the cell that is there; this edits the cell
+            that will be. Both at once is two rows of chrome under a grid whose
+            scarcest dimension is height (§31.10), and they would be describing
+            different weeks — the strip reads the generated draft, the bar the
+            pins. One question at a time.
+          */}
+          {pinning ? (
+            pinCell ? (
+              <div style={{ padding: "8px 10px", borderTop: "1px solid var(--line)" }}>
+                <FixedLessonBar
+                  label={`${rowLabels.get(String(pinCell.classSectionId)) ?? "This class"} · ${DAY_NAMES[pinCell.dayOfWeek]} P${pinCell.periodNumber}`}
+                  cell={pinCell}
+                  pin={fixed.at(pinCell.classSectionId, pinCell.dayOfWeek, pinCell.periodNumber)}
+                  options={fixed.optionsFor(pinCell.classSectionId)}
+                  rooms={fixed.rooms}
+                  capFor={fixed.capFor}
+                  onChange={(next: Pin) => fixed.set(next)}
+                  onClear={() => fixed.clear(pinCell)}
+                />
+              </div>
+            ) : (
+              <div style={{
+                padding: "14px 12px", borderTop: "1px solid var(--line)",
+                font: "400 12.5px/1.5 Inter", color: "var(--ink-soft)",
+              }}>
+                Click any cell to fix a lesson to it. The generator will place that lesson exactly
+                there and build the rest of the week around it — and the lesson plan for a pinned
+                subject is locked until the pin is removed.
+              </div>
+            )
+          ) : (
           <Strip
             groups={
               selected === null ? null
@@ -1557,6 +1752,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
             readiness={readiness}
             onShowIssues={() => setShowIssues(true)}
           />
+          )}
         </div>
       </div>
 

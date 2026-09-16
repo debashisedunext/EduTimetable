@@ -3999,3 +3999,50 @@ That judgement was computed once, from the stored **curriculum**, and applied to
 `wingsOf` returns a **list**, not a wing: a curriculum cell belongs to one class and therefore one wing, but a §4.10 merged group spans several class-sections and may span wings, and a proposal is kept only when *every* wing it touches is still unplanned. That `every` is the grid's own rule, preserved rather than reinvented at the call site. An `undefined` wing — a stored row naming a class the plan does not know — never marks a wing as planned and never blocks a proposal.
 
 **Known edge, stated rather than hidden:** clearing the *last* teacher in a wing leaves it with no stored mappings, so the proposal returns. That is §27.15's "emptied on purpose" problem in its other form, and much the smaller one — it takes clearing every cell in a wing to reach, rather than typing a single digit.
+
+
+## 36. Fixed Lessons (Phase 52)
+
+A school pins a lesson to a day, period and room *before* anything is generated — *"Class 1-A does Mathematics with Puja Sri on Monday period 2"* — and the solver honours it, then builds the rest of the week around it.
+
+### 36.1 Domain pruning, not a pre-written slot
+
+`timetable_slots.is_locked` already pins a *placement*, and reusing it was the obvious implementation. It is wrong three times:
+
+- **A locked slot belongs to one draft** (§22), so generating a second draft would ignore every pin. A fixed lesson is the timetable's standing intention and has to survive every regeneration into any draft. That difference is the whole reason it has its own table.
+- **It needs a room**, and the §19 room ladder lives inside `SolverState.check()` — a row written from outside would either carry a NULL room (breaking invariant 5) or need a second copy of the ladder.
+- It would make **invariant 2** — hard constraints are pruned before search, never scored — true of electives and false of this.
+
+So nothing is written into `timetable_slots`. `variables.ts` hands a pinned occurrence exactly the cell the school named, intersected with `free` rather than replacing it, which is the same four lines §4.9 Phase 15 already uses for a pinned elective block. A pin into a cell that cannot work therefore leaves an **empty domain** — the lesson will not place, and Check 14 has already said so by name.
+
+A pin **narrows an occurrence, it does not consume one** — unlike a locked cell, which is already placed and needs no variable. Measured on the reference school: five occurrences before and after, the pinned one down from 40 legal cells to exactly one.
+
+`room_id` is nullable and NULL is **"not stated", never "anywhere"**: the solver picks by the §19 ladder as it does for every other lesson. A named room rides as that occurrence's `preferredRoomId`, which is already the top of the ladder and already refuses hard when the room is taken — so the room costs nothing in `SolverState`.
+
+### 36.2 What is refused at save, and what Check 14 reports
+
+Everything **local and exact** is refused by `assertFixedLessonsValid` while the school is looking at the row: the cell must exist (not a break, not a §28 activity, not past a §34 short day's reach, not a non-working day); the subject must be taught to the class (§27.16); an elective must not already own it (§31.19); the teacher must be active, not a guest (§18) and free (§4.7a); the curriculum must have room; nobody in two places; one room, one lesson.
+
+Two more come from the solver's own shape rather than from policy, and both would otherwise fail silently. **A pin must attach to a real mapping** — `variables.ts` matches on (section, subject, teacher), so a pin naming an unmapped teacher would build no variable and the constraint would simply vanish. And **a §4.8 double-period row has no single occurrences to pin**, so it is refused by name rather than accepted and dropped.
+
+The whole set is validated **before the delete**, because the write is a replace: a refused save leaves the school exactly what it had.
+
+**Check 14 reports the aggregate and the drift**, and nothing else — repeating the save-time rules would be a second opinion free to disagree. It blocks, which is the school's own decision: Readiness refuses the generation rather than letting it run and report what it could not honour. Six issues, each naming the pin precisely enough to remove: the lesson a pin belongs to has **moved** (re-staffing changed the mapping key — the one a school could never deduce, so it is named first); the cell no longer exists; more pinned than the class is taught; one teacher in two places, *including across timetables*, which a per-config save cannot see; a day the teacher does not work; more pinned into a day than their cap allows.
+
+### 36.3 The lesson plan locks while pinned
+
+The school's own rule: *"if fixed allocation is done, the user should not be able to change the lesson plan — prompt to remove the fixed entry first."* Enforced on the **server** at the curriculum PUT and DELETE and at §27.15's allocation-cell delete, because the Lesson grid, the §16 importer and the guided setup's commit all reach the same rows and a rule kept in one screen is a rule the other two break.
+
+Asked by **class**, which surprises people and is not a quirk: `class_subjects.periods_per_week` is one number for the whole class (§27), so a pin in 1-A locks Class 1's Mathematics for 1-B and 1-C too. It is the same number.
+
+### 36.4 The screen: a mode on the Whole tab
+
+A **mode**, not a seventh tab — the same grid answering a different question about the same cells, *"what will be here"* instead of *"what is here"*. Only on `section`, the one pivot whose rows are class-sections, which is what a pin belongs to; switching tabs turns it off rather than rendering half a mode a teacher pivot cannot express. Turning it off with unsaved pins is refused rather than discarding them.
+
+**The pickers offer only what the server would accept.** `GET /fixed-lessons` sends `options` already filtered — real mappings only, no elective-owned subject, no double-period row, no guest teacher — and the bar narrows that to the selected section. Nothing is re-derived on the client, because a picker that can offer what the save refuses is a picker that teaches people to distrust the screen (the §27.13 Electives lesson, applied again).
+
+The bar **replaces** the §31.6 strip rather than joining it: the strip explains the cell that is there and the bar edits the cell that will be, so both at once would be two rows of chrome describing two different weeks under a grid whose scarcest dimension is height. The generated lesson underneath is not drawn either — two answers in one 27-pixel cell is no answer.
+
+One **Save** for the set, like the Lesson grid's (§31.10): a click that wrote straight through would put a hard constraint on the timetable for a mis-click, and the whole set is validated together anyway. A refusal keeps the editing set exactly as it was — rolling back would throw away nineteen good pins to punish the twentieth. The count in the toolbar is the one thing the client owns, because *"3 of 6 fixed"* has to include the pin just placed and the server cannot know about that one.
+
+`pnpm test:fixed` is the proof, and it is the whole chain rather than the parts: a pin is stored and served with what the grid needs, a **real generation** puts the lesson in that cell and nowhere else, nothing is unplaced, regenerating keeps it, a named room binds, every refusal fires by name, a refused save leaves the pins untouched, the lesson plan locks and unlocks, and Check 14 blocks with Generate refused.
