@@ -50,6 +50,12 @@ export type IssueCode =
   | "FIXED_LESSON_TEACHER_CLASH"
   | "FIXED_LESSON_TEACHER_AWAY"
   | "FIXED_LESSON_OVER_DAY_CAP"
+  /**
+   * §26.4 — Check 10b: a confined subject's cells hold fewer lessons than its
+   * teachers have to give. The cells a rule leaves are not supply until
+   * somebody can stand in them.
+   */
+  | "PLACEMENT_TEACHER_CAPACITY"
   /** §26.3 — a lunch-side rule confines more periods than that side holds. */
   | "LUNCH_SIDE_CAPACITY"
   | "HOME_ROOM_UNSET"

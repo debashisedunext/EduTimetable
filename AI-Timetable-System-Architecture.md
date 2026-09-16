@@ -4084,3 +4084,47 @@ The breakpoint is a `matchMedia` in the component rather than a CSS class, becau
 The log is **320px** instead of 150 now that it has a column to itself. It was the one thing somebody watches during a solve, shown eight lines at a time.
 
 **Before the first run, the right column says what is about to be built** — class-sections, teachers, periods required and periods available. Not filler: on a school that has never generated there is no log and no result, and the column would be the blank half this change exists to remove. Those four numbers are what somebody checks before pressing a button that rewrites a week, and they are already in the readiness payload, so there is no second request and no second opinion about what the timetable contains.
+
+
+## 5.8 A timetable of zero slots, reported as success
+
+Reported as *"timetable is not generating, 0 slots written"* — and the draft said `0 / 315 placed`, `errorCount 0`. Zero errors on zero lessons.
+
+**The bug is one line, and it is a vocabulary bug.** `search()` seeded its running best as `{ placements: [], unplaced: [] }`. That is not "nothing tried yet"; it is *"complete, with nothing left over"*, and the two lines after it read it exactly that way:
+
+```
+if (out.placements.length > best.placements.length) best = out;   // 0 > 0 → false
+if (best.unplaced.length === 0) break;                            // 0 === 0 → TRUE
+```
+
+An attempt that placed nothing at all never replaced `best`, and the next line then declared success and broke out. Worse, `solveTimetable` went on to test `if (enforced && best.unplaced.length > 0)` — so the **§20 fallback never ran**, and that pass is the one that exists to guarantee a new rule can never cost a school lessons. Completeness outranks shape, unless the shape pass fails so completely that it looks finished.
+
+`best` is now seeded with **every variable unplaced**, through the same `allUnplaced` helper the repair pass uses so the two cannot word a row differently. The general rule: **a state that means failure must not be spelled the same way as the state that means done.**
+
+On the reporting school this took the same data from `0 / 315` to `286 / 315` with 29 named.
+
+## 26.4 Check 10b — the teachers inside a confined subject's cells
+
+The other 29 were not a solver failure. Phase A had promised a full solution and was wrong:
+
+> Lunch after period 6 of 8. Physical Education set to *after lunch* with the following-period gap — so PE may occupy **period 8, and nothing else**. Five cells a week, two PE teachers, and 36 lessons of PE to give.
+
+Every class-section passed Check 10 on its own — three periods needed, five cells available — the score said 100%, and the solver then left 26 PE lessons unplaced with nothing to say about why. Relaxing the lunch rules solved the identical data 315/315, which is the proof.
+
+**The missing dimension was the teacher.** The cells a placement rule leaves are not supply until somebody can stand in them. Check 10b multiplies them: `supply = teachers × cells`, against the subject's whole demand. An upper bound — those teachers also teach other subjects in the same cells — so it under-detects rather than over-detects, which is the direction Check 10 already chose and for the same reason: a false blocker stops a school that could have generated.
+
+Only for subjects a rule actually confines; `any` with no gap leaves the whole week and this would be a second, worse copy of Check 2. No auto-remedy (§21): every way out either loosens a rule the school set on purpose or hires somebody.
+
+It fires on the reporting school with the arithmetic in the message — *"1 period a day, 5 a week. 2 teachers take it, so at most 10 lessons can be taught there, and the school needs 36"* — and is silent on the other schools in the estate.
+
+## 5.9 What the search prefers, in order
+
+Asked directly, and worth writing down because it is already the design rather than something added for the question:
+
+1. **Fixed lessons (§36)** — domain pruning to one cell, so a pinned occurrence sorts first under the static constrainedness order (`v.domain.length` ascending) and is chosen first by MRV. It cannot be traded away: the domain holds nothing else.
+2. **Hard rules** — class-teacher first period, alternate day/period, availability, §34 day shapes, elective pins. All pruned before search (invariant 2), never scored, so the solver cannot consider an illegal cell at all.
+3. **Consecutive blocks (§4.8)** — atomic macro-variables placed whole or not at all, ordered early by `- v.span * 8`.
+4. **Resources** — the §19 room ladder inside `check()`: preferred room, the subject's own rooms, the lab pool, the home room. A placement with no free room is refused, not scored down.
+5. **Preferences** — §20 day shaping, §26.2 subject priority pulling towards the morning, spread across days, and a seeded jitter. These order the *values* a variable tries; they never remove one.
+
+Everything above the line is pruning, everything below it is ordering. That split is invariant 2, and it is why a hard rule can never be lost to a tie-break.

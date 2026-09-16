@@ -1537,6 +1537,70 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
         });
       }
     }
+
+    // ── Check 10b (§26.4): the TEACHERS inside a confined subject's cells ──
+    /*
+      Check 10 above asks "does this section's week hold the periods its
+      confined subjects need?" and is per class-section. A school met the other
+      half of that question and Phase A promised it a full timetable:
+
+        Lunch after period 6 of 8. Physical Education set to "after lunch" with
+        the following-period gap — so PE may occupy period 8, and nothing else.
+        That is 5 cells a week, one PE teacher, and 27 lessons of PE to give.
+
+      Every section passed Check 10 on its own (3 periods needed, 5 cells
+      available), the score said 100%, and the solver then left 26 lessons
+      unplaced with nothing to say about why. **The missing dimension was the
+      teacher**: the cells a rule leaves are not supply until somebody can
+      stand in them.
+
+      Supply is `teachers × cells` — a teacher can take at most one lesson per
+      cell. An UPPER bound, because those teachers also teach other subjects in
+      the same cells, so this under-detects rather than over-detects, which is
+      the direction Check 10 already chose and for the same reason: a false
+      blocker stops a school that could have generated.
+
+      Only for subjects a rule actually confines. `any` with no gap leaves the
+      whole week, and this would then be a second, worse copy of Check 2.
+    */
+    const demandOf = new Map<number, number>();
+    const teachersOfSubject = new Map<number, Set<number>>();
+    for (const m of snap.mappings) {
+      demandOf.set(m.subjectId, (demandOf.get(m.subjectId) ?? 0) + m.periodsPerWeek);
+      const set = teachersOfSubject.get(m.subjectId) ?? new Set<number>();
+      set.add(m.teacherId);
+      teachersOfSubject.set(m.subjectId, set);
+    }
+    for (const [subjectId, demand] of demandOf) {
+      const pl = snap.subjectPlacement?.[subjectId];
+      if (!pl || (pl.lunchRule === "any" && !pl.gapAfterLunch)) continue;
+      const cells = cellsFor(pl.lunchRule, pl.gapAfterLunch, 1);
+      const staff = teachersOfSubject.get(subjectId)?.size ?? 0;
+      const supply = cells * staff;
+      if (staff === 0 || demand <= supply) continue;
+      const perDayCells = cells / Math.max(1, days);
+      const where = pl.lunchRule === "before" ? "before lunch"
+        : pl.lunchRule === "after" ? "after lunch"
+        : "the week";
+      issues.push({
+        code: "PLACEMENT_TEACHER_CAPACITY",
+        severity: "blocker",
+        message:
+          `${pl.subjectName} is confined to ${where}`
+          + (pl.gapAfterLunch ? ", with the period straight after lunch kept free" : "")
+          + ` — ${perDayCells} period(s) a day, ${cells} a week. `
+          + `${staff} teacher(s) take it, so at most ${supply} lesson(s) can be taught there, `
+          + `and the school needs ${demand}.`,
+        entity: { type: "subject", id: subjectId, label: pl.subjectName },
+        fix:
+          `Set ${pl.subjectName} back to "any time" on the Subjects screen, turn off the `
+          + `after-lunch gap, or give it ${Math.ceil(demand / Math.max(1, cells)) - staff} more `
+          + `teacher(s) — ${Math.ceil(demand / Math.max(1, cells))} are needed for ${demand} lessons `
+          + `in ${cells} cell(s) a week.`,
+        // §21 — no auto-remedy, for Check 10's own reason: every way out either
+        // loosens a rule the school set on purpose or hires somebody.
+      });
+    }
   }
 
   // ── Check 14 (§36): the lessons the school pinned by hand ────────────────

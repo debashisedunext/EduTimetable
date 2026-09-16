@@ -41,7 +41,26 @@ export function solveTimetable(input: SolverInput, opts: SolveOptions = {}): Sol
    * on thrashing.
    */
   const search = (minBudget: Map<number, number> | null, deadline: number) => {
-    let best: { placements: Placement[]; unplaced: UnplacedVariable[] } = { placements: [], unplaced: [] };
+    /*
+      §5.8 — seeded with EVERYTHING unplaced, not with an empty pair.
+
+      `{ placements: [], unplaced: [] }` is not "nothing tried yet"; it is
+      "complete, with nothing left over", and the two lines below read it as
+      exactly that. When an attempt placed nothing at all — `0 > 0` is false, so
+      `best` was never replaced — the very next line saw `unplaced.length === 0`
+      and broke out declaring success. `solveTimetable` then found
+      `best.unplaced.length > 0` false and skipped the §20 fallback, which is
+      the pass that exists to guarantee a new rule can never cost a school
+      lessons.
+
+      The symptom was a timetable of zero slots reported with zero errors, at
+      100% of nothing: `0 / 315 placed`, `errorCount 0`. A state that means
+      failure must not be spelled the same way as the state that means done.
+    */
+    let best: { placements: Placement[]; unplaced: UnplacedVariable[] } = {
+      placements: [],
+      unplaced: allUnplaced(baseVars, "the search made no progress within its time budget"),
+    };
     const maxRestarts = 3;
     const window = deadline - Date.now();
     for (let attempt = 0; attempt <= maxRestarts; attempt++) {
@@ -380,14 +399,27 @@ function repair(
 
   const finalPlacements = [...placementByVar.values()];
   const placedIds = new Set(finalPlacements.map((p) => p.variableId));
-  const unplaced: UnplacedVariable[] = baseVars
-    .filter((v) => !placedIds.has(v.id))
-    .map((v) => ({
-      variableId: v.id,
-      label: `${v.classSectionLabels.join("+")} · ${v.subjectName}${v.span > 1 ? ` (block of ${v.span})` : ""}`,
-      reason: "no conflict-free slot found even after repair — place manually on the board",
-    }));
+  const unplaced = allUnplaced(
+    baseVars.filter((v) => !placedIds.has(v.id)),
+    "no conflict-free slot found even after repair — place manually on the board",
+  );
   return { placements: finalPlacements, unplaced };
+}
+
+/**
+ * §5.8 — a list of variables as unplaced rows, worded once.
+ *
+ * Two callers now: the repair pass's leftovers, and the seed that makes "not
+ * tried yet" distinguishable from "finished with nothing left over". A second
+ * copy of the label format is a second thing to get out of step with the
+ * board's own naming.
+ */
+function allUnplaced(vars: SolverVariable[], reason: string): UnplacedVariable[] {
+  return vars.map((v) => ({
+    variableId: v.id,
+    label: `${v.classSectionLabels.join("+")} · ${v.subjectName}${v.span > 1 ? ` (block of ${v.span})` : ""}`,
+    reason,
+  }));
 }
 
 function attemptSolve(
