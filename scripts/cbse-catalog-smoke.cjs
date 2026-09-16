@@ -220,7 +220,7 @@ async function main() {
   const subjectsNow = await prisma.subject.count({ where: { schoolId } });
   check(again.status < 300 && after === before && subjectsNow === 4,
     "adds no row — the §16 committer skips by natural key, and the class PK makes a repeat an upsert",
-    `subject_classes ${before} → ${after}, subjects ${subjectsNow}`);
+    `${again.status} ${(again.json?.message ?? "").slice(0, 90)} · subject_classes ${before} → ${after}, subjects ${subjectsNow}`);
 
   // ─────────────── 7. REFERENCE DATA, NOT A LEAK
   console.log("\nThe catalogue is the same for everybody:");

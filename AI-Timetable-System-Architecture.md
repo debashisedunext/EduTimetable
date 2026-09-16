@@ -4128,3 +4128,26 @@ Asked directly, and worth writing down because it is already the design rather t
 5. **Preferences** — §20 day shaping, §26.2 subject priority pulling towards the morning, spread across days, and a seeded jitter. These order the *values* a variable tries; they never remove one.
 
 Everything above the line is pruning, everything below it is ordering. That split is invariant 2, and it is why a hard rule can never be lost to a tie-break.
+
+
+## 16.2 A commit updates a subject's settings, it does not only create one
+
+Reported by a school: *"changing a subject's preference from after lunch to any time in the guided setup does not reflect in the master."*
+
+It did not. The committer's Subjects loop was `at("Subjects").filter(isNew)`, so **every column on that sheet was create-only**. The screen said one thing, the `subjects` table said another, and the solver reads the table — on that school it went on confining Physical Education to a single period a day (§26.4), which is the fault it was reported alongside.
+
+This is §16.1's lesson on a different column set. A commit is not only a create: the guided setup and the Subjects master are two doors onto one row, and a door that can only ever add is a door that lies the second time somebody walks through it.
+
+**Only the fields the sheet actually states.** A blank cell leaves the stored value alone, exactly as the `Classes` and `Teaching Scope` columns already do — without that rule, a school re-uploading a workbook exported before these columns existed would have every placement rule it had set replaced by the classifier's guess. The **name is never written**: it is the natural key, and a changed key is a new subject rather than a rename.
+
+### The companion change, without which the fix is worse than the bug
+
+`answersFromSchool` did not carry `category`, `priority`, `lunchRule`, `gapAfterLunch` or `taughtInOwnRoom`. That was harmless while the committer ignored them; the moment it updates, a rebuilt draft with those fields missing means `subjectSheets` fills them from `defaultsFor(name)` — so a school that set PE to "any time" on the **Subjects master** would have it pushed back to "after lunch" by pressing Next in the guided setup.
+
+They are read back now. The same rule §27.16 states three lines below in the same object, for the same reason: **what the school has said is read back, never re-derived.** `pnpm test:rerun` asserts both directions, and the second is the one that would have been the regression.
+
+### Two mistakes worth keeping
+
+`tx.subject.update()` threw a validation error: §17's scope extension adds the ambient `schoolId` to every `where`, and `update` requires a where Prisma knows is unique — `{ id, schoolId }` is not a declared unique key. `updateMany` is the shape that scopes correctly. It is safe against CLAUDE.md's rule about a scoped `updateMany` matching nothing, because the id came from a scoped read of the same table a few lines above.
+
+And `validate` returns **`null`** for a blank cell, not `undefined`. Guarding only `undefined` let those nulls through and Prisma refused the write, which the CBSE catalogue smoke caught on its second Create. Worth stating because the strict check would have been the *dangerous* kind of wrong on a nullable column: every blank cell writing a null is precisely the "lose your settings on re-upload" failure the guard exists to prevent, and it would have looked like it was preventing it.

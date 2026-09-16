@@ -291,6 +291,82 @@ async function main() {
   await save(5, { wings: [{ name: "Main", fromIndex: 5, toIndex: 7, sections: 3 }] });
   await commit(4);
 
+  // ─────────────── 2c. A SUBJECT'S SETTINGS REACH THE MASTER
+  /*
+    §16.2 — reported by a school: *"changing a subject's preference from after
+    lunch to any time in the guided setup does not reflect in the master."*
+
+    It did not. The committer's Subjects loop was `filter(isNew)`, so every
+    column on that sheet was create-only — the screen said one thing, the
+    `subjects` table said another, and the solver reads the table. On that
+    school it went on confining PE to one period a day (§26.4).
+
+    Both directions are asserted, and the SECOND is the one the fix could have
+    broken: if the guided setup's draft does not carry the school's current
+    settings, pressing Next fills them from `defaultsFor(name)` and quietly
+    overwrites a choice made on the Subjects master.
+  */
+  console.log("\nChanging a subject's placement in the guided setup:");
+  const subjRows = (await call("GET", "/subjects", S)).json;
+  const mathRow = subjRows.find((x) => x.name === "Mathematics");
+  check(!!mathRow, "the subject is in the master", `${subjRows.length} subject(s)`);
+
+  const draft = (await call("GET", "/onboarding/session", S)).json.answers;
+  await save(7, {
+    ...draft,
+    subjects: (draft.subjects ?? []).map((x) =>
+      x.name === "Mathematics" ? { ...x, lunchRule: "after", gapAfterLunch: true, priority: 5 } : x),
+  });
+  await commit(6);
+  const afterEdit = await prisma.subject.findFirst({
+    where: { schoolId, name: "Mathematics" },
+    select: { lunchRule: true, gapAfterLunch: true, priority: true },
+  });
+  check(afterEdit?.lunchRule === "after" && afterEdit?.gapAfterLunch === true && afterEdit?.priority === 5,
+    "it reaches the MASTER — the row the solver reads",
+    JSON.stringify(afterEdit));
+
+  // …and back again, which is the school's own words.
+  const draft2 = (await call("GET", "/onboarding/session", S)).json.answers;
+  await save(7, {
+    ...draft2,
+    subjects: (draft2.subjects ?? []).map((x) =>
+      x.name === "Mathematics" ? { ...x, lunchRule: "any", gapAfterLunch: false } : x),
+  });
+  await commit(6);
+  const relaxed = await prisma.subject.findFirst({
+    where: { schoolId, name: "Mathematics" },
+    select: { lunchRule: true, gapAfterLunch: true, priority: true },
+  });
+  check(relaxed?.lunchRule === "any" && relaxed?.gapAfterLunch === false,
+    "changing it back to \"any time\" reaches the master too", JSON.stringify(relaxed));
+  check(relaxed?.priority === 5,
+    "and a field nobody touched is left alone — priority is still 5", `${relaxed?.priority}`);
+
+  /*
+    The direction that would be a REGRESSION: set it on the master, then walk
+    the guided setup without touching it. A draft that did not carry the
+    school's current settings would fill them from the name classifier and undo
+    the choice on the next Next.
+  */
+  console.log("\nSetting it on the Subjects master instead:");
+  await call("PUT", `/subjects/${mathRow.id}`, S, { lunchRule: "before", gapAfterLunch: true });
+  await call("DELETE", "/onboarding/session", S);
+  const rebuilt = (await call("GET", "/onboarding/session", S)).json.answers;
+  const carried = (rebuilt.subjects ?? []).find((x) => x.name === "Mathematics");
+  check(carried?.lunchRule === "before" && carried?.gapAfterLunch === true,
+    "a rebuilt draft carries what the master says, rather than re-deriving it",
+    JSON.stringify({ lunchRule: carried?.lunchRule, gap: carried?.gapAfterLunch }));
+  await save(7, rebuilt);
+  await commit(6);
+  const survived2 = await prisma.subject.findFirst({
+    where: { schoolId, name: "Mathematics" },
+    select: { lunchRule: true, gapAfterLunch: true },
+  });
+  check(survived2?.lunchRule === "before" && survived2?.gapAfterLunch === true,
+    "so pressing Next does NOT push it back to the classifier's guess",
+    JSON.stringify(survived2));
+
   // ─────────────── 3. UNTICKING SUBJECTS IS WRITTEN
   console.log("\nUnticking two subjects:");
   await save(7, { subjectsByWing: { Main: ["Mathematics", "English", "Hindi"] } });

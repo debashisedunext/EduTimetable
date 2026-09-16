@@ -834,6 +834,25 @@ export class OnboardingService {
             subjects: subjects.map((s) => ({
               name: s.name, code: s.code ?? "", isLab: s.isLab,
               requiresDoublePeriod: s.requiresDoublePeriod,
+              /*
+                §16.2 — the placement settings, READ BACK rather than left out.
+
+                §26.2's classifier fills a blank from the subject's NAME, and
+                `subjectSheets` applies it at commit — so a field missing here
+                is not "unchanged", it is "whatever `defaultsFor` thinks". Now
+                that the committer updates an existing subject, leaving these
+                out would mean a school that set Physical Education to "any
+                time" on the Subjects master had it silently pushed back to
+                "after lunch" by pressing Next in the guided setup.
+
+                The same rule §27.16 states three lines down, for the same
+                reason: what the school has said is read back, never re-derived.
+              */
+              taughtInOwnRoom: s.taughtInOwnRoom,
+              category: s.category,
+              priority: s.priority,
+              lunchRule: s.lunchRule,
+              gapAfterLunch: s.gapAfterLunch,
               // §27.16. Empty stays empty — "not stated", which is what lets
               // the §27.15 ladder go on proposing for a subject nobody narrowed.
               classes: s.classes.map((c) => c.class.name),
