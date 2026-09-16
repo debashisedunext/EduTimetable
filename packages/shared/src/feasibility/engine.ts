@@ -1539,6 +1539,189 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
+  // ── Check 14 (§36): the lessons the school pinned by hand ────────────────
+  /*
+    A fixed lesson is a HARD constraint the school wrote itself, and this
+    product's whole architecture is Phase A proving a solution can exist before
+    Phase B looks for one. `variables.ts` enforces a pin by handing its
+    occurrence exactly one cell; if that cell is impossible the domain is empty
+    and the lesson simply will not place. Without this check that is discovered
+    by a failed generation — which is the one outcome the two-phase split exists
+    to prevent.
+
+    It reports the AGGREGATE and the DRIFT. Everything local and exact is
+    already refused at save (`assertFixedLessonsValid`), and repeating it here
+    would be a second opinion free to disagree. What is left is what only the
+    whole snapshot can see, and what a *later* edit somewhere else can break —
+    a pin is stored once and the school goes on changing around it.
+
+    Blocking, which is the school's own decision: Readiness refuses the
+    generation rather than letting it run and report what it could not honour.
+    Every issue therefore has to name the pin precisely enough to remove it.
+  */
+  const pins = snap.fixedLessons ?? [];
+  if (pins.length > 0) {
+    const sectionById = new Map(snap.classSections.map((cs) => [cs.id, cs]));
+    const teacherById = new Map(snap.teachers.map((t) => [t.id, t]));
+    const reqByClassSubject = new Map(
+      snap.subjectRequirements.map((r) => [`${r.classId}:${r.subjectId}`, r]),
+    );
+    const mappingKeys = new Set(
+      snap.mappings.map((m) => `${m.classSectionId}:${m.subjectId}:${m.teacherId}`),
+    );
+    const workingDays = new Set(snap.config.workingDays);
+    const pinLabel = (p: (typeof pins)[number]) => {
+      const cs = sectionById.get(p.classSectionId);
+      return `${cs?.label ?? `#${p.classSectionId}`} ${DAY_NAMES[p.dayOfWeek] ?? `day ${p.dayOfWeek}`} P${p.periodNumber}`;
+    };
+
+    /*
+      The lesson a pin belongs to, GONE.
+
+      `variables.ts` matches a pin to its variable by (section, subject,
+      teacher). Re-staffing on the Lesson grid moves the teacher, the mapping
+      key changes, and the pin then matches nothing — it would be silently
+      ignored, which is the worst way for a hard constraint to fail. Named
+      first because it is the one a school cannot possibly deduce.
+    */
+    for (const p of pins) {
+      if (mappingKeys.has(`${p.classSectionId}:${p.subjectId}:${p.teacherId}`)) continue;
+      const cs = sectionById.get(p.classSectionId);
+      const t = teacherById.get(p.teacherId);
+      issues.push({
+        code: "FIXED_LESSON_ORPHANED",
+        severity: "blocker",
+        message:
+          `A lesson is fixed at ${pinLabel(p)}, but ${t?.name ?? "that teacher"} no longer teaches ` +
+          `it to ${cs?.label ?? "that class"} — the assignment has changed since it was pinned.`,
+        entity: { type: "class_section", id: p.classSectionId, label: cs?.label ?? `#${p.classSectionId}` },
+        fix:
+          `Remove the fixed lesson on the Master Grid's Whole tab, or put ` +
+          `${t?.name ?? "that teacher"} back on that lesson on the Lesson grid.`,
+      });
+    }
+
+    // A cell the week no longer has — the timetable's own shape changed after
+    // the pin was saved (§34's short days, or a working day switched off).
+    for (const p of pins) {
+      const reach = periodsOn(snap.config, p.dayOfWeek);
+      if (workingDays.has(p.dayOfWeek) && p.periodNumber >= 1 && p.periodNumber <= reach) continue;
+      issues.push({
+        code: "FIXED_LESSON_NO_CELL",
+        severity: "blocker",
+        message:
+          `A lesson is fixed at ${pinLabel(p)}, but this timetable no longer has that cell` +
+          (workingDays.has(p.dayOfWeek) ? ` — ${DAY_NAMES[p.dayOfWeek]} runs ${reach} period(s).` : "."),
+        entity: {
+          type: "class_section",
+          id: p.classSectionId,
+          label: sectionById.get(p.classSectionId)?.label ?? `#${p.classSectionId}`,
+        },
+        fix: "Remove it on the Master Grid's Whole tab, or restore the week it was pinned to.",
+      });
+    }
+
+    // More pinned than the class is taught. Refused at save, and the §16
+    // importer can still lower a curriculum row behind that refusal.
+    const pinnedPerLesson = new Map<string, number>();
+    for (const p of pins) {
+      const cs = sectionById.get(p.classSectionId);
+      if (!cs) continue;
+      const k = `${p.classSectionId}:${p.subjectId}`;
+      pinnedPerLesson.set(k, (pinnedPerLesson.get(k) ?? 0) + 1);
+    }
+    for (const [k, count] of pinnedPerLesson) {
+      const [sectionId, subjectId] = k.split(":").map(Number);
+      const cs = sectionById.get(sectionId);
+      if (!cs) continue;
+      const req = reqByClassSubject.get(`${cs.classId}:${subjectId}`);
+      const have = req?.periodsPerWeek ?? 0;
+      if (count <= have) continue;
+      issues.push({
+        code: "FIXED_LESSON_OVER_CURRICULUM",
+        severity: "blocker",
+        message:
+          `${cs.label} has ${count} fixed lesson(s) of ${req?.subjectName ?? "a subject"} but is taught ` +
+          `${have} period(s) a week of it.`,
+        entity: { type: "class_section", id: cs.id, label: cs.label },
+        fix:
+          `Remove ${count - have} of them on the Master Grid's Whole tab, or raise the periods ` +
+          `on the Lesson grid.`,
+      });
+    }
+
+    /*
+      One teacher, two places. The unique key stops a CLASS-SECTION being
+      pinned twice into a cell, and nothing stops a teacher being — not even
+      across timetables, which is why this is here rather than only at save.
+    */
+    const teacherCell = new Map<string, string>();
+    for (const p of pins) {
+      const k = `${p.teacherId}@${p.dayOfWeek}:${p.periodNumber}`;
+      const held = teacherCell.get(k);
+      const cs = sectionById.get(p.classSectionId);
+      if (held && cs) {
+        const t = teacherById.get(p.teacherId);
+        issues.push({
+          code: "FIXED_LESSON_TEACHER_CLASH",
+          severity: "blocker",
+          message:
+            `${t?.name ?? "A teacher"} is fixed in ${held} and ${cs.label} at the same time — ` +
+            `${DAY_NAMES[p.dayOfWeek]} period ${p.periodNumber}.`,
+          entity: { type: "teacher", id: p.teacherId, label: t?.name ?? `#${p.teacherId}` },
+          fix: "Move one of them to another cell on the Master Grid's Whole tab.",
+        });
+      } else if (cs) {
+        teacherCell.set(k, cs.label);
+      }
+    }
+
+    // A day the teacher does not work at all — §4.7a weekly off, or an
+    // alternate-day pattern. Both can be set after the pin was saved, and
+    // §29.1 deliberately leaves availability editable on a frozen timetable.
+    for (const p of pins) {
+      const t = teacherById.get(p.teacherId);
+      if (!t) continue;
+      const offDay = t.unavailableFullDays.includes(p.dayOfWeek);
+      const wrongDay = t.periodPattern === "alternate_day"
+        && Array.isArray(t.alternateDaySet) && t.alternateDaySet.length > 0
+        && !t.alternateDaySet.includes(p.dayOfWeek);
+      if (!offDay && !wrongDay) continue;
+      issues.push({
+        code: "FIXED_LESSON_TEACHER_AWAY",
+        severity: "blocker",
+        message:
+          `A lesson is fixed at ${pinLabel(p)}, but ${t.name} does not work on ` +
+          `${DAY_NAMES[p.dayOfWeek]}${wrongDay ? " (alternate-day pattern)" : ""}.`,
+        entity: { type: "teacher", id: t.id, label: t.name },
+        fix: "Move the fixed lesson to a day they work, or remove it on the Whole tab.",
+      });
+    }
+
+    // More pinned into one day than a teacher may teach in one.
+    const perTeacherDay = new Map<string, number>();
+    for (const p of pins) {
+      const k = `${p.teacherId}:${p.dayOfWeek}`;
+      perTeacherDay.set(k, (perTeacherDay.get(k) ?? 0) + 1);
+    }
+    for (const [k, count] of perTeacherDay) {
+      const [teacherId, day] = k.split(":").map(Number);
+      const t = teacherById.get(teacherId);
+      if (!t || count <= t.maxPeriodsPerDay) continue;
+      issues.push({
+        code: "FIXED_LESSON_OVER_DAY_CAP",
+        severity: "blocker",
+        message:
+          `${t.name} has ${count} lesson(s) fixed on ${DAY_NAMES[day]} but may teach ` +
+          `${t.maxPeriodsPerDay} period(s) a day.`,
+        entity: { type: "teacher", id: t.id, label: t.name },
+        fix:
+          `Move ${count - t.maxPeriodsPerDay} of them to another day, or raise their daily ` +
+          `limit on the Teachers screen.`,
+      });
+    }
+  }
+
   return finalize(snap, issues, totalRequired, available);
 }
 

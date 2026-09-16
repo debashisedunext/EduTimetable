@@ -17,6 +17,7 @@
     "test:periods": "node scripts/class-period-span-smoke.cjs",
     "test:dayshapes": "node scripts/day-shape-smoke.cjs",
     "test:catalog": "node scripts/cbse-catalog-smoke.cjs",
+    "test:fixed": "node scripts/fixed-lessons-smoke.cjs",
     "test:rerun": "node scripts/guided-rerun-smoke.cjs",
     "test:mastergrid": "node scripts/master-grid-smoke.cjs",
     "lint": "eslint ."

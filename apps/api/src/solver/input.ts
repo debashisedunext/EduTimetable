@@ -218,6 +218,24 @@ export async function buildFeasibilitySnapshot(
       }),
     ]);
 
+    /*
+      §36 — the pins, for Check 14.
+
+      Read into the SNAPSHOT as well as into `SolverInput` — the same rows, but
+      the engine and the solver are different readers: the solver prunes the
+      domain, and the engine has to be able to say *before* Generate that the
+      pruning will leave nothing. Queried once here, so a pin the engine passes
+      and the solver refuses is not expressible.
+    */
+    const pinned = await prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        dayOfWeek: true, periodNumber: true,
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
+    });
+
     const ownRoomSubjectIds = allSubjects.filter((s) => s.taughtInOwnRoom).map((s) => s.id);
     const ownRoomsBySubject: Record<number, number[]> = {};
     for (const id of ownRoomSubjectIds) {
@@ -422,6 +440,8 @@ export async function buildFeasibilitySnapshot(
     // cells from `SolverInput`. Same rows, read once here.
     classSectionTimeOff: sectionOff.map((r) => ({ id: r.classSectionId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
     subjectTimeOff: subjectOff.map((r) => ({ id: r.subjectId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
+    // §36 — what Check 14 reads. Empty for every school that has pinned nothing.
+    fixedLessons: pinned,
     roomTimeOff: roomOff.map((r) => ({ id: r.roomId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
     labRoomsBySubject,
     // §19.1 — whether, and where. See the note by their construction above.

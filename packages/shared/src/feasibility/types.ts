@@ -36,6 +36,20 @@ export type IssueCode =
   | "LAB_SUBJECT_UNSERVED"
   | "LAB_SUBJECT_OVERFLOW"
   | "HOME_ROOM_SHARED"
+  /**
+   * §36 — Check 14: a lesson the school pinned by hand that cannot be honoured.
+   *
+   * Every one of these is a HARD constraint written by a person, so they block
+   * rather than warn: Readiness refuses the generation instead of letting it
+   * run and report what it could not place. Each names the pin precisely enough
+   * to find and remove on the Master Grid's Whole tab.
+   */
+  | "FIXED_LESSON_ORPHANED"
+  | "FIXED_LESSON_NO_CELL"
+  | "FIXED_LESSON_OVER_CURRICULUM"
+  | "FIXED_LESSON_TEACHER_CLASH"
+  | "FIXED_LESSON_TEACHER_AWAY"
+  | "FIXED_LESSON_OVER_DAY_CAP"
   /** §26.3 — a lunch-side rule confines more periods than that side holds. */
   | "LUNCH_SIDE_CAPACITY"
   | "HOME_ROOM_UNSET"
@@ -404,6 +418,25 @@ export interface FeasibilitySnapshot {
    * the solver needs the cells themselves and gets them from `SolverInput`.
    */
   classSectionTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /**
+   * §36 — the lessons this timetable has pinned to a cell.
+   *
+   * Optional: absent is every school that has never pinned one, and Check 14
+   * is then silent for all of them.
+   *
+   * The engine sees them so that Phase A can refuse BEFORE Generate — a hard
+   * constraint the school wrote by hand is still a hard constraint, and the
+   * whole architecture rests on proving a solution can exist rather than
+   * discovering it cannot. `variables.ts` enforces them; this check is what
+   * makes the enforcement answerable.
+   */
+  fixedLessons?: Array<{
+    classSectionId: number;
+    subjectId: number;
+    teacherId: number;
+    dayOfWeek: number;
+    periodNumber: number;
+  }>;
   /** §4.7b — the same, per subject: the cells it may not be taught in. */
   subjectTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
   /** §4.7b — the same, per room: the cells it cannot be used in. */
