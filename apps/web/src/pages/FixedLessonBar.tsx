@@ -17,7 +17,7 @@
 import type { Pin, PinOption } from "./fixed-lessons";
 
 export function FixedLessonBar({
-  label, cell, pin, options, rooms, capFor, onChange, onClear,
+  label, cell, pin, options, rooms, capFor, whyEmpty, onChange, onClear,
 }: {
   /** "Class 1-A · Monday P2" — what is being edited, said once. */
   label: string;
@@ -26,6 +26,8 @@ export function FixedLessonBar({
   options: PinOption[];
   rooms: Array<{ id: number; name: string }>;
   capFor: (classSectionId: number, subjectId: number) => { used: number; cap: number };
+  /** §36 — why there is nothing to offer, when there is nothing. */
+  whyEmpty: string | null;
   onChange: (next: Pin) => void;
   onClear: () => void;
 }) {
@@ -62,6 +64,35 @@ export function FixedLessonBar({
   };
 
   const count = pin ? capFor(cell.classSectionId, pin.subjectId) : null;
+
+  /*
+    §36 — nothing to offer is a STATE, and it gets said rather than drawn as
+    three dead controls.
+
+    A pin attaches to a lesson somebody teaches, so a class with no curriculum
+    or no staffing genuinely has nothing pinnable. That is correct — and shown
+    as an empty dropdown it reads as a broken screen, which is the failure this
+    codebase keeps writing down: a state nobody can tell from a bug is a state
+    that was not communicated. The two causes name different screens, so they
+    are told apart rather than folded into one vague sentence.
+  */
+  if (whyEmpty) {
+    return (
+      <div style={{
+        display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
+        padding: "9px 12px", borderRadius: 8,
+        background: "var(--amber-bg)", border: "1px solid var(--amber)",
+      }}>
+        <span style={{
+          font: "800 11.5px/1.6 Inter, sans-serif", padding: "3px 8px", borderRadius: 6,
+          background: "var(--paper)", color: "var(--brand-dark)", whiteSpace: "nowrap",
+        }}>{label}</span>
+        <span style={{ font: "500 12.3px/1.5 Inter", color: "var(--ink)", maxWidth: "72ch" }}>
+          {whyEmpty}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div style={{

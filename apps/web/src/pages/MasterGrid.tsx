@@ -1726,6 +1726,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
                   options={fixed.optionsFor(pinCell.classSectionId)}
                   rooms={fixed.rooms}
                   capFor={fixed.capFor}
+                  whyEmpty={fixed.whyEmpty(pinCell.classSectionId)}
                   onChange={(next: Pin) => fixed.set(next)}
                   onClear={() => fixed.clear(pinCell)}
                 />
@@ -1735,9 +1736,25 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
                 padding: "14px 12px", borderTop: "1px solid var(--line)",
                 font: "400 12.5px/1.5 Inter", color: "var(--ink-soft)",
               }}>
-                Click any cell to fix a lesson to it. The generator will place that lesson exactly
-                there and build the rest of the week around it — and the lesson plan for a pinned
-                subject is locked until the pin is removed.
+                {/*
+                  §36 — said BEFORE a cell is clicked when the whole timetable
+                  has nothing to pin. Discovering it one cell at a time is
+                  discovering it the slowest possible way.
+                */}
+                {fixed.empty ? (
+                  <span style={{ color: "var(--ink)" }}>
+                    <strong>Nothing can be fixed in this timetable yet.</strong> A fixed lesson has
+                    to belong to a lesson somebody teaches, and none of these class-sections has a
+                    lesson plan with a teacher on it. Set them on the <strong>Lesson grid</strong>
+                    {" "}and press Save, then come back.
+                  </span>
+                ) : (
+                  <>
+                    Click any cell to fix a lesson to it. The generator will place that lesson
+                    exactly there and build the rest of the week around it — and the lesson plan for
+                    a pinned subject is locked until the pin is removed.
+                  </>
+                )}
               </div>
             )
           ) : (

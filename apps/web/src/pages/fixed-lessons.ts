@@ -126,6 +126,34 @@ export function useFixedLessons(configId: number | null, enabled: boolean) {
   const at = useCallback((classSectionId: number, dayOfWeek: number, periodNumber: number) =>
     byCell.get(key({ classSectionId, dayOfWeek, periodNumber })) ?? null, [byCell]);
 
+  /**
+   * §36 — why there is nothing to offer, when there is nothing to offer.
+   *
+   * A pin attaches to a lesson somebody teaches, so a class with no curriculum
+   * or no staffing has nothing pinnable — which is correct, and was shown as an
+   * empty dropdown with no explanation. That reads as a broken screen, and it
+   * is the exact failure this codebase keeps writing down: a state nobody can
+   * tell from a bug is a state that was not communicated.
+   *
+   * Two causes, two different screens to fix them on, so they are told apart
+   * rather than folded into one vague sentence. `caps` is the curriculum, so
+   * its absence for the class is the first question; a class that HAS a
+   * curriculum and still offers nothing is unstaffed.
+   */
+  const whyEmpty = useCallback((classSectionId: number): string | null => {
+    if (optionsFor(classSectionId).length > 0) return null;
+    const classId = classOf.get(classSectionId);
+    const taught = meta.caps.some((c) => c.classId === classId);
+    return taught
+      ? "Nobody is assigned to teach this class yet. Give its lessons a teacher on the "
+        + "Lesson grid and press Save — a fixed lesson has to belong to a lesson somebody teaches."
+      : "This class has no lesson plan yet. Set its subjects and periods on the Lesson grid "
+        + "and press Save, then come back to fix them to a day and period.";
+  }, [classOf, meta.caps, optionsFor]);
+
+  /** True when NO section in this timetable has anything to pin. */
+  const empty = meta.options.length === 0;
+
   /** Put a pin in a cell, or replace the one already there. */
   const set = useCallback((next: Pin) => {
     setPins((all) => [...all.filter((p) => key(p) !== key(next)), next]);
@@ -173,5 +201,8 @@ export function useFixedLessons(configId: number | null, enabled: boolean) {
 
   const revert = useCallback(() => { setPins(saved); setError(null); }, [saved]);
 
-  return { pins, at, set, clear, save, revert, dirty, loading, savingNow, error, setError, optionsFor, capFor, rooms: meta.rooms };
+  return {
+    pins, at, set, clear, save, revert, dirty, loading, savingNow, error, setError,
+    optionsFor, capFor, whyEmpty, empty, rooms: meta.rooms,
+  };
 }
