@@ -4046,3 +4046,26 @@ The bar **replaces** the §31.6 strip rather than joining it: the strip explains
 One **Save** for the set, like the Lesson grid's (§31.10): a click that wrote straight through would put a hard constraint on the timetable for a mis-click, and the whole set is validated together anyway. A refusal keeps the editing set exactly as it was — rolling back would throw away nineteen good pins to punish the twentieth. The count in the toolbar is the one thing the client owns, because *"3 of 6 fixed"* has to include the pin just placed and the server cannot know about that one.
 
 `pnpm test:fixed` is the proof, and it is the whole chain rather than the parts: a pin is stored and served with what the grid needs, a **real generation** puts the lesson in that cell and nowhere else, nothing is unplaced, regenerating keeps it, a named room binds, every refusal fires by name, a refused save leaves the pins untouched, the lesson plan locks and unlocks, and Check 14 blocks with Generate refused.
+
+
+### 36.6 One period, every day
+
+Asked for directly: *"give the option that the fixing is for this particular day or for all the days; if all days, assign it to all days for the same class, and they can change any particular day later."*
+
+"This day" is what a click already does, so only the other answer needs a control — a button that **acts**, with its result printed beside it. A segmented *This day / Every day* would have been a mode with a state to remember and a standing question about whether it is still on.
+
+**Three things it will not do**, each of which would make the button dangerous rather than quick:
+
+- **Overwrite another pin.** A cell already holding a different lesson is a decision somebody made; a bulk action that silently replaced it is the worst kind of convenience.
+- **Exceed the curriculum.** Five days of a subject taught three periods a week is a set the save refuses, so the button would be a button that creates an error. It fills to the cap and says it stopped. The count is over the **whole set**, not over that period's column — a lesson pinned on another period spends one of the class's weekly periods just as surely.
+- **Put one teacher in two places**, including colliding with what the same call has already added: two sections of a class taught by one teacher at one period would otherwise fill straight over each other.
+
+It returns the rows to add *and* the reasons the other days were skipped, because "3 of 5" with no explanation is the empty-dropdown mistake in another shape.
+
+The arithmetic is `fillAcrossDays` in `packages/shared/src/timetable/fixed-fill.ts`, not in the component: `apps/web` has no test harness, and a mistake here either destroys a pin somebody placed or hands the save a set it refuses. Same rule as `mergeShownWings` and `mergeByWing`. Ten unit tests, including the self-collision case and the cap counted across periods rather than down a column.
+
+### 36.5 Nothing to offer is a state, not an empty list
+
+A pin attaches to a lesson somebody teaches, so a class with no curriculum or no staffing has nothing pinnable — correct, and originally shown as three dead dropdowns saying nothing. That reads as a broken screen, and it is the failure this codebase keeps writing down: **a state nobody can tell from a bug is a state that was not communicated.**
+
+The bar replaces the pickers with the reason, and the two causes name different screens rather than being folded into one vague sentence — a class with no curriculum is sent to set subjects and periods, a class with a curriculum and no staffing is sent to give its lessons a teacher. Both add *"and press Save"*, because the Lesson grid shows a **proposal** until it is committed (§27.17), so a timetable can look fully staffed while the database holds nothing. The whole-timetable case is said before any cell is clicked: discovering it one cell at a time is discovering it the slowest possible way.

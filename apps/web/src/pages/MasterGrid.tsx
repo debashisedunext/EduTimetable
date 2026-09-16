@@ -1727,6 +1727,8 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
                   rooms={fixed.rooms}
                   capFor={fixed.capFor}
                   whyEmpty={fixed.whyEmpty(pinCell.classSectionId)}
+                  days={days}
+                  onRepeat={() => fixed.repeatAcrossDays(pinCell, days)}
                   onChange={(next: Pin) => fixed.set(next)}
                   onClear={() => fixed.clear(pinCell)}
                 />

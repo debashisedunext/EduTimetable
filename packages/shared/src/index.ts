@@ -192,6 +192,7 @@ export * from "./timetable/initials";
 export * from "./timetable/pivot";
 export * from "./timetable/coverage";
 export * from "./timetable/viewport";
+export * from "./timetable/fixed-fill";
 export * from "./onboarding/suggest";
 export * from "./onboarding/load";
 export * from "./ai/data-entry";

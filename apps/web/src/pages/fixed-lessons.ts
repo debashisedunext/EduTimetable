@@ -23,6 +23,7 @@
  * has not saved, and the server cannot know about that one.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { describeFill, fillAcrossDays } from "@edutimetable/shared";
 import { api } from "../api";
 import { asMessage } from "../components";
 
@@ -163,6 +164,54 @@ export function useFixedLessons(configId: number | null, enabled: boolean) {
     setPins((all) => all.filter((p) => key(p) !== key(cell)));
   }, []);
 
+  /**
+   * §36.6 — the same lesson, at the same period, on every working day.
+   *
+   * A school pinning assembly-style lessons wants "Maths, period 1, every day"
+   * far more often than it wants five separate decisions, and the alternative
+   * is clicking the same three controls once per day.
+   *
+   * ## It fills, it never overwrites, and it stops at the cap
+   *
+   * Three things it will not do, each of which would make the button dangerous
+   * rather than quick:
+   *
+   *  - **Overwrite another pin.** A cell already holding a different lesson is
+   *    a decision somebody made; a bulk action that silently replaced it would
+   *    be the worst kind of convenience. Skipped and counted.
+   *  - **Exceed the curriculum.** Five days of a subject taught three periods a
+   *    week is a set the save would refuse, so the button would be a button
+   *    that creates an error. It fills up to the cap and says it stopped.
+   *  - **Put the teacher in two places.** The same teacher already pinned at
+   *    that period in another section is a clash this client can see in its own
+   *    set, and the save would refuse it by name. Skipped here instead.
+   *
+   * Returns a sentence rather than a boolean, because every one of those
+   * reasons is something the person needs told — "it did 3 of 5" with no
+   * explanation is the empty-dropdown mistake in another shape.
+   *
+   * The days it fills are the working days in order, which is arbitrary but
+   * predictable — and every one of them is editable afterwards, which is the
+   * whole point of doing it this way rather than refusing.
+   */
+  const repeatAcrossDays = useCallback((
+    cell: { classSectionId: number; dayOfWeek: number; periodNumber: number },
+    days: number[],
+  ): string => {
+    const src = byCell.get(key(cell));
+    if (!src) return "Choose a subject for this cell first.";
+    const { cap } = capFor(cell.classSectionId, src.subjectId);
+    /*
+      The arithmetic lives in `packages/shared` and is unit-tested there.
+      `apps/web` has no test harness, and a mistake here either destroys a pin
+      somebody placed or hands the save a set it refuses — the same reason
+      `mergeShownWings` and `mergeByWing` moved out of this app.
+    */
+    const result = fillAcrossDays(src, pins, days, cap);
+    if (result.add.length > 0) setPins((all) => [...all, ...result.add]);
+    return describeFill(result, cap);
+  }, [byCell, capFor, pins]);
+
   /*
     Compared by VALUE, sorted, rather than by reference or by length.
 
@@ -203,6 +252,6 @@ export function useFixedLessons(configId: number | null, enabled: boolean) {
 
   return {
     pins, at, set, clear, save, revert, dirty, loading, savingNow, error, setError,
-    optionsFor, capFor, whyEmpty, empty, rooms: meta.rooms,
+    optionsFor, capFor, whyEmpty, empty, repeatAcrossDays, rooms: meta.rooms,
   };
 }
