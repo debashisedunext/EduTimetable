@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
 import type { FeasibilityResult } from "@edutimetable/shared";
@@ -68,6 +68,28 @@ export function Generate() {
   const [weights, setWeights] = useState({ teacherGaps: 5, dailyLoadBalance: 2, roomChanges: 1 });
   const logRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * §5.7 — is there room for two columns?
+   *
+   * A media query would be tidier, but the two things that depend on it are
+   * inline styles on elements this file builds — the grid's own tracks and the
+   * log's height — and a CSS class for each would put the breakpoint in a
+   * second file that has to agree with this one.
+   *
+   * `useLayoutEffect`, not `useEffect` (§8.1d): the first paint would otherwise
+   * be the one-column layout on every load, snapping to two after it.
+   */
+  const [wide, setWide] = useState(
+    typeof window === "undefined" ? true : window.innerWidth >= 1100,
+  );
+  useLayoutEffect(() => {
+    const mq = window.matchMedia("(min-width: 1100px)");
+    const sync = () => setWide(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
   useEffect(() => {
     const socket = io({ auth: { token: getToken() } });
     socket.on("solver:progress", (d: { placed: number; total: number; phase?: string }) => {
@@ -136,8 +158,37 @@ export function Generate() {
   const result: JobSummary | null = latest?.result ?? null;
   const pct = progress ? Math.round((progress.placed / Math.max(1, progress.total)) * 100) : 0;
 
+  /**
+   * §5.7 — two columns: what you SET on the left, what comes BACK on the right.
+   *
+   * This was one 760px column on a 2,000px screen, so half the page was empty
+   * while the log — the tallest thing here and the one somebody actually reads
+   * while waiting — sat below the fold behind the mode radios they had already
+   * finished with.
+   *
+   * The split is the page's own grammar rather than a way to fill space: the
+   * left column is every decision taken before pressing Generate, and the
+   * right is the run. Nothing on the right can be acted on until something on
+   * the left has been.
+   *
+   * `minmax(0, …)` on both tracks, because a grid child's default `min-width:
+   * auto` refuses to shrink below its content — the log's long lines would
+   * otherwise push the column wider than its track and the page would scroll
+   * sideways, which is the §31 rule about wide content in its own container.
+   *
+   * One column below 1100px: at that width two columns are two narrow columns,
+   * and the radio descriptions are already three lines each.
+   */
+  const twoCol: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: wide ? "minmax(0, 460px) minmax(0, 1fr)" : "minmax(0, 1fr)",
+    gap: 18,
+    alignItems: "start",
+  };
+
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={twoCol}>
+      <div style={{ minWidth: 0 }}>
       <ErrorNote message={error} />
 
       <Card title={`Generate — ${current.name}`} sub="Phase B runs as a background job in the worker container; progress streams live. It is only offered once Phase A proves a solution exists (§4).">
@@ -197,17 +248,20 @@ export function Generate() {
                 <input type="radio" name="genmode" checked={mode === "fast"} onChange={() => setMode("fast")} />
                 <div>
                   <div className="radio-opt-title">Fast — feasibility</div>
-                  <div className="radio-opt-desc">The custom CSP engine alone: a complete conflict-free timetable, as quickly as possible.</div>
+                  <div className="radio-opt-desc">The CSP engine alone — a complete, conflict-free timetable as quickly as possible.</div>
                 </div>
               </label>
               <label className={`radio-opt${mode === "optimized" ? " selected" : ""}`}>
                 <input type="radio" name="genmode" checked={mode === "optimized"} onChange={() => setMode("optimized")} />
                 <div>
                   <div className="radio-opt-title">Optimized — nicer timetable</div>
-                  <div className="radio-opt-desc">
-                    Solves fast first, then hands the model to OR-Tools CP-SAT to reduce teacher gaps, flatten daily
-                    load, and cluster lab periods. The result is kept only if it passes the same hard-constraint
-                    checks and scores better — so this can never be worse than Fast.
+                  {/* Shortened for the 460px column (§5.7). The claim that
+                      decides the choice — never worse than Fast — is kept;
+                      the mechanism behind it is on the hover. */}
+                  <div className="radio-opt-desc"
+                    title="Solves fast first, then hands the model to OR-Tools CP-SAT to reduce teacher gaps, flatten daily load and cluster lab periods. The result is replayed through the same hard-constraint checks and adopted only if it verifies and scores better.">
+                    Solves fast, then lets CP-SAT cut teacher gaps and flatten daily load. Kept only
+                    if it passes the same checks and scores better — never worse than Fast.
                   </div>
                 </div>
               </label>
@@ -225,30 +279,85 @@ export function Generate() {
           </div>
         )}
 
-        {(running || progress) && (
-          <>
-            <div className="progress-track" style={{ marginTop: 18 }}>
-              <div className="progress-fill" style={{ width: `${pct}%` }} />
-            </div>
-            <div className="mono" style={{ fontSize: 12, color: "var(--ink-soft)", marginBottom: 8 }}>
-              {progress ? `${progress.placed} / ${progress.total} variables placed (${pct}%)` : "queued…"}
-            </div>
-          </>
-        )}
-        {log.length > 0 && (
-          <div ref={logRef} style={{
-            fontFamily: "var(--font-mono)", fontSize: 11.5, background: "var(--brand-deep)",
-            color: "var(--steel-light)", borderRadius: 10, padding: "12px 14px",
-            height: 150, overflowY: "auto", lineHeight: 1.7,
-          }}>
-            {log.map((l, i) => <div key={i} style={l.startsWith("✓") ? { color: "#7BE3C8" } : l.startsWith("✗") ? { color: "#FF9C93" } : undefined}>{l}</div>)}
-          </div>
-        )}
       </Card>
+      </div>
+
+      {/*
+        The right column: the RUN. Progress, the live log and whatever the last
+        one produced — the things that appear because of a press rather than
+        before it.
+      */}
+      <div style={{ minWidth: 0 }}>
+      {/*
+        §5.7 — before the first run, the right column says what is about to be
+        built.
+
+        Not filler: on a school that has never generated there is no log and no
+        result, and the column would be the blank half this layout exists to
+        remove. These four numbers are the ones somebody checks before pressing
+        a button that rewrites a week, and they are already in the readiness
+        payload — no second request, and no second opinion about what the
+        timetable contains.
+      */}
+      {!running && log.length === 0 && !result && readiness && (
+        <Card title="What will be generated"
+          sub="Phase A has already counted this. Generate places every required period into the week below.">
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 10,
+          }}>
+            <Stat n={String(readiness.stats.classSections)} l="class-sections" />
+            <Stat n={String(readiness.stats.teachers)} l="teachers" />
+            <Stat n={String(readiness.stats.totalRequiredSlots)} l="periods required" />
+            <Stat n={String(readiness.stats.totalAvailableSlots)} l="periods available" />
+          </div>
+          {readiness.warnings.length > 0 && (
+            <p style={{ fontSize: 12.5, color: "var(--amber)", margin: "12px 0 0", lineHeight: 1.6 }}>
+              {readiness.warnings.length} warning(s) — none of them stops a generation.{" "}
+              <Link to="/readiness" style={{ color: "var(--brand)", fontWeight: 600 }}>See what they are →</Link>
+            </p>
+          )}
+        </Card>
+      )}
+      {(running || progress || log.length > 0) && (
+        <Card title={running ? "Running" : "Solver log"}
+          sub={running ? "Streaming from the worker container." : "The last run's output."}>
+          {(running || progress) && (
+            <>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${pct}%` }} />
+              </div>
+              <div className="mono" style={{ fontSize: 12, color: "var(--ink-soft)", margin: "6px 0 10px" }}>
+                {progress ? `${progress.placed} / ${progress.total} variables placed (${pct}%)` : "queued…"}
+              </div>
+            </>
+          )}
+          {log.length > 0 && (
+            /*
+              Taller than it was, because it has a column to itself now. It was
+              150px under a stack of controls — the one thing somebody watches
+              while waiting, shown eight lines at a time.
+            */
+            <div ref={logRef} style={{
+              fontFamily: "var(--font-mono)", fontSize: 11.5, background: "var(--brand-deep)",
+              color: "var(--steel-light)", borderRadius: 10, padding: "12px 14px",
+              height: wide ? 320 : 180, overflowY: "auto", lineHeight: 1.7,
+              // §31's rule: wide content scrolls inside its own box, never the page.
+              overflowX: "auto", whiteSpace: "pre",
+            }}>
+              {log.map((l, i) => <div key={i} style={l.startsWith("✓") ? { color: "#7BE3C8" } : l.startsWith("✗") ? { color: "#FF9C93" } : undefined}>{l}</div>)}
+            </div>
+          )}
+        </Card>
+      )}
 
       {result && !running && (
         <Card title="Last run" sub={latest.state === "completed" ? "Draft written — review it on the Allocation Matrix." : `state: ${latest.state}`}>
-          <div style={{ display: "flex", gap: 12, marginBottom: result.unplaced.length ? 14 : 0 }}>
+          {/* A wrapping grid, not a flex row: five stat boxes in a 1fr column
+              overflowed sideways the moment the page became two columns. */}
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))",
+            gap: 10, marginBottom: result.unplaced.length ? 14 : 0,
+          }}>
             <Stat n={`${result.placedVariables}/${result.totalVariables}`} l="variables placed" />
             <Stat n={String(result.slotRows)} l="slot rows" />
             <Stat n={`${Math.round((result.placedVariables / Math.max(1, result.totalVariables)) * 100)}%`} l="fill" />
@@ -291,7 +400,7 @@ export function Generate() {
                   </span>
                 )}
               </div>
-              <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
                 <Metric label="Teacher gaps" before={result.objective.before.teacherGaps} after={result.objective.after.teacherGaps} />
                 <Metric label="Peak daily load" before={result.objective.before.peakDailyLoad} after={result.objective.after.peakDailyLoad} />
                 <Metric label="Room changes" before={result.objective.before.roomChanges} after={result.objective.after.roomChanges} />
@@ -308,6 +417,7 @@ export function Generate() {
           </div>
         </Card>
       )}
+      </div>
     </div>
   );
 }

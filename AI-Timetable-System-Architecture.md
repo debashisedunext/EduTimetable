@@ -4069,3 +4069,18 @@ The arithmetic is `fillAcrossDays` in `packages/shared/src/timetable/fixed-fill.
 A pin attaches to a lesson somebody teaches, so a class with no curriculum or no staffing has nothing pinnable — correct, and originally shown as three dead dropdowns saying nothing. That reads as a broken screen, and it is the failure this codebase keeps writing down: **a state nobody can tell from a bug is a state that was not communicated.**
 
 The bar replaces the pickers with the reason, and the two causes name different screens rather than being folded into one vague sentence — a class with no curriculum is sent to set subjects and periods, a class with a curriculum and no staffing is sent to give its lessons a teacher. Both add *"and press Save"*, because the Lesson grid shows a **proposal** until it is committed (§27.17), so a timetable can look fully staffed while the database holds nothing. The whole-timetable case is said before any cell is clicked: discovering it one cell at a time is discovering it the slowest possible way.
+
+
+## 5.7 The Generate screen is two columns
+
+Reported as *"lots of unused space on the right, and too much scrolling."* It was one 760px column on a 2,000px screen: half the page empty, while the **solver log** — the tallest thing here and the one somebody actually watches while waiting — sat below the fold behind mode radios they had already finished with.
+
+**The split is the page's own grammar, not a way to fill space.** The left column is every decision taken *before* pressing Generate: feasibility, which draft to write into (§22), fast or optimized (§5.6), and the weights. The right is the run. Nothing on the right can be acted on until something on the left has been.
+
+`minmax(0, …)` on both tracks, because a grid child's default `min-width: auto` refuses to shrink below its content — the log's long lines would otherwise push their column past its track and scroll the *page* sideways, which is §31's rule about wide content living in its own container. The stat rows became wrapping grids for the same reason: five flex boxes in a `1fr` column overflow the moment the page has two.
+
+The breakpoint is a `matchMedia` in the component rather than a CSS class, because the two things that depend on it are inline styles this file builds — the grid's tracks and the log's height — and a class for each would put the breakpoint in a second file that has to agree with this one. Read in `useLayoutEffect` (§8.1d), or the first paint is the one-column layout on every load, snapping to two afterwards.
+
+The log is **320px** instead of 150 now that it has a column to itself. It was the one thing somebody watches during a solve, shown eight lines at a time.
+
+**Before the first run, the right column says what is about to be built** — class-sections, teachers, periods required and periods available. Not filler: on a school that has never generated there is no log and no result, and the column would be the blank half this change exists to remove. Those four numbers are what somebody checks before pressing a button that rewrites a week, and they are already in the readiness payload, so there is no second request and no second opinion about what the timetable contains.
