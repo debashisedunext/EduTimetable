@@ -120,6 +120,7 @@ model School {
   staffingChanges        StaffingChange[]
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
+  fixedLessons           TimetableFixedLesson[]
 
   @@map("schools")
 }
@@ -404,6 +405,8 @@ model ClassSection {
   /// §30 — Class 1-A exists once PER POOL, not once per school-year. That one
   /// column is what lets an individual timetable hold its own Class 1-A with
   /// its own class teacher, home room and Maths teacher.
+  fixedLessons TimetableFixedLesson[]
+
   @@unique([classId, sectionId, academicYearId, resourceGroupId], map: "uq_section_in_group")
   @@index([schoolId])
   @@index([resourceGroupId], map: "class_sections_group_idx")
@@ -429,6 +432,7 @@ model Room {
 
   dailyActivities DailyActivity[]
   unavailability  RoomUnavailability[]
+  fixedLessons    TimetableFixedLesson[]
 
   @@unique([schoolId, name])
   @@map("rooms")
@@ -494,6 +498,7 @@ model Subject {
   classes         SubjectClass[]
   /// §32 — the timetables that have DECLARED this subject. Empty = not stated.
   timetables      TimetableSubject[]
+  fixedLessons    TimetableFixedLesson[]
 
   @@unique([schoolId, name])
   @@map("subjects")
@@ -574,6 +579,7 @@ model Teacher {
   teacherSubjects TeacherSubject[]
   /// §29.2 — the staffing changes this teacher is named in, on either side.
   staffingChanges StaffingChangeTeacher[]
+  fixedLessons    TimetableFixedLesson[]
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
@@ -664,14 +670,14 @@ model BoardSubjectCatalog {
 /// the migration is a bare CREATE TABLE: every day of every school today has
 /// no row and keeps the config's shape.
 model TimetableDayShape {
-  timetableConfigId Int             @map("timetable_config_id")
-  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  timetableConfigId  Int             @map("timetable_config_id")
+  timetableConfig    TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
   /// ISO day number, 1 = Monday.
-  dayOfWeek         Int             @map("day_of_week") @db.TinyInt
-  periodsPerDay     Int             @map("periods_per_day")
-  periodDurationMins Int            @map("period_duration_mins")
-  schoolId          Int             @map("school_id")
-  school            School          @relation(fields: [schoolId], references: [id])
+  dayOfWeek          Int             @map("day_of_week") @db.TinyInt
+  periodsPerDay      Int             @map("periods_per_day")
+  periodDurationMins Int             @map("period_duration_mins")
+  schoolId           Int             @map("school_id")
+  school             School          @relation(fields: [schoolId], references: [id])
 
   @@id([timetableConfigId, dayOfWeek])
   @@index([schoolId])
@@ -747,6 +753,49 @@ model TimetableClassSpan {
 /// Selection only. The subject's own settings — code, category, priority,
 /// placement, lab, own room, double — are one answer per subject, school-wide,
 /// because they describe the subject rather than the week.
+/// §36 — a lesson pinned to a cell before the timetable is generated.
+///
+/// The school says "Class 1-A does Mathematics with Puja Sri on Monday period
+/// 2", and the solver honours it before building the rest of the week around it.
+///
+/// **Keyed to the timetable, not to a draft.** `timetable_slots.is_locked`
+/// already pins a *placement* and is deliberately not this: a locked slot
+/// belongs to ONE draft (§22), so generating a second draft would ignore every
+/// pin. This is the school's standing intention and survives every regeneration.
+///
+/// **Not a slot either.** Nothing here is written into `timetable_slots`. A
+/// fixed lesson becomes DOMAIN PRUNING (invariant 2) — the variable for that
+/// occurrence is handed exactly this cell and the solver places it, which is
+/// what keeps the room assignment, the occupancy keys and the §20 shape rules
+/// working rather than a row inserted behind the engine's back.
+///
+/// `roomId` NULL is "not stated", never "anywhere": the solver picks by the §19
+/// ladder. Naming one binds, as the variable's `preferredRoomId`.
+model TimetableFixedLesson {
+  id                Int             @id @default(autoincrement())
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  classSectionId    Int             @map("class_section_id")
+  classSection      ClassSection    @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  subjectId         Int             @map("subject_id")
+  subject           Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacherId         Int             @map("teacher_id")
+  teacher           Teacher         @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  /// §19 — absent means "the solver chooses", which is every lesson today.
+  roomId            Int?            @map("room_id")
+  room              Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  dayOfWeek         Int             @map("day_of_week") @db.TinyInt
+  periodNumber      Int             @map("period_number")
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@unique([timetableConfigId, classSectionId, dayOfWeek, periodNumber], map: "uq_fixed_cell")
+  @@index([classSectionId, subjectId], map: "timetable_fixed_lessons_section_subject_idx")
+  @@index([timetableConfigId, teacherId, dayOfWeek, periodNumber], map: "timetable_fixed_lessons_teacher_cell_idx")
+  @@index([schoolId], map: "timetable_fixed_lessons_school_id_idx")
+  @@map("timetable_fixed_lessons")
+}
+
 model TimetableSubject {
   timetableConfigId Int             @map("timetable_config_id")
   timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
@@ -945,44 +994,44 @@ model TimetableGroup {
 }
 
 model TimetableConfig {
-  id                          Int                   @id @default(autoincrement())
-  schoolId                    Int                   @map("school_id")
-  school                      School                @relation(fields: [schoolId], references: [id])
-  academicYearId              Int                   @map("academic_year_id")
-  academicYear                AcademicYear          @relation(fields: [academicYearId], references: [id])
+  id                          Int                    @id @default(autoincrement())
+  schoolId                    Int                    @map("school_id")
+  school                      School                 @relation(fields: [schoolId], references: [id])
+  academicYearId              Int                    @map("academic_year_id")
+  academicYear                AcademicYear           @relation(fields: [academicYearId], references: [id])
   /// §30 — which pool this timetable competes for resources in.
-  resourceGroupId             Int                   @map("resource_group_id")
-  resourceGroup               TimetableGroup        @relation(fields: [resourceGroupId], references: [id])
+  resourceGroupId             Int                    @map("resource_group_id")
+  resourceGroup               TimetableGroup         @relation(fields: [resourceGroupId], references: [id])
   /// §30.5 — when this timetable applies. NULL at both ends means the whole
   /// session, which is every school before this feature; publishing then refuses
   /// a second live timetable over any class this one teaches.
-  effectiveFrom               DateTime?             @map("effective_from") @db.Date
-  effectiveTo                 DateTime?             @map("effective_to") @db.Date
-  name                        String                @db.VarChar(50)
-  description                 String?               @db.Text
-  workingDays                 Json                  @map("working_days")
-  periodsPerDay               Int                   @default(8) @map("periods_per_day")
-  periodDurationMins          Int                   @default(40) @map("period_duration_mins")
-  hasZeroPeriod               Boolean               @default(false) @map("has_zero_period")
-  zeroPeriodDurationMins      Int?                  @map("zero_period_duration_mins")
-  allowConsecutivePeriods     Boolean               @default(true) @map("allow_consecutive_periods")
-  classTeacherGetsFirstPeriod Boolean               @default(false) @map("class_teacher_gets_first_period")
-  startTime                   String                @default("08:00") @map("start_time") @db.VarChar(5)
-  endTime                     String?               @map("end_time") @db.VarChar(5)
+  effectiveFrom               DateTime?              @map("effective_from") @db.Date
+  effectiveTo                 DateTime?              @map("effective_to") @db.Date
+  name                        String                 @db.VarChar(50)
+  description                 String?                @db.Text
+  workingDays                 Json                   @map("working_days")
+  periodsPerDay               Int                    @default(8) @map("periods_per_day")
+  periodDurationMins          Int                    @default(40) @map("period_duration_mins")
+  hasZeroPeriod               Boolean                @default(false) @map("has_zero_period")
+  zeroPeriodDurationMins      Int?                   @map("zero_period_duration_mins")
+  allowConsecutivePeriods     Boolean                @default(true) @map("allow_consecutive_periods")
+  classTeacherGetsFirstPeriod Boolean                @default(false) @map("class_teacher_gets_first_period")
+  startTime                   String                 @default("08:00") @map("start_time") @db.VarChar(5)
+  endTime                     String?                @map("end_time") @db.VarChar(5)
   /// §18: periods appended after the regular day for extra classes. The solver
   /// places only into 1..periodsPerDay, so these are a free space by
   /// construction rather than by a new rule.
-  extraPeriodsPerDay          Int                   @default(0) @map("extra_periods_per_day")
-  extraPeriodDurationMins     Int?                  @map("extra_period_duration_mins")
+  extraPeriodsPerDay          Int                    @default(0) @map("extra_periods_per_day")
+  extraPeriodDurationMins     Int?                   @map("extra_period_duration_mins")
   /// Days that exist only for extra classes, e.g. [6] for Saturday. Kept apart
   /// from `workingDays` precisely so generation cannot reach them.
-  extraDays                   Json?                 @map("extra_days")
+  extraDays                   Json?                  @map("extra_days")
   /// §28.1 — the percentage of a teacher's weekly limit at which the app says
   /// so. A WARNING threshold, never a blocker: a teacher at 80% is a normally
   /// employed teacher, and refusing to generate at a number a school chose for
   /// its own reporting would make most real schools ungenerable.
-  loadAlertPct                Int                   @default(75) @map("load_alert_pct")
-  status                      TimetableConfigStatus @default(draft)
+  loadAlertPct                Int                    @default(75) @map("load_alert_pct")
+  status                      TimetableConfigStatus  @default(draft)
   /// §29.1 — when this timetable was frozen, or NULL if it is not.
   ///
   /// A separate column rather than a `status` value: `status` already means
@@ -992,10 +1041,10 @@ model TimetableConfig {
   /// made. NULL is every timetable that exists today, so nothing changes until
   /// a school presses the button — freezing is a decision, never a side effect
   /// of publishing.
-  frozenAt                    DateTime?             @map("frozen_at")
+  frozenAt                    DateTime?              @map("frozen_at")
   /// Who froze it. No relation, matching `timetable_publications.published_by_id`:
   /// a record of who acted has to survive their account being removed.
-  frozenById                  Int?                  @map("frozen_by_id")
+  frozenById                  Int?                   @map("frozen_by_id")
   /// §29.2 — the staffing changes made against this timetable.
   staffingChanges             StaffingChange[]
   /// §32 — the subjects this timetable teaches. Empty = not stated = all.
@@ -1010,6 +1059,7 @@ model TimetableConfig {
   autoFixRuns                 AutoFixRun[]
   drafts                      TimetableDraft[]
   dailyActivities             DailyActivity[]
+  fixedLessons                TimetableFixedLesson[]
 
   @@unique([schoolId, name, academicYearId])
   @@index([resourceGroupId, effectiveFrom, effectiveTo], map: "tc_window_idx")

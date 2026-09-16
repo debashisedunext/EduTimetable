@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Logger, NotFoundExc
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertFixedLessonsValid, type FixedLessonInput } from "./fixed-lessons";
 import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService, type MoveTarget } from "../groups/resource-group.service";
 import { ValidityService, type Window } from "../validity/validity.service";
@@ -1053,6 +1054,136 @@ export class TimetableConfigsController {
    * computed on the client so the divisibility rule (§33) has one author, and
    * so the form can offer a list in which no invalid value exists.
    */
+  /**
+   * §36 — the lessons this timetable has pinned to a cell.
+   *
+   * Served with everything the Whole tab needs to paint them without a second
+   * round trip: the section's label, the subject's name, the teacher's stored
+   * initials (§31's one definition, never re-derived) and the room's name.
+   *
+   * `caps` rides along because the screen has to say "3 of 6 fixed" before
+   * anybody presses Save, and the cap is a CLASS fact (§27) — one number for
+   * every section of the class — which a client counting rows could not know.
+   */
+  @Get(":id/fixed-lessons")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async fixedLessons(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.ownConfigOr404(configId);
+
+    const rows = await this.prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        id: true, classSectionId: true, subjectId: true, teacherId: true, roomId: true,
+        dayOfWeek: true, periodNumber: true,
+        classSection: { select: { class: { select: { name: true } }, section: { select: { name: true } } } },
+        subject: { select: { name: true } },
+        teacher: { select: { name: true, initials: true } },
+        room: { select: { name: true } },
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
+    });
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { timetableConfigId: configId },
+      select: { id: true, classId: true },
+    });
+    const caps = await this.prisma.classSubject.findMany({
+      where: {
+        classId: { in: [...new Set(sections.map((s) => s.classId))] },
+        academicYearId: config.academicYearId,
+      },
+      select: { classId: true, subjectId: true, periodsPerWeek: true },
+    });
+
+    return {
+      lessons: rows.map((r) => ({
+        id: r.id,
+        classSectionId: r.classSectionId,
+        classSection: `${r.classSection.class.name}-${r.classSection.section.name}`,
+        subjectId: r.subjectId,
+        subject: r.subject.name,
+        teacherId: r.teacherId,
+        teacher: r.teacher.name,
+        initials: r.teacher.initials,
+        roomId: r.roomId,
+        room: r.room?.name ?? null,
+        dayOfWeek: r.dayOfWeek,
+        periodNumber: r.periodNumber,
+      })),
+      /** The curriculum cap, per class and subject — what "3 of 6" counts against. */
+      caps: caps.map((c) => ({
+        classId: c.classId, subjectId: c.subjectId, periodsPerWeek: c.periodsPerWeek,
+      })),
+      sections: sections.map((s) => ({ id: s.id, classId: s.classId })),
+    };
+  }
+
+  /**
+   * §36 — replace the whole set of pins for this timetable.
+   *
+   * **Replace, not upsert**, because that is what a Save button means: the
+   * screen holds the school's whole answer and sends it. Anything else would
+   * need a second way to say "this one is gone", and a grid whose deletions
+   * travel differently from its additions is a grid that loses one of them.
+   *
+   * Validated as ONE set before anything is written (`assertFixedLessonsValid`),
+   * so two pins that are each legal alone and collide with each other are
+   * refused — and refused before the delete, so a rejected save leaves the
+   * school exactly what it had.
+   */
+  @Put(":id/fixed-lessons")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setFixedLessons(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const configId = toInt(id, "id");
+    await this.ownConfigOr404(configId);
+    // §29.1 — a published week does not quietly acquire new hard constraints.
+    await this.freeze.assertConfigs([configId], "the fixed lessons");
+
+    const rows: FixedLessonInput[] = Array.isArray(body?.lessons)
+      ? body.lessons.map((l: any) => ({
+        classSectionId: toInt(l?.classSectionId, "classSectionId"),
+        subjectId: toInt(l?.subjectId, "subjectId"),
+        teacherId: toInt(l?.teacherId, "teacherId"),
+        roomId: l?.roomId === null || l?.roomId === undefined || l?.roomId === ""
+          ? null
+          : toInt(l.roomId, "roomId"),
+        dayOfWeek: toInt(l?.dayOfWeek, "dayOfWeek"),
+        periodNumber: toInt(l?.periodNumber, "periodNumber"),
+      }))
+      : [];
+
+    await assertFixedLessonsValid(this.prisma as never, configId, rows);
+
+    await this.prisma.$transaction(async (tx: any) => {
+      await tx.timetableFixedLesson.deleteMany({ where: { timetableConfigId: configId } });
+      if (rows.length > 0) {
+        await tx.timetableFixedLesson.createMany({
+          data: rows.map((r) => ({
+            timetableConfigId: configId,
+            classSectionId: r.classSectionId,
+            subjectId: r.subjectId,
+            teacherId: r.teacherId,
+            roomId: r.roomId ?? null,
+            dayOfWeek: r.dayOfWeek,
+            periodNumber: r.periodNumber,
+            schoolId: req.user.schoolId,
+          })),
+        });
+      }
+    });
+
+    /*
+      A pin changes what the solver may do, so it changes what Readiness has to
+      say — Check 14 reads these rows. Swept by prefix (§22) as well, because
+      the Whole tab's own payload is cached per timetable.
+    */
+    await this.keys.invalidateTimetable(configId);
+    await this.readiness.invalidate(req.user.schoolId);
+    this.logger.warn(`Fixed lessons for timetable ${configId} set to ${rows.length} row(s)`);
+    return { ok: true, count: rows.length };
+  }
+
   @Get(":id/class-periods")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
   async classPeriods(@Param("id") id: string) {

@@ -216,6 +216,19 @@ export async function planCellDelete(
     },
   });
 
+  /**
+   * §36 — lessons of this subject pinned to a cell.
+   *
+   * Deleting the curriculum row would leave a hard constraint with nothing
+   * behind it: the pin names a lesson that no longer exists, `variables.ts`
+   * would build no variable for it, and Check 14 would then refuse the whole
+   * school for a row nobody can find. Counted by SECTION, which is what a pin
+   * is keyed by.
+   */
+  const pinned = await tx.timetableFixedLesson.count({
+    where: { timetableConfigId: configId, subjectId: ids.subjectId, classSectionId: { in: ids.sectionIds } },
+  });
+
   return {
     configId,
     className,
@@ -227,7 +240,11 @@ export async function planCellDelete(
       ? `The published timetable teaches ${subjectName} to ${className} in ${published} period(s). ` +
         `Removing the subject would leave those lessons on the wall with nothing behind them. ` +
         `Withdraw it on the Publish screen (§3.14), or take those lessons off the board first.`
-      : null,
+      : pinned > 0
+        ? `${pinned} lesson(s) of ${subjectName} are fixed to a day and period for ${className}. ` +
+          `Remove them on the Master Grid's Whole tab first — a fixed lesson has to belong to ` +
+          `a subject the class is still taught.`
+        : null,
     keeps: [
       `${subjectName} itself, and every other class that takes it`,
       ...(electives > 0

@@ -147,6 +147,23 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     lockedCount.set(k, (lockedCount.get(k) ?? 0) + 1);
   }
 
+  /**
+   * §36 — the pins, grouped by the lesson they belong to.
+   *
+   * Keyed exactly as `lockedCount` is, so a pin attaches to the variable for
+   * the lesson somebody is assigned to teach. They do NOT consume occurrences
+   * the way a locked cell does: a locked cell is already placed and needs no
+   * variable, while a pinned one still has to be placed — it simply has one
+   * legal cell instead of forty.
+   */
+  const pinsByLesson = new Map<string, Array<NonNullable<SolverInput["fixedLessons"]>[number]>>();
+  for (const f of input.fixedLessons ?? []) {
+    const k = `${f.classSectionId}:${f.subjectId}:${f.teacherId}`;
+    const list = pinsByLesson.get(k);
+    if (list) list.push(f);
+    else pinsByLesson.set(k, [f]);
+  }
+
   const vars: SolverVariable[] = [];
   let nextId = 1;
 
@@ -310,8 +327,39 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
         ),
       });
     }
+    /*
+      §36 — a pinned occurrence is handed exactly the cell the school named.
+
+      The same four lines §4.9 Phase 15 already uses for a pinned elective
+      block, and for the same reason: placement is DOMAIN PRUNING, never a
+      preference score (invariant 2), so the solver must not be able to
+      *consider* any other cell for this lesson.
+
+      Intersected with `free` rather than replacing it, so a pin into a cell the
+      teacher cannot work, the class is not in school for, or the day does not
+      have leaves an EMPTY domain — the lesson will not place, and Check 14 has
+      already said so by name rather than letting the search discover it.
+
+      Pins apply to the single occurrences only. A row taught as §4.8 double
+      periods has none of them to spare, which is why `assertFixedLessonsValid`
+      refuses a pin on such a row rather than quietly dropping it here.
+    */
+    const pins = pinsByLesson.get(`${m.classSectionId}:${m.subjectId}:${m.teacherId}`) ?? [];
+    const free = domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]);
     for (let i = 0; i < singles; i++) {
-      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]) });
+      const pin = pins[i];
+      vars.push({
+        ...common,
+        id: nextId++,
+        span: 1,
+        domain: pin
+          ? free.filter((c) => c.day === pin.dayOfWeek && c.period === pin.periodNumber)
+          : free,
+        // §19 — a named room binds for this occurrence alone. `preferredRoomId`
+        // is already the top of the room ladder and already refuses hard when
+        // that room is taken, so a pin needs nothing else to be honoured.
+        ...(pin?.roomId ? { preferredRoomId: pin.roomId } : {}),
+      });
     }
   }
 

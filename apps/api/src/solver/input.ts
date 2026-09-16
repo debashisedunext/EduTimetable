@@ -452,7 +452,7 @@ export async function buildSolverInput(
 ): Promise<SolverInput> {
   const snapshot = await buildFeasibilitySnapshot(prisma, configId);
   const sectionIds = snapshot.classSections.map((c) => c.id);
-  const [unavail, labRooms, mappingsWithRooms, groups, locked] = await Promise.all([
+  const [unavail, labRooms, mappingsWithRooms, groups, locked, fixed] = await Promise.all([
     prisma.teacherUnavailability.findMany({
       where: { teacher: { isActive: true } },
     }),
@@ -475,6 +475,15 @@ export async function buildSolverInput(
         isLocked: true,
         ...(draftId !== undefined && draftId !== null ? { draftId } : {}),
       },
+    }),
+    // §36 — no draft filter, deliberately: see the note where they are mapped.
+    prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        dayOfWeek: true, periodNumber: true, roomId: true,
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
     }),
   ]);
   return {
@@ -500,6 +509,21 @@ export async function buildSolverInput(
       mappingsWithRooms.map((m) => [m.id, m.preferredRoomId as number]),
     ),
     mergedGroupRooms: Object.fromEntries(groups.map((g) => [g.id, g.roomId])),
+    /*
+      §36 — the lessons this timetable has pinned to a cell.
+
+      By CONFIG, not by draft: unlike `lockedSlots` above, a fixed lesson is the
+      school's standing intention and has to be honoured whichever draft is
+      being generated. That difference is the whole reason it is its own table.
+    */
+    fixedLessons: fixed.map((f) => ({
+      classSectionId: f.classSectionId,
+      subjectId: f.subjectId,
+      teacherId: f.teacherId,
+      dayOfWeek: f.dayOfWeek,
+      periodNumber: f.periodNumber,
+      roomId: f.roomId,
+    })),
     lockedSlots: locked
       // A locked cell is something a person pinned in a section's grid, so it
       // always has a section. An elective *option* row has none (§4.9) — it is
