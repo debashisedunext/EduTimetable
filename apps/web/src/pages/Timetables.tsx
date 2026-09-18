@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, switchSchool } from "../api";
 import { openOnboarding, resumeOnboarding } from "../onboarding/Onboarding";
-import { STEP_TITLES, TOTAL_STEPS } from "../onboarding/OnboardingWizard";
 import { Card, ErrorNote, Field } from "../components";
+import { PageActions } from "../page-actions";
 import { useApi, useConfigCtx } from "../hooks";
 import { CloneTimetable } from "./CloneTimetable";
 import { DeleteTimetable } from "./DeleteTimetable";
@@ -23,6 +23,13 @@ export function Timetables({ me }: { me: MeResponse }) {
   // "which panel is this?" a question the render has to answer.
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const { data: years } = useApi<{ id: number; name: string }[]>("/academic-years");
+  /*
+    §24.9 — one request for every timetable's progress, not one per card.
+    Refetched beside `configs`, because creating or deleting a timetable
+    changes the list this is keyed on.
+  */
+  const { data: progress, refetch: refetchProgress } = useApi<ConfigSetup[]>("/onboarding/progress");
+  const setupOf = new Map((progress ?? []).map((p) => [p.id, p]));
   const [name, setName] = useState("");
   // §30.5 — when the new timetable applies. Empty means the whole session,
   // which is what every timetable meant before this existed.
@@ -109,38 +116,54 @@ export function Timetables({ me }: { me: MeResponse }) {
         return;
       }
       refetch();
+      refetchProgress();
       setCurrentId(created.id);
       navigate(to);
     } catch (e) {
       // The timetable may well exist by now — the draft write is the half that
       // usually fails — so the list is refreshed either way rather than leaving
       // somebody looking at a screen that does not show what they just made.
-      if (!crossSchool) refetch();
+      if (!crossSchool) { refetch(); refetchProgress(); }
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   return (
-    // Wider than the old 880 because each card now carries five actions: at 880
-    // the row wrapped under the title on every card, which is the other half of
-    // why it looked ragged.
-    <div style={{ maxWidth: 1080 }}>
+    /*
+      §8.7 — no `maxWidth`.
+
+      It was 1080, which on a 1,900px screen left a third of the page empty to
+      the right of every card. The card is what fills the width now: its body
+      is two columns, identity on the left and this timetable's setup on the
+      right, so the space goes to the most informative thing on the screen
+      rather than to a stretched gap between a name and five buttons.
+    */
+    <div>
       <ErrorNote message={error} />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 16 }}>
-        <p className="screen-sub" style={{ margin: 0 }}>
-          Every wing runs its own timetable — different timings, periods, and breaks — built and published independently (§3.10).
-        </p>
-        <div className="actions">
-          {/* §16: skip the hand-entry route entirely and load the masters from a spreadsheet */}
-          {/* §15.3 Phase 25.2 — the permanent way back to the three doors. The
-              welcome screen stops opening by itself once a school has a
-              timetable, or once somebody has waved it away; this is how they
-              get to it afterwards, and how a colleague finds it at all. */}
-          <button className="btn btn-secondary" onClick={openOnboarding}>✦ Set up a timetable</button>
-          <Link to="/import" className="btn btn-secondary" style={{ textDecoration: "none" }}>⬆ Import from Excel</Link>
-          <button className="btn btn-primary" onClick={() => setCreating(true)}>＋ New Timetable</button>
-        </div>
-      </div>
+      {/*
+        §8.7 — the three primary actions live in the top bar's action slot.
+
+        They had a header row of their own: a line of the page spent on three
+        controls, with the prose on the left and several hundred pixels of
+        nothing between. The bar already ends in empty space, and the split it
+        draws is the right one — where you can go on the left, what you can do
+        here on the right.
+      */}
+      <PageActions>
+        {/* §15.3 Phase 25.2 — the permanent way back to the three doors. The
+            welcome screen stops opening by itself once a school has a
+            timetable, or once somebody has waved it away; this is how they get
+            to it afterwards, and how a colleague finds it at all. */}
+        <button className="btn btn-secondary" onClick={openOnboarding}>✦ Set up</button>
+        {/* §16: skip the hand-entry route entirely and load the masters from a
+            spreadsheet. Also reachable from More — kept here because it is one
+            of the three ways a school starts, and the place it is looked for. */}
+        <Link to="/import" className="btn btn-secondary" style={{ textDecoration: "none" }}>⬆ Import</Link>
+        <button className="btn btn-primary" onClick={() => setCreating(true)}>＋ New Timetable</button>
+      </PageActions>
+      <p className="screen-sub" style={{ margin: "0 0 14px" }}>
+        Every wing runs its own timetable — different timings, periods, and breaks — built and published independently (§3.10).
+      </p>
 
       {creating && (
         <Card title="New wing">
@@ -203,7 +226,7 @@ export function Timetables({ me }: { me: MeResponse }) {
             school only fills these in when it runs two timetables over the same
             children at different times of year.
           */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="grid2" style={{ gap: 10 }}>
             <Field label="Runs from (optional)">
               <input type="date" value={runsFrom} onChange={(e) => setRunsFrom(e.target.value)} style={inputStyle} />
             </Field>
@@ -229,11 +252,7 @@ export function Timetables({ me }: { me: MeResponse }) {
         </Card>
       )}
 
-      <SetupProgress />
-
-      {configs.length === 0 && !creating && (
-        <Card><p style={{ color: "var(--ink-faint)", fontSize: 13 }}>No timetables yet — create one and the guided setup picks up from there.</p></Card>
-      )}
+      {configs.length === 0 && <NoTimetablesYet />}
 
       {configs.map((c) => (
         deletingId === c.id ? (
@@ -241,7 +260,7 @@ export function Timetables({ me }: { me: MeResponse }) {
             <DeleteTimetable
               config={c}
               onCancel={() => setDeletingId(null)}
-              onDone={() => { setDeletingId(null); refetch(); }}
+              onDone={() => { setDeletingId(null); refetch(); refetchProgress(); }}
             />
           </div>
         ) : cloningId === c.id ? (
@@ -262,8 +281,10 @@ export function Timetables({ me }: { me: MeResponse }) {
           </div>
         ) : (
         <Card key={c.id}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
+          {/* §8.7 — three areas, so a wide screen puts the setup beside the
+              identity rather than leaving the middle of the card empty. */}
+          <div className="tt-card">
+            <div className="tt-main">
               {/* The status belongs beside the name — it describes the
                   timetable, not something you can do to it. Standing in the
                   action row it was also the thing making that row ragged: a
@@ -291,10 +312,18 @@ export function Timetables({ me }: { me: MeResponse }) {
                     ⬚ individual
                   </span>
                 )}
+                {/*
+                  §29.8 — "locked", not "frozen".
+
+                  The word changed with the meaning: publishing now does this
+                  rather than a separate press, and what a school does next is
+                  unlock a class or a teacher rather than thaw the lot. A badge
+                  saying "frozen" would describe a button nobody pressed.
+                */}
                 {c.frozenAt && (
-                  <span className="badge" title="Frozen — the allocation cannot be changed until it is unfrozen"
+                  <span className="badge" title="Locked — published, and settled. Unlock the classes or teachers you need to re-plan."
                     style={{ background: "var(--steel-pale)", color: "var(--brand-dark)", borderColor: "var(--brand)" }}>
-                    🔒 frozen
+                    🔒 locked
                   </span>
                 )}
               </div>
@@ -326,7 +355,7 @@ export function Timetables({ me }: { me: MeResponse }) {
               red destroys it. Every one carries an icon — half of them did and
               half did not, which is most of why the row read as ragged.
             */}
-            <div className="actions">
+            <div className="actions tt-actions">
               <button className="btn btn-primary"
                 title="Open the step-by-step Setup Wizard for this timetable"
                 onClick={() => { setCurrentId(c.id); navigate("/setup"); }}>
@@ -343,7 +372,7 @@ export function Timetables({ me }: { me: MeResponse }) {
               */}
               <button className="btn btn-brand-soft"
                 title="Carry on in the guided setup — it fills in what is missing and changes nothing that is already there"
-                onClick={() => { setCurrentId(c.id); void adoptAndResume(setError); }}>
+                onClick={() => { setCurrentId(c.id); void adoptAndResume(setError, navigate); }}>
                 ⚡ Guided
               </button>
               <button className="btn btn-accent-soft"
@@ -372,6 +401,22 @@ export function Timetables({ me }: { me: MeResponse }) {
                 🗑 Delete
               </button>
             </div>
+            {/* §24.9 — this timetable's own progress, in this timetable's own
+                card. The old bar sat above all of them and belonged to none. */}
+            <div className="tt-setup">
+            <SetupStrip
+            setup={setupOf.get(c.id)}
+            onCarryOn={(st) => {
+              // The timetable first, always: every destination is scoped by the
+              // top bar's selection (§30.13), so landing on the Lesson grid or
+              // the wizard pointed at a different wing would be worse than not
+              // going at all.
+              setCurrentId(c.id);
+              if (st.route) { navigate(st.route); return; }
+              void adoptAndResume(setError, navigate, st.step);
+            }}
+            />
+            </div>
           </div>
         </Card>
         )
@@ -386,101 +431,158 @@ export const inputStyle: React.CSSProperties = {
 };
 
 /**
- * How far through the guided setup this school is, and the way back into it.
+ * §24.9 — how far a TIMETABLE is, read from the timetable.
  *
- * On the Timetables page rather than on each timetable card, and the difference
- * is not cosmetic: a card is one `timetable_config`, while the guided setup is
- * one draft per person per SCHOOL that creates the configs in the first place.
- * A progress bar drawn on each card would be the same number repeated, attached
- * to the wrong thing — and would still be showing it on a school with no
- * timetables at all, which is exactly when somebody most needs to see it.
+ * ## What was wrong with the old one
  *
- * Shown only while there is something unfinished. A completed setup is not
- * progress, it is history, and a permanent "11 of 11" would be clutter on every
- * visit forever.
+ * It drew one bar for the WHOLE SCHOOL, above every card, from
+ * `(onboarding draft's current_step - 1) / 10`. Three separate faults, all
+ * reported at once:
+ *
+ *  - **It measured a cursor, not the school.** `current_step` is where somebody
+ *    last clicked. Opening the wizard to look at step 3 sent a fully generated
+ *    school back to 20%, and it stayed there.
+ *  - **It could never reach 100%.** Nothing in it knew the timetable had been
+ *    generated, which is the thing the whole setup exists to reach.
+ *  - **It belonged to no timetable.** One number above two wings describes
+ *    neither of them, and read as a claim about both.
+ *
+ * Every milestone here is a fact about the database, computed per
+ * `timetable_config` on the server, so the only way to move the bar is to
+ * create the thing it counts.
+ *
+ * The school-wide version survives for exactly one case — a school with **no
+ * timetables at all**, where there is no card to attach anything to and where
+ * somebody most needs the way in.
  */
-interface SetupState {
-  resumeStep: number | null;
-  resumeMode: string | null;
-  resumeWings?: { name: string; weekReady: boolean }[];
+export interface SetupStep {
+  key: string;
+  label: string;
+  done: boolean;
+  step: number | null;
+  route: string | null;
+  hint: string;
+}
+export interface ConfigSetup {
+  id: number;
+  steps: SetupStep[];
+  done: number;
+  total: number;
+  pct: number;
+  generated: boolean;
+  published: boolean;
+  nextStep: number | null;
+  nextRoute: string | null;
+  nextLabel: string | null;
 }
 
-function SetupProgress() {
-  const [state, setState] = useState<SetupState | null>(null);
+function Bar({ pct, complete }: { pct: number; complete: boolean }) {
+  return (
+    <div style={{ height: 6, borderRadius: 3, background: "var(--steel-pale)", overflow: "hidden", flex: 1, minWidth: 90 }}>
+      <div style={{
+        width: `${pct}%`, height: "100%", borderRadius: 3,
+        background: complete
+          ? "var(--accent)"
+          : "linear-gradient(90deg,var(--brand),var(--accent))",
+        transition: "width 520ms cubic-bezier(.22,.68,.36,1)",
+      }} />
+    </div>
+  );
+}
 
-  useEffect(() => {
-    api<SetupState>("/me/onboarding").then(setState).catch(() => setState(null));
-  }, []);
+/** One timetable's progress, inside that timetable's card. */
+function SetupStrip({
+  setup, onCarryOn,
+}: {
+  setup: ConfigSetup | undefined;
+  onCarryOn: (step: SetupStep) => void;
+}) {
+  if (!setup) return null;
+  const next = setup.steps.find((s) => !s.done) ?? null;
 
-  const step = state?.resumeStep ?? null;
-  if (step === null) return null;
+  /*
+    Finished is a STATE with something to say, not an absent bar.
 
-  const wings = state?.resumeWings ?? [];
-  const done = Math.max(0, step - 1);
-  const pct = Math.round((done / TOTAL_STEPS) * 100);
-  const next = STEP_TITLES[step - 1] ?? "Settings";
+    "Nothing to show once it is done" was the old rule and it is why a school
+    that had generated its week got no acknowledgement anywhere — the thing it
+    had been working towards simply stopped being mentioned.
+  */
+  if (!next) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
+        borderRadius: 9, background: "var(--accent-bg)", border: "1px solid var(--accent)",
+      }}>
+        <span style={{ fontSize: 14 }}>✓</span>
+        <strong style={{ fontSize: 12.5, color: "var(--accent)" }}>
+          {setup.published
+            ? "Set up and published — this timetable is on the wall."
+            : "Set up and generated — this timetable is ready to publish."}
+        </strong>
+        <Bar pct={100} complete />
+        <span style={{ font: "700 13px/1 var(--font-mono)", color: "var(--accent)" }}>100%</span>
+      </div>
+    );
+  }
 
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 12.5 }}>⚡ Setup</strong>
+        <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+          {setup.done} of {setup.total} done · next up, {next.label}
+        </span>
+        <Bar pct={setup.pct} complete={false} />
+        <span style={{ font: "700 13px/1 var(--font-mono)", color: "var(--brand-dark)" }}>{setup.pct}%</span>
+        <button className="btn btn-primary" style={{ padding: "6px 11px", fontSize: 12 }}
+          title={next.hint}
+          onClick={() => onCarryOn(next)}>
+          Carry on →
+        </button>
+      </div>
+      {/*
+        The milestones themselves, because "6 of 8" tells somebody how far they
+        are and not what is missing — and what is missing is the only part they
+        can act on. Each carries its own `hint` from the server, which is also
+        what the Carry on button obeys, so the two cannot point different ways.
+      */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 9 }}>
+        {setup.steps.map((st) => (
+          <span key={st.key} title={st.done ? `${st.label} — done` : st.hint}
+            style={{
+              font: "600 11px/1 Inter", padding: "5px 9px", borderRadius: 20,
+              background: st.done ? "var(--accent-bg)" : "var(--offwhite)",
+              color: st.done ? "var(--accent)" : "var(--ink-faint)",
+              border: `1px solid ${st.done ? "transparent" : "var(--line)"}`,
+            }}>
+            {st.done ? "✓ " : ""}{st.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The way in for a school with NO timetables.
+ *
+ * The only thing the school-wide banner is still right about: there is no card
+ * to attach progress to, and this is exactly when somebody needs the door most.
+ * It carries no percentage — nothing has been started, and "0%" is a number
+ * pretending to be a measurement.
+ */
+function NoTimetablesYet() {
   return (
     <Card>
       <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 240px", minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 7 }}>
-            <strong style={{ fontSize: 14 }}>
-              {state?.resumeMode === "ai" ? "✦ Setting up by conversation" : "⚡ Guided setup"}
-            </strong>
-            <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>
-              {done} of {TOTAL_STEPS} done · next up, {next}
-            </span>
-          </div>
-          <div style={{ height: 6, borderRadius: 3, background: "var(--steel-pale)", overflow: "hidden" }}>
-            <div style={{
-              width: `${pct}%`, height: "100%", borderRadius: 3,
-              background: "linear-gradient(90deg,var(--brand),var(--accent))",
-              transition: "width 520ms cubic-bezier(.22,.68,.36,1)",
-            }} />
-          </div>
-
-          {/*
-            Which wings this is for — and the answer is "all of them".
-            A guided setup is one draft for the whole school: step 3 names every
-            wing at once and everything after covers all of them, so a progress
-            bar per wing would be the same number drawn several times. What IS
-            per wing is the week (step 5), which is filled in wing by wing — so
-            a two-wing school can be half-way through one step, and this is the
-            only place that would show it.
-          */}
-          {wings.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
-              <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
-                {wings.length === 1 ? "Wing:" : "Wings:"}
-              </span>
-              {wings.map((w) => (
-                <span
-                  key={w.name}
-                  title={w.weekReady
-                    ? `${w.name}'s week is set`
-                    : `${w.name} has no working days or periods yet — step 5`}
-                  style={{
-                    font: "600 11px/1 Inter", padding: "5px 9px", borderRadius: 20,
-                    background: w.weekReady ? "var(--accent-bg)" : "var(--offwhite)",
-                    color: w.weekReady ? "var(--accent)" : "var(--ink-faint)",
-                    border: `1px solid ${w.weekReady ? "transparent" : "var(--line)"}`,
-                  }}>
-                  {w.weekReady ? "✓ " : ""}{w.name}
-                </span>
-              ))}
-              {wings.some((w) => !w.weekReady) && (
-                <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
-                  · ticked once its week is set
-                </span>
-              )}
-            </div>
-          )}
+        <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+          <strong style={{ fontSize: 14 }}>⚡ Guided setup</strong>
+          <p style={{ fontSize: 12.5, color: "var(--ink-faint)", margin: "4px 0 0" }}>
+            No timetables yet. The guided setup asks for your classes, week, subjects and staff, and
+            creates the first one — each timetable then shows its own progress here.
+          </p>
         </div>
-        <span style={{
-          font: "700 15px/1 var(--mono, monospace)", color: "var(--brand-dark)",
-        }}>{pct}%</span>
-        <button className="btn btn-primary" onClick={resumeOnboarding}>Carry on →</button>
+        <button className="btn btn-primary" onClick={resumeOnboarding}>Start →</button>
       </div>
     </Card>
   );
@@ -498,7 +600,11 @@ function SetupProgress() {
  * silently would be far worse than saying which wing to use the Setup Wizard
  * for.
  */
-async function adoptAndResume(setError: (m: string | null) => void) {
+async function adoptAndResume(
+  setError: (m: string | null) => void,
+  go: (to: string) => void,
+  at?: number | null,
+) {
   try {
     const r = await api<{ adopted: boolean; skippedWings: string[] }>(
       "/onboarding/session/adopt", { method: "POST" },
@@ -510,7 +616,16 @@ async function adoptAndResume(setError: (m: string | null) => void) {
           "Use Edit for that one.",
       );
     }
-    resumeOnboarding();
+    /*
+      §24.9 — open at the step that is actually missing, when one was named.
+
+      `resumeOnboarding` reopens the draft at its stored `current_step`, which
+      is where somebody last clicked — the very thing that made the progress
+      bar wrong. With a milestone in hand the destination is known, and `?at=`
+      is already how the welcome flow and the §24.6 chat hand-over say it.
+    */
+    if (at != null) go(`/guided-setup?at=${at}`);
+    else resumeOnboarding();
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
   }
