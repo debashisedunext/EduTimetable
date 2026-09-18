@@ -636,6 +636,8 @@ export function dayEndsAt(week: {
   periodDurationMins: number;
   breaks?: Array<{ durationMins: number }>;
   activities?: Array<{ durationMins: number; placement?: string }>;
+  /** §28.6 — changeover between periods, where no break already provides one. */
+  periodGapMins?: number;
 }): string | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec((week.startTime ?? "").trim());
   if (!m) return null;
@@ -654,7 +656,21 @@ export function dayEndsAt(week: {
     .filter((a) => a.placement === "after_last")
     .reduce((n, a) => n + Math.max(0, a.durationMins || 0), 0);
 
-  const total = h * 60 + min + teaching + breaks + after;
+  /*
+    §28.6 — one changeover after each period EXCEPT the last and except where a
+    break already follows.
+
+    Counted rather than assumed: `periodsPerDay - 1` would charge the school for
+    a gap in front of every break as well, which `buildPeriodRows` does not
+    insert — and this function exists precisely to tell somebody what the clock
+    will say before those rows are written. The two must agree.
+  */
+  const gapMins = Math.max(0, Math.floor(week.periodGapMins || 0));
+  const breakCount = (week.breaks ?? []).length;
+  const periods = Math.max(0, Math.floor(week.periodsPerDay || 0));
+  const gaps = gapMins * Math.max(0, periods - 1 - breakCount);
+
+  const total = h * 60 + min + teaching + breaks + after + gaps;
   // A day that runs past midnight is nonsense a school would want to see
   // rather than a wrapped time that looks plausible.
   if (total >= 24 * 60) return null;

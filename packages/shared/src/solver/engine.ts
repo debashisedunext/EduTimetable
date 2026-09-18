@@ -6,6 +6,7 @@
 import type { Placement, SolverInput, SolveOptions, SolverResult, SolverVariable, UnplacedVariable } from "./types";
 import { SolverState, teacherPeriodBudget, teachersOf } from "./state";
 import { buildTeacherCtx, buildVariables } from "./variables";
+import { crossWingConflict } from "./cross-wing";
 
 /** deterministic PRNG (mulberry32) — reproducible runs per seed (task 2.5) */
 function rng(seed: number) {
@@ -514,12 +515,49 @@ function attemptSolve(
       }
       return cost;
     };
+    /**
+     * §28.7 — steer away from a cell the teacher would have to sprint to.
+     *
+     * This is the `prefer` half of the setting, and it is the DEFAULT: every
+     * school that has never measured the walk between its wings still gets a
+     * timetable that avoids back-to-back crossings where it easily can, without
+     * ever refusing one. That is the asked-for "consider it partially".
+     *
+     * It ORDERS values and removes none, so it cannot cost a school a lesson —
+     * invariant 2's line between pruning and ordering, and §20's rule that
+     * completeness outranks shape. Weighted above the day preferences because
+     * a teacher who physically cannot arrive is a worse outcome than a ragged
+     * day, and below nothing else: it is still only a tie-break.
+     *
+     * Skipped entirely when the rule is `forbid`, where `check()` has already
+     * removed those cells and scoring them again would be arithmetic nobody
+     * reads.
+     */
+    const crossWingCost = (val: { day: number; period: number }) => {
+      const cfg = input.snapshot.config;
+      if (cfg.crossWingRule === "forbid" || !cfg.periodClock) return 0;
+      const first = cfg.periodClock[val.period];
+      const last = cfg.periodClock[val.period + v.span - 1];
+      if (!first || !last) return 0;
+      let cost = 0;
+      for (const t of varTeachers) {
+        const hit = crossWingConflict(
+          input.snapshot.crossWingBusy?.[t],
+          val.day, first.start, last.end, cfg.crossWingTravelMins ?? 0,
+        );
+        // An overlap is worse than a tight walk and is scored as such, but both
+        // remain preferences: `prefer` means prefer.
+        if (hit) cost += hit.gapMins < 0 ? 24 : 12;
+      }
+      return cost;
+    };
     values.sort((a, b) => {
       const load = (val: { day: number; period: number }) =>
         state.sectionDayLoad(v.classSectionIds[0], v.dayKey, val.day) * 4 +
         varTeachers.reduce((n, t) => n + dayPreference(t, val.day), 0) +
         (ownP1 ? (val.period === 1 ? -8 : 0) : 0) +
         priorityOf(val) * 1.5 +
+        crossWingCost(val) +
         (jitter.get(val) ?? 0);
       return load(a) - load(b);
     });

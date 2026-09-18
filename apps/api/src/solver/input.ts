@@ -283,6 +283,72 @@ export async function buildFeasibilitySnapshot(
     if (!entry.otherConfigNames.includes(name)) entry.otherConfigNames.push(name);
   }
 
+  /*
+    §28.7 — where these teachers already are, in the other wings of this pool.
+
+    Two queries and both are narrow: the other configs in the same
+    `resource_group_id` (the §30 rule `crossConfigTeacherLoad` above already
+    uses, one level in), and their placed rows for these teachers.
+
+    **Read once, when generation starts.** Wings are generated one at a time, so
+    the wing generated second can honour the first and the first knows nothing
+    of the second. That asymmetry is real and is stated rather than papered
+    over: regenerating the first wing afterwards is what makes the pair
+    consistent, and the Generate screen says so.
+  */
+  /** "HH:MM" → minutes from midnight. A cross-wing clash is a clock question. */
+  const hhmm = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const crossWingBusy: FeasibilitySnapshot["crossWingBusy"] = {};
+  if ((config.crossWingTravelMins ?? 0) > 0 || config.crossWingRule === "forbid") {
+    const siblings = await prisma.timetableConfig.findMany({
+      where: { id: { not: configId }, resourceGroupId: config.resourceGroupId },
+      include: { periods: true },
+    });
+    if (siblings.length > 0) {
+      const busyRows = await prisma.timetableSlot.findMany({
+        where: {
+          timetableConfigId: { in: siblings.map((c) => c.id) },
+          teacherId: { in: teachers.map((t) => t.id) },
+          source: { not: "extra" },
+        },
+        select: { timetableConfigId: true, teacherId: true, dayOfWeek: true, periodNumber: true },
+      });
+      // Each sibling's own clock — §30.7's lesson: their P3 is not our P3.
+      const clocks = new Map(siblings.map((c) => [
+        c.id,
+        new Map(c.periods
+          .filter((p) => p.periodNumber !== null && !p.isBreak && !p.isExtra && !p.isActivity)
+          .map((p) => [p.periodNumber as number, { start: hhmm(p.startTime), end: hhmm(p.endTime) }])),
+      ]));
+      const names = new Map(siblings.map((c) => [c.id, c.name]));
+      const travel = new Map(siblings.map((c) => [c.id, c.crossWingTravelMins ?? 0]));
+      const seen = new Set<string>();
+      for (const r of busyRows) {
+        if (r.teacherId === null) continue;
+        const clock = clocks.get(r.timetableConfigId)?.get(r.periodNumber);
+        if (!clock) continue;
+        /*
+          §4.10 — a merged group places one row per member section, and they are
+          one event. Left as-is the same lesson would be compared several times,
+          which changes no verdict but inflates every list this teacher has.
+        */
+        const key = `${r.teacherId}:${r.timetableConfigId}:${r.dayOfWeek}:${r.periodNumber}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        (crossWingBusy[r.teacherId] ??= []).push({
+          dayOfWeek: r.dayOfWeek,
+          start: clock.start,
+          end: clock.end,
+          configName: names.get(r.timetableConfigId) ?? "another wing",
+          travelMins: travel.get(r.timetableConfigId) ?? 0,
+        });
+      }
+    }
+  }
+
   const label = (cs: (typeof classSections)[number]) => `${cs.class.name}-${cs.section.name}`;
 
   // Built once: both `daySegments` and the lunch boundary read the same rows,
@@ -321,6 +387,19 @@ export async function buildFeasibilitySnapshot(
       lunchAfterPeriod: lunchAfterPeriodFromRows(periodRows),
       // §28.1 — the school's own "getting full" line, for Check 12.
       loadAlertPct: config.loadAlertPct,
+      // §28.7 — this wing's own walk, and how strictly to honour it.
+      crossWingTravelMins: config.crossWingTravelMins ?? 0,
+      crossWingRule: (config.crossWingRule ?? "prefer") as "prefer" | "forbid",
+      /*
+        This wing's clock, teaching periods only. Breaks, §18 extras and §28.3
+        activities carry no period number the solver can reach, so including
+        them would only be rows nothing looks up.
+      */
+      periodClock: Object.fromEntries(
+        config.periods
+          .filter((p) => p.periodNumber !== null && !p.isBreak && !p.isExtra && !p.isActivity)
+          .map((p) => [p.periodNumber as number, { start: hhmm(p.startTime), end: hhmm(p.endTime) }]),
+      ),
     },
     classSections: classSections.map((cs) => ({
       id: cs.id,
@@ -418,6 +497,7 @@ export async function buildFeasibilitySnapshot(
       })),
     })),
     crossConfigTeacherLoad,
+    crossWingBusy,
     labRoomCount: labRooms,
     labSubjectIds: labSubjects.map((s) => s.id),
     subjectPlacement: Object.fromEntries(allSubjects.map((s) => [s.id, {

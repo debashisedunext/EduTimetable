@@ -22,6 +22,20 @@ export interface StructureSpec {
    * The solver places only into 1..periodsPerDay, so these are out of its
    * reach by construction — no new rule for it to remember.
    */
+  /**
+   * §28.6 — minutes of changeover between one period and the next.
+   *
+   * A school that wants five minutes for children and teachers to move rooms
+   * writes it here rather than padding every period's duration, which is the
+   * workaround it replaces: a 30-minute lesson taught in a 35-minute slot is a
+   * lie told to the curriculum, to the load arithmetic and to the wall.
+   *
+   * **Not applied where a break already follows.** A break IS the changeover —
+   * adding five minutes in front of a twenty-minute lunch buys nothing and
+   * moves the whole afternoon — and not after the last period either, where
+   * there is nothing to change over to.
+   */
+  periodGapMins?: number;
   extraPeriodsPerDay?: number;
   extraPeriodDurationMins?: number | null;
   /** Minutes between the last regular period and the first extra one. */
@@ -73,6 +87,9 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
   }
   if (spec.periodDurationMins < 20 || spec.periodDurationMins > 120) {
     throw new Error("periodDurationMins must be between 20 and 120");
+  }
+  if (spec.periodGapMins !== undefined && (spec.periodGapMins < 0 || spec.periodGapMins > 30)) {
+    throw new Error("periodGapMins must be between 0 and 30");
   }
   const breaksAfter = new Map<number, BreakSpec>();
   for (const b of spec.breaks) {
@@ -162,6 +179,20 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
     });
     clock += spec.periodDurationMins;
     const brk = breaksAfter.get(p);
+    /*
+      §28.6 — the changeover, and the two places it does NOT go.
+
+      Not before a break, because a break already is one; and not after the
+      last period, where there is nothing to change over to and the only effect
+      would be to tell the school it closes five minutes later than it does.
+
+      It is added to the CLOCK and to no row: nothing occupies it, so no grid
+      has a cell to draw and the solver — which places into period numbers — is
+      untouched. That is the same device §28.3 activities and the §18 window
+      use, and it is why this costs the rest of the system nothing.
+    */
+    const gap = spec.periodGapMins ?? 0;
+    if (gap > 0 && !brk && p < spec.periodsPerDay) clock += gap;
     if (brk) {
       rows.push({
         sortOrder: sortOrder++,

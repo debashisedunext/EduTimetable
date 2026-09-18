@@ -201,3 +201,57 @@ describe("§34.5 the clock on a day with its own shape", () => {
     expect(breaksFromRows(stored)).toEqual([{ afterPeriod: 4, name: "Lunch", durationMins: 30 }]);
   });
 });
+
+describe("§28.6 changeover gap between periods", () => {
+  const base = {
+    startTime: "08:00", periodsPerDay: 4, periodDurationMins: 30,
+    hasZeroPeriod: false, breaks: [] as Array<{ afterPeriod: number; name: string; durationMins: number }>,
+  };
+
+  it("pushes each period later by the gap — the school's own example", () => {
+    // 1st 08:00–08:30, then five minutes to move rooms, so the 2nd is 08:35.
+    const { rows } = buildPeriodRows({ ...base, periodGapMins: 5 });
+    const teaching = rows.filter((r) => r.periodNumber !== null && !r.isBreak);
+    expect(teaching.map((r) => `${r.startTime}-${r.endTime}`)).toEqual([
+      "08:00-08:30", "08:35-09:05", "09:10-09:40", "09:45-10:15",
+    ]);
+  });
+
+  it("does NOT add one where a break already follows", () => {
+    /*
+      A break is the changeover. Five minutes in front of a twenty-minute lunch
+      buys nothing and moves the whole afternoon.
+    */
+    const { rows } = buildPeriodRows({
+      ...base, periodGapMins: 5,
+      breaks: [{ afterPeriod: 2, name: "Lunch", durationMins: 20 }],
+    });
+    /*
+      P1 08:00-08:30, gap, P2 08:35-09:05 — so lunch starts at 09:05, straight
+      after period 2 ends, with no changeover in front of it. (The first
+      version of this test expected 08:35, having forgotten that period 2 has
+      itself already moved by the earlier gap.)
+    */
+    const lunch = rows.find((r) => r.isBreak);
+    expect(lunch?.startTime).toBe("09:05");
+    expect(lunch?.endTime).toBe("09:25");
+    const third = rows.find((r) => r.periodNumber === 3);
+    expect(third?.startTime).toBe("09:25");     // and no gap after the break either
+  });
+
+  it("does not add one after the LAST period", () => {
+    // Otherwise the school is told it closes five minutes later than it does.
+    const { endTime } = buildPeriodRows({ ...base, periodGapMins: 5 });
+    expect(endTime).toBe("10:15");
+  });
+
+  it("is off by default, so every existing school's clock is unchanged", () => {
+    const { rows, endTime } = buildPeriodRows(base);
+    expect(rows.find((r) => r.periodNumber === 2)?.startTime).toBe("08:30");
+    expect(endTime).toBe("10:00");
+  });
+
+  it("refuses a gap longer than a changeover could be", () => {
+    expect(() => buildPeriodRows({ ...base, periodGapMins: 45 })).toThrow(/between 0 and 30/);
+  });
+});
