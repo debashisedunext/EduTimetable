@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { asMessage } from "../components";
 import { commitWeeks, commitWings, defaultWeek, StepClasses, StepWeek, StepWings } from "./steps/Structure";
+import { StepSummary } from "./steps/Summary";
 import { StepSubjects, StepTeachers } from "./steps/People";
 import { defaultSettings, StepRooms, StepSettings } from "./steps/Syllabus";
 import {
@@ -26,7 +27,9 @@ import {
   type SubjectAnswer, type TeacherAnswer, type WingAnswer,
 } from "@edutimetable/shared";
 import { celebrate, setSoundEnabled, soundEnabled } from "./celebrate";
-import { useConfigCtx } from "../hooks";
+import { useApi, useConfigCtx } from "../hooks";
+import { LockRibbon, useUnlocks } from "../locks";
+import { useIsMobile } from "../mobile";
 import { DraftTerms, termProblems } from "../terms/TermsEditor";
 
 /**
@@ -35,7 +38,7 @@ import { DraftTerms, termProblems } from "../terms/TermsEditor";
  * The server owns the same number and the migration of stored step numbers
  * (`onboarding.service.ts`), because a resumed draft is read there.
  */
-export const TOTAL_STEPS = 10;
+export const TOTAL_STEPS = 11;
 
 /**
  * §31.13 — the steps this wizard SHOWS, in order.
@@ -51,7 +54,22 @@ export const TOTAL_STEPS = 10;
  * them the wizard walks through has changed. Renumbering would have been a
  * second migration of everybody's stored step for a change to a menu.
  */
-export const WIZARD_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 10] as const;
+export const WIZARD_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11] as const;
+
+/**
+ * §38 — the Published summary: what this timetable turned out to be.
+ *
+ * Shown only once the timetable has a live publication, and opened by default
+ * when it does. A wizard whose last step is "Settings" leaves a school that has
+ * finished with nowhere to land — §24.9 made the same point about the progress
+ * bar: *finished is a state with something to say, not an absent bar.*
+ *
+ * Number **11**, not 9 or 10, for the reason `WIZARD_STEPS` exists at all: 9 is
+ * Allocation and 10 is Settings in every stored `current_step`, every
+ * `POST /onboarding/commit/:step` and `migrateStep` on the server. Reusing
+ * either would silently move somebody's saved position.
+ */
+export const SUMMARY_STEP = 11;
 
 /** Where a step sits in the visible sequence, or -1 for one that is not shown. */
 export const stepIndex = (n: number): number => WIZARD_STEPS.indexOf(n as never);
@@ -60,12 +78,20 @@ export const stepIndex = (n: number): number => WIZARD_STEPS.indexOf(n as never)
  * The nearest step this wizard will actually show.
  *
  * A draft saved mid-setup can name step 9, and there is no longer anywhere to
- * put somebody who resumes there — so they land on Settings, which is what
- * came after it. Everything else is returned untouched.
+ * put somebody who resumes there — so they land on Settings, which is what came
+ * after it. Everything else is returned untouched.
+ *
+ * **Forwards to the next shown step, never to the last one.** It used to fall
+ * back to `TOTAL_STEPS`, which was Settings and therefore right by coincidence;
+ * §38 added step 11 and that coincidence ended — a draft on step 9 would have
+ * resumed on the Published summary, which is neither where they were nor what
+ * comes next. The rule is "the first step at or after this one", which is what
+ * the sentence above always meant.
  */
 export const visibleStep = (n: number): number => {
   const clamped = Math.min(TOTAL_STEPS, Math.max(1, n));
-  return stepIndex(clamped) >= 0 ? clamped : TOTAL_STEPS;
+  if (stepIndex(clamped) >= 0) return clamped;
+  return WIZARD_STEPS.find((s) => s > clamped) ?? WIZARD_STEPS[WIZARD_STEPS.length - 1];
 };
 
 /** The next step forward, or the same one at the end. */
@@ -156,12 +182,17 @@ function wellDone(step: number, created: Record<string, number> | undefined): st
  * §30.13 — the step that CREATES wings, and therefore the one step that must
  * still see all of them. Named rather than a bare 3, because "which step is
  * Wings?" is exactly the kind of number a renumbering leaves behind.
+ *
+ * §39.1 — exported now, because it is also where a FINISHED school starts.
+ * "Set up a timetable" on a school whose every timetable is complete has only
+ * one useful destination: everything before this step is the school and the
+ * session, and everything after it is about a wing that does not exist yet.
  */
-const WINGS_STEP = 3;
+export const WINGS_STEP = 3;
 
 export const STEP_TITLES = [
   "School", "Session", "Wings", "Classes", "Timetable", "Subjects",
-  "Teachers", "Rooms", "Allocation", "Settings",
+  "Teachers", "Rooms", "Allocation", "Settings", "Summary",
 ];
 
 /**
@@ -223,17 +254,26 @@ export interface SchoolIdentity {
 // ─────────────────────────────────────────────────────────────── chrome
 
 /**
- * How far through, as a number and as a bar.
+ * How far through — a fact about the TIMETABLE, not about where you clicked.
  *
- * Counted on steps COMPLETED — `step - 1` — not on the step being looked at.
- * Showing 9% for having opened the first question is the kind of progress bar
- * people stop believing, and the eleventh step reading 100% before it has been
- * pressed would be worse.
+ * It used to be `stepIndex(step) / WIZARD_STEPS.length`: a cursor. Opening the
+ * guided setup on step 6 to look at something dropped a fully generated,
+ * published school to 56%, and moving between steps made the number go up and
+ * down while nothing about the school changed. Reported exactly that way, and
+ * it is §24.9's finding a second time — *a cursor answers "where was I?", which
+ * is not what anybody was asking.*
+ *
+ * `pct` now comes from `GET /onboarding/progress`, the §24.9 milestone service:
+ * eight facts read from the database, none of which can move without something
+ * really being created. A published timetable therefore reads 100% on every
+ * step, including the ones somebody wanders back to.
+ *
+ * The cursor is kept as the fallback for the one case the milestones cannot
+ * describe — a school with no `timetable_config` yet, before step 3 has run —
+ * where there is nothing to measure and the old behaviour is the honest answer.
  */
-function Progress({ step }: { step: number }) {
-  // Counted over the steps actually shown, so the bar reaches 100% on the
-  // last one somebody can be standing on rather than stopping short of it.
-  const pct = Math.round((stepIndex(visibleStep(step)) / WIZARD_STEPS.length) * 100);
+function Progress({ step, pct: real }: { step: number; pct: number | null }) {
+  const pct = real ?? Math.round((stepIndex(visibleStep(step)) / WIZARD_STEPS.length) * 100);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
       <div style={{
@@ -271,29 +311,62 @@ function Progress({ step }: { step: number }) {
  * `unfinished` is therefore a marker, not a gate: the dot says a step still
  * wants something, and you may go and look at it.
  */
-function Rail({ step, unfinished, onJump, disabled }: {
+function Rail({ steps, step, unfinished, onJump, disabled, compact, caption }: {
+  /**
+   * §38 — which steps to draw.
+   *
+   * Passed rather than read from `WIZARD_STEPS`, because the Summary appears
+   * only once the timetable has been published: a dot for a step that answers
+   * "what did this produce?" on a school that has produced nothing is a dead
+   * end with a number on it.
+   */
+  steps: readonly number[];
   step: number;
   /** Steps still missing something — drawn with a ring, never locked. */
   unfinished: (n: number) => boolean;
   onJump: (n: number) => void;
   disabled: boolean;
+  /**
+   * §8.8 — dots alone, and one fixed caption beneath them.
+   *
+   * Nine labels under nine dots is nine truncations on a phone: "S…", "W…",
+   * "Cl…", "Ti…" — which name nothing and still cost the row its height. The
+   * dots keep their numbers, which are the part that survives at that size,
+   * and the step you are ON gets named once underneath in full.
+   */
+  compact?: boolean;
+  /** What the caption says. Built by the caller, which knows about wings. */
+  caption?: React.ReactNode;
 }) {
+  /*
+    The strip spans the dialog (§24.5d). It used to be eleven dots bunched at
+    the left with 10px connectors between them — packed tight while most of the
+    bar was empty, which reads as a cluster rather than a route. The CONNECTORS
+    are the flexible part now, so the dots space themselves to whatever width
+    the pane has, and every step is named rather than only the current one:
+    with the room to show them, "which step is Rooms?" should not need clicking
+    to find out.
+
+    This comment lives ABOVE the return, and that is not a style choice. It sat
+    between `return (` and the JSX — which is a comment while the JSX is a
+    single element, and became TEXT the moment §8.8 wrapped the return in a
+    fragment, because a block comment in JSX *children* position is literal
+    content. It printed itself across the top of the guided setup at every
+    screen size.
+
+    Writing that explanation caused the same bug a second time: the sentence
+    originally quoted the comment delimiters, and the closing pair ended this
+    comment eight lines early. They are described rather than typed.
+  */
   return (
-    /*
-      The strip spans the dialog (§24.5d). It used to be eleven dots bunched at
-      the left with 10px connectors between them — packed tight while most of
-      the bar was empty, which reads as a cluster rather than a route. The
-      CONNECTORS are the flexible part now, so the dots space themselves to
-      whatever width the pane has, and every step is named rather than only the
-      current one: with the room to show them, "which step is Rooms?" should not
-      need clicking to find out.
-    */
+    <>
     <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 14 }}>
-      {WIZARD_STEPS.map((n, i) => {
+      {steps.map((n, i) => {
         const label = STEP_TITLES[n - 1];
         // "Done" is about position, not about the numbers: the sequence skips
         // step 9, so `n < step` would call Settings undone while standing on it.
-        const state = i < stepIndex(step) ? "done" : n === step ? "now" : "todo";
+        // Indexed into the SHOWN list, so hiding the Summary does not shift it.
+        const state = i < steps.indexOf(step) ? "done" : n === step ? "now" : "todo";
         const wants = unfinished(n);
         return (
           <div key={label} style={{
@@ -354,17 +427,31 @@ function Rail({ step, unfinished, onJump, disabled }: {
                 "Wings". Under the dot they cost the strip no width, and truncate
                 rather than collide when the pane is narrow.
               */}
-              <span style={{
-                fontSize: 10.5, lineHeight: 1.2, maxWidth: "100%",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
-                fontWeight: state === "now" ? 700 : 400,
-              }}>{label}</span>
+              {!compact && (
+                <span style={{
+                  fontSize: 10.5, lineHeight: 1.2, maxWidth: "100%",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  color: state === "now" ? "var(--brand)" : "var(--ink-faint)",
+                  fontWeight: state === "now" ? 700 : 400,
+                }}>{label}</span>
+              )}
             </button>
           </div>
         );
       })}
     </div>
+    {compact && caption && (
+      /*
+        Fixed, not a tooltip: there is nothing to hover on a touch screen, and
+        a caption that appeared on tap would be a second thing to discover in
+        order to read the first.
+      */
+      <div style={{
+        textAlign: "center", marginTop: -8, marginBottom: 12,
+        font: "700 13px/1.3 var(--font-body)", color: "var(--brand)",
+      }}>{caption}</div>
+    )}
+    </>
   );
 }
 
@@ -530,6 +617,16 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+  /*
+    §38/§39.2 — "the Summary landing has already chosen the step".
+
+    Declared HERE, above the draft fetch that reads it, because the two race:
+    the landing waits on `/onboarding/progress` and the resume waits on
+    `/onboarding/session`, and whichever resolved last used to win. A ref rather
+    than state because nothing renders from it — it only has to be readable
+    inside a promise callback that was created before the landing happened.
+  */
+  const landed = useRef(false);
   const [busy, setBusy] = useState(false);
   /**
    * §30.10 — the error banner remembers WHICH pool it is about.
@@ -589,7 +686,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           touched.current.clear();
           // §31.13 — a draft saved on the old step 9 resumes on Settings, since
           // there is no longer an Allocation step to put anybody on.
-          setStep(visibleStep(startAt ?? d.currentStep));
+          //
+          // §39.2 — unless the §38 landing has already chosen the Summary. The
+          // two are racing: this is a fetch and that is an effect waiting on a
+          // different fetch, so whichever resolves last used to win. In dev
+          // StrictMode the draft is fetched TWICE, so the second response
+          // reliably arrived after the landing and put a published school back
+          // on step 1 — which is exactly what was reported.
+          if (!landed.current) setStep(visibleStep(startAt ?? d.currentStep));
         } else if (d.prefilled && d.answers) {
           /**
            * §27.12 — the school's own masters, rebuilt but NOT saved.
@@ -602,8 +706,8 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
            */
           setAnswers(d.answers);
           for (const k of Object.keys(d.answers)) touched.current.add(k);
-          setStep(visibleStep(startAt ?? d.currentStep ?? 1));
-        } else if (startAt) {
+          if (!landed.current) setStep(visibleStep(startAt ?? d.currentStep ?? 1));
+        } else if (startAt && !landed.current) {
           setStep(visibleStep(startAt));
         }
       })
@@ -641,6 +745,127 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
    * pool completely.
    */
   const { configs, current, setCurrentId, refetch } = useConfigCtx();
+
+  /*
+    §29.8 — the guided setup is READ-ONLY for a locked timetable.
+
+    Reported: the wizard let everything be changed and both Save & close and
+    Next were live; the refusal only arrived from the server, after the typing.
+    A refusal at the end is the worst place for one.
+
+    Scoped to the timetable the top bar has selected (§30.13), because that is
+    what the server now refuses: `assertWingsUnlocked` asks about the wings this
+    commit is building, so a school with Main published can still set up Junior.
+
+    Steps 1–3 stay editable for the same reason the server exempts them: the
+    school, the session and the wings themselves cannot change what a published
+    week teaches, and `commitWings` skips an existing wing by name.
+
+    A live grant re-opens it, which is what the unlock is FOR. The server still
+    refuses anything the grant does not cover, now by name.
+  */
+  /*
+    §24.9 — the real progress of the timetable the top bar has selected.
+
+    One request for the school, then picked out by id, because that is the
+    endpoint that exists and it answers for every timetable at once (§24.9:
+    "seven queries however many timetables"). Null while it is in flight or for
+    a school with no timetable yet, which is what makes `Progress` fall back to
+    the cursor rather than flashing 0%.
+  */
+  const { data: progress } = useApi<Array<{ id: number; pct: number; published: boolean }>>(
+    "/onboarding/progress",
+  );
+  const mine = progress?.find((p) => p.id === current?.id) ?? null;
+  /*
+    §38 — the Summary joins the rail once this timetable has been published.
+
+    Kept out until then rather than shown disabled: a step whose whole content
+    is "what did this produce?" has nothing to say about a school that has not
+    produced anything, and a greyed dot invites a click that cannot help.
+
+    `published` comes from §24.9's milestone service, which reads an
+    un-withdrawn publication from the database — so §3.14 withdrawal removes the
+    step again, which is right: there is no published week to summarise.
+  */
+  const showSummary = mine?.published === true;
+  // Widened to `number[]`: `WIZARD_STEPS` is `as const` so `indexOf` on it only
+  // accepts its own literals, and the whole point here is to look up a step that
+  // may not be in the list.
+  const shownSteps: number[] = showSummary
+    ? [...WIZARD_STEPS]
+    : WIZARD_STEPS.filter((n) => n !== SUMMARY_STEP);
+
+  /*
+    Next / Back / "is this the last one?" walk the SHOWN list.
+
+    The module-level `stepAfter` walks `WIZARD_STEPS`, which now always contains
+    the Summary — so on a school that has published nothing, Settings would
+    offer "Next: Summary" and land on a step with no dot in the rail. These are
+    the same functions over the list actually on screen.
+  */
+  const afterStep = (n: number) =>
+    shownSteps[Math.min(shownSteps.length - 1, Math.max(0, shownSteps.indexOf(visibleStep(n))) + 1)];
+  const beforeStep = (n: number) =>
+    shownSteps[Math.max(0, shownSteps.indexOf(visibleStep(n)) - 1)];
+  const isLastStep = step === shownSteps[shownSteps.length - 1];
+
+  /*
+    §38 — a published timetable OPENS on its summary.
+
+    Asked for directly: *"this will be the 10th step, which will by default open
+    when timetable is published."* Applied ONCE, guarded by a ref, because
+    `/onboarding/progress` can refetch — and yanking somebody from step 6 back to
+    the summary because a request completed is the screen taking the wheel.
+
+    Skipped entirely when `startAt` named a step: a link that says where to go
+    outranks a default.
+  */
+  useEffect(() => {
+    if (landed.current || loading || startAt) return;
+    if (!showSummary) return;
+    landed.current = true;
+    setStep(SUMMARY_STEP);
+  }, [showSummary, loading, startAt]);
+
+  /*
+    §39.2 — and back off the Summary if it stops being shown.
+
+    Landing there persists `current_step: 11`. §3.14's withdrawal then takes the
+    Summary out of the rail — it describes a published week and there is no
+    longer one — while the stored step still points at it, so reopening would
+    render a step with no dot and no way back to it. Falling to the last step
+    that IS shown keeps the rail and the body agreeing.
+
+    Keyed on `showSummary` rather than on `shownSteps`, which is a fresh array
+    every render and would make this run on all of them.
+  */
+  useEffect(() => {
+    if (showSummary || step !== SUMMARY_STEP) return;
+    setStep(WIZARD_STEPS[WIZARD_STEPS.length - 2]);
+  }, [showSummary, step]);
+
+  const lockedAt = current?.frozenAt ?? null;
+  const { live: liveGrants } = useUnlocks(lockedAt ? (current?.id ?? null) : null);
+  /*
+    §29.8 — locked, with nothing unlocked. A fact about the TIMETABLE.
+
+    Separated from `readOnly` because the two answer different questions.
+    `readOnly` is "may this step be edited?" and is gated on `step >= 4`, since
+    the school, the session and the wings cannot change a published week.
+    `settled` is "is there anything a commit could write?" — and the answer is
+    no at every step, which is what §39.2's navigation needs.
+  */
+  const settled = lockedAt !== null && liveGrants.length === 0;
+  /*
+    §39.2 — the Summary is exempt.
+
+    It is a report, not a step with fields: greying it and putting it behind
+    `inert` would disable a screen that offers nothing to disable, on the very
+    timetable it exists to describe. Every other step past 3 stays read-only.
+  */
+  const readOnly = settled && step >= 4 && step !== SUMMARY_STEP;
+  const mobile = useIsMobile();
   const [scope, setScope] = useState<string>(GROUPED_SCOPE);
 
   /**
@@ -1031,6 +1256,25 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
       by skipping one: every commit is idempotent, so pressing Next through it
       later writes exactly the rows this pass did not.
     */
+    /*
+      §39.2 — a settled timetable is NAVIGATED, never committed through.
+
+      Reported: "it should allow me to navigate to any step, but the page will
+      be disabled — currently it is allowing me till the Timetable step and
+      after that it blocks me." That was this loop. A forward jump commits every
+      step it passes, and on a locked timetable the server refuses the first one
+      that would write — so the jump landed nowhere and reported a refusal for a
+      step the person had not touched.
+
+      Nothing is lost by skipping the commits, because there is nothing to
+      commit: every step past 3 is already read-only (§29.8), so the answers
+      cannot have changed. The steps are simply pages to look at.
+    */
+    if (settled) {
+      if (await persist(target)) setStep(target);
+      return;
+    }
+
     setBusy(true);
     const skipped: string[] = [];
     try {
@@ -1160,7 +1404,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
       // is worse than no flourish at all.
       setPraise(wellDone(step, created));
       celebrate(burstFrom.current ?? undefined);
-      setStep((s) => stepAfter(s));
+      setStep((s) => afterStep(s));
     }
   };
 
@@ -1168,7 +1412,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
     setPraise(null);
     if (step === WIZARD_STEPS[0]) return;
     await persist(stepBefore(step));
-    setStep((s) => stepBefore(s));
+    setStep((s) => beforeStep(s));
   };
 
   const saveAndClose = async () => {
@@ -1228,9 +1472,37 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
             overflow: "hidden", maxHeight: focus ? 0 : 120, opacity: focus ? 0 : 1,
             transition: "max-height 240ms ease, opacity 180ms ease",
           }}>
-            <Progress step={step} />
-            <Rail step={step} unfinished={unfinished} onJump={(n) => void jumpTo(n)} disabled={busy} />
+            <Progress step={step} pct={mine?.pct ?? null} />
+            <Rail
+              steps={shownSteps}
+              step={step}
+              unfinished={unfinished}
+              onJump={(n) => void jumpTo(n)}
+              disabled={busy}
+              compact={mobile}
+              /*
+                §8.8 — the caption carries what row two carried on a desktop:
+                which step, and which wing it is for. Row two itself is gone on
+                a phone — "Step 5 of 9" is the dots said again in words, and the
+                school's name is in the top bar.
+              */
+              caption={
+                <>
+                  {STEP_TITLES[step - 1]}
+                  {activeWing && (
+                    <span style={{ color: "var(--ink-faint)", fontWeight: 600 }}>
+                      {" · "}{activeWing.name}
+                    </span>
+                  )}
+                </>
+              }
+            />
           </div>
+          {/* §8.8 — gone on a phone. Every one of these is a desktop
+              convenience: the count repeats the dots, the school's name is in
+              the top bar, Focus folds a rail that is already two rows tall,
+              and Sound is a preference nobody sets on a first visit. */}
+          {!mobile && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span>Step {stepIndex(visibleStep(step)) + 1} of {WIZARD_STEPS.length} · {STEP_TITLES[step - 1]} · {school.name}</span>
             {/*
@@ -1281,6 +1553,7 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
               {sound ? "🔊 Sound on" : "🔇 Sound off"}
             </button>
           </div>
+          )}
         </div>
 
         <div style={{
@@ -1343,6 +1616,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
               <span role="status">{praise}</span>
             </div>
           )}
+          {/* §29.8 — above the step, because it changes what every field below
+              it will be allowed to save. Renders nothing when unlocked. */}
+          {/* §39.2 — not over the Summary either: that step is a report of the
+              locked week, so a banner explaining that it cannot be edited is
+              answering a question nobody asked there. */}
+          {lockedAt && step >= 4 && step !== SUMMARY_STEP && current && (
+            <LockRibbon configId={current.id} configName={current.name} frozenAt={lockedAt} />
+          )}
           {loading ? (
             <p style={{ fontSize: 13, color: "var(--ink-soft)" }}>Loading what you saved…</p>
           ) : (
@@ -1354,7 +1635,22 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
               one reason: a step that starts reading wings later must not have
               to remember to ask for the narrowed copy.
             */
-            step === 1 ? <StepSchool school={school} answers={answersInScope} onChange={patch} />
+            <div
+              /*
+                `inert` rather than a `readOnly` prop threaded through nine
+                steps and forty controls: it is the one attribute that means
+                exactly this — the subtree cannot be clicked, focused or tabbed
+                into. `pointer-events: none` would leave it in the tab order, so
+                a locked step would still be typeable by anybody who pressed
+                Tab. React 18 does not type it, hence the spread.
+
+                Readable, not hidden: what the school entered is exactly what
+                somebody opening a locked timetable wants to see (§29.1).
+              */
+              {...(readOnly ? ({ inert: "" } as Record<string, string>) : {})}
+              style={{ opacity: readOnly ? 0.62 : 1 }}
+            >
+            {step === 1 ? <StepSchool school={school} answers={answersInScope} onChange={patch} />
             : step === 2 ? <StepSession answers={answersInScope} onChange={patch} />
             : step === 3 ? <StepWings answers={answersInScope} onChange={patch} />
             : step === 4 ? <StepClasses answers={answersInScope} onChange={patch} startWing={startWing} />
@@ -1362,13 +1658,16 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
             : step === 6 ? <StepSubjects answers={answersInScope} onChange={patch} />
             : step === 7 ? <StepTeachers answers={answersInScope} onChange={patch} />
             : step === 8 ? <StepRooms answers={answersInScope} onChange={patch} />
+            /* §38 — the last step, and the only one that asks nothing. */
+            : step === SUMMARY_STEP ? <StepSummary configId={current?.id ?? null} />
             : (
               <StepSettings
                 answers={answersInScope}
                 onChange={patch}
                 onOpenAllocation={() => { void openAllocation(); }}
               />
-            )
+            )}
+            </div>
           )}
           {error && (
             <div style={{
@@ -1386,27 +1685,69 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
           // for having 14px above and below them rather than 8.
           padding: tall ? "8px 12px" : "14px 28px",
           borderTop: "1px solid var(--line)", background: "var(--offwhite)",
-          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-        }}>
-          <button className="btn" onClick={back} disabled={busy || step === WIZARD_STEPS[0]}>← Back</button>
+          display: "flex", alignItems: "center", gap: 10,
+          /*
+            §8.8 — one row on a phone, never two.
+
+            `wrap` is what put Next on a line of its own: four controls at
+            desktop widths do not fit 400px, so the primary action dropped
+            below and took 60px of a screen that has none to give. It does not
+            wrap on a phone; the labels shorten instead, which is the trade
+            worth making — a button that is where you expect it beats a button
+            that spells itself out.
+          */
+          flexWrap: mobile ? "nowrap" : "wrap",
+        }} className="wizard-actions">
+          <button className="btn" onClick={back} disabled={busy || step === shownSteps[0]}>
+            {mobile ? "←" : "← Back"}
+          </button>
           <button className="btn" onClick={discard} disabled={busy}
             style={{ border: "none", background: "none", color: "var(--ink-faint)", fontSize: 12 }}>
             Discard
           </button>
           <span style={{ flex: 1 }} />
-          <button className="btn" onClick={saveAndClose} disabled={busy}>Save &amp; close</button>
+          {/*
+            §29.8 — the two buttons that WRITE are disabled on a locked
+            timetable, and they carry the reason on hover.
+
+            Back and Discard are not: reading the other steps of a settled
+            timetable is exactly what a locked one is for, and Discard throws
+            away a draft rather than changing a published week.
+          */}
+          <button className="btn" onClick={saveAndClose} disabled={busy || readOnly}
+            title={readOnly
+              ? `${current?.name ?? "This timetable"} is published and locked — unlock a class or a teacher to change it`
+              : mobile ? "Save and close the guided setup" : undefined}>
+            {mobile ? "Save" : "Save & close"}
+          </button>
           {/* The last step SHOWN, which is what decides Finish-vs-Next — the
               same list `stepAfter` walks, rather than `TOTAL_STEPS`, which only
               happens to be the same number today. */}
-          {step === WIZARD_STEPS[WIZARD_STEPS.length - 1] ? (
+          {/*
+            §38 — the Summary's primary action is CLOSE, not Finish.
+
+            It is the last step and asks nothing, so "Finish setup" would offer
+            to write settings nobody has touched — and on a locked timetable
+            that button is disabled, leaving somebody landing on their own
+            summary with a greyed primary action and no way out but Back. This
+            closes, which is the only thing left to do here.
+          */}
+          {step === SUMMARY_STEP ? (
+            <button className="btn btn-primary" onClick={() => onClose("saved")} disabled={busy}>
+              Done
+            </button>
+          ) : isLastStep ? (
             <button className="btn btn-primary"
               onClick={(e) => {
                 const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                 burstFrom.current = { x: r.left + r.width / 2, y: r.top };
                 void finish();
               }}
-              disabled={busy}>
-              {busy ? "Finishing…" : "Finish setup →"}
+              disabled={busy || readOnly}
+              title={readOnly
+                ? `${current?.name ?? "This timetable"} is published and locked`
+                : undefined}>
+              {busy ? "Finishing…" : mobile ? "Finish →" : "Finish setup →"}
             </button>
           ) : (
             <button className="btn btn-primary"
@@ -1415,7 +1756,11 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
                 burstFrom.current = { x: r.left + r.width / 2, y: r.top };
                 void next();
               }}
-              disabled={busy}>
+              aria-label={`Next: ${STEP_TITLES[afterStep(step) - 1]}`}
+              title={readOnly
+                ? `${current?.name ?? "This timetable"} is published and locked — unlock a class or a teacher to change it`
+                : `Next: ${STEP_TITLES[afterStep(step) - 1]}`}
+              disabled={busy || readOnly}>
               {/*
                 §31.13 — the step this button GOES TO, not the next number.
 
@@ -1426,7 +1771,14 @@ export function OnboardingWizard({ school, startAt = null, startWing = null, inl
                 press itself uses, so the label and the destination cannot
                 disagree again.
               */}
-              {busy ? "Saving…" : `Next: ${STEP_TITLES[stepAfter(step) - 1]} →`}
+              {/*
+                §8.8 — the arrow alone on a phone, with the destination on the
+                accessible name rather than in the row. It is the rightmost
+                primary button above a step rail that already says where you
+                are; naming the next step as well cost more width than every
+                other control in the row put together.
+              */}
+              {busy ? "Saving…" : mobile ? "→" : `Next: ${STEP_TITLES[afterStep(step) - 1]} →`}
             </button>
           )}
         </div>

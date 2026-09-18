@@ -79,6 +79,15 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
   }
 
   let totalRequired = 0;
+  /*
+    §38 — Check 1's per-section answer, kept rather than thrown away.
+
+    The loop below already works out what each class-section is owed and what
+    its week actually holds. The Published-summary step needs exactly those two
+    numbers, and deriving them anywhere else would be a second opinion free to
+    disagree with the Readiness figure printed next to it.
+  */
+  const sectionStats: Array<{ id: number; label: string; required: number; available: number }> = [];
 
   // A §4.9 elective block reserves the same slot in every member section's
   // grid, so its periods are real demand on each of them — but they are NOT in
@@ -128,6 +137,7 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
       ? `${days} days × ${perDay} periods, less ${off} blocked`
       : `${days} days × ${perDay} periods`;
     totalRequired += required;
+    sectionStats.push({ id: cs.id, label: cs.label, required, available: usable });
     if (required > usable) {
       issues.push({
         code: "SLOT_OVERFLOW",
@@ -1786,7 +1796,7 @@ export function runFeasibility(snap: FeasibilitySnapshot): FeasibilityResult {
     }
   }
 
-  return finalize(snap, issues, totalRequired, available);
+  return finalize(snap, issues, totalRequired, available, sectionStats);
 }
 
 /** §4.2/§4.7: capacity depends on the teacher's placement pattern. */
@@ -1999,6 +2009,14 @@ function finalize(
   issues: FeasibilityIssue[],
   totalRequired: number,
   available: number,
+  /**
+   * §38 — Check 1's per-section figures, empty when Check 1 never ran.
+   *
+   * Defaulted rather than required, because `finalize` is also called on the
+   * early return above — a config with nothing to check has no sections to
+   * report, and an empty list says that honestly.
+   */
+  sections: FeasibilityResult["stats"]["sections"] = [],
 ): FeasibilityResult {
   // §21: one key per issue, assigned here rather than at each of the 38 check
   // sites — a new check cannot forget to do it, and it cannot invent a
@@ -2047,6 +2065,7 @@ function finalize(
       teachers: snap.teachers.length,
       totalRequiredSlots: totalRequired,
       totalAvailableSlots: available * snap.classSections.length,
+      sections,
     },
   };
 }

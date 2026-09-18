@@ -198,6 +198,21 @@ export interface FeasibilityResult {
     teachers: number;
     totalRequiredSlots: number;
     totalAvailableSlots: number;
+    /**
+     * §38 — what each class-section is owed, from Check 1's own arithmetic.
+     *
+     * Surfaced rather than recomputed. "How many periods does 5-A need?" has
+     * exactly one right answer and Check 1 already works it out — curriculum
+     * rows for the class (§27: periods are a class fact) plus the §4.9 blocks
+     * that section attends, against a week reduced by §4.7b class time off.
+     * A summary screen deriving its own would be a second opinion free to
+     * disagree with the Readiness figure printed beside it, which is the fault
+     * `weekPeriods`, `initialsOf` and `coverage.ts` each exist to prevent.
+     *
+     * `available` is per section and already net of time off, so a school that
+     * blocks Friday afternoon for 5-A sees 5-A's own smaller week here.
+     */
+    sections: Array<{ id: number; label: string; required: number; available: number }>;
   };
 }
 
@@ -244,6 +259,48 @@ export interface SnapshotConfig {
    * reporting would make most real schools ungenerable.
    */
   loadAlertPct: number;
+  /**
+   * §28.7 — how long it takes to reach THIS wing from another in the same §30
+   * pool, and how strictly to honour it.
+   *
+   * A pair of wings uses the LARGER of their two numbers, so one figure per
+   * wing composes without a distance matrix nobody would fill in.
+   */
+  crossWingTravelMins?: number;
+  crossWingRule?: "prefer" | "forbid";
+  /**
+   * §28.7 — when each teaching period of this timetable starts and ends, in
+   * minutes from midnight.
+   *
+   * Needed because a cross-wing clash is a WALL-CLOCK question, never a period
+   * number one: §30.7 already had to learn that Junior's P3 and Senior's P2
+   * both start at 09:14, so comparing period numbers across wings is wrong in
+   * both directions — it misses real overlaps and invents false ones.
+   *
+   * Absent for a timetable whose week has not been built yet, which switches
+   * the rule off rather than guessing a clock.
+   */
+  periodClock?: Record<number, { start: number; end: number }>;
+}
+
+/**
+ * §28.7 — one lesson a teacher already has in ANOTHER wing of the same pool.
+ *
+ * Read from the other timetables' placed rows, with their own clocks, because
+ * that is the only way "is this teacher already across the site at 09:10?" can
+ * be answered: `uq_teacher_slot` is keyed by `timetable_config_id`, so the
+ * database has no cross-timetable occupancy constraint at all (§30.11) and
+ * nothing else in the system would notice.
+ */
+export interface CrossWingLesson {
+  dayOfWeek: number;
+  /** Minutes from midnight, on that wing's own clock. */
+  start: number;
+  end: number;
+  /** Named so a refusal can say which wing, rather than "another one". */
+  configName: string;
+  /** That wing's own travel minutes; the pair uses the larger of the two. */
+  travelMins: number;
 }
 
 export interface SnapshotClassSection {
@@ -400,6 +457,19 @@ export interface FeasibilitySnapshot {
   electiveBlocks: SnapshotElectiveBlock[];
   /** teacher load carried in OTHER timetable configs (§3.10 cross-wing rule) */
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
+  /**
+   * §28.7 — where each teacher already is, in the OTHER wings of this pool.
+   *
+   * Empty for a school with one timetable, which is most of them, so the rule
+   * costs nothing until two wings share staff.
+   *
+   * **Read once, at the moment generation starts.** Wings are generated one at
+   * a time, so the wing generated second can honour the first and the first
+   * knows nothing of the second — an asymmetry that is real and stated rather
+   * than hidden: regenerating the first wing afterwards is what makes the pair
+   * consistent, and the school is told so.
+   */
+  crossWingBusy?: Record<number, CrossWingLesson[]>;
   labRoomCount: number;
   labSubjectIds: number[];
   /** §26 — placement rules per subject id. A subject missing from here has none. */

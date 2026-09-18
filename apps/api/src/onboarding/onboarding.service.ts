@@ -27,6 +27,8 @@ import {
 import { ImportService } from "../import/import.service";
 import { TermsService } from "../terms/terms.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { FreezeService } from "../freeze/freeze.service";
+import { SetupProgressService } from "./setup-progress.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { stepFrom } from "./interview.answers";
 
@@ -77,6 +79,16 @@ export interface OnboardingState {
   /** Whether a half-finished guided setup is waiting for them. */
   resumeStep: number | null;
   resumeMode: "wizard" | "ai" | null;
+  /**
+   * §39.1 — the timetables that are genuinely unfinished, newest first.
+   *
+   * The welcome dialog names these instead of quoting `resumeStep`. Empty means
+   * every timetable this school has is complete, which is what makes the dialog
+   * stay shut for a published school — and what `resumeStep` could never say,
+   * because a cursor records where somebody last clicked rather than what is
+   * left to do.
+   */
+  unfinished: Array<{ id: number; name: string; pct: number; nextLabel: string | null }>;
   /** The wings this setup is building — one draft covers all of them. */
   resumeWings: Array<{ name: string; weekReady: boolean }>;
   /** Whether the welcome screen should open on its own right now. */
@@ -93,6 +105,11 @@ export class OnboardingService {
     private readonly terms: TermsService,
     /** §3.10d — the score is dropped when a wing lets go of a class. */
     private readonly readiness: ReadinessService,
+    /** §29.8 — refuses the wing being committed, never the whole school. */
+    private readonly freeze: FreezeService,
+    /** §39.1 — what is genuinely unfinished, so the welcome prompt can stop
+     *  reading a cursor. */
+    private readonly progress: SetupProgressService,
   ) {}
 
   /**
@@ -122,6 +139,22 @@ export class OnboardingService {
 
     const isNew = configs === 0;
     const dismissedAt = user?.onboardingDismissedAt ?? null;
+
+    /*
+      §39.1 — what is actually unfinished, asked only when it can matter.
+
+      `SetupProgressService` is seven queries (§24.9) and `stateFor` runs on
+      every page load, so it is asked ONLY when a draft exists — which is the
+      only case where the answer can change anything. A school with no draft
+      takes the three cheap counts it always took, and the §14 budget is
+      untouched.
+    */
+    const unfinished = draft === null
+      ? []
+      : (await this.progress.forSchool(schoolId))
+        .filter((c) => c.pct < 100)
+        .map((c) => ({ id: c.id, name: c.name, pct: c.pct, nextLabel: c.nextLabel }));
+
     return {
       isNew,
       hasConfig: configs > 0,
@@ -153,7 +186,25 @@ export class OnboardingService {
       // `isNew` is FALSE while the setup is still unfinished — and an `isNew &&`
       // would stop offering to resume at exactly the point the person has the
       // most to lose.
-      shouldPrompt: draft !== null || isNew,
+      //
+      // §39.1 — and the draft alone is no longer enough.
+      //
+      // It was `draft !== null || isNew`, which made the existence of a ROW the
+      // trigger. `completed_at` is set in exactly one place — pressing "Finish
+      // setup" on the wizard's last step — and a school that generates and
+      // publishes from the Generate and Publish screens never presses it. So
+      // the draft stayed open for ever and the dialog met a fully published
+      // school at every sign-in with "Pick up where you left off — step 3",
+      // which is where somebody last clicked and not a thing left to do.
+      //
+      // The draft is one row per (school, user) and covers EVERY wing — step 3
+      // names them all — so "this timetable is published" and "this draft is
+      // open" are facts about different objects. A school with Main published
+      // and Junior half-built must still be offered its resume, which is why
+      // this asks the milestones rather than the publication count: `unfinished`
+      // is empty exactly when there is nothing left to carry on with.
+      shouldPrompt: isNew || unfinished.length > 0,
+      unfinished,
     };
   }
 
@@ -1183,6 +1234,77 @@ export class OnboardingService {
     return { ...answers, wings: mine };
   }
 
+  /**
+   * §29.8 — the guided setup refuses a locked timetable, and only that one.
+   *
+   * §29.1 guarded this bluntly: `assertNoneFrozen` refused the commit while
+   * **any** wing in the school was frozen, on the grounds that a workbook
+   * resolves names to rows deep inside one transaction and cannot say up front
+   * which timetables it will touch.
+   *
+   * That was tolerable while freezing was a deliberate press that few schools
+   * made. §29.8's auto-lock makes it the normal state, and the blunt version
+   * then blocks the guided setup for **every school that has published
+   * anything** — including a school with Main published and Junior still being
+   * built, which is the case the wizard exists for. Reported exactly that way:
+   * *"the freezing will happen only for that particular timetable which is
+   * being published; this rule is not applicable to other timetables."*
+   *
+   * The narrow version is available here and was not available to the importer,
+   * which is the whole difference: `answers.wings` NAMES the timetables this
+   * commit is building (§3.10a — a wing IS a `timetable_config`, created by
+   * name on step 3), and §30.13 hands each step exactly one. So the wings are
+   * resolved to configs and only those are asked about.
+   *
+   * Narrowed by SESSION as well as by name. `timetable_config` is unique on
+   * `(school, name, year)`, so a school that cloned "Main Wing" into next
+   * session has two rows with that name — and last year's locked timetable must
+   * not refuse this year's planning, which is the same reasoning
+   * `assertClasses` already uses for the curriculum.
+   *
+   * Still `assertConfigs` rather than a grant-aware check: a bulk commit cannot
+   * say which rows it touches, so no entity unlock opens it. Narrowing WHICH
+   * timetable is refused is a different question from letting a grant through.
+   */
+  private async assertWingsUnlocked(
+    schoolId: number,
+    answers: WizardAnswers & Record<string, any>,
+  ): Promise<void> {
+    const names = this.wingsIn(answers)
+      .map((w) => (w?.name ?? "").trim())
+      .filter((n) => n.length > 0);
+    if (names.length === 0) {
+      /*
+        No wings named — step 1 or 2, before any timetable exists. There is no
+        config to be locked, so there is nothing to refuse. Deliberately NOT
+        falling back to the blunt check: that would put the old behaviour back
+        for exactly the steps that cannot touch a published week.
+      */
+      return;
+    }
+
+    const yearName = (answers as { session?: { name?: string } })?.session?.name;
+    const year = yearName
+      ? await this.prisma.academicYear.findFirst({ where: { schoolId, name: yearName } })
+      : await this.prisma.academicYear.findFirst({ where: { schoolId, isActive: true } });
+
+    const configs = await this.prisma.timetableConfig.findMany({
+      where: {
+        schoolId,
+        name: { in: names },
+        ...(year ? { academicYearId: year.id } : {}),
+      },
+      select: { id: true },
+    });
+    // Empty is the normal case on a first run: the wings are about to be
+    // created and nothing can be locked yet. `assertConfigs([])` is a no-op
+    // rather than "all", which is the behaviour this relies on.
+    await this.freeze.assertConfigs(
+      configs.map((c) => c.id),
+      "this timetable",
+    );
+  }
+
   async commit(schoolId: number, userId: number, step: number, scope?: string) {
     const draft = await this.draftFor(schoolId, userId);
     if (!draft) throw new BadRequestException("There is nothing saved to commit.");
@@ -1190,6 +1312,18 @@ export class OnboardingService {
       draft.answers as WizardAnswers & Record<string, any>,
       scope,
     );
+
+    /*
+      §29.8 — refuse the LOCKED wing, never the whole school.
+
+      Steps 1–3 are exempt, and not as a convenience: the school, the session
+      and the wings themselves cannot change what a published week teaches.
+      Step 3 is the one worth checking rather than assuming — `commitWings`
+      **skips an existing wing by name** and only creates the missing ones, so
+      a school with Main locked adding Junior writes nothing to Main. Guarding
+      it would refuse precisely the case this narrowing exists to allow.
+    */
+    if (step >= 4) await this.assertWingsUnlocked(schoolId, answers);
 
     const built = await this.sheetsFor(schoolId, step, answers);
     const issues = built.issues;

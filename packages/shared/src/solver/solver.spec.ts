@@ -209,7 +209,16 @@ describe("CSP Solver (§5, tasks 2.2-2.6, 2.10)", () => {
       expect(segOf(b.period)).toBe(segOf(b.period + 1));
     }
     assertValid(input, result);
-  });
+    /*
+      An explicit timeout, like the two other real generations in this file.
+
+      This does ~3.2s of search when it runs alone and had only vitest's 5s
+      default, so it failed intermittently inside the full suite — always with
+      "Test timed out in 5000ms", never with a wrong placement. A test that
+      fails for being on a busy machine teaches people to re-run the suite
+      instead of reading it, which costs more than the minutes it saves.
+    */
+  }, 40_000);
 
   it("a block may cross the break when the row says so, and only then (§31.10)", () => {
     /*

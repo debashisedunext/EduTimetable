@@ -18,9 +18,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-// The step count lives with the step list (§28): a hardcoded "of 11" here
-// outlived the eleven steps by exactly one release.
-import { TOTAL_STEPS } from "./OnboardingWizard";
 
 export interface OnboardingState {
   isNew: boolean;
@@ -31,6 +28,11 @@ export interface OnboardingState {
   resumeStep: number | null;
   resumeMode: "wizard" | "ai" | null;
   shouldPrompt: boolean;
+  /**
+   * §39.1 — the timetables that are genuinely unfinished, and what each wants
+   * next. Empty for a school whose every timetable is complete.
+   */
+  unfinished?: Array<{ id: number; name: string; pct: number; nextLabel: string | null }>;
 }
 
 // §8.2 — TWO doors, not three. The manual one led to a nine-step wizard whose
@@ -61,6 +63,27 @@ const DOORS = [
   },
 ];
 
+
+/**
+ * §39.1 — one sentence about what is left, built rather than ternaried.
+ *
+ * The first draft of this was a chain of inline conditionals with a
+ * `many ? "is" : "is"` in it — both branches identical, which is what a
+ * sentence assembled inside JSX tends to become. Written out, each case is
+ * readable and the plurals are obviously right.
+ */
+function resumeLede(rows: Array<{ name: string; nextLabel: string | null }>): string {
+  const [first, ...rest] = rows;
+  const what = first.nextLabel
+    ? ` — ${first.nextLabel.toLowerCase()} is the next thing it needs`
+    : "";
+  if (rest.length === 0) {
+    return `${first.name} is not finished${what}. Everything you have already answered is saved.`;
+  }
+  const others = rest.length === 1 ? "1 other timetable" : `${rest.length} other timetables`;
+  return `${first.name}${what}, and ${others} still unfinished. `
+    + "Everything you have already answered is saved.";
+}
 export function WelcomeModal({
   state,
   userName,
@@ -78,7 +101,25 @@ export function WelcomeModal({
 }) {
   const nav = useNavigate();
   const [busy, setBusy] = useState(false);
-  const resuming = state.resumeStep !== null && state.resumeStep > 1;
+  /*
+    §39.1 — resuming is about UNFINISHED WORK, not about a saved cursor.
+
+    It was `resumeStep > 1`: the existence of a draft row whose step number
+    happened to be past the first. `completed_at` is only written by pressing
+    "Finish setup", so a school that published from the Generate screen kept a
+    draft for ever and was met with "Pick up where you left off — step 3" over
+    a finished, published timetable. `unfinished` is the §24.9 milestones, which
+    can only move when something is really created.
+
+    The `?? []` is for a client that outlives a server without the field. Absent
+    reads as "nothing unfinished", so the dialog goes quiet rather than falling
+    back to the cursor it is replacing.
+  */
+  const unfinished = state.unfinished ?? [];
+  const resuming = unfinished.length > 0;
+  /* The one it will open on — the same ordering the server sent. */
+  const next = unfinished[0] ?? null;
+  const many = unfinished.length > 1;
 
   const later = async () => {
     setBusy(true);
@@ -116,8 +157,16 @@ export function WelcomeModal({
             {resuming ? "Pick up where you left off" : "Let's build your first timetable"}
           </h2>
           <p style={{ fontSize: 14, color: "var(--ink-soft)", margin: "8px 0 0" }}>
+            {/*
+              §39.1 — the TIMETABLE that needs work, never a step number.
+
+              "You were on step 3 of 11" answers "where was I?", which nobody is
+              asking, and the old sentence went on to claim "nothing has been
+              written yet" — false on any school past step 2, since the wizard
+              commits on every Next.
+            */}
             {resuming
-              ? `You were on step ${state.resumeStep} of ${TOTAL_STEPS} for ${schoolName}. Nothing has been written yet — carry on, or start a different way.`
+              ? resumeLede(unfinished)
               : `${schoolName} has no timetable yet. Choose how you'd like to put the information in — you can switch between these at any point, and nothing is written until you confirm.`}
           </p>
         </div>
@@ -133,10 +182,13 @@ export function WelcomeModal({
               }}
             >
               <div style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 16.5, fontWeight: 600 }}>
-                ↻ Continue guided setup — step {state.resumeStep} of {TOTAL_STEPS}
+                ↻ Carry on with {next?.name}
               </div>
               <div style={{ fontSize: 12.8, color: "var(--ink-soft)", marginTop: 4 }}>
-                Everything you have already answered is saved.
+                {next?.nextLabel
+                  ? `${next.nextLabel} is the next thing it needs — ${next.pct}% done.`
+                  : `${next?.pct}% done.`}
+                {many && ` ${unfinished.length - 1} other timetable${unfinished.length > 2 ? "s" : ""} also unfinished.`}
               </div>
             </button>
           )}
@@ -203,7 +255,7 @@ export function WelcomeModal({
           </button>
           <span style={{ flex: 1 }} />
           <button className="btn btn-primary" onClick={onStartGuided} disabled={busy}>
-            {resuming ? `Continue from step ${state.resumeStep} →` : "Start guided setup →"}
+            {resuming ? `Carry on with ${next?.name} →` : "Start guided setup →"}
           </button>
         </div>
       </div>

@@ -15,7 +15,7 @@ import { api } from "../api";
 import { markOffered, wasOffered } from "./offered";
 import { WelcomeModal, type OnboardingState } from "./WelcomeModal";
 import { useNavigate } from "react-router-dom";
-import { type SchoolIdentity } from "./OnboardingWizard";
+import { WINGS_STEP, type SchoolIdentity } from "./OnboardingWizard";
 import { OnboardingChat } from "./OnboardingChat";
 
 /**
@@ -108,7 +108,28 @@ export function Onboarding({
   // On demand: the permanent entry point, which ignores `shouldPrompt` — the
   // whole point of a button is that you asked for it.
   useEffect(() => {
-    const open = () => { refresh().then(() => setView("welcome")); };
+    /*
+      §39.1 — a finished school goes straight to Wings, not to the doors.
+
+      "Set up a timetable" on a school whose every timetable is complete used to
+      open a dialog offering to *continue* work that is done, with three ways to
+      start a setup that has already happened. The only thing left to do there
+      is add a wing, which is step 3 — so that is where it goes.
+
+      `unfinished.length > 0` rather than `isNew`: a school half-way through its
+      first timetable still wants the doors, and `isNew` goes false the moment
+      step 5 creates the config.
+    */
+    const open = () => {
+      refresh().then((s) => {
+        if (s && !s.isNew && (s.unfinished?.length ?? 0) === 0) {
+          setOpenAt(WINGS_STEP);
+          setView("wizard");
+          return;
+        }
+        setView("welcome");
+      });
+    };
     // "Carry on" skips the doors and reopens the one already in use. The wizard
     // and the chat both resume from the saved draft on their own, so there is
     // no step to pass — only which of the two to show.
