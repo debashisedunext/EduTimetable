@@ -32,7 +32,9 @@ model School {
   code               String       @unique @db.VarChar(40)
   name               String       @db.VarChar(120)
   shortName          String?      @map("short_name") @db.VarChar(40)
-  logoUrl            String?      @map("logo_url") @db.VarChar(255)
+  /// §17.4a — TEXT, not VarChar(255): holds either a URL or a `data:` URI for
+  /// a logo uploaded through the School Profile and downscaled in the browser.
+  logoUrl            String?      @map("logo_url") @db.Text
   timezone           String       @default("Asia/Kolkata") @db.VarChar(40)
   address            String?      @db.VarChar(255)
   /// The trust this school belongs to, as the ERP reports it. Denormalized
@@ -65,6 +67,13 @@ model School {
   /// the next login. Null means "the ERP has never named this", which is the
   /// only honest test.
   erpNameSyncedAt    DateTime?    @map("erp_name_synced_at")
+  /// §29.8 — does publishing lock the timetable?
+  ///
+  /// True for every school, because nobody should have to discover a setting in
+  /// order to be protected by it. This reverses §29.1's "a freeze is a decision
+  /// rather than a side effect of publishing" — see the migration for why: the
+  /// printed copy becomes a second source of truth the moment it is printed.
+  lockOnPublish      Boolean      @default(true) @map("lock_on_publish")
   isActive           Boolean      @default(true) @map("is_active")
   createdAt          DateTime     @default(now()) @map("created_at")
 
@@ -121,6 +130,9 @@ model School {
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
   fixedLessons           TimetableFixedLesson[]
+  timetableUnlocks       TimetableUnlock[]
+  timetableUnlockEntities TimetableUnlockEntity[]
+  timetableUnlockEvents  TimetableUnlockEvent[]
 
   @@map("schools")
 }
@@ -406,6 +418,8 @@ model ClassSection {
   /// column is what lets an individual timetable hold its own Class 1-A with
   /// its own class teacher, home room and Maths teacher.
   fixedLessons TimetableFixedLesson[]
+  /// §29.8 — the unlock grants that have named this cohort.
+  unlockGrants TimetableUnlockEntity[]
 
   @@unique([classId, sectionId, academicYearId, resourceGroupId], map: "uq_section_in_group")
   @@index([schoolId])
@@ -580,6 +594,8 @@ model Teacher {
   /// §29.2 — the staffing changes this teacher is named in, on either side.
   staffingChanges StaffingChangeTeacher[]
   fixedLessons    TimetableFixedLesson[]
+  /// §29.8 — the unlock grants that have named this teacher.
+  unlockGrants    TimetableUnlockEntity[]
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
@@ -796,6 +812,94 @@ model TimetableFixedLesson {
   @@map("timetable_fixed_lessons")
 }
 
+/// §29.8 — an unlock grant on a locked (published) timetable.
+///
+/// One grant is ONE decision: "open Class 1-A, 1-B and Ajay Verma, because the
+/// Class 1 morning has to be rebuilt before Monday". Six separate unlock rows
+/// would store six copies of that sentence, free to disagree, and leave nothing
+/// to close as a unit.
+///
+/// A grant does not name cells. It names entities, and what it opens is every
+/// lesson those entities appear in — see `TimetableUnlockEntity`.
+model TimetableUnlock {
+  id                Int             @id @default(autoincrement())
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// Required, with no default. Six months later this is the only thing that
+  /// answers "why was the settled week opened?", and a blank answers nothing.
+  reason            String          @db.Text
+  /// No foreign key, matching `timetable_config.frozen_by_id` and
+  /// `timetable_publications.published_by_id`: a record of who acted must
+  /// survive that person's account being removed.
+  unlockedById      Int?            @map("unlocked_by_id")
+  unlockedAt        DateTime        @default(now()) @map("unlocked_at")
+  /// NULL is "until somebody closes it". The app offers a few hours by default
+  /// because an unlock left open is not a lock, but that is a default and not a
+  /// rule.
+  expiresAt         DateTime?       @map("expires_at")
+  /// §3.14's rule — kept and marked, never deleted.
+  closedAt          DateTime?       @map("closed_at")
+  closedById        Int?            @map("closed_by_id")
+
+  entities TimetableUnlockEntity[]
+  events   TimetableUnlockEvent[]
+
+  @@index([schoolId, timetableConfigId, closedAt], map: "ix_unlock_live")
+  @@map("timetable_unlocks")
+}
+
+/// §29.8 — one ticked entity inside a grant.
+///
+/// Exactly one of `teacherId` / `classSectionId` is set. Two nullable foreign
+/// keys rather than a polymorphic `entity_id`, for §4.7b's reason: the FK is
+/// what we want here, because an unlock pointing at a deleted teacher is
+/// meaningless rather than historic.
+model TimetableUnlockEntity {
+  id             Int             @id @default(autoincrement())
+  schoolId       Int             @map("school_id")
+  school         School          @relation(fields: [schoolId], references: [id])
+  unlockId       Int             @map("unlock_id")
+  unlock         TimetableUnlock @relation(fields: [unlockId], references: [id], onDelete: Cascade)
+  teacherId      Int?            @map("teacher_id")
+  teacher        Teacher?        @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classSectionId Int?            @map("class_section_id")
+  classSection   ClassSection?   @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  /// One entity may be relocked early without ending the grant.
+  releasedAt     DateTime?       @map("released_at")
+
+  @@unique([unlockId, teacherId], map: "uq_unlock_teacher")
+  @@unique([unlockId, classSectionId], map: "uq_unlock_section")
+  @@map("timetable_unlock_entities")
+}
+
+/// §29.8 — one write the grant admitted.
+///
+/// §29.2's lesson, applied: a change is a record, not a mode. Without this table
+/// an unlock can say what it *permitted* and never what it was *used for*, which
+/// is the only question anybody asks afterwards.
+model TimetableUnlockEvent {
+  id           BigInt          @id @default(autoincrement())
+  schoolId     Int             @map("school_id")
+  school       School          @relation(fields: [schoolId], references: [id])
+  unlockId     Int             @map("unlock_id")
+  unlock       TimetableUnlock @relation(fields: [unlockId], references: [id], onDelete: Cascade)
+  /// The operation, never the URL — a renamed route must not erase history.
+  route        String          @db.VarChar(96)
+  /// Denormalised prose: the rows it describes may be gone when it is read.
+  summary      String          @db.VarChar(255)
+  /// The classes a teacher-scoped change reached into, and the teachers a
+  /// class-scoped one dragged along. A lesson has two owners, so opening one
+  /// necessarily touches the other — this is where that is admitted.
+  alsoAffected Json?           @map("also_affected")
+  actorId      Int?            @map("actor_id")
+  at           DateTime        @default(now())
+
+  @@index([unlockId, at], map: "ix_unlock_event_grant")
+  @@map("timetable_unlock_events")
+}
+
 model TimetableSubject {
   timetableConfigId Int             @map("timetable_config_id")
   timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
@@ -993,6 +1097,12 @@ model TimetableGroup {
   @@map("timetable_groups")
 }
 
+/// §28.7 — how strictly a teacher's walk between wings is honoured.
+enum CrossWingRule {
+  prefer
+  forbid
+}
+
 model TimetableConfig {
   id                          Int                    @id @default(autoincrement())
   schoolId                    Int                    @map("school_id")
@@ -1012,6 +1122,20 @@ model TimetableConfig {
   workingDays                 Json                   @map("working_days")
   periodsPerDay               Int                    @default(8) @map("periods_per_day")
   periodDurationMins          Int                    @default(40) @map("period_duration_mins")
+  /// §28.6 — minutes of changeover between one period and the next. Affects the
+  /// CLOCK only: nothing occupies the gap, so no grid gains a cell and the
+  /// solver, which places into period numbers, is untouched. Not applied where
+  /// a break already follows — a break IS the changeover — nor after the last
+  /// period, where there is nothing to change over to.
+  periodGapMins      Int             @default(0) @map("period_gap_mins") @db.SmallInt
+  /// §28.7 — minutes to reach THIS wing from another in the same §30 pool. A
+  /// pair of wings uses the larger of the two, so one number per wing composes
+  /// without a distance matrix nobody would fill in.
+  crossWingTravelMins Int            @default(0) @map("cross_wing_travel_mins") @db.SmallInt
+  /// §28.7 — what to do about it. `prefer` avoids a back-to-back crossing but
+  /// will still make one rather than leave a lesson unplaced (completeness
+  /// outranks shape, §20); `forbid` makes it a hard rule the solver prunes on.
+  crossWingRule      CrossWingRule   @default(prefer) @map("cross_wing_rule")
   hasZeroPeriod               Boolean                @default(false) @map("has_zero_period")
   zeroPeriodDurationMins      Int?                   @map("zero_period_duration_mins")
   allowConsecutivePeriods     Boolean                @default(true) @map("allow_consecutive_periods")
@@ -1060,6 +1184,8 @@ model TimetableConfig {
   drafts                      TimetableDraft[]
   dailyActivities             DailyActivity[]
   fixedLessons                TimetableFixedLesson[]
+  /// §29.8 — the unlock grants opened against this timetable, live and closed.
+  unlocks                     TimetableUnlock[]
 
   @@unique([schoolId, name, academicYearId])
   @@index([resourceGroupId, effectiveFrom, effectiveTo], map: "tc_window_idx")

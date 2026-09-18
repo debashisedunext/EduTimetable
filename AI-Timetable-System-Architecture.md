@@ -4151,3 +4151,733 @@ They are read back now. The same rule §27.16 states three lines below in the sa
 `tx.subject.update()` threw a validation error: §17's scope extension adds the ambient `schoolId` to every `where`, and `update` requires a where Prisma knows is unique — `{ id, schoolId }` is not a declared unique key. `updateMany` is the shape that scopes correctly. It is safe against CLAUDE.md's rule about a scoped `updateMany` matching nothing, because the id came from a scoped read of the same table a few lines above.
 
 And `validate` returns **`null`** for a blank cell, not `undefined`. Guarding only `undefined` let those nulls through and Prisma refused the write, which the CBSE catalogue smoke caught on its second Create. Worth stating because the strict check would have been the *dangerous* kind of wrong on a nullable column: every blank cell writing a null is precisely the "lose your settings on re-upload" failure the guard exists to prevent, and it would have looked like it was preventing it.
+
+
+## 8.6 The screens are reachable from the top bar
+
+Asked for directly: *"put all important icons on the top bar with proper pipe bifurcation, so the user can access the pages from the top bar."*
+
+Twelve screens get a button at the top of every page — a 22px icon over a 10.5px label — grouped, with a rule between groups. The other fourteen are one press away behind **More**. The left rail is untouched.
+
+```
+Timetables  Masters  Master Grid  Week  Readiness  Generate │ Publish  Substitutes  Staffing │ Reports  Wall │ Ask AI │ ⋯ More
+```
+
+### It is a selection out of `NAV`, not a second nav
+
+`TOP_BAR` holds **route paths and nothing else** — no labels, no icons, no order, no groups, no permissions. All of those come from the existing `NAV` array, which both renderings read. That is the §10.6 rule in its other form: two lists would be two chances to call Masters one thing on the left and another on top, and to add a screen to one and forget the other.
+
+It is checked at compile time rather than by hand. `NAV` is `as const satisfies readonly NavGroup[]`, which keeps every `to` as a literal type, so `TOP_BAR: readonly NavPath[]` rejects a path the nav does not have — typing `"/repots"` fails the build and suggests `"/reports"`. A screen added to `NAV` and **not** to `TOP_BAR` needs no decision at all: it falls into More, which carries the whole of the rest of the rail under its own group headings.
+
+**The permission filter is applied once.** `Toolbar` receives the already-filtered `groups` that the rail renders from, so a role without `timetable.publish` has no Publish in either place, and **More can never be a way round what the rail hides** — the rule §31.10 kept for the Master Grid's embedded tabs.
+
+**A rule between two icons is a real boundary**, not decoration: it is where one of `NAV`'s groups ends. Structure is information, or it is noise.
+
+### The twelve never move
+
+There is no width-measured overflow, and there must not be. The same buttons in the same order at every window size; under 1100px the labels drop and it becomes icons; under 820px the row scrolls sideways. §31.14 made this argument when it docked the assistant's launcher in this bar: **a control whose position depends on the window is a control nobody can reach by memory.**
+
+Only the *context cluster* reflows — at ≥1680px the school picker, timetable selector, bell, assistant and live badge move onto the toolbar's right and the bar becomes one row. Ordered with `order`, never reordered in the DOM, so the nav comes first for a screen reader in both arrangements while the eye sees context on top in the stacked one.
+
+### It replaces the page title rather than sitting above it
+
+The lit button says which screen this is, so the 42px eyebrow-and-title block is gone — saying it twice cost height on an app whose two densest screens (§31, §5.7) are short of exactly that. Two rows are **+22px** against the old bar; one row is **−22px**.
+
+`TITLES` did not become dead with it: it names the **browser tab** now, which is what somebody with six of these open is reading.
+
+### Active is derived from the route, not from the press
+
+`/matrix` and `/board` are real screens that Generate and Publish link to and that people have bookmarked — §31.13 kept the routes when it took them out of the rail. `STANDS_FOR` maps them to **Master Grid**, whose tabs they are, so the bar does not go blank on a screen somebody reached from inside the app. When the active route lives in More, the More button carries a dot.
+
+Every button goes through **`mayLeave()`**, exactly as the rail's links do. A new door that skipped it would be a way to lose unsaved Master Grid work by pressing the nearest thing to the top of the screen.
+
+### Three details that would each have been a bug
+
+- **The More panel must not live inside the scroller.** `overflow-x: auto` on an ancestor clips an absolutely-positioned child, so the panel was cut off at the toolbar's own height — the trap `ui/anchored.tsx` exists to document. The buttons scroll in `.tb-scroll`; More sits outside it, which is also the plainer rule: *the way out of a bar too narrow to show everything must not be the thing that scrolls off it.* No measuring is needed beyond that, because unlike `anchored.tsx`'s two call sites the top bar scrolls nothing.
+- **The assistant's panel is measured from the whole bar, not from its slot.** It anchored to `#ai-launcher-slot`'s bottom; with a second row beneath, that put the panel over the toolbar. `closest(".topbar")` is correct in both arrangements without this file knowing which, and keeps §31.14's property that the panel follows a bar whose height changes (a §30.5 dated timetable already made it taller).
+- **Substitute Center and Staffing Changes shared the `swap` icon.** That reads fine beside a label and is the same button twice the moment the bar drops to icons alone. Staffing Changes has its own glyph now — a person with the work leaving them.
+
+### One tab stop, not thirteen
+
+The bar is a `role="toolbar"`: whichever button is current takes the tab stop and the arrows move between them, so a keyboard reader reaches the page in one press rather than walking the whole nav first. `aria-label` and not `title`, for §8.1d's reason — the accessible name has to survive the label being folded away, and a browser tooltip repeating a visible label is noise.
+
+### Deliberately not in this change: retiring the rail
+
+Once More holds all twenty-six, the rail is a second copy of the same index taking 64px of width on every screen — and width is what the Master Grid, the Matrix and the Wall are short of. Against that, it is where the signed-in person, their role and sign-out live. It stays exactly as it was; removing it is a separate decision, taken once it is clear nobody reaches for it, and it needs an avatar menu at the end of the context row first.
+
+
+## 17.4a The school's logo, top left — and a default for a school without one
+
+Asked for: *"on top left, above the menu bar, need school logo option; also add a school logo entry point in School master; if the school logo is not present then show the default logo."*
+
+Three parts, and each one turned out to be a different problem.
+
+### 1. The top bar has a brand slot
+
+§8.6 made the top bar two rows. The school's mark now sits at the left of the upper one, above the toolbar, at 26px — the school's mark rather than the product's, because this is whose timetable this is.
+
+It is a **grid with named areas**, not flex with `order`. The two arrangements are genuinely different shapes: stacked, brand and context share the top row while the toolbar spans the width beneath; at ≥1680px all three sit on one line. Areas place them either way from one DOM order — brand, nav, context — which is also the right reading order for both. The hairline between the rows lives on the toolbar, which spans the whole width: two borders on two boxes of independently-computed height is two chances to disagree.
+
+**Two copies of the logo were removed in the same change.** The `SchoolPicker` drew an 18px copy beside the school name, and the sidebar drew it at the top of the navy rail. The rail's is now always the product mark — a dark logo on `--brand-deep` is invisible, and the default mark is dark because it is right on a paper-white top bar.
+
+### 2. The fallback is a rule, so it lives in one place
+
+`brand.tsx` owns it: *the school's own logo, or the default mark — and the default mark again if the URL the school gave us cannot be loaded.*
+
+That last clause is the one three call sites had wrong. Each carried its own `onError` handler setting `display: none`, so a logo URL that 404s left a **blank space** — which reads as "this school has no logo" when what actually happened is that the one it has is unreachable. One of those three was the form whose whole job is telling somebody whether the URL they typed works.
+
+`onBroken` is an **event, not a reported state**, and that is deliberate: a callback describing what is on screen would have to fire from an effect, which runs after paint, so a perfectly good logo would flash one frame of *"this could not be loaded"* on every mount.
+
+`DEFAULT_LOGO` is the only reference to the file. Dropping the real artwork in at `apps/web/public/` under that name changes every screen with no code change at all.
+
+### 3. A URL field is only an entry point if you already have somewhere to put the file
+
+The old hint said it plainly — *"the app does not host uploads"* — which left any school without a public image host unable to set a logo at all.
+
+So the browser downscales the chosen image to 256px on a canvas and stores it as a `data:` URI in the same column. `schools.logo_url` went from `VARCHAR(255)` to `TEXT`; **nothing else moved**. No file storage, no image route, no unauthenticated asset path — and, importantly, no authentication problem: an `<img src>` cannot carry a bearer token, so any server-hosted variant would have needed a signed or unguessable public URL and its own §17.8 classification.
+
+The downscale is the safety argument, not a nicety. A school picks the 4MB photograph they happen to have, and this value travels on `/me` in every session. PNG rather than JPEG, because a logo is usually transparent and JPEG would paint a black rectangle behind it; the **longest edge** is what is capped, so a wide wordmark keeps its aspect ratio rather than being silently squashed into a square.
+
+### The guard that refuses instead of truncating
+
+Every other field in `SchoolController.update` goes through `str(v, max)`, which **slices**. On a name that loses a few characters somebody can see and retype. On a `data:` URI, half a URI is not a shorter logo — it is a broken image stored silently as if it had worked, drawn nowhere, on every screen, for the life of that school.
+
+So the logo gets its own `logo()` that refuses past 60,000 characters and says what to do about it. `pnpm test:logo` proves the round trip is byte-identical, that the refusal fires by name, and — the assertion that matters most — that **a refusal leaves the logo that was already there untouched**. It also asserts the value reaches `/me`, since that, not `GET /school`, is what the top bar actually renders.
+
+### The default artwork is a stand-in
+
+`apps/web/public/edunext-logo.svg` is drawn, not embedded: a navy book silhouette with the page-fan cut out of it, shaped to still read at the 22px the top bar gives it. Replacing it with the real file is a one-file change with no code behind it.
+
+
+## 24.9 Guided-setup progress is a fact about the timetable, not a memory of where you clicked
+
+Reported as one sentence with three faults in it: *"I have already generated the timetable, but the guided setup shows I am on step 3 — because step 3 is the last thing I clicked. It should show 100% and say I have generated it. And it sits on top of all my timetables, which gives the wrong impression."*
+
+All three were true, and they had one cause.
+
+### The bar measured a cursor
+
+It was `(onboarding_sessions.current_step - 1) / 10`. `current_step` is **where a person last was in the wizard** — it moves backwards when they press Back, and it moves at all only because somebody navigated. A finished school that opened the guided setup to look at step 3 read 20% and stayed there for ever.
+
+A cursor answers *"where was I?"*. Nobody was asking that.
+
+So `SetupProgressService` reads no draft at all. Every milestone is a fact about the database, and the only way to move the bar is to create the thing it counts. `pnpm test:progress` drives `current_step` from 3 to 10 between two reads and asserts the answer is **byte-identical** — that experiment is the bug, run deliberately.
+
+### It could never reach the thing it exists to reach
+
+Nothing in the old calculation knew whether the timetable had been **generated**, which is the point of the entire setup. Generating is now the last milestone, so a generated timetable reads 100% and says so — *"Set up and generated — this timetable is ready to publish"*, or *"Set up and published — this timetable is on the wall"*.
+
+The old rule was "hide it once there is nothing left", which is why a school that finished got no acknowledgement anywhere: the thing it had been working towards simply stopped being mentioned. **Finished is a state with something to say, not an absent bar.**
+
+One thing here would have been silently wrong. `generated` counts slots of **any status except `extra`** — a published timetable's rows are `status: published` and its draft can be empty, so counting drafts alone reports the most finished timetable in the building as never generated. §18 extras are excluded because next week's revision class is not a generated week.
+
+### It belonged to no timetable
+
+One bar above every card is one number for the whole school, which on a two-wing school describes neither of them — and reads as a claim about both. Progress is per `timetable_config` now, inside that timetable's own card.
+
+The milestones are per-timetable where the fact is (**its** classes, **its** week, **its** lessons, **its** generation) and school-wide where the fact is school-wide (subjects, staff, rooms — §27.12: a master is entered once and used for ever). The smoke asserts exactly that shape: two wings report different numbers, while the wing with no classes still has the school's subjects ticked.
+
+The school-wide banner survives for **one** case — a school with no timetables at all, where there is no card to attach anything to and where somebody most needs the way in. It carries no percentage: nothing has been started, and `0%` is a number pretending to be a measurement.
+
+### Two milestones are deliberately absent, and three are not wizard steps
+
+*School* and *Session* are gone. A config always has an academic year and a school always has a name, so both are true the moment there is anything to report — and a checklist item that can never be false is a tick that teaches the reader to stop reading ticks.
+
+*Published* is not a step. Publishing is a decision about a finished timetable, not the last chore of building one; the card's status badge already says it, and it rides along as a flag so the completion line can.
+
+And **the server says where each milestone gets filled in**, as either a wizard step or a screen — never both. §31.13 took Allocation out of the wizard, so pointing the curriculum and staffing milestones at "step 9" would land somebody on Settings; they point at the Lesson grid, and *Generated* points at Generate. One definition, so the bar and the **Carry on** button cannot send somebody to different places (§10.6).
+
+`Carry on` also selects that timetable first, because every destination is scoped by the top bar's selection (§30.13) — landing on the Lesson grid pointed at a different wing would be worse than not going at all.
+
+### Cost
+
+Seven queries however many timetables there are, never one per config — a school with six wings paying forty round trips to draw six bars is the §14 failure this would otherwise be. Its **own endpoint**, deliberately not a field on `GET /timetable-configs`: that payload feeds `ConfigContext` on every screen in the app, and none of the others want these counts.
+
+
+## 8.7 A screen's actions belong in the top bar, and a card should use the width
+
+Reported with a screenshot: *"utilise the page UI properly, lots of white space on the right. The three buttons can shift to the upper menu."*
+
+### The actions
+
+The Timetables page spent a line of itself on three controls: a header row with the prose on the left, **Set up a timetable · Import from Excel · New Timetable** on the right, and several hundred pixels of nothing between them on any wide screen. Every screen that grew a primary action would spend the same line again.
+
+§8.6's toolbar row already ends in empty space before **More**, and the split it draws is the useful one — **the left of the bar is where you can go, the right is what you can do here**, with a rule between them like every other group boundary.
+
+`PageActions` portals into `#page-actions-slot`, the same mechanism `AiDock` uses for its launcher, and for the same reason: the bar lives in `Shell`, several layers above the routed page, and threading a `headerActions` prop through the router for one row of buttons would put every screen's actions into a component that renders none of them.
+
+Three details it has to get right:
+
+- **It falls back rather than vanishing.** A page rendered outside the shell has no slot, and a portal with no target renders *nothing at all* — a primary action silently disappearing on one route is worse than one in the wrong place. With no slot the buttons render where the component sits.
+- **Three states, not two.** `undefined` means "not looked yet" and draws nothing for one pre-paint pass; `null` means "looked, and there is no slot", which is what turns the fallback on. Collapsing them would flash the fallback on every page that *does* have a slot. The look-up is a `useLayoutEffect`, so it happens before paint (§8.1d, again).
+- **The slot is always rendered** so the portal has a target, and `.tb-actions:empty { display: none }` is what stops a screen with no actions paying for a divider and 18px of padding around nothing.
+- **Outside `.tb-scroll`**, like More: a primary action that scrolls off a narrow bar is a primary action nobody can reach.
+
+### The width
+
+`maxWidth: 1080` left a third of a 1,900px page empty to the right of every card. It is gone — but *stretching* the old card would only have moved the emptiness inside it, into the gap between a name and five buttons.
+
+So the card is three grid areas. Below 1500px it is exactly the layout it always had (identity left, actions right, setup across the bottom); above it the setup panel moves into a column of its own, and the space a wide screen offers goes to the most informative thing on the card. The divider belongs to the grid area, not to the strip: a rule *across* a card separates two stacked blocks, while the same rule *beside* a column is a line above nothing.
+
+### One thing the tenancy gate nearly missed
+
+§24.9's new route passed the §17.8 sweep — but reported as *"A returned no ids here; nothing could have leaked"*, which the sweep itself prints as information rather than as a pass. `idsIn` compares keys named exactly `id`, and the payload's identifier was called `configId`, so there was nothing to compare and the route passed **for the wrong reason**.
+
+Renamed to `id`. One row, one `id`, like every other collection in the app — and the gate now actually bites on it.
+
+
+## 8.8 The phone
+
+Asked for directly: *"the current application is not mobile responsive; make every page responsive, with smart navigation in mobile view, proper use of space, and treat sections that are not useful on a first screen properly."*
+
+### One breakpoint, named twice and only twice
+
+820px, in `mobile.ts` and in `styles.css`. A second copy that disagreed produces the worst state available — the rail hidden by CSS while the bottom bar is not rendered, or both on screen at once.
+
+Most of the work is CSS, and it should be: a breakpoint in the stylesheet costs nothing at runtime and cannot fall out of step with a paint. `useIsMobile()` exists for the three things that change *what is rendered*, which CSS cannot do:
+
+- the navy rail is **replaced** on a phone, not narrowed;
+- `--sidebar-w` is an inline custom property on `<html>` (§8.1d), so a stylesheet `:root` rule inside a media query cannot reach it — the §24.5d guided-setup dialog insets itself by that token and would keep a 64px strip of dead page on every phone;
+- §8.7's action slot is not rendered, so `PageActions` has to look for it **again** when the breakpoint changes — without that, rotating a tablet leaves a portal pointing at a node that has left the document, which renders nothing at all.
+
+The hook seeds its state *from* `matchMedia` rather than from `false`. The usual `useState(false)` + effect shape renders the desktop tree first and swaps, which here means the navy rail appearing and vanishing on every page load.
+
+### Navigation: four at the thumb, everything in a sheet
+
+The rail is a third of a phone's width before any content, and its collapsed form depends on a **hover flyout** to name anything — there is no hover on a touch screen, so it would be unlabelled icons with no way to find out. §8.6's toolbar is a strip of twelve, which at 400px shows three and asks somebody to swipe a *navigation bar* to find the rest.
+
+So: four destinations along the bottom edge where a thumb rests, and **Menu** opening a full-screen sheet with every group under its own heading, plus who is signed in and the way out — the two things the rail kept at its foot that nothing else on a phone would have.
+
+The four are **derived, never a third hand-written list**: the first four entries of §8.6's `TOP_BAR` that this role actually holds, read out of the same permission-filtered `groups` the rail and the toolbar render from. A screen removed from `NAV` leaves all three at once, and a bottom bar must not become a way round what the rail hides.
+
+Two details a bottom sheet gets wrong if nobody says them: the body must not scroll behind it (it is `position: fixed`, so a scroll gesture over the menu moves the page underneath and the reader lands somewhere else), and navigating must close it (a full-screen menu still covering the screen it just navigated to is the page nobody can see).
+
+### The phone-specific rules a desktop browser never shows you
+
+- **`100dvh`, not `100vh`.** `vh` is the viewport at its *tallest* — address bar retracted — so a 100vh column puts its last eighty pixels, which here is the whole bottom bar, under browser chrome that is on screen most of the time.
+- **16px on every input.** Safari on iOS zooms the page when a focused field is under 16px and does not zoom back out, so a 13px input turns one tap into a pinch-and-scroll hunt for the rest of the form.
+- **44px minimum on every button**, the smallest reliably hittable target.
+- **`env(safe-area-inset-bottom)`** rather than a guessed margin, which is wrong on both kinds of device.
+
+### What is hidden, and what is not
+
+The top bar keeps the logo, which screen you are on, the timetable picker, the bell and the assistant. The **school name, the trust label and the timetable's date window are hidden** — all real facts, none of them what somebody opening a phone needs first, and the picker still says which timetable everything is about.
+
+Nothing else is hidden. Two-column layouts become one (`.form-grid`, `.grid2`, `.ai-layout`, `.ai-settings-grid`, `.master-split`, `.sub-row`, `.tt-card`, and the nine inline `1fr 1fr` grids, which became `.grid2` so a stylesheet can reach them at all).
+
+### Wide grids scroll; they do not get clipped
+
+A grid of 55 period columns will not fit a phone and should not pretend to. It scrolls sideways inside `.content`, which already owns both axes (§8.4), so the top bar and the bottom nav stay put while the grid moves — which is how a timetable is read on paper.
+
+The first version of that rule was `.content { overflow-x: hidden }`, which stops the page scrolling sideways by **clipping**: the far end of a wide grid becomes unreachable rather than reachable-by-swiping. *Hiding a horizontal scrollbar is not the same as not needing one.*
+
+Tables got the opposite problem. At 400px a six-column `DataTable` with `width: 100%` and no minimum does not scroll, it **squashes** — every cell wraps to one word per line and a row becomes eight lines tall. `.table-scroll` gives it a 560px floor to scroll against.
+
+### The phone's top bar: a mark, and three controls
+
+Four things, and three of them do something: the **school's logo** on the left; the **bell**, the **assistant** and a **hamburger** on the right. The product's name, the "Live" badge and the screen's own title are not among the four — a name is not a control, and reassurance is the first thing to go when the row is 400px.
+
+**The school and timetable pickers moved into the sheet.** Both are dropdowns whose value is a long name, and two of those plus a bell plus the assistant do not fit. They are the first thing inside the menu, above the destinations, because switching either one changes what every screen is about.
+
+They are **rendered into the sheet, not hidden by CSS**. `display: none` would have left two live `<select>`s in the tab order that nobody can see — and `SchoolPicker` in particular knows about ERP grants, local accounts and trusts, so a phone-shaped copy would be a second set of rules about who may switch what. That is how the app grew three timetable selectors once already (§30.13).
+
+**The hamburger is the only opener of the sheet**, which is why the bottom bar carries **five** destinations rather than four and a Menu: two controls opening one sheet is a question answered in two places. The hamburger takes the dot when the active screen is not one of the five.
+
+### The guided setup on a phone
+
+Three things it spent height on that it should not:
+
+- **Nine labels under nine dots** is nine truncations — *"S…", "W…", "Cl…", "Ti…"* — which name nothing and still cost the row its height. The dots keep their numbers, which is the part that survives at that size, and the step you are on is named **once, in full, underneath**. A fixed caption rather than a tooltip: there is nothing to hover on a touch screen, and a caption that appeared on tap would be a second thing to discover in order to read the first.
+- **The meta row is gone.** *"Step 5 of 9"* is the dots said again in words, the school's name is in the top bar, *Focus* folds a rail that is now two rows tall, and *Sound* is a preference nobody sets on a first visit. What was worth keeping — which wing this step is for (§30.9) — moved into the caption.
+- **The footer is one row.** `flex-wrap: wrap` is what put the primary action on a line of its own, costing sixty pixels of a screen that has none to give. It does not wrap on a phone; the labels shorten instead. *Next: Subjects →* becomes **→**, with the destination on `aria-label` and `title` — it is the rightmost primary button above a rail that already says where you are, and naming the next step cost more width than every other control in the row put together.
+
+### Honest limits
+
+The four dense grids — Master Grid, the Allocation Matrix, the Draft Board and the Timetable Wall — are *readable* on a phone and are not *comfortable* on one. They scroll in both directions inside their own frame, which is the right answer for a 55-column week, but none of them has been re-thought as a phone screen; the Master Grid keeps its 34px vertical tab rail, which is already the most space-efficient form it has. Drag-and-drop on the Board is untested on touch.
+
+
+## 37. Teacher Requirement — how many teachers, subject by subject, and why
+
+Asked for: *"analyse class-sections, subjects, current subject teachers, working days and periods and generate the actual teacher requirement subject-wise — a detailed report with the justification for why these teachers are required and what the load of the current teachers is."*
+
+A screen at `/teacher-requirement`, read-only, under **Reference** beside Reports.
+
+### The question it answers, and the one it does not
+
+*"Given what this school teaches and who it employs, where is it short?"* That is arithmetic over demand and capacity.
+
+It is **not** the Feasibility Engine's question, which is harder and different: whether a legal timetable can be built at all — rooms, clashes, day shapes, placement patterns. A school can be fully staffed by this report and still fail Readiness, and it can fail this while every lesson it has actually entered places perfectly. Neither substitutes for the other, and this shares none of the solver's machinery — §29.3 made the same call, for the same reason: forcing one question into the other's shape means building a variable that lies about half its fields and discarding most of the answer.
+
+### Three things it gets right that a subtraction does not
+
+**1. Demand is a CLASS fact multiplied by sections.** `class_subjects.periods_per_week` is stored per class (§27), so Class 5's six Mathematics is six for 5-A, six for 5-B and six for 5-C. Reading the column as the answer reports a *third* of the truth on a three-section class — the single most damaging mistake available here, and the first unit test.
+
+**2. Two facts the curriculum table does not contain.** A §4.10 **merged group** is subtracted (one teacher covering three sections at once costs one lesson, not three) and a §4.9 **split elective's options** are added (they carry their own periods and belong to no class-section at all, so anything reading `class_subjects` alone reports a language block as costing nothing).
+
+**3. Spare capacity can only be spent once.** A teacher qualified for three subjects has their free periods counted three times by any per-subject sum. That is not a rounding error — it is the difference between *"you are fine"* and *"you are three teachers short"*, in the direction that does the damage. `allocateSpare` is a **max-flow**: source → teacher (free periods) → subject (if qualified) → sink (that subject's gap). What does not flow is the shortfall.
+
+On the reference school the flow and a naive sum happen to agree, because no teacher there is qualified for two of the short subjects. That is a property of one staff list, not a vindication, which is why `test:requirement` builds the case deliberately: one teacher with 30 free periods qualified for two subjects that are each 10 short.
+
+### Two numbers are borrowed, never recomputed
+
+`cap` is `teacherWeeklyCapacity` — the same function Check 2 uses, so this report cannot tell a school its teachers are freer than Readiness does. `load` is summed across the whole §30 **pool**, not this timetable: *"how full is this person?"* has one answer, and scoping it to one wing is CLAUDE.md's own "67% where the truth is 87%".
+
+### Over-assignment is reported, never netted off
+
+Mapped periods beyond what the curriculum asks are a **data fault, not spare teaching**. Folding them into coverage would let a school with 600 bad mapping rows read as comfortably staffed — and the reference school has exactly that, 602 periods a week of it. They are drawn as a hatched amber segment, excluded from the coverage total, and named as *"a mapping to check rather than a teacher to hire"*.
+
+### The divisor is a control, not a constant
+
+Periods ÷ load-per-teacher is the last step and the **only judgement** in the report. A school that staffs at 22 a week and one that staffs at 36 get different answers from identical data, so it is a query parameter with a slider on the screen — and the default is the mean of the school's **own** teacher caps, because a school of part-timers should not be handed a full-timer's assumption. Every sentence the report writes states the figure it used.
+
+### The justification is the feature
+
+A staffing number goes to a governing body, so nothing is a bare total. Each subject opens into the class-by-class multiplication that produced its demand, the named teachers who could take it with their load against their own cap, and five numbered steps ending in the division. A report that says *"hire 7.6"* and cannot say where the 7.6 came from is a report nobody will act on.
+
+Load is drawn as a **distribution, not 123 bars**: the question is what shape the staff room is in, and a bar per teacher answers a different one — it invites comparing people, which this screen has no business doing.
+
+### Two bugs it was built with, both silent
+
+**`as never` on the `SnapshotTeacher`.** The service built the object by eye and cast the type away — and `unavailablePeriodCount` was missing, so `teacherWeeklyCapacity`'s last line computed `pattern - undefined`, every capacity came back **NaN**, every spare was NaN, and the max-flow found no edge with `c > 0`. The report told a school with idle teachers to hire. Exactly what CLAUDE.md records about `sync.service.ts` typing its transaction client as `any`: the one place tsc was not the safety net is the one place the bug was. It builds a real, un-cast `SnapshotTeacher` now.
+
+**The merged group's periods came from a mapping.** It looked the number up on whichever mapping happened to teach that subject in this timetable — which is `0` for a merged group whose sections have no separate mapping, the normal case. The subtraction silently did not happen, and a school teaching three sections together read as needing three teachers' worth. It reads `merged_teaching_groups.periods_per_week`, which is the group's own fact.
+
+And one in the smoke itself, worth recording because it is the worse kind: it posted an elective block with no teacher or room on the options, got a **400 it never looked at**, and then asserted `!of(r,"French")?.breakdown` — which is `true` when French is missing from the report entirely. *A green tick for a subject that was never created.* An assertion that passes when the thing under test is absent is worse than no assertion; the create's status is checked now.
+
+### Where it lives
+
+`analyseRequirement` is in `packages/shared` with 19 unit tests, because `apps/web` has no harness and the arithmetic IS the feature: an off-by-one in the section multiplier tells a school to hire four people it does not need. `TeacherRequirementService` builds the snapshot from real rows and nothing else. The route is `GET /timetable-configs/:id/teacher-requirement` — under that prefix deliberately, since §17.8's sweep already classifies its `:id` as a config and drives it against both schools, so the route is swept the day it exists rather than needing a decision recorded about it.
+
+`reports.view`, not `timetable.publish`: this answers nothing about who teaches what tomorrow, and a principal who may read the teacher-load report may read the case for a hire.
+
+
+## 29.6 A staffing change acts on the week the school actually has
+
+Reported with two screenshots: *"Ajay Verma resigned, I assigned his lessons to Prakarti, all the steps completed — and the timetable still shows Ajay Verma."*
+
+It did, and the change said **applied**.
+
+### What happened
+
+§29.2 read `status: "published"` in four places — the unit enumeration, the plan's occupancy, the apply's writes and the revert's. That school's timetable had never been published: **30 draft rows, 0 published ones**.
+
+So `unitsFor` returned units with **no cells**, `updateMany` matched nothing, and the apply moved five mappings and a class-teacher pointer while leaving every visible lesson with the leaver's name on it. Half-applied, and reported as done — not a refusal, not an error, a green tick over a week that had not moved.
+
+The published-only rule was not wrong, it was **incomplete**. Its reasoning — *"draft rows belong to a working copy nobody is teaching from"* — is exactly right for a school that has published and describes nothing at all for a school that has not. Which is every school until its first publish, i.e. every school evaluating the product.
+
+### The rule
+
+**The published week if there is one; otherwise the config's current draft.**
+
+Not both, and not the draft as well: a school that has published is teaching from the wall, and a draft beside it is a working copy the next Generate overwrites anyway.
+
+`weekScopeFor` is one function used by all four places, because the fault was precisely those four agreeing on a rule that was wrong — and if they can disagree, one of them will. A preview computed against the draft and an apply written against the published rows is the same half-applied change with a different half missing.
+
+Three details it has to get right:
+
+- **The draft id is load-bearing.** `timetable_slots` holds several named drafts at once (§22), so `status: "draft"` alone would reassign lessons in drafts nobody is looking at. `drafts.currentId` is the app's own "newest draft that has rows" (invariant 3), so this screen acts on the week the Board and the Master Grid are showing — which is the week the person raising the change is looking at while they raise it.
+- **Published keeps its exact old filter**, `{ status: "published" }` and nothing more. A published row's `draft_id` is not reliably null — §3.14's withdrawal flips rows between the two — so adding a `draftId` predicate would quietly stop matching on any school that has ever withdrawn a version.
+- **§18 extras are excluded from the question.** They live in the same table in both statuses, and a school whose only published rows are next week's revision classes has not published a week.
+
+### The second fault, in the same report
+
+The History card said **"0 things to reassign · 0 lessons a week · They teach nothing in this timetable — there is nothing to move"** under a change that had just moved five mappings.
+
+`GET /staffing-changes/:id` enumerated live whatever the releasing teachers still hold — which, after the change is applied, is by definition nothing. So *every* applied change in the History list read as empty, however much it had moved.
+
+§29.5 had already made this call for the revert — *"built from `staffing_change_items`, never by re-planning"* — because the items are the record of what moved and a re-plan is a question about now. The display needs the same answer for the same reason: an applied change is served from its items, with where each one went.
+
+And the screen now says which week it is acting on, because *"why does the grid still show the old name?"* and *"why does this say nothing to move?"* were both unanswerable from it.
+
+### The proof
+
+`pnpm test:staffing-draft` builds a school that has never published, puts ten lessons in its current draft and one in an older draft, and asserts after the apply that the ten changed hands, the carrier moved, and **the older draft is untouched**. `pnpm test:staffing` still passes unchanged, which is what says the published path is exactly as it was.
+
+One note on the test itself: the first fixture made the *decoy* draft the newest, and the apply correctly moved the decoy. The test was wrong, not the code — `currentId` means the newest draft with rows, and the week under test has to be that one.
+
+
+## 29.7 Five carriers, not four — and saying what was changed
+
+Reported as a follow-up to §29.6, with the timetable now correctly moved: *"the Lesson plan still shows Ajay Verma; the same should happen in Fixed Timetable; check the class teacher too; and once done it should display what all changes the application has done and where."*
+
+Three separate things, and they resolved differently.
+
+### The Lesson plan and the class teacher were already right
+
+The database had already moved: five mappings and the Class 1-A class-teacher pointer both named the new teacher, and all thirty draft lessons with them. `staffing-units.ts` has enumerated the class-teacher role since §29.2 — it is the thing a school notices first when somebody leaves — and the Lesson grid reads the mappings, so it shows the new name on its next load. What was on screen was a page fetched before the change.
+
+Worth stating plainly rather than quietly agreeing: the fix for that half was §29.6's, and it had landed.
+
+### §36 fixed lessons were the fifth carrier, and nothing moved them
+
+This one was real. Four things hold *"who teaches"* and `timetable_fixed_lessons` is a fifth — it arrived later (§36) and was never added to the enumeration.
+
+A pin left pointing at a teacher who no longer teaches that lesson is not cosmetic: **Check 14 blocks the next generation** with *"a pin whose lesson has moved"*. A staffing change that ignored it would quietly leave the school unable to generate, which is a worse outcome than the change failing outright.
+
+**A pin moves WITH its mapping, not beside it.** §36 attaches a pin to a real mapping, matched on section + subject + teacher, so it is an attribute of the unit rather than a unit of its own. Offering it separately would let somebody move the mapping and leave the pin — creating by hand exactly the invalid state §36's own save refuses.
+
+**Only for a plain mapping**, deliberately. A §4.10 merged group's sections carry no separate mapping and a §4.9 block uses `placement: fixed` rather than this table, so a pin cannot exist for either — and the revert identifies a group by its id and never learns a subject, so a pin moved for one on the way in could not be put back on the way out. *An apply that moves something its revert cannot return is worse than an apply that leaves it.* The first version of this called `movePins` for all three; restricting it to mappings is what makes apply and revert symmetric.
+
+**The revert returns them too**, for the same reason in mirror: a revert that restored the mapping and left the pin would create the blocking Check 14 by the act of undoing.
+
+And the preview says so before anything is applied — `fixedCount` per unit, totalled on the panel — because a pin is rare enough that nobody expects one and consequential enough that it must not be a surprise.
+
+### "Applied" is not a report
+
+The apply returned `{moved, slots, gaps, loads}` and the screen said it had applied. To find out whether anything had actually happened, somebody had to open four screens — which is precisely the report that produced §29.6.
+
+It returns a `changed` block now: lessons re-assigned, mappings moved, merged groups, elective options, the class-teacher role, fixed lessons re-pointed, and **where** — the published timetable or the current draft. Every number is **counted from the writes as they run**, never predicted from the plan: a summary computed from what was *going* to happen is the half-applied change claiming success all over again.
+
+A row that changed nothing is not drawn. "0 elective options" on a school with no electives is noise, and noise beside real numbers is what stops people reading them.
+
+`pnpm test:staffing-draft` covers all of it: the pin moves, the class-teacher role moves, the reported counts match the writes, and the revert brings the pin back.
+
+
+## 28.6 A changeover between periods
+
+Asked for: *"if after each period there should be a gap of 5 minutes, the period duration should be calculated from it — not applicable if there is a break just after the period."*
+
+`timetable_config.period_gap_mins`, 0 by default, so nothing moves until a school sets it. The example from the report, exactly: period 1 is 08:00–08:30, period 2 is **08:35–09:05**.
+
+### It changes the clock and nothing else
+
+The gap is added to the **clock** and to no row. Nothing occupies it, so no grid gains a cell to draw and the solver — which places into period *numbers* — is untouched. That is the same device §28.3 activities and the §18 extra window already use, and it is why the feature costs the rest of the system nothing.
+
+Deliberately its own field rather than padding `period_duration_mins`, which is the workaround it replaces: **a 30-minute lesson taught in a 35-minute slot is a lie** told to the curriculum, to the load arithmetic and to the printed wall.
+
+### The two places it does not go
+
+**Not in front of a break**, because a break *is* a changeover — five minutes before a twenty-minute lunch buys nothing and moves the whole afternoon. **Not after the last period**, where there is nothing to change over to and the only effect would be telling a school it closes five minutes later than it does.
+
+Both are asserted, and one of them caught a mistake in the test rather than the code: the first version expected lunch at 08:35, having forgotten that period 2 has itself already moved by the earlier gap.
+
+### Everywhere the clock is computed
+
+`clockForDay` (§34.5) spreads the same spec, so a §34 short Saturday inherits it. `dayEndsAt` in `packages/shared` (§33.5) had to learn it separately — it is the *second* function that answers "when does the day finish", deliberately, because it answers before any row is written. It counts `periods − 1 − breaks` gaps rather than `periods − 1`, or it would charge the school for a changeover in front of every break that `buildPeriodRows` does not insert. **Two functions that must agree, and they are tested to.**
+
+## 28.7 The walk between wings
+
+Asked for: *"if two wings share teachers and there is a walking distance between them, the generation should consider it — if the setting is on, do not give an immediate period across wings; if off, still consider it partially."*
+
+Two fields on the timetable: `cross_wing_travel_mins` (minutes to reach **this** wing from another in the same §30 pool) and `cross_wing_rule` — `prefer` (the default) or `forbid`.
+
+### Why the database cannot do this
+
+All three unique keys on `timetable_slots` are scoped by `timetable_config_id` (§30.11), so **there is no cross-timetable occupancy constraint at all**: two wings may place the same teacher in the same minute and nothing anywhere notices. §30.7 reports it afterwards as a warning between two *published* timetables; this stops the second wing creating it.
+
+### It is a wall-clock question, never a period-number one
+
+§30.7 already had to learn this and it is the same lesson: Junior's P3 and Senior's P2 can both start at 09:14, so comparing period numbers across wings is wrong in **both** directions — it misses real overlaps and invents false ones. Everything in `crossWingConflict` is minutes from midnight, and the snapshot carries each wing's own `periodClock`.
+
+An **overlap** falls out of the same arithmetic rather than a separate branch: it is a walk with less than no time for it. That is what makes the rule useful to a school that has never measured the distance — at zero travel minutes it still refuses "in two places at once" and says nothing about a back-to-back crossing.
+
+### One number per wing, not a distance matrix
+
+A pair of wings uses the **larger** of their two figures. A matrix would be more expressive and nobody would fill it in; one number composes, and *"how far is this wing from the rest of the school?"* is a question a school can actually answer.
+
+### `prefer` is the default, and it prunes nothing
+
+`forbid` is a hard rule inside `SolverState.check()` — domain pruning, invariant 2. `prefer` is a **value-ordering term** in the search: it steers away from a cell the teacher could not reach in time and removes none, so it can never cost a school a lesson (§20: completeness outranks shape). That is the asked-for *"consider it partially"*, and it is what every school gets without touching the setting.
+
+### The limitation, stated rather than hidden
+
+**Wings are generated one at a time.** The wing generated second can honour the first; the first knows nothing of the second. Regenerating the first afterwards is what makes the pair agree, and the Settings screen says so in the field's own hint rather than leaving somebody to discover it.
+
+The setting is shown **only when another timetable shares this one's §30 pool** — counted from the pool, not from "more than one timetable exists", because an individual timetable (§30.1) shares no staff with anybody and its teachers never cross. A setting nobody can act on teaches people to skim the page.
+
+### A mistake worth recording
+
+The fields went onto **`TimetableDayShape`** first, because its `periodDurationMins` line is identical to `TimetableConfig`'s and the edit was anchored on that text. The migration named the right table (`timetable_config` — singular, and the first draft of the SQL had that wrong too), so the database was correct while the Prisma schema described a different model entirely. What made it visible was tsc: the generated payload type had the fields on the day-shape model and not on the config, which is the compiler catching an error the SQL could not.
+
+---
+
+## 29.8 Published means locked, and an unlock names entities
+
+Asked as one requirement with three parts:
+
+> *"Once the particular timetable is published then it should not allow any changes from Guided Setup, Lesson Grid, Fixed Timetable, Draft Board, staffing changes and any other page from where data is used in Timetable. Only masters can be change for new timetable but no deletion of master which are used in generated timetable. One unlock feature can be provided for Teacher and Specific Class … log should be maintain that who, when and why."*
+
+And then sharpened, after a first design that got the scope wrong:
+
+> *"this will be not a cell wise unlocking system, if i select multiple class then it should unlock the entire timetable of those classes … Example, if user want to replace one teacher completely from the timetable and want to assign his class to another then from Staffing Changes he can do this, but only when the Teacher is unlocked else not."*
+
+### The rule
+
+**An unlock opens an entity's whole week. A write is allowed when every lesson it touches is open — and refused, by name, the moment one is not.**
+
+A lesson is open if *either* of its owners is unlocked:
+
+```
+open(row) = every teacher named on it is unlocked
+         OR every class-section named on it is unlocked
+```
+
+`packages/../apps/api/src/freeze/grant.ts` is that predicate and the only statement of it. There is no per-cell permission, no second rule for a second screen, and nothing a page has to remember.
+
+For a `timetable_slots` row it collapses to *"its teacher, or its class-section"*. The two-clause form is what makes the rows naming several entities behave: a §4.10 merged group is one mapping teaching three sections, so it takes **all three** or the single teacher who holds it; a §4.9 block is one card over several sections with several option teachers; a `class_subjects` row names a class and no teacher at all (§27 — periods are a class fact), so the teacher clause never fires and it takes every section of the class.
+
+**An empty list never satisfies its clause vacuously.** `[].every(…)` is true, so without the length guard a curriculum row would open itself against any grant, including an empty one. A row naming *nothing* is therefore never open — which is the right default: a caller that cannot say what it touches belongs in the `whole` classification instead.
+
+### This reverses §29.1, deliberately
+
+§29.1 says in as many words that *"a freeze is a decision rather than a side effect of publishing"*. That is now the opposite, for the reason §29.1 itself gives: the printed copy in every classroom becomes a second source of truth the moment it is printed, not the moment somebody remembers to press a button. Every school is exposed in the gap between the two, and the gap has no natural end.
+
+`schools.lock_on_publish` (default **true**) governs it, and the lock is set **in the same transaction as the flip** — a published-but-unlocked window is exactly what this closes, and a second write afterwards would leave one that is merely shorter.
+
+**The trap this creates, and the fix.** §3.14 withdrawal is itself guarded, so publish → locked → withdraw is refused, and the obvious next move — unlocking a class or two — does not help. Taking the whole week off the wall is not a change to some classes, so no entity grant reaches it. Withdrawal therefore carries **its own refusal sentence** naming the full unlock, rather than the generic one.
+
+### A teacher unlock reaches into locked classes. That is the point.
+
+Unlocking Ajay Verma opens his lessons *inside* the classes he teaches, while those classes stay locked — so replacing him changes what is printed on wall charts nobody unlocked.
+
+The alternative is to require those classes too, and it makes the requested feature impossible: replacing one teacher in a real school would mean unlocking the twelve classes they cover, which is unlocking the whole timetable under another name. So the rule is **either owner opens the row**, and the honesty is paid for in the record — every affected class is named in `also_affected`, and the unlock dialog says so before anybody presses it.
+
+**Only the releasing side.** The grant is evaluated on the row *as it stands*, never as it will be; reading the incoming teacher would make a re-staffing edit refuse itself, and the receiver cannot be unlocked in advance anyway because §29.3 chooses them. A receiving teacher gaining lessons from a change somebody deliberately made is not the accident a lock exists to prevent.
+
+**The revert asks about the receiver**, which reads backwards for a moment and is the same rule applied exactly: after the apply those lessons belong to whoever took them, so undoing is *releasing* them again, from that person. A grant opened on the leaver does not admit the undo, and the refusal names the person whose week it would change.
+
+### Two classifications, and the line between them
+
+Every guarded route is **scopeable** or **whole**. A route with no classification is a route nobody decided about.
+
+| | |
+|---|---|
+| **scopeable** | Board move/swap/place/remove/pin · staffing plan & apply · §36 fixed lessons · class teacher · curriculum · mappings · merged groups · elective blocks |
+| **whole** | **Generate** · week structure · daily activities · which classes the wing covers · allocation reset · publish · withdraw · delete the timetable · guided-setup commit · §16 import · draft create/rename/archive/discard |
+
+**Generate is the one worth stating.** It is not classified `whole` as policy — it *decides which rows exist*, so "is every touched row open?" cannot be answered before it runs. The others are shared by every class in the wing, or are about the week rather than about anyone in it.
+
+`assertUnlockable` is a **precondition**, not the guard: the board cannot name the rows of a card until it has built the solver input, and building that for a locked timetable with nothing unlocked — the overwhelmingly common state — would be the §14 budget spent entirely on producing a refusal. A caller that stops there has checked only that *some* grant exists.
+
+### Three tables, because "unlock these six things" is one decision
+
+`timetable_unlocks` (the grant — who, when, why, until) · `timetable_unlock_entities` (what it opens) · `timetable_unlock_events` (what it was used for).
+
+Ticking four classes and two teachers is a single act with a single reason and a single author. Six independent unlock rows would store six copies of that sentence, free to disagree, and leave nothing to close as a unit.
+
+- `reason` is **NOT NULL with no default**. Six months later it is the only thing that answers "why was the settled week opened?", and a blank answers nothing.
+- Entities are **two nullable foreign keys, never a polymorphic `entity_id`** — §4.7b's argument, and here the FK is what we want: an unlock pointing at a deleted teacher is meaningless rather than historic. (The opposite call is §29.2's `staffing_change_items`, deliberately polymorphic *because* the record must outlive its rows.)
+- The third table is §29.2's lesson applied: a change is a record, not a mode. `record()` is called **after** the write, never at guard time — recording at guard time would claim changes that went on to fail on a unique key, and an audit that over-reports is worse than one with a gap.
+- **Grants expire** (default 4 hours, "until I close it" an explicit choice). An unlock left open is not a lock. Expiry stops *new* writes only: nothing is rolled back and nothing half-applies.
+- Closing **keeps and marks** the row (§3.14's rule), never deletes it.
+
+**A full unfreeze closes every live grant.** Not tidiness: left open across a thaw a grant says nothing while the timetable is open and then starts admitting writes again the moment somebody re-locks — silently, with nobody deciding it should. A stale permission that reactivates is the worst shape this feature could take, so the wide unlock supersedes the narrow ones rather than sitting beside them.
+
+### The cache
+
+The live grant is cached under the config's own slot prefix, so `invalidateTimetable` already sweeps it and there is no second invalidation rule to remember (invariant 3's lesson about open-ended suffixes). The cached value keeps `expiresAt` rather than a pre-computed answer, because expiry is a function of *now* — a cached "still open" would go on admitting writes after the grant had lapsed.
+
+### §29.8b — masters may grow, never shrink out from under a live week
+
+§23 already recorded the fact this rests on: **`timetable_slots` has no foreign keys to the masters**, so deleting a teacher is invisible to MySQL and leaves a published week pointing at an id that no longer names anybody.
+
+`InUseService` refuses a delete when the row is referenced by slots of a config with an **un-withdrawn publication**, naming the count, the timetables and a few of the classes. Two exclusions, both deliberate: **drafts are not protected** (the next Generate rewrites them wholesale, and refusing there would leave a school unable to tidy master data it is still editing) and **§18 extras are not** (next week's revision class is not the week on the wall).
+
+**No unlock opens this.** The refusal is not about authority, it is about the rows — deleting a teacher removes them from every class at once, which is the opposite of a scoped change. Once their lessons have moved the same delete succeeds with no grant at all, and `locks-smoke.cjs` walks that arc rather than asserting the refusal alone.
+
+Classes and class-sections were already covered by their existing dependency checks; teachers, subjects and rooms are the three this adds.
+
+### The guard on the guard
+
+`pnpm test:locks` asserts the four things that are actually the feature, each of them a way the design could be wrong while looking right:
+
+1. **Publishing locks** — not a button pressed afterwards.
+2. **A grant opens exactly what it names** — the board edit for the unlocked class-section succeeds *and* the identical call for the locked one still refuses, naming it. Neither half means anything alone: a grant that opened everything passes the first, one that opened nothing passes the second.
+3. **A teacher grant reaches into locked classes** — the whole load moves while both class-sections stay locked and the teacher nobody unlocked keeps every lesson.
+4. **A narrow permission never becomes a wide one** — every `whole` route stays refused *while grants are live*. This is the assertion the design rests on, and the only one that catches "generate quietly became scopeable".
+
+`freeze-smoke.cjs` still drives all 28 routes and now thaws mid-replay after `publish`, which is the auto-lock being asserted in passing. §17.8's sweep found a real fault on the first run: `close` and `events` parsed `:unlockId` before checking whether the timetable belonged to the caller, so a stranger and the owner both got the same 400 — *a route that refuses everyone proves nothing*. The config is resolved first now, exactly as `drafts.controller.ts` documents.
+
+### What the lock deliberately does not touch
+
+Unchanged from §29.1 and worth repeating because the auto-lock makes it apply to every school rather than a few: **substitutions** (invariant 4 — a dated overlay, never a mutation, and the case a lock would be most resented in), **§18 extra classes**, **availability** (§4.7a/b — "Mrs Rao now leaves at 1pm" is a fact about a person, and the one a school records *before* re-staffing), and everything that cannot contradict the published week: hiring, rooms, subjects, next year's session, cloning.
+
+### §29.8c — a refusal at the end is the worst place for one
+
+Reported with two screenshots: the Master Grid's Lesson Grid let every cell be typed into, Save stayed live, and pressing it printed
+
+```
+400: {"message":"Edunext School is locked, so master data cannot be changed…","error":"Bad Request","statusCode":400}
+```
+
+**across the page where the grid had been** — and the guided setup let every step be edited with Save & close and Next both active. Three separate faults, and each is worth its own line.
+
+**1. The app was rendering its transport format at people.** `api()` threw `new Error("400: " + the raw body)`. Some screens unwrapped that with `asMessage`; most rendered `e.message` directly, so the same refusal read as a considered sentence on one page and as a stack trace on the next. Unwrapped in `api.ts` now — §10.6's rule: thirty screens each remembering to decode a transport detail is thirty chances to forget, and the ones that forgot were exactly the ones nobody had seen fail. The status stays reachable as `ApiError.status`; it is off the message because a person reading "400" learns nothing.
+
+**2. One error state was doing two jobs.** The Master Grid held a single `allocError` written by both the initial fetch and the save. `AllocationTab` treats its `error` prop as *"there is nothing to draw"*, so a **refused save blanked the grid** — replacing the week somebody was looking at, with their unsaved edits behind it. Split into `allocLoadError` (nothing to draw) and `allocSaveError` (the grid is fine, the write was not).
+
+**3. The screens did not know the timetable was locked.** Both now render the `LockRibbon` above what they edit and make the body `inert` when the timetable is locked with **no live grant**:
+
+- `inert` rather than a `readOnly` prop threaded through forty controls — it is the one attribute that means exactly this, and unlike `pointer-events: none` it also leaves the tab order, so a locked grid is not still typeable by anybody who presses Tab.
+- **Readable, not hidden.** The subtree is greyed, never removed: a locked week is exactly what people look at (§29.1).
+- The Lesson Grid's toolbar is **portalled into the host's bar**, outside the inert subtree, so `toolbarHost` is passed as `null` when read-only. A grid nobody can click with a live Save button above it is the same trap in a smaller frame.
+- The wizard disables **Save & close**, **Next** and **Finish**, and leaves **Back** and **Discard** alone: reading the other steps of a settled timetable is what a locked one is for, and Discard throws away a draft rather than changing a published week.
+
+A live grant re-opens both, which is what the unlock is for. Stated rather than hidden: neither screen yet greys the rows a live grant does *not* reach — the server refuses those by name, and the refusal is now legible.
+
+### §29.8d — the guided setup refuses the locked wing, not the school
+
+Asked as a rule: *"the freezing will happen only for that particular timetable which is being published; this rule is not applicable to other timetables."*
+
+§29.1 guarded the guided setup with `assertNoneFrozen` — refuse while **any** wing in the school is frozen — because a step's answers become rows by name rather than by timetable id. That was tolerable while freezing was a rare deliberate press. Auto-lock makes it the normal state, and the blunt version then blocks the wizard for every school that has published anything, including one with Main published and Junior still being built, which is the case the wizard exists for.
+
+The check moved **into `OnboardingService.commit`**, which has what the controller does not: `answers.wings` names the timetables this commit is building (§3.10a — a wing IS a `timetable_config`, created by name on step 3), narrowed by `?scope=` to one §30 pool. Those names are resolved to configs and only those are asked about.
+
+- **Narrowed by session as well as by name.** `timetable_config` is unique on `(school, name, year)`, so a school that cloned "Main Wing" into next session has two rows with that name — and last session's locked timetable must not refuse this session's planning, which is the reasoning `assertClasses` already uses for the curriculum.
+- **Steps 1–3 are exempt**, and step 3 is the one worth checking rather than assuming: `commitWings` **skips an existing wing by name** and creates only what is missing, so a school with Main locked adding Junior writes nothing to Main. Guarding it would refuse precisely the case this narrowing exists to allow.
+- **Still `assertConfigs`, not a grant-aware check.** A bulk commit cannot say which rows it touches, so no entity unlock opens it. Narrowing *which* timetable is refused is a different question from letting a grant through.
+- One consequence to know about: the guard now runs *after* the "is there anything saved?" check, so a commit with no draft answers `"There is nothing saved to commit"` rather than the lock refusal. Both requests write nothing; the smokes assert the lock with a real draft instead of asserting which of two messages arrives first.
+
+**The limit, stated.** `wingScope` identifies a §30 **pool**, and two grouped wings share one — so on a school whose Main and Junior are both grouped, a step-6/7/8 commit still names both and is still refused while either is locked. That is not merely conservative: those steps write school-wide masters *and* per-wing subject selections, so the commit really can reach both. Separating them needs the commit to narrow its **writes** to one wing, not just its refusals, which is a change to what a step commits and belongs in its own decision. The §16 importer keeps `assertNoneFrozen` for the reason §29.1 gave: a workbook resolves names to rows deep inside one transaction and genuinely cannot say up front which timetables it will touch.
+
+### A grant names one timetable
+
+Unlocking a teacher in Main Wing does not unlock them in Junior Wing — §30.11 keeps all three unique keys scoped by config, so the two weeks cannot see each other anyway. Re-staffing in one wing can still create a §30.7 wall-clock clash with the other, reported after the fact today. Not made worse here; not fixed here either.
+
+---
+
+## 38 The Published summary, and a progress bar that stopped lying
+
+Reported as one message against a screenshot of the guided setup sitting on step 6 at **56%** for a school whose timetable was finished and published:
+
+> *"when timetable is complete and published then why still Guided Setup showing highlighted in 6 … there should be one more step which should be visible after timetable publish, where it should show the summary of current timetable — number of slots, how much generated, % of generation, class-wise allocation and generated, teacher involved for this timetable, their allocation and load. This will be the 10th step, which will by default open when timetable is published. And the percentage bar always showing 100%, currently on change of tab the percentage is decreasing, this should not happen."*
+
+Three things, and the third is §24.9 a second time.
+
+### 38.1 The bar was a cursor
+
+`Progress` computed `stepIndex(step) / WIZARD_STEPS.length`. That is where somebody last clicked, not how far the school has got — so opening the wizard on step 6 to look at something dropped a published school to 56%, and walking between steps made the number rise and fall while nothing about the school changed.
+
+§24.9 found and fixed exactly this on the Timetables card, and recorded the reason: **a cursor answers "where was I?", which is not what anybody was asking.** The wizard's own bar was never converted. It now reads `pct` from `GET /onboarding/progress` — the same eight database milestones, none of which can move without something really being created — so a published timetable reads 100% on every step, including the ones somebody wanders back to.
+
+The cursor survives as the fallback for the one case the milestones cannot describe: a school with no `timetable_config` yet, before step 3 has run. There is nothing to measure there, and the old behaviour is the honest answer.
+
+### 38.2 The Summary step
+
+`WIZARD_STEPS` becomes `[1..8, 10, 11]`. **Number 11, not 9 or 10**, for the reason that list exists at all (§31.13): 9 is Allocation and 10 is Settings in every stored `current_step`, every `POST /onboarding/commit/:step` and `migrateStep` on the server. Reusing either would silently move somebody's saved position.
+
+- **Shown only once the timetable has a live publication**, and opened by default when it does. Kept out rather than shown disabled: a step whose content is *"what did this produce?"* has nothing to say about a school that has produced nothing, and a greyed dot invites a click that cannot help. §3.14's withdrawal removes it again, which is right — there is no published week to summarise.
+- **The landing is applied once, guarded by a ref.** `/onboarding/progress` can refetch, and yanking somebody from step 6 back to the summary because a request completed is the screen taking the wheel. A `startAt` in the URL outranks it.
+- **`visibleStep` had to change with it.** It used to fall back to `TOTAL_STEPS`, which was Settings and therefore right by coincidence; with step 11 in the list, a draft saved on the old step 9 would have resumed on the *summary*. It forwards to the first shown step at or after the stored one now, which is what its own comment always said it did.
+- **Navigation walks the SHOWN list.** The module-level `stepAfter` walks `WIZARD_STEPS`, which always contains the Summary — so on an unpublished school, Settings would have offered "Next: Summary" and landed on a step with no dot in the rail.
+- **Its primary action is Done, not Finish.** It asks nothing, so "Finish setup" would offer to write settings nobody touched — and on a §29.8-locked timetable that button is disabled, leaving somebody landing on their own summary with a greyed primary action and no way out but Back.
+
+### 38.3 It composes; it does not calculate
+
+`GET /timetable-configs/:id/summary` is one payload, and every figure on it already has an owner:
+
+| Figure | Owner |
+|---|---|
+| Required, per class-section | Check 1's own arithmetic, via `stats.sections` |
+| Placed | The published rows, counted |
+| Teacher capacity | `teacherWeeklyCapacity` — the function Check 2 scores against |
+| Teacher load | `crossConfigTeacherLoad` — §30.11's one cross-timetable calculation |
+| Which rows are "the timetable" | §29.6's `weekScopeFor` |
+
+This is the rule this codebase has had to relearn repeatedly — `weekPeriods`, `initialsOf`, `coverage.ts`, §29.3's borrowed `cap` and `load` — because the failure is never a crash. It is two screens quoting different numbers for the same week with nothing to say which is right.
+
+**`stats.sections` is the one new thing, and it is a surfacing rather than a calculation.** Check 1 already works out what each class-section is owed and what its week holds; those two numbers were being thrown away. Deriving them anywhere else would be a second opinion free to disagree with the Readiness figure printed beside it — and §38's smoke asserts the agreement rather than the endpoint's mere existence, because a summary inventing its own arithmetic would answer perfectly well.
+
+Four details worth stating:
+
+- **Per-section `available` is already net of §4.7b class time off**, because it is Check 1's `usable`. A class that blocks Friday afternoon sees its own smaller week.
+- **`pct` is placed ÷ REQUIRED, never ÷ capacity.** A school whose curriculum fills 80% of the week is fully generated at 80% of capacity; measuring against capacity would report it as permanently unfinished.
+- **The teacher list is filtered to this timetable.** A school's whole staff list on a one-wing summary buries the twelve people it is about — and §29.3a's rule still applies to the *load*, so the bar measures the whole week and the other timetables are named beside it rather than folded in or ignored.
+- **§18 extras are excluded throughout.** Next week's revision class would inflate both the generation percentage and every teacher's load.
+
+**The cached-readiness trap.** Readiness is cached for an hour, so for the hour after this deploys every school's payload lacks `stats.sections`. A bare `?? []` would produce a confident "0 class-sections" for a timetable full of them — the worst available answer on a screen whose job is to state what the timetable contains. It is treated as a cache **miss** instead: recomputed once from the snapshot already in hand.
+
+**A structural note.** The route lives in its own controller inside `OnboardingModule` rather than on `TimetableConfigsController`, because the service belongs to the guided setup while that controller belongs to `MastersModule` — putting it there means masters importing onboarding, which already reaches back into masters. Nest lets several controllers share a prefix, so the URL stays where it should be and the modules keep their direction. `UnlockController` (§29.8) is the same shape for the same reason.
+
+---
+
+## 39.1 The welcome prompt reads unfinished work, not a saved cursor
+
+Reported against a screenshot of a school whose timetable was published, locked and reading 100%, met at every sign-in with:
+
+> **Pick up where you left off** — You were on step 3 of 11 for Edunext Demo School. Nothing has been written yet.
+
+> *"why the guided setup is showing step 3 of 11, when I said yesterday that if the particular timetable is published then it should not show any previous step to continue … this is only applicable if any current timetable is on mid way but not for the timetable which is already published."*
+
+Four separate faults behind one dialog.
+
+### The trigger was the existence of a row
+
+```ts
+shouldPrompt: draft !== null || isNew
+```
+
+`onboarding_sessions.completed_at` is written in **exactly one place** — pressing *Finish setup* on the wizard's last step. A school that generates and publishes from the Generate and Publish screens, which is the ordinary path, never presses it. So the draft stayed open for ever and re-offered itself at every sign-in, with no reference to whether anything was left to do.
+
+It is now `isNew || unfinished.length > 0`, where `unfinished` is §24.9's milestone service filtered to `pct < 100`. Those are database facts that cannot move unless something is really created — the same source §38 gave the wizard's progress bar.
+
+### `resumeStep` is a cursor, for the third time
+
+`migrateStep(draft.currentStep)` is where somebody last clicked. §24.9 removed that from the Timetables card; §38 removed it from the wizard's progress bar; this was the third place it survived. The dialog no longer prints it at all — it names the **timetable** and what that timetable wants next: *"Junior Wing is not finished — rooms is the next thing it needs."*
+
+### "of 11" was a §38 regression
+
+`TOTAL_STEPS` is the internal numbering ceiling (11 since §38 added the Summary), not the count of steps shown — 10 for a published timetable, 9 otherwise. It read "of 10" against 9 shown before, and §38 made it off by two. The import is **removed rather than corrected**, because the number was never the right thing to put in that sentence.
+
+### "Nothing has been written yet" was false
+
+The wizard commits on every Next. The claim was untrue for any school past step 2 and absurd for a published one.
+
+### Why it could not simply be "published → never prompt"
+
+**The draft is one row per (school, user) and covers every wing.** The service's own comment says so: *step 3 names every wing at once and everything after it covers all of them.* So "this timetable is published" and "this draft is open" are facts about different objects, and a flat publication check would strand a school with Main published and Junior half-built — the case the resume exists for. Asking the milestones answers both: `unfinished` is empty exactly when there is nothing to carry on with, and names Junior when there is.
+
+**Publishing deliberately does not auto-complete the draft.** One draft covers every wing, so completing it on Main's publish would silently destroy Junior's resume. The state self-heals through the milestone read instead, which needs no write at all.
+
+### The cost, kept off the common path
+
+`SetupProgressService.forSchool` is seven queries (§24.9) and `stateFor` runs on every page load. It is therefore asked **only when a draft exists** — the only case where the answer can change anything — so a school with no draft still pays the three indexed counts it always paid, and the §14 budget is untouched.
+
+### A finished school's manual entry point
+
+"Set up a timetable" on a school whose every timetable is complete opened a dialog offering to *continue* finished work behind three ways to start a setup that had already happened. It opens **step 3, Wings** instead: everything before it is the school and the session, and everything after it is about a wing that does not exist yet. `WINGS_STEP` was already named in the wizard for §30.13 and is exported rather than a second `3` appearing at a call site.
+
+### The proof
+
+`pnpm test:progress` drives the exact reported state — a draft open and parked on step 3, every timetable complete — and asserts the dialog stays shut **while `resumeStep` is still 3**. The pair either side of it matters as much: with a half-built wing present the prompt still fires and **names** it, so a rule that never prompts fails the first assertion and one that always prompts fails the second.
+
+§17.8's sweep gained something in passing: `/me/onboarding` now returns `unfinished[].id`, so the sweep **compares** that route between two schools instead of reporting "A returned no ids here" — it had been passing by having nothing to compare.
+
+---
+
+## 39.2 The landing was racing, and a settled timetable is navigated
+
+Reported together against one screenshot — a published, locked, 100% school with the Summary dot in its rail, sitting on **step 1**:
+
+> *"why is it showing the first step while the timetable is generated, it should show directly the 10th step Summary … Also it should allow me to navigate to any step, but the page will be disabled if the timetable is generated. Currently it is allowing me till the Timetable step, after that it blocks me."*
+
+### Two fetches, two `setStep`s, and no ordering between them
+
+§38's landing effect waits on `/onboarding/progress`; the resume effect waits on `/onboarding/session`. Both call `setStep`, and **whichever resolved last won**.
+
+That is a race in production and a certainty in development: React 18's StrictMode double-invokes the mount effect, so the draft is fetched **twice** — and the second response reliably arrives after the landing. The step it restores is `visibleStep(startAt ?? d.currentStep)`, which for a user with no draft of their own is 1. Exactly the screenshot.
+
+The fix is not to reorder them but to make the outcome **independent of order**: every `setStep` in the resume is guarded by `landed.current`, the ref the landing already sets. Landing first wins; resume first is overwritten. `landed` moved above the fetch that reads it, because it is read inside a promise callback created before the landing can have happened.
+
+### A jump commits; a settled timetable has nothing to commit
+
+§31.13 made a forward jump *"commit what is ready, skip what is not, and always land"*. On a locked timetable the server refuses the first step that would write, so the jump landed nowhere and reported a refusal for a step nobody had touched — which is also the red banner sitting over step 1 in the screenshot, left from an earlier attempt.
+
+`settled` — locked, with no live §29.8 grant — now skips the commit loop entirely and persists the new position. **Nothing is lost by skipping, because there is nothing to commit**: every step past 3 is already read-only, so the answers cannot have changed since they were written. The steps become what the request asked for — pages to look at.
+
+`settled` is deliberately a second flag rather than a widening of `readOnly`:
+
+| | asks | gated on |
+|---|---|---|
+| `readOnly` | may this step be edited? | `step >= 4` — the school, session and wings cannot change a published week |
+| `settled` | could a commit write anything? | nothing — true at every step |
+
+### Two consequences of landing on step 11
+
+**The Summary is exempt from `readOnly` and from the lock ribbon.** It is a report, not a step with fields: greying it behind `inert` would disable a screen that offers nothing to disable, and a banner explaining that it cannot be edited answers a question nobody asked there.
+
+**A stored step 11 must not outlive the Summary.** Landing persists `current_step: 11`; §3.14's withdrawal then removes the step from the rail — it describes a published week and there is no longer one — while the draft still points at it, so reopening would render a step with no dot and no way back to it. An effect falls back to the last shown step, keyed on `showSummary` rather than on `shownSteps`, which is a fresh array on every render and would make it run on all of them.
+
+### What is not covered
+
+`apps/web` has no test harness, so the ordering fix is defended **by construction** — a ref read inside the promise callback, which cannot be true-then-false — rather than by assertion. `pnpm test:progress` covers the server fact the landing reads (`published` per timetable), which is the half that could silently change.
