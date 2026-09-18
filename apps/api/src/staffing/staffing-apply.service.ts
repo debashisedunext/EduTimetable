@@ -31,7 +31,10 @@ import { CacheKeysService } from "../redis/cache-keys.service";
 import { EventsGateway } from "../events/events.gateway";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ReadinessService } from "../readiness/readiness.service";
+import { DraftsService } from "../drafts/drafts.service";
+import { slotsIn, weekScopeFor } from "./staffing-week";
 import { StaffingPlanService, type PlanMode } from "./staffing-plan.service";
+import { FreezeService } from "../freeze/freeze.service";
 
 export interface ApplyInput {
   mode?: unknown;
@@ -58,7 +61,22 @@ export class StaffingApplyService {
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
     private readonly readiness: ReadinessService,
+    private readonly drafts: DraftsService,
+    private readonly freeze: FreezeService,
   ) {}
+
+  /**
+   * §29.6 — the week this change writes to.
+   *
+   * Resolved the same way the preview resolved it, from the same function: the
+   * published week if this timetable has one, otherwise its current draft. The
+   * fault this fixes was an apply that wrote only to `status: "published"` on a
+   * school that had never published — every carrier moved, not one visible
+   * lesson did, and the change said `applied`.
+   */
+  private week(configId: number) {
+    return weekScopeFor(this.prisma as never, configId, (id) => this.drafts.currentId(id));
+  }
 
   async apply(changeId: number, userId: number | null, body: ApplyInput) {
     const change = await this.prisma.staffingChange.findFirst({
@@ -105,8 +123,52 @@ export class StaffingApplyService {
       );
     }
 
+    /*
+      §29.8 — the headline case, and the reason a teacher unlock exists.
+
+      A resignation moves one person's whole load across every class they teach.
+      Requiring those classes to be unlocked would mean unlocking the twelve a
+      real teacher covers, which is unlocking the timetable under another name —
+      so the grant is asked about the RELEASING teachers, and their lessons are
+      open wherever they sit. The classes stay locked; the record names them.
+
+      Only the releasing side. A receiving teacher gaining lessons from a change
+      somebody deliberately made is not the accident a lock exists to prevent,
+      and could not be unlocked in advance anyway: §29.3 chooses them.
+
+      Asked AFTER the plan is built and BEFORE the first write — the plan is a
+      question (a GET, §29.3) and stays readable while locked, because being able
+      to see it is how somebody decides whom to unlock.
+    */
+    const releasing = [...new Set(moving.map((a) => a.unit.fromTeacherId))];
+    const ticket = await this.freeze.assertTouched(
+      change.timetableConfigId,
+      releasing.map((id) => ({ teacherIds: [id], classSectionIds: [] })),
+      "who teaches these lessons",
+    );
+
+    /*
+      Resolved OUTSIDE the transaction and before any write, so the preview's
+      week and the apply's week are the same answer from the same function.
+    */
+    const scope = await this.week(change.timetableConfigId);
+
     const written = await this.prisma.$transaction(async (tx) => {
       let slots = 0;
+      /*
+        §29.7 — §36 fixed lessons are the FIFTH carrier of "who teaches".
+
+        `staffing-units.ts` enumerates four; `timetable_fixed_lessons` arrived
+        later (§36) and was never added to them. A pin is not an independent
+        thing to reassign, though — §36 attaches one to a real mapping, matched
+        on section + subject + teacher — so it moves WITH its mapping rather
+        than beside it. Left behind, the pin names a teacher who no longer
+        teaches that lesson, and Check 14 BLOCKS the next generation with "a pin
+        whose lesson has moved". A staffing change that quietly makes a school
+        unable to generate is not a staffing change that worked.
+      */
+      let pins = 0;
+      const byType = { mapping: 0, merged_group: 0, elective_option: 0, class_teacher: 0 };
       for (const a of moving) {
         const to = a.toTeacherId as number;
         const from = a.unit.fromTeacherId;
@@ -128,7 +190,7 @@ export class StaffingApplyService {
             const done = await tx.timetableSlot.updateMany({
               where: {
                 timetableConfigId: change.timetableConfigId,
-                status: "published",
+                ...slotsIn(scope),
                 teacherId: from,
                 subjectId: a.unit.subjectId,
                 classSectionId: { in: a.unit.classSectionIds },
@@ -138,6 +200,8 @@ export class StaffingApplyService {
               data: { teacherId: to },
             });
             slots += done.count;
+            byType.mapping += 1;
+            pins += await this.movePins(tx as never, change.timetableConfigId, from, to, a.unit);
             break;
           }
           case "merged_group": {
@@ -148,13 +212,14 @@ export class StaffingApplyService {
             const done = await tx.timetableSlot.updateMany({
               where: {
                 timetableConfigId: change.timetableConfigId,
-                status: "published",
+                ...slotsIn(scope),
                 mergedGroupId: a.unit.id,
                 teacherId: from,
               },
               data: { teacherId: to },
             });
             slots += done.count;
+            byType.merged_group += 1;
             break;
           }
           case "elective_option": {
@@ -165,13 +230,14 @@ export class StaffingApplyService {
             const done = await tx.timetableSlot.updateMany({
               where: {
                 timetableConfigId: change.timetableConfigId,
-                status: "published",
+                ...slotsIn(scope),
                 electiveOptionId: a.unit.id,
                 teacherId: from,
               },
               data: { teacherId: to },
             });
             slots += done.count;
+            byType.elective_option += 1;
             break;
           }
           case "class_teacher": {
@@ -181,6 +247,7 @@ export class StaffingApplyService {
               where: { id: a.unit.id, classTeacherId: from },
               data: { classTeacherId: to },
             });
+            byType.class_teacher += 1;
             break;
           }
         }
@@ -228,22 +295,60 @@ export class StaffingApplyService {
         where: { id: changeId },
         data: { status: "applied", appliedAt: new Date(), appliedById: userId },
       });
-      return slots;
+      return { slots, pins, byType };
     });
 
     await this.finish(change.timetableConfigId, change.schoolId);
+    if (ticket.admittedBy.length > 0) {
+      /*
+        §29.8 — the honest half of a teacher unlock.
+
+        A teacher grant opens lessons sitting inside classes nobody unlocked, so
+        the record names those classes. Written from the PLAN's own units rather
+        than re-queried, because the plan is what was applied and a second query
+        would be a second answer.
+      */
+      const classes = [
+        ...new Set(moving.flatMap((a) => a.unit.classSectionIds ?? [])),
+      ];
+      await ticket.record(
+        `re-assigned ${written.slots} lesson(s) across ${moving.length} unit(s) from ` +
+          `${preview.releasing.map((t) => t.name).join(", ")}`,
+        { classSectionIds: classes, changeId, where: scope.status },
+      );
+    }
     await this.tellThem(moving.map((a) => a.toTeacherId as number), preview.releasing.map((t) => t.name));
     this.logger.log(
-      `applied staffing change ${changeId}: ${moving.length} unit(s), ${written} published lesson(s) re-assigned`,
+      `applied staffing change ${changeId}: ${moving.length} unit(s), `
+        + `${written.slots} lesson(s) and ${written.pins} fixed lesson(s) re-assigned`,
     );
 
     return {
       ok: true,
       changeId,
       moved: moving.length,
-      slots: written,
+      slots: written.slots,
       gaps: plan.uncovered,
       loads: plan.loads,
+      /*
+        §29.7 — what was changed, and where, in the words the screen prints.
+
+        "Applied" on its own left somebody to go and look at four screens to
+        find out whether anything had happened — which is exactly what the
+        report that prompted this did. Every number here is counted from the
+        writes that actually ran, never predicted from the plan: a summary
+        computed from what was *going* to happen is the half-applied change
+        saying it worked all over again.
+      */
+      changed: {
+        where: scope.status === "published" ? "the published timetable" : "the current draft",
+        lessons: written.slots,
+        mappings: written.byType.mapping,
+        mergedGroups: written.byType.merged_group,
+        electiveOptions: written.byType.elective_option,
+        classTeacher: written.byType.class_teacher,
+        fixedLessons: written.pins,
+      },
     };
   }
 
@@ -271,9 +376,35 @@ export class StaffingApplyService {
 
     const moved = change.items.filter((i) => i.toTeacherId !== null);
     const skipped: string[] = [];
+
+    /*
+      §29.8 — a revert is a write to the published week like any other, so it
+      asks too, and it asks about the RECEIVING teacher.
+
+      That reads backwards for a moment and is the rule applied exactly: the
+      grant is evaluated on the row as it stands, and after the apply these
+      lessons belong to whoever took them. Undoing is therefore *releasing* them
+      again, from that person. Reading `fromTeacherId` instead would be checking
+      a grant against an owner the rows no longer have — the same mistake as
+      reading the incoming teacher on a mapping edit, in the other direction.
+
+      The practical consequence is real and correct: a grant opened on the
+      leaver does not admit the undo, and the refusal names the person whose
+      week the undo would change. That is what somebody needs to be told.
+    */
+    const holding = [...new Set(moved.map((i) => i.toTeacherId as number))];
+    const ticket = await this.freeze.assertTouched(
+      change.timetableConfigId,
+      [{ teacherIds: holding, classSectionIds: [] }],
+      "who teaches these lessons",
+    );
+
+    // §29.6 — put it back into the same week it was taken from.
+    const scope = await this.week(change.timetableConfigId);
     const result = await this.prisma.$transaction(async (tx) => {
       let slots = 0;
       let units = 0;
+      let pins = 0;
       for (const item of moved) {
         const to = item.toTeacherId as number;
         const from = item.fromTeacherId as number;
@@ -338,7 +469,7 @@ export class StaffingApplyService {
         slots += (await tx.timetableSlot.updateMany({
           where: {
             timetableConfigId: change.timetableConfigId,
-            status: "published",
+            ...slotsIn(scope),
             // Compare-and-set again, at row level: a lesson somebody has moved
             // on to a third teacher since is left where it is.
             teacherId: to,
@@ -346,6 +477,24 @@ export class StaffingApplyService {
           },
           data: { teacherId: from },
         })).count;
+
+        /*
+          §29.7 — and the pins come back with it.
+
+          A revert that returned the mapping but left the §36 pin pointing at
+          the person who no longer teaches it would leave the school with the
+          blocking Check 14 that moving the pin was meant to prevent — created
+          by the act of undoing.
+        */
+        if (owned.subjectId !== null && owned.subjectId !== undefined) {
+          pins += await this.movePins(
+            tx as never,
+            change.timetableConfigId,
+            to,
+            from,
+            { subjectId: owned.subjectId as number, classSectionIds: owned.classSectionId !== undefined && owned.classSectionId !== null ? [owned.classSectionId as number] : [] },
+          );
+        }
       }
 
       await tx.staffingChange.update({
@@ -355,10 +504,17 @@ export class StaffingApplyService {
         // rewrite the school's own record of what happened.
         data: { status: "reverted", revertedAt: new Date() },
       });
-      return { units, slots };
+      return { units, slots, pins };
     });
 
     await this.finish(change.timetableConfigId, change.schoolId);
+    if (ticket.admittedBy.length > 0) {
+      await ticket.record(
+        `reverted staffing change #${changeId}: ${result.slots} lesson(s) put back` +
+          (skipped.length > 0 ? `, ${skipped.length} skipped` : ""),
+        { changeId, skipped },
+      );
+    }
     this.logger.log(`reverted staffing change ${changeId}: ${result.units} unit(s), ${result.slots} lesson(s)`);
     return {
       ok: true,
@@ -371,6 +527,47 @@ export class StaffingApplyService {
       */
       skipped,
     };
+  }
+
+  /**
+   * §29.7 — move the §36 pins that belong to a unit that has just moved.
+   *
+   * Matched the way §36 matches a pin to its lesson — section + subject +
+   * teacher — and compare-and-set on `teacherId: from` like every other write
+   * here, so a pin somebody has already re-aimed is left alone.
+   *
+   * ## Only for a plain MAPPING, deliberately
+   *
+   * §36 attaches a pin to a mapping and to nothing else: a §4.10 merged group's
+   * sections carry no separate mapping and a §4.9 block uses `placement: fixed`
+   * rather than this table, so a pin cannot exist for either. Calling this for
+   * them would be speculative on the way in and — because the revert identifies
+   * a group by its id and never learns a subject — **not undoable on the way
+   * out**. An apply that moves something its revert cannot put back is worse
+   * than an apply that leaves it.
+   *
+   * A class-teacher unit has no subject at all; asking anyway would match every
+   * pin in those sections and hand them all to the new class teacher, which is
+   * a different and much worse bug than the one this fixes.
+   */
+  private async movePins(
+    tx: { timetableFixedLesson: { updateMany: (args: unknown) => Promise<{ count: number }> } },
+    configId: number,
+    from: number,
+    to: number,
+    unit: { subjectId: number | null; classSectionIds: number[] },
+  ): Promise<number> {
+    if (unit.subjectId === null || unit.classSectionIds.length === 0) return 0;
+    const done = await tx.timetableFixedLesson.updateMany({
+      where: {
+        timetableConfigId: configId,
+        teacherId: from,
+        subjectId: unit.subjectId,
+        classSectionId: { in: unit.classSectionIds },
+      },
+      data: { teacherId: to },
+    });
+    return done.count;
   }
 
   /** Everything a change to the published week makes stale. */

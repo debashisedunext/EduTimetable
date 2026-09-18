@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, Q
 import { CLASS_LADDER, defaultsFor, PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { InUseService } from "../freeze/in-use.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { PrismaBaseService } from "../prisma/prisma-base.service";
 import { ImportService } from "../import/import.service";
@@ -59,6 +60,7 @@ function placement(body: any, name: string | null) {
 export class SubjectsController {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly inUse: InUseService,
     private readonly readiness: ReadinessService,
     /**
      * §35 — the board catalogue has no `school_id`, so it is read through the
@@ -338,9 +340,16 @@ export class SubjectsController {
     return updated;
   }
 
+  /** §29.8b — a subject a live week teaches cannot be deleted. */
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await del(() => this.prisma.subject.delete({ where: { id: toInt(id, "id") } }), "Subject");
+    const subjectId = toInt(id, "id");
+    const subject = await this.prisma.subject.findFirst({
+      where: { id: subjectId },
+      select: { name: true },
+    });
+    if (subject) await this.inUse.assertNotInUse(subject.name, { subjectId });
+    await del(() => this.prisma.subject.delete({ where: { id: subjectId } }), "Subject");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }

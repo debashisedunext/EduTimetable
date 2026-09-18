@@ -116,9 +116,16 @@ export class MappingsController {
     }
     const subjectId = toInt(body.subjectId, "subjectId");
     const teacherId = toInt(body.teacherId, "teacherId");
-    // §29.1 — asked before anything is checked or written, so a frozen
+    // §29.1 — asked before anything is checked or written, so a locked
     // timetable refuses for its own reason rather than for a capacity one.
-    await this.freeze.assertSections(ids, "who teaches a subject");
+    //
+    // §29.8 — the teacher rides along, and it is what makes re-staffing
+    // possible: unlocking one person must not require unlocking every class
+    // they teach. The sections are ONE row for the predicate, so it takes all
+    // of them or the teacher — never one of three (`grant.ts`).
+    const ticket = await this.freeze.assertSections(ids, "who teaches a subject", {
+      teacherIds: [teacherId],
+    });
     await assertCanTeach(this.prisma, teacherId, ids, { what: "this subject" });
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
     const preferredRoomId =
@@ -146,6 +153,7 @@ export class MappingsController {
         }),
       "Subject mapping",
     );
+    await ticket.record(`added ${toCreate.length} subject mapping(s)`);
     await this.readiness.invalidate(req.user.schoolId);
     return {
       created: toCreate.length,
@@ -160,9 +168,20 @@ export class MappingsController {
   async update(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const mine = await this.prisma.teacherSubjectClassSection.findUnique({
       where: { id: toInt(id, "id") },
-      select: { classSectionId: true },
+      select: { classSectionId: true, teacherId: true },
     });
-    if (mine) await this.freeze.assertSections([mine.classSectionId], "who teaches a subject");
+    /*
+      §29.8 — the grant is evaluated on the row AS IT STANDS, never as it will
+      be. Re-staffing means moving a lesson from an unlocked teacher to somebody
+      who is not unlocked, and reading the incoming teacher here would make that
+      refuse itself — you cannot unlock the receiver in advance, because for a
+      §29.3 plan the app chooses them.
+    */
+    const ticket = mine
+      ? await this.freeze.assertSections([mine.classSectionId], "who teaches a subject", {
+          teacherIds: [mine.teacherId],
+        })
+      : null;
     if (body.periodsPerWeek !== undefined) {
       const row = await this.prisma.teacherSubjectClassSection.findUnique({
         where: { id: toInt(id, "id") },
@@ -189,6 +208,7 @@ export class MappingsController {
         }),
       "Mapping",
     );
+    await ticket?.record(`changed a subject mapping (#${toInt(id, "id")})`);
     await this.readiness.invalidate(req.user.schoolId);
     return updated;
   }
@@ -197,13 +217,18 @@ export class MappingsController {
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
     const row = await this.prisma.teacherSubjectClassSection.findUnique({
       where: { id: toInt(id, "id") },
-      select: { classSectionId: true },
+      select: { classSectionId: true, teacherId: true },
     });
-    if (row) await this.freeze.assertSections([row.classSectionId], "who teaches a subject");
+    const ticket = row
+      ? await this.freeze.assertSections([row.classSectionId], "who teaches a subject", {
+          teacherIds: [row.teacherId],
+        })
+      : null;
     await uniq(
       () => this.prisma.teacherSubjectClassSection.delete({ where: { id: toInt(id, "id") } }),
       "Mapping",
     );
+    await ticket?.record(`deleted a subject mapping (#${toInt(id, "id")})`);
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }
@@ -223,7 +248,11 @@ export class MergedGroupsController {
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["teacherId", "subjectId", "periodsPerWeek", "classSectionIds"]);
     const ids = this.memberIds(body);
-    await this.freeze.assertSections(ids, "a merged teaching group");
+    // §29.8 — a merged group is ONE row teaching several sections, so it takes
+    // every member, or the single teacher who holds it (`grant.ts`).
+    const ticket = await this.freeze.assertSections(ids, "a merged teaching group", {
+      teacherIds: [toInt(body.teacherId, "teacherId")],
+    });
     await assertCanTeach(this.prisma, toInt(body.teacherId, "teacherId"), ids, { what: "this merged group" });
     assertWithinWeek(
       toInt(body.periodsPerWeek, "periodsPerWeek"),
@@ -248,6 +277,7 @@ export class MergedGroupsController {
         }),
       "Merged group",
     );
+    await ticket.record(`added a merged teaching group over ${ids.length} section(s)`);
     await this.readiness.invalidate(req.user.schoolId);
     return group;
   }
@@ -266,9 +296,13 @@ export class MergedGroupsController {
       where: { mergedGroupId: groupId },
       select: { classSectionId: true },
     });
-    await this.freeze.assertSections(
+    const ticket = await this.freeze.assertSections(
       [...current.map((m) => m.classSectionId), ...(Array.isArray(body.classSectionIds) ? this.memberIds(body) : [])],
       "a merged teaching group",
+      // §29.8 — the group's CURRENT teacher, never the incoming one: the grant
+      // reads the row as it stands, so a re-staffing edit is not refused by the
+      // teacher it is about to name.
+      { teacherIds: current.length > 0 ? [await this.teacherOf(groupId)] : [] },
     );
     const data: Record<string, unknown> = {};
     if (body.teacherId !== undefined) data.teacherId = toInt(body.teacherId, "teacherId");
@@ -315,6 +349,7 @@ export class MergedGroupsController {
         ]);
       }
     }, "Merged group");
+    await ticket.record(`changed a merged teaching group (#${groupId})`);
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }
@@ -325,13 +360,27 @@ export class MergedGroupsController {
       where: { mergedGroupId: toInt(id, "id") },
       select: { classSectionId: true },
     });
-    await this.freeze.assertSections(members.map((m) => m.classSectionId), "a merged teaching group");
+    const ticket = await this.freeze.assertSections(
+      members.map((m) => m.classSectionId),
+      "a merged teaching group",
+      { teacherIds: [await this.teacherOf(toInt(id, "id"))] },
+    );
     await uniq(
       () => this.prisma.mergedTeachingGroup.delete({ where: { id: toInt(id, "id") } }),
       "Merged group",
     );
+    await ticket.record(`deleted a merged teaching group (#${toInt(id, "id")})`);
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
+  }
+
+  /** The teacher a group currently belongs to — §29.8's other clause. */
+  private async teacherOf(groupId: number): Promise<number> {
+    const row = await this.prisma.mergedTeachingGroup.findFirst({
+      where: { id: groupId },
+      select: { teacherId: true },
+    });
+    return row?.teacherId ?? -1;
   }
 
   private memberIds(body: any): number[] {

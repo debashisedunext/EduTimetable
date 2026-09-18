@@ -23,6 +23,7 @@ import {
   type Swatch,
 } from "@edutimetable/shared";
 import { api, getToken } from "../api";
+import { LockRibbon } from "../locks";
 import { useApi, useConfigCtx } from "../hooks";
 import { useColors } from "../colors-context";
 import type { StripGroup } from "./strip";
@@ -1176,6 +1177,19 @@ export function Board({
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>{pickers}</div>
         <div style={{ display: "flex", gap: 10 }}>{actions}</div>
       </div>
+
+      {/*
+        §29.8 — above the grid, because it changes what every drag below it will
+        do. Standalone only: the embedded copy (§31.11) lives inside the Master
+        Grid, which draws the same ribbon once for all six tabs rather than
+        letting each one repeat it.
+      */}
+      <LockRibbon
+        configId={current.id}
+        configName={current.name}
+        frozenAt={current.frozenAt ?? null}
+        onChanged={() => void refetch()}
+      />
 
       {/* §22.5 — the numbers this draft is judged on, read off the registry
           row rather than counted from 2,000 slots per render (§14). */}

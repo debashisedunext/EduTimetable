@@ -360,6 +360,7 @@ async function main() {
   });
   void draftRow;
 
+
   const clash = await call("POST", `/timetable-configs/${cfg2.id}/board/publish`, S, {});
   check(clash.status === 400 && /one live timetable at a time/i.test(clash.json?.message ?? ""),
     "publishing a second timetable over the same class is refused",

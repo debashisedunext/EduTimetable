@@ -79,7 +79,14 @@ export class ElectiveBlocksController {
     const memberIds = this.memberIds(body);
     const options = this.options(body);
     const periodsPerWeek = toInt(body.periodsPerWeek, "periodsPerWeek");
-    await this.freeze.assertSections(memberIds, "a split elective block");
+    /*
+      §29.8 — a block is ONE card over several sections with several option
+      teachers, so it takes every member, or every option teacher (`grant.ts`).
+      Not "any": changing the block changes all its members' weeks at once.
+    */
+    const ticket = await this.freeze.assertSections(memberIds, "a split elective block", {
+      teacherIds: options.map((o) => o.teacherId),
+    });
     // Every option teacher takes the block's member classes (§18).
     for (const o of options) {
       await assertCanTeach(this.prisma, o.teacherId, memberIds, { what: "this elective option" });
@@ -107,6 +114,9 @@ export class ElectiveBlocksController {
         }),
       `Elective block '${body.name}'`,
     );
+    await ticket.record(
+      `added the split elective block “${String(body.name)}” over ${memberIds.length} section(s)`,
+    );
     await this.readiness.invalidate(req.user.schoolId);
     return block;
   }
@@ -122,12 +132,20 @@ export class ElectiveBlocksController {
       where: { electiveBlockId: blockId },
       select: { classSectionId: true },
     });
-    await this.freeze.assertSections(
+    // §29.8 — the block's CURRENT option teachers, never the incoming ones:
+    // the grant reads the row as it stands, so a re-staffing edit is not
+    // refused by the teacher it is about to name.
+    const currentOptions = await this.prisma.electiveOption.findMany({
+      where: { electiveBlockId: blockId },
+      select: { teacherId: true },
+    });
+    const ticket = await this.freeze.assertSections(
       [
         ...currentMembers.map((m) => m.classSectionId),
         ...(Array.isArray(body.classSectionIds) ? this.memberIds(body) : []),
       ],
       "a split elective block",
+      { teacherIds: currentOptions.map((o) => o.teacherId) },
     );
 
     const data: Record<string, unknown> = {};
@@ -176,6 +194,7 @@ export class ElectiveBlocksController {
         ]);
       }
     }, "Elective block");
+    await ticket.record(`changed the split elective block #${blockId}`);
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }

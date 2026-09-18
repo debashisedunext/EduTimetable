@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
+import { LockRibbon } from "../locks";
 import { asMessage } from "../components";
 import { useApi, useConfigCtx } from "../hooks";
 
@@ -175,21 +176,34 @@ export function Publish() {
         to enforce — which is why it names the one action that IS available.
       */}
       {frozenAt && (
-        <div className="card" style={{
-          borderColor: "var(--brand)", background: "var(--steel-pale)", padding: "12px 14px",
-          marginBottom: 18, fontSize: 12.6, lineHeight: 1.55, display: "flex",
-          alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap",
-        }}>
-          <span>
-            <strong>This timetable is frozen.</strong> Its published week is settled, so the
-            allocation cannot be changed — no curriculum, mappings, class teachers, board edits,
-            generation or publishing. Frozen {fmtDate(frozenAt)}.
-          </span>
-          <button className="btn" disabled={freezing} onClick={() => unfreeze()}
-            style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
-            {freezing ? "Working…" : "Unfreeze to make changes"}
-          </button>
-        </div>
+        <>
+          {/*
+            §29.8 — the scoped answer first, the wide one underneath.
+
+            The old banner offered exactly one way out, and it was the widest
+            one available: unfreeze everything to change one class. The ribbon
+            puts the narrow door first and lists what is already open; the full
+            unfreeze stays, because a school re-planning the whole week still
+            needs it and one that froze by mistake has no other way back.
+          */}
+          <LockRibbon
+            configId={current.id}
+            configName={current.name}
+            frozenAt={frozenAt}
+            onChanged={() => { void refetchConfigs?.(); refetch(); }}
+          />
+          <p style={{ fontSize: 11.8, color: "var(--ink-faint)", margin: "-8px 0 16px" }}>
+            Re-planning the whole week instead?{" "}
+            <button className="linkish" disabled={freezing} onClick={() => unfreeze()}
+              style={{
+                border: "none", background: "none", padding: 0, font: "inherit",
+                color: "var(--brand)", cursor: "pointer", textDecoration: "underline",
+              }}>
+              {freezing ? "Working…" : "Unlock the whole timetable"}
+            </button>{" "}
+            — this also closes every unlock above.
+          </p>
+        </>
       )}
 
       {/* Says where the week WENT. A screen that simply stops showing a
@@ -247,7 +261,7 @@ export function Publish() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 22 }}>
+      <div className="grid2" style={{ gap: 16, marginBottom: 22 }}>
         <div className="card" style={{ padding: 20 }}>
           <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-faint)", marginBottom: 12 }}>Currently Published</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 600 }}>

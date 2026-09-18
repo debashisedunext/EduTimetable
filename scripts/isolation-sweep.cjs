@@ -510,10 +510,25 @@ const LIST_NO_IDS = {
 
   /** A school with a working role, an ERP mapping, and one of everything. */
   async function buildSchool(id, tag) {
+    /*
+      §29.8 — `lockOnPublish: false` for the fixture, deliberately.
+
+      This suite drives every route in sequence, and `POST /board/publish` sits
+      a few lines above `POST /board/draft-from-published`. With the default on,
+      publishing LOCKS the timetable, so the owner's next call is refused for a
+      lock reason while the stranger's is refused for a tenancy one — both 400,
+      and the sweep correctly reports that it can no longer tell scoping apart
+      from a route that refuses everyone.
+
+      Turning it off here rather than reordering the routes: the order is the
+      app's own route table, and this suite is about TENANCY. §29.8's behaviour
+      has its own gate in `locks-smoke.cjs`, which asserts the auto-lock
+      directly — so nothing is lost by taking it out of the way here.
+    */
     await prisma.school.upsert({
       where: { id },
-      create: { id, code: `${P}-${tag}`, name: `${P} School ${tag}` },
-      update: { name: `${P} School ${tag}` },
+      create: { id, code: `${P}-${tag}`, name: `${P} School ${tag}`, lockOnPublish: false },
+      update: { name: `${P} School ${tag}`, lockOnPublish: false },
     });
     const role = await prisma.role.upsert({
       where: { schoolId_name: { schoolId: id, name: "Super Admin" } },

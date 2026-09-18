@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { GROUPED_SCOPE, wingScope, type WingAnswer } from "@edutimetable/shared";
 import { api } from "../api";
+import { LockRibbon, useUnlocks } from "../locks";
 import { useConfigCtx } from "../hooks";
 import { StepAllocation, type AllocationCellFacts, type ElectiveBlockView } from "../onboarding/steps/Allocation";
 
@@ -126,6 +127,24 @@ export function AllocationTab({
    */
   const { current } = useConfigCtx();
   const yearId = current?.academicYearId ?? null;
+
+  /*
+    §29.8 — a locked timetable's Lesson Grid is READ-ONLY, and says so.
+
+    Before this it looked exactly like an editable grid: you could type a
+    number, press Save, and get the server's refusal back as a line of raw JSON
+    across the page. A refusal at the end of the work is the worst place to put
+    one — everything typed is lost and nothing said it would be.
+
+    Read-only when there is a grant OPEN is wrong in the other direction, so the
+    gate is *locked AND nothing unlocked*. With a grant live the grid is editable
+    and the server refuses whatever the grant does not cover, by name. Stated
+    rather than hidden: the grid does not yet grey the rows a live grant does not
+    reach — that is a refinement, and the refusal is precise in the meantime.
+  */
+  const frozenAt = current?.frozenAt ?? null;
+  const { live: liveGrants } = useUnlocks(frozenAt ? (current?.id ?? null) : null);
+  const readOnly = frozenAt !== null && liveGrants.length === 0;
   const [electives, setElectives] = useState<ElectiveBlockView[]>([]);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -243,6 +262,17 @@ export function AllocationTab({
 
   return (
     <div style={frame}>
+      {/* §29.8 — above the grid, because it changes what every cell below it
+          will accept. The ribbon renders nothing at all when unlocked. */}
+      {frozenAt && (
+        <div style={{ padding: "0 2px" }}>
+          <LockRibbon
+            configId={current?.id ?? 0}
+            configName={current?.name ?? "This timetable"}
+            frozenAt={frozenAt}
+          />
+        </div>
+      )}
       {/*
         §31.10 — `compact`, which is the one visual difference from
         `/allocation`: percentage columns instead of content-sized ones, and
@@ -250,17 +280,43 @@ export function AllocationTab({
         horizontal scrollbar, which was the whole point of putting the grid
         here rather than linking to it.
       */}
-      <StepAllocation
-        spanByClass={spans}
-        electives={electives}
-        onElectivesChanged={() => setTick((n) => n + 1)}
-        answers={scoped}
-        onChange={onChange}
-        density="compact"
-        wing={wing}
-        onSelectCell={onSelectCell}
-        toolbarHost={toolbarHost}
-      />
+      <div
+        style={{ ...frame, opacity: readOnly ? 0.62 : 1 }}
+        /*
+          `inert`, not a `readOnly` prop threaded through forty controls.
+
+          It is the one attribute that means exactly this: the subtree cannot be
+          clicked, focused or reached by the keyboard, and it leaves the tab
+          order — which a `pointer-events: none` would not, so a locked grid
+          would still be typeable by anybody who pressed Tab. React 18 does not
+          type it, hence the spread; React treats an unknown lowercase attribute
+          as a pass-through, which is what the DOM wants.
+
+          The data stays READABLE, deliberately: a locked week is exactly what
+          people look at (§29.1), so this greys it rather than hiding it.
+        */
+        {...(readOnly ? ({ inert: "" } as Record<string, string>) : {})}
+        aria-disabled={readOnly || undefined}
+      >
+        <StepAllocation
+          spanByClass={spans}
+          electives={electives}
+          onElectivesChanged={() => setTick((n) => n + 1)}
+          answers={scoped}
+          onChange={onChange}
+          density="compact"
+          wing={wing}
+          onSelectCell={onSelectCell}
+          /*
+            §29.8 — no toolbar when read-only, and this is the one that would
+            have slipped through: the toolbar is PORTALLED into the host's bar,
+            which is outside this subtree, so `inert` never reaches it. A grid
+            nobody can click with a live Save button above it is the same trap
+            in a smaller frame.
+          */
+          toolbarHost={readOnly ? null : toolbarHost}
+        />
+      </div>
     </div>
   );
 }

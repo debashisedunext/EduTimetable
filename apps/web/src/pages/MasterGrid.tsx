@@ -454,7 +454,21 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
   */
   const [alloc, setAlloc] = useState<Record<string, any> | null>(null);
   const [allocLoading, setAllocLoading] = useState(false);
-  const [allocError, setAllocError] = useState<string | null>(null);
+  /*
+    §29.8 — two DIFFERENT failures, and they used to share one state.
+
+    `allocLoadError` means the grid could not be fetched, so there is nothing to
+    draw and `AllocationTab` renders the message instead. `allocSaveError` means
+    a save was refused, and the grid on screen is still perfectly good — it holds
+    the very edits somebody is being told about.
+
+    One state made a refused save BLANK the grid: press Save on a locked
+    timetable and the week you were looking at was replaced by the server's
+    sentence, with the unsaved work behind it. The report that produced this
+    showed exactly that, in raw JSON.
+  */
+  const [allocLoadError, setAllocLoadError] = useState<string | null>(null);
+  const [allocSaveError, setAllocSaveError] = useState<string | null>(null);
   const [edits, setEdits] = useState(0);
   const [saving, setSaving] = useState(false);
   /**
@@ -498,9 +512,9 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
         if (d.empty && d.prefilled && d.answers) {
           for (const k of Object.keys(d.answers)) allocTouched.current.add(k);
         }
-        setAllocError(null);
+        setAllocLoadError(null);
       })
-      .catch((e) => setAllocError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setAllocLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setAllocLoading(false));
   }, [tab, alloc, allocLoading]);
 
@@ -531,7 +545,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
   const saveAlloc = async () => {
     if (!alloc || saving) return;
     setSaving(true);
-    setAllocError(null);
+    setAllocSaveError(null);
     try {
       /*
         The answers go up FIRST, and only the touched keys. The server commits
@@ -567,7 +581,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
       // the save is the one thing worse than no summary.
       refetchReadiness();
     } catch (e) {
-      setAllocError(e instanceof Error ? e.message : String(e));
+      setAllocSaveError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
@@ -1403,10 +1417,20 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
           )}
           {tab === "lesson" ? (
             <>
-              {allocError && (
-                <span className="chip mono" style={{ background: "var(--signal-bg)", color: "var(--signal)" }}
-                  title={allocError}>
-                  {allocError.slice(0, 60)}
+              {allocSaveError && (
+                /*
+                  Wraps rather than slicing at 60 characters. `api.ts` now
+                  throws the server's own sentence instead of its wire format,
+                  and a refusal that names the class to unlock is only useful if
+                  the name survives — which at 60 characters it did not.
+                */
+                <span style={{
+                  background: "var(--signal-bg)", color: "var(--signal)",
+                  border: "1px solid var(--signal)", borderRadius: 7,
+                  padding: "5px 9px", fontSize: 11.8, lineHeight: 1.45,
+                  maxWidth: 520,
+                }}>
+                  {allocSaveError}
                 </span>
               )}
               {saved && !dirty && (
@@ -1501,7 +1525,7 @@ export function MasterGrid({ canEdit = false, canManage = false }: {
               answers={alloc}
               onChange={patchAlloc}
               loading={allocLoading}
-              error={allocError}
+              error={allocLoadError}
               wing={current?.name ?? null}
               /* §33.6 — for the per-class lesson lengths the cells are typed in. */
               configId={current?.id ?? null}

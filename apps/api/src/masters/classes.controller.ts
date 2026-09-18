@@ -278,9 +278,21 @@ export class ClassSectionsController {
   /** §8.1b — Class Teacher Assignment: the pointer that activates a teacher's P1 rule. */
   @Put(":id/class-teacher")
   async assignClassTeacher(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
-    // §29.1 — a class teacher is one of the four things that carry "who
-    // teaches", and `always_first_period` makes it a placement rule too.
-    await this.freeze.assertSections([toInt(id, "id")], "a class teacher");
+    /*
+      §29.1 — a class teacher is one of the four things that carry "who
+      teaches", and `always_first_period` makes it a placement rule too.
+
+      §29.8 — the CURRENT holder is the other clause, so re-staffing a class
+      teacher works under that person's grant without unlocking the class. Read
+      as it stands, never the incoming teacher.
+    */
+    const holder = await this.prisma.classSection.findFirst({
+      where: { id: toInt(id, "id") },
+      select: { classTeacherId: true },
+    });
+    const ticket = await this.freeze.assertSections([toInt(id, "id")], "a class teacher", {
+      teacherIds: holder?.classTeacherId != null ? [holder.classTeacherId] : [],
+    });
     const teacherId = body.teacherId === null ? null : toInt(body.teacherId, "teacherId");
     if (teacherId !== null) {
       const teacher = await this.prisma.teacher.findFirst({
@@ -297,6 +309,11 @@ export class ClassSectionsController {
           data: { classTeacherId: teacherId },
         }),
       "Class-section",
+    );
+    await ticket.record(
+      teacherId === null
+        ? `cleared the class teacher of class-section #${toInt(id, "id")}`
+        : `class teacher of class-section #${toInt(id, "id")} set to teacher #${teacherId}`,
     );
     await this.readiness.invalidate(req.user.schoolId);
     return updated;

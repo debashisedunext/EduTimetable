@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Put, R
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { InUseService } from "../freeze/in-use.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 
@@ -28,6 +29,7 @@ import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util
 export class RoomsController {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly inUse: InUseService,
     private readonly readiness: ReadinessService,
   ) {}
 
@@ -117,9 +119,13 @@ export class RoomsController {
     return updated;
   }
 
+  /** §29.8b — a room a live week puts classes in cannot be deleted. */
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await del(() => this.prisma.room.delete({ where: { id: toInt(id, "id") } }), "Room");
+    const roomId = toInt(id, "id");
+    const room = await this.prisma.room.findFirst({ where: { id: roomId }, select: { name: true } });
+    if (room) await this.inUse.assertNotInUse(room.name, { roomId });
+    await del(() => this.prisma.room.delete({ where: { id: roomId } }), "Room");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }

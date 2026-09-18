@@ -38,6 +38,15 @@ export interface CellPlan {
   className: string;
   subjectName: string;
   academicYear: string;
+  /**
+   * §29.8 — the sections of THIS class in THIS timetable.
+   *
+   * Surfaced on the plan rather than re-derived by the caller because the lock
+   * has to be asked about exactly the rows the delete will touch, and `idsFor`
+   * has already worked out which those are. A second derivation at the call
+   * site is §10.6's rule: two chances to disagree about the same set.
+   */
+  sectionIds: number[];
   lines: CellLine[];
   total: number;
   /** Non-null means it is refused, and this is the reason to show. */
@@ -234,6 +243,7 @@ export async function planCellDelete(
     className,
     subjectName,
     academicYear: config.academicYear?.name ?? "",
+    sectionIds: ids.sectionIds,
     lines,
     total: lines.reduce((n, l) => n + l.count, 0),
     blocked: published > 0

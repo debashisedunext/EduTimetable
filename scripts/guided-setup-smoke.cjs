@@ -18,6 +18,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { disableAutoLockByPrefix } = require("/app/scripts/auto-lock.cjs");
 const { PrismaClient: ControlClient } = req("/app/apps/api/prisma/generated/control-client");
 const Redis = req("ioredis");
 // The same suggesters the screens run, so the "edited" answers this suite
@@ -947,6 +948,13 @@ function staff() {
   console.log("\nClearing an allocation, and the refusal that guards it:");
 
   const senior = configs.find((c) => c.name === "ZZGS Senior");
+  /*
+    §29.8 — publishing LOCKS the timetable, and this suite is about something
+    else. `locks-smoke.cjs` asserts the auto-lock and the grants; taking it out
+    of the way here keeps a §29.8 regression from failing a file that would then
+    point at the wrong feature. See scripts/auto-lock.cjs.
+  */
+  await disableAutoLockByPrefix(prisma, "ZZGS ");
   const published = await call("POST", `/timetable-configs/${senior.id}/board/publish`, S, {});
   check(published.status < 300, "ZZGS Senior is published", `${published.status}`);
   const refused = await call("GET", `/timetable-configs/${senior.id}/allocation-reset`, S);

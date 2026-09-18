@@ -31,8 +31,54 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     window.location.href = "/";
     throw new Error("Session expired");
   }
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) throw await asError(res);
   return res.json() as Promise<T>;
+}
+
+/**
+ * The server's own sentence, not its wire format.
+ *
+ * This used to throw `new Error("400: " + the raw body)`, which meant every
+ * screen that rendered `e.message` printed a line of JSON at the reader —
+ * `400: {"message":"Edunext School is locked, …","error":"Bad Request"}`. Some
+ * screens unwrapped it with `asMessage`; most did not, so the same refusal read
+ * as a considered sentence on one page and as a stack trace on the next.
+ *
+ * Unwrapped HERE rather than at the call sites, for §10.6's reason: thirty
+ * screens each remembering to decode a transport detail is thirty chances to
+ * forget, and the ones that forgot were exactly the ones nobody had seen fail.
+ * `asMessage` stays and is now a no-op on these — its regex finds no prefix and
+ * its `JSON.parse` fails, so it returns the string untouched.
+ *
+ * The status stays reachable as a property for the few places that branch on
+ * it; it is off the message because a person reading "400" learns nothing.
+ */
+export interface ApiError extends Error {
+  status: number;
+  /** The raw body, for the rare case something needs more than the sentence. */
+  body: string;
+}
+
+async function asError(res: Response): Promise<ApiError> {
+  const body = await res.text();
+  let message = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.message === "string") message = parsed.message;
+    // Nest sends `message` as an ARRAY for a failed class-validator pipe. Joined
+    // rather than `[object Object]`, which is what `String()` would have made of
+    // it on the one screen that hit it.
+    else if (Array.isArray(parsed?.message)) message = parsed.message.join(". ");
+    else if (typeof parsed?.error === "string") message = parsed.error;
+  } catch {
+    // Not JSON — a proxy error page or an empty body. The status is all there
+    // is to say, and saying nothing at all would be worse.
+    if (!message.trim()) message = `Request failed (${res.status})`;
+  }
+  const err = new Error(message) as ApiError;
+  err.status = res.status;
+  err.body = body;
+  return err;
 }
 
 /** Multipart upload — the browser must set its own boundary, so this helper
@@ -50,7 +96,7 @@ export async function apiUpload<T>(path: string, file: File, field = "file"): Pr
     window.location.href = "/";
     throw new Error("Session expired");
   }
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) throw await asError(res);
   return res.json() as Promise<T>;
 }
 
@@ -65,7 +111,7 @@ export async function apiDownload(path: string, fallbackName: string, file?: Fil
     init.body = body;
   }
   const res = await fetch(`/api${path}`, init);
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) throw await asError(res);
   const disposition = res.headers.get("Content-Disposition") ?? "";
   const named = /filename="?([^"]+)"?/.exec(disposition)?.[1];
   const blob = await res.blob();

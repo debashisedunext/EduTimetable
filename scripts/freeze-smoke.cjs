@@ -54,9 +54,16 @@ async function call(method, path, token, body) {
 const mailToken = async (to, kind) =>
   (await call("GET", `/dev/mail/token?to=${encodeURIComponent(to)}&kind=${kind}`)).json?.token ?? null;
 
-/** A refusal that came from the freeze, not from something else going wrong. */
+/**
+ * A refusal that came from the lock, not from something else going wrong.
+ *
+ * §29.8 reworded the sentence from "is frozen" to "is locked" and added a
+ * second, narrower form that NAMES what is shut ("… and Class 1-B are not
+ * unlocked, so …"). Both are this guard refusing, so both count here — and the
+ * scoped one is what `locks-smoke.cjs` goes on to assert in detail.
+ */
 const frozenRefusal = (r) =>
-  r.status === 400 && /is frozen, so /.test(r.json?.message ?? "");
+  r.status === 400 && /(is|are) locked(,| and)/.test(r.json?.message ?? "");
 
 async function main() {
   const prisma = new PrismaClient();
@@ -261,7 +268,28 @@ async function main() {
     ["draft from published", () => call("POST", `/timetable-configs/${cfg.id}/board/draft-from-published`, S)],
     ["draft: create", () => call("POST", `/timetable-configs/${cfg.id}/drafts`, S, { label: "ZZFRZ D" })],
     ["delete the timetable", () => call("DELETE", `/timetable-configs/${cfg.id}`, S)],
-    ["guided setup commit", () => call("POST", "/onboarding/commit/6", S)],
+    /*
+      The guided setup's own draft, so the refusal is the LOCK rather than
+      "there is nothing saved to commit".
+
+      §29.8 moved that guard out of the controller and into the service, where
+      `answers.wings` names the timetables a commit is building — which is what
+      lets a locked Main Wing stop blocking a different timetable's setup. The
+      cost is that it now runs after the draft check, so a commit with no draft
+      answers the honest thing instead. `locks-smoke.cjs` asserts the narrowing;
+      this keeps asserting the refusal, with a draft that names the frozen wing.
+    */
+    ["guided setup commit", async () => {
+      await call("PUT", "/onboarding/session", S, {
+        mode: "wizard",
+        answers: {
+          session: { name: "ZZFRZ 2026-27" },
+          wings: [{ name: "ZZFRZ Wing", fromIndex: 5, toIndex: 5, sections: 1 }],
+          subjects: [{ name: "ZZFRZ Drama" }],
+        },
+      });
+      return call("POST", "/onboarding/commit/6", S);
+    }],
   ];
 
   for (const [label, run] of GUARDED) {
@@ -330,6 +358,19 @@ async function main() {
     const r = await run();
     if (frozenRefusal(r)) stillRefused.push(label);
     else restored++;
+    /*
+      §29.8 — publishing LOCKS, so replaying the list re-locks the timetable
+      half way through and every route after `publish` refuses again.
+
+      Thawing here rather than reordering the list: the order is the order those
+      routes appear in the app, and a test that quietly moved `publish` to the
+      end would stop being a replay of what a person does. This line is also the
+      auto-lock being asserted in passing — if it stopped working, the thaw
+      below would be a no-op and nothing here would change.
+    */
+    if (label === "publish" && r.status < 300) {
+      await call("POST", `/timetable-configs/${cfg.id}/unfreeze`, S);
+    }
   }
   check(stillRefused.length === 0,
     "every one of those routes stops refusing once the timetable is thawed",

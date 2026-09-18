@@ -192,7 +192,30 @@ async function main() {
     "with nothing unplaced", `${done?.state} · ${done?.result?.unplaced?.length ?? "?"} unplaced`);
   const pub = await call("POST", `/timetable-configs/${cfg.id}/board/publish`, S, {});
   check(pub.status < 300, "and publishes", `${pub.status}`);
+  /*
+    Frozen on purpose, and §29.8 changed what that costs.
+
+    §29.1 deliberately left staffing changes OUT of the freeze guard, on the
+    grounds that "a timetable that never freezes still has teachers resign".
+    §29.8 reverses that half of it by explicit requirement: re-staffing a
+    published week is exactly the change a school most wants a record of, so
+    the apply now asks for a grant naming the releasing teacher.
+
+    The freeze call below is kept rather than removed, and a grant opened
+    beside it, because that IS the flow now — a suite that disabled the lock
+    would be asserting a configuration no school runs. Everything this file
+    measures (the byte-identical week, the four carriers, the revert) is
+    unchanged by it.
+  */
   await call("POST", `/timetable-configs/${cfg.id}/freeze`, S);
+  const grant = await call("POST", `/timetable-configs/${cfg.id}/unlocks`, S, {
+    reason: "the Maths teacher has resigned; their load moves to the new hire",
+    classSectionIds: [],
+    teacherIds: [T.leaver.id],
+    expiresInMinutes: null,
+  });
+  check(grant.status < 300, "§29.8 — the leaver is unlocked, which is what admits the apply",
+    `#${grant.json?.id}, ${grant.json?.opens} lesson(s) open`);
 
   /*
     The fingerprint everything below is measured against.
@@ -624,6 +647,29 @@ async function main() {
 
   // ══════════════════════════ 7. §29.5 PUTTING IT BACK
   console.log("\nReverting it:");
+  /*
+    §29.8 — the undo needs the RECEIVING teacher unlocked, not the leaver.
+
+    It reads backwards for a moment and is the rule applied exactly: a grant is
+    evaluated on the row as it stands, and after the apply these lessons belong
+    to whoever took them. Undoing is *releasing* them again, from that person —
+    so the newbie's week is the one about to change, and the newbie is who the
+    lock is protecting.
+
+    A second grant rather than naming both up front, deliberately: the apply
+    above proved that only the releasing side is needed, and folding both into
+    one grant would have hidden that. A school that wants to keep the option of
+    undoing would tick both at once.
+  */
+  const undoGrant = await call("POST", `/timetable-configs/${cfg.id}/unlocks`, S, {
+    reason: "putting the Maths load back — the resignation was withdrawn",
+    classSectionIds: [],
+    teacherIds: [T.newbie.id],
+    expiresInMinutes: null,
+  });
+  check(undoGrant.status < 300,
+    "§29.8 — the teacher who TOOK the lessons is unlocked, because it is their week the undo changes",
+    `#${undoGrant.json?.id}`);
   const reverted = await call("POST", `/staffing-changes/${changeId}/revert`, S);
   check(reverted.status < 300 && reverted.json?.units === 5 && (reverted.json?.skipped ?? []).length === 0,
     "every unit goes back",
@@ -680,6 +726,19 @@ async function main() {
   check(stillLeavers > 0,
     "the uncovered lessons keep their teacher rather than being emptied — nothing is damaged to make the change look complete",
     `${stillLeavers} lesson(s) still name them`);
+  /*
+    §29.8 again — and it is `T.other` this time, for the same reason.
+
+    The undo releases the lessons from whoever the plan handed them to, so the
+    teacher to unlock follows the change rather than the file: this one replaced
+    into `other`, the one above into `newbie`. Spelled out rather than folded
+    into a helper, because the whole point of the rule is that it depends on who
+    is holding the lessons NOW.
+  */
+  await call("POST", `/timetable-configs/${cfg.id}/unlocks`, S, {
+    reason: "undoing the partial cover",
+    classSectionIds: [], teacherIds: [T.other.id], expiresInMinutes: null,
+  });
   await call("POST", `/staffing-changes/${partial.id}/revert`, S);
   check((await weekHash()) === before, "and that one reverts cleanly too", "unchanged");
 

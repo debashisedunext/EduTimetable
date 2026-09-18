@@ -116,6 +116,11 @@ export class TimetableConfigsController {
       workingDays: c.workingDays,
       periodsPerDay: c.periodsPerDay,
       periodDurationMins: c.periodDurationMins,
+      // §28.6/§28.7 — carried with the config so the Settings screen and the
+      // solver read one answer rather than each asking its own endpoint.
+      periodGapMins: c.periodGapMins,
+      crossWingTravelMins: c.crossWingTravelMins,
+      crossWingRule: c.crossWingRule,
       hasZeroPeriod: c.hasZeroPeriod,
       zeroPeriodDurationMins: c.zeroPeriodDurationMins,
       // §28.1 — served with the config so the Allocation rail and Readiness
@@ -276,6 +281,10 @@ export class TimetableConfigsController {
         startTime: String(body.startTime),
         periodsPerDay: toInt(body.periodsPerDay, "periodsPerDay"),
         periodDurationMins: toInt(body.periodDurationMins, "periodDurationMins"),
+        // §28.6 — the changeover between periods. The clock is rebuilt around
+        // it here, which is the whole of the feature: nothing else in the
+        // system has to know it exists.
+        periodGapMins: body.periodGapMins != null ? toInt(body.periodGapMins, "periodGapMins") : 0,
         hasZeroPeriod: Boolean(body.hasZeroPeriod),
         zeroPeriodDurationMins:
           body.zeroPeriodDurationMins != null ? toInt(body.zeroPeriodDurationMins, "zeroPeriodDurationMins") : null,
@@ -313,6 +322,21 @@ export class TimetableConfigsController {
           workingDays: body.workingDays,
           periodsPerDay: toInt(body.periodsPerDay, "periodsPerDay"),
           periodDurationMins: toInt(body.periodDurationMins, "periodDurationMins"),
+          periodGapMins: body.periodGapMins != null ? toInt(body.periodGapMins, "periodGapMins") : 0,
+          /*
+            §28.7 — the walk between wings.
+
+            Absent leaves the stored value alone rather than resetting it: this
+            endpoint rebuilds the whole period grid and is called by the guided
+            setup's week step, which knows nothing about wing travel. A blanket
+            `?? 0` would clear the setting every time somebody changed a break.
+          */
+          ...(body.crossWingTravelMins != null
+            ? { crossWingTravelMins: toInt(body.crossWingTravelMins, "crossWingTravelMins") }
+            : {}),
+          ...(body.crossWingRule === "prefer" || body.crossWingRule === "forbid"
+            ? { crossWingRule: body.crossWingRule }
+            : {}),
           hasZeroPeriod: Boolean(body.hasZeroPeriod),
           zeroPeriodDurationMins:
             body.zeroPeriodDurationMins != null ? toInt(body.zeroPeriodDurationMins, "zeroPeriodDurationMins") : null,
@@ -420,7 +444,13 @@ export class TimetableConfigsController {
   async cellDelete(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const configId = toInt(id, "id");
     await this.ownConfigOr404(configId);
-    await this.freeze.assertConfigs([configId], "what a class is taught");
+    /*
+      §29.8 — scopeable through the CLASS, not the config: taking a subject off
+      a class reaches every section of it (§27 — periods are a class fact), and
+      `assertClasses` resolves exactly that set. Asked below, once the class has
+      been resolved from its name; only the precondition fits here.
+    */
+    await this.freeze.assertUnlockable(configId, "what a class is taught");
     const className = String(body?.className ?? "").trim();
     const subjectName = String(body?.subjectName ?? "").trim();
     if (!className || !subjectName) {
@@ -429,6 +459,15 @@ export class TimetableConfigsController {
     const plan = await planCellDelete(this.prisma, configId, className, subjectName);
     if (!plan) throw new NotFoundException(`No class ${className} or subject ${subjectName} in this timetable`);
     if (plan.blocked) throw new BadRequestException(plan.blocked);
+    /*
+      §29.8 — the sections are resolved now, so the grant can answer precisely.
+
+      The plan's own list, never a second query: it is exactly the set the
+      delete will touch, and every section of it must be open because periods
+      are a class fact (§27) — taking Maths off Class 5 takes it off 5-A, 5-B
+      and 5-C at once.
+    */
+    const ticket = await this.freeze.assertSections(plan.sectionIds, "what a class is taught");
 
     if (plan.total > 0) {
       await this.prisma.$transaction(async (tx: any) => {
@@ -442,6 +481,7 @@ export class TimetableConfigsController {
           plan.lines.filter((l) => l.count > 0).map((l) => `${l.count} ${l.label}`).join(", "),
       );
     }
+    await ticket.record(`${className} no longer takes ${subjectName} (${plan.total} row(s) removed)`);
     return { ok: true, removed: plan.lines.filter((l) => l.count > 0), total: plan.total };
   }
 
@@ -569,6 +609,9 @@ export class TimetableConfigsController {
       startTime: config.startTime,
       periodsPerDay: config.periodsPerDay,
       periodDurationMins: config.periodDurationMins,
+      // §28.6 — read back with the rest of the week, so adding an assembly
+      // cannot silently drop the changeover from every period's clock.
+      periodGapMins: config.periodGapMins,
       hasZeroPeriod: config.hasZeroPeriod,
       zeroPeriodDurationMins: config.zeroPeriodDurationMins,
       breaks: await this.breaksFor(configId),
@@ -839,12 +882,37 @@ export class TimetableConfigsController {
     // a double-click look like a failure.
     if (!config.frozenAt) return { ok: true, frozenAt: null, alreadyThawed: true };
 
-    await this.prisma.timetableConfig.update({
-      where: { id: configId },
-      data: { frozenAt: null, frozenById: null },
+    /*
+      §29.8 — a full unlock CLOSES every live grant.
+
+      Not tidiness. A grant is a statement about a locked timetable; left open
+      across a thaw it says nothing while the timetable is open, and then starts
+      admitting writes again the moment somebody re-locks — silently, without
+      anybody deciding it should. A stale permission that reactivates is the
+      worst shape this feature could take, so the wide unlock supersedes the
+      narrow ones rather than sitting beside them.
+
+      They are closed, not deleted (§3.14's rule): the record of what each one
+      admitted survives.
+    */
+    const closed = await this.prisma.$transaction(async (tx) => {
+      await tx.timetableConfig.update({
+        where: { id: configId },
+        data: { frozenAt: null, frozenById: null },
+      });
+      return (
+        await tx.timetableUnlock.updateMany({
+          where: { timetableConfigId: configId, closedAt: null },
+          data: { closedAt: new Date(), closedById: req.user.sub },
+        })
+      ).count;
     });
-    this.logger.log(`unfroze timetable ${configId} (${config.name})`);
-    return { ok: true, frozenAt: null };
+    await this.freeze.forgetGrant(configId);
+    this.logger.log(
+      `unfroze timetable ${configId} (${config.name})` +
+        (closed > 0 ? `, closing ${closed} live unlock grant(s)` : ""),
+    );
+    return { ok: true, frozenAt: null, grantsClosed: closed };
   }
 
   /**
@@ -1192,7 +1260,11 @@ export class TimetableConfigsController {
     const configId = toInt(id, "id");
     await this.ownConfigOr404(configId);
     // §29.1 — a published week does not quietly acquire new hard constraints.
-    await this.freeze.assertConfigs([configId], "the fixed lessons");
+    //
+    // §29.8 — scopeable, and the guard runs below once the rows are parsed: a
+    // pin names its class-section and its teacher, so it is exactly the shape
+    // the predicate wants. Only the precondition can be asked this early.
+    await this.freeze.assertUnlockable(configId, "the fixed lessons");
 
     const rows: FixedLessonInput[] = Array.isArray(body?.lessons)
       ? body.lessons.map((l: any) => ({
@@ -1208,6 +1280,27 @@ export class TimetableConfigsController {
       : [];
 
     await assertFixedLessonsValid(this.prisma as never, configId, rows);
+
+    /*
+      §29.8 — the real guard, now the set is known.
+
+      A Save REPLACES the whole set, so the write reaches every pin the school
+      already has as well as every one it is adding: a grant that admitted only
+      the incoming rows would let an unlocked class's save silently delete a
+      locked class's pins. Both lists go in.
+    */
+    const existing = await this.prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: { classSectionId: true, teacherId: true },
+    });
+    const ticket = await this.freeze.assertTouched(
+      configId,
+      [
+        ...rows.map((r) => ({ classSectionIds: [r.classSectionId], teacherIds: [r.teacherId] })),
+        ...existing.map((r) => ({ classSectionIds: [r.classSectionId], teacherIds: [r.teacherId] })),
+      ],
+      "the fixed lessons",
+    );
 
     await this.prisma.$transaction(async (tx: any) => {
       await tx.timetableFixedLesson.deleteMany({ where: { timetableConfigId: configId } });
@@ -1232,6 +1325,7 @@ export class TimetableConfigsController {
       say — Check 14 reads these rows. Swept by prefix (§22) as well, because
       the Whole tab's own payload is cached per timetable.
     */
+    await ticket.record(`set ${rows.length} fixed lesson(s), replacing ${existing.length}`);
     await this.keys.invalidateTimetable(configId);
     await this.readiness.invalidate(req.user.schoolId);
     this.logger.warn(`Fixed lessons for timetable ${configId} set to ${rows.length} row(s)`);

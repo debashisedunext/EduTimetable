@@ -72,15 +72,108 @@ export class BoardService {
    * Guarded in the SERVICE rather than the controller, so the answer holds for
    * every caller — including anything that reaches these methods without going
    * through an HTTP route. `context` and the read paths are deliberately not
-   * guarded: looking at a frozen week is exactly what a frozen week is for.
+   * guarded: looking at a locked week is exactly what a locked week is for.
    *
    * Board edits touch DRAFT rows, not the published set, which makes it
-   * tempting to leave them alone. That would make the freeze theatre: a draft
+   * tempting to leave them alone. That would make the lock theatre: a draft
    * edited and then published is the published week changed, by two clicks
    * instead of one.
+   *
+   * §29.8 splits the question in two, because a board edit cannot say what it
+   * touches until it has resolved the cell:
+   *
+   *   `editable` is the precondition — locked with no grant at all refuses here,
+   *   before the solver input is built, which is the common state and the one
+   *   worth not paying for.
+   *   `scoped` is the guard — once the rows are known, every one of them must be
+   *   open, and the refusal names whichever is not.
    */
   private editable(configId: number) {
-    return this.freeze.assertConfigs([configId], "the timetable");
+    return this.freeze.assertUnlockable(configId, "the timetable");
+  }
+
+  /**
+   * §29.8 — the rows of a card, described by whom they belong to.
+   *
+   * A card is ONE row for the predicate however many database rows it holds: a
+   * §4.10 merged group is one lesson taught to three sections, and a §4.9 block
+   * is one cell holding several parallel options. Option rows carry
+   * `classSectionId = NULL` by design and member rows carry no teacher, so
+   * collecting both lists across the card is what makes "all its sections, or
+   * all its teachers" mean the right thing for all three shapes.
+   */
+  private touchedOf(rows: Array<{ classSectionId: number | null; teacherId: number | null }>) {
+    return {
+      classSectionIds: [
+        ...new Set(rows.map((r) => r.classSectionId).filter((x): x is number => x !== null)),
+      ],
+      teacherIds: [...new Set(rows.map((r) => r.teacherId).filter((x): x is number => x !== null))],
+    };
+  }
+
+  /**
+   * §29.8 — what to write in the audit, resolved only when there is one.
+   *
+   * The name lookup is deliberately inside the record path rather than beside
+   * the guard: it runs only when a grant actually admitted the write, which is
+   * a locked timetable being deliberately edited. Every other board edit — the
+   * overwhelming majority — pays nothing for it.
+   *
+   * Names rather than ids, for §29.2's reason: the rows this describes may be
+   * gone by the time anybody reads it, and `section 41` is not a record of
+   * anything.
+   */
+  private async describeCard(
+    rows: Array<{ classSectionId: number | null; subjectId: number | null; teacherId: number | null }>,
+  ): Promise<{ label: string; teachers: string[] }> {
+    const sectionIds = [
+      ...new Set(rows.map((r) => r.classSectionId).filter((x): x is number => x !== null)),
+    ];
+    const subjectIds = [
+      ...new Set(rows.map((r) => r.subjectId).filter((x): x is number => x !== null)),
+    ];
+    const teacherIds = [
+      ...new Set(rows.map((r) => r.teacherId).filter((x): x is number => x !== null)),
+    ];
+    const [sections, subjects, teachers] = await Promise.all([
+      sectionIds.length
+        ? this.prisma.classSection.findMany({
+            where: { id: { in: sectionIds } },
+            select: { class: { select: { name: true } }, section: { select: { name: true } } },
+          })
+        : [],
+      subjectIds.length
+        ? this.prisma.subject.findMany({ where: { id: { in: subjectIds } }, select: { name: true } })
+        : [],
+      teacherIds.length
+        ? this.prisma.teacher.findMany({ where: { id: { in: teacherIds } }, select: { name: true } })
+        : [],
+    ]);
+    const where = sections.map((s) => `${s.class.name}-${s.section.name}`).join(", ");
+    const what = subjects.map((s) => s.name).join("/");
+    return {
+      label: [where, what].filter(Boolean).join(" ") || "a lesson",
+      teachers: teachers.map((t) => t.name),
+    };
+  }
+
+  /** `Mon P3` — a cell, the way somebody reading the record thinks of one. */
+  private cellName(day: number, period: number): string {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return `${days[day] ?? `Day ${day}`} P${period}`;
+  }
+
+  /** The real guard, once the card is known. Returns the ticket to record with. */
+  private scoped(
+    configId: number,
+    cards: Array<Array<{ classSectionId: number | null; teacherId: number | null }>>,
+    what: string,
+  ) {
+    return this.freeze.assertTouched(
+      configId,
+      cards.map((rows) => this.touchedOf(rows)),
+      what,
+    );
   }
 
   /**
@@ -235,6 +328,8 @@ export class BoardService {
       throw new ConflictException("Stale board: that card no longer exists — refresh and retry");
     }
     this.assertFresh(sourceRows, expect, "source");
+    // §29.8 — the card is known now, so the lock can answer precisely.
+    const ticket = await this.scoped(configId, [sourceRows], "this lesson");
     const key = this.keyOfRows(sourceRows, from);
     const verdict = engine.checkMove(key, to.day, to.period);
     if (!verdict.ok) throw new BadRequestException(verdict.reason);
@@ -257,6 +352,15 @@ export class BoardService {
         }),
       ),
     ).catch(rethrowUniqueAs409);
+    if (ticket.admittedBy.length > 0) {
+      const card = await this.describeCard(sourceRows);
+      await ticket.record(
+        `moved ${card.label} from ${this.cellName(from.day, from.period)} to ${this.cellName(to.day, to.period)}`,
+        // §29.8 — the honest half: a class-scoped move takes its teacher's week
+        // with it, and the record is where that is admitted rather than hidden.
+        { teachers: card.teachers },
+      );
+    }
     await this.finish(configId);
     return { ok: true, roomId: verdict.roomId };
   }
@@ -312,6 +416,19 @@ export class BoardService {
       throw new ConflictException("Stale board: a displaced card no longer exists — refresh and retry");
     }
 
+    /*
+      §29.8 — a group swap moves the card AND everything it displaces, so every
+      displaced card is a touched row too. Guarding only the card somebody
+      dragged would let an unlocked group push three locked classes' lessons
+      around, which is the rule broken from inside the one operation that can
+      change most cells at once.
+    */
+    const ticket = await this.scoped(
+      configId,
+      [sourceRows, ...displaced.map((d) => d.rows)],
+      "these lessons",
+    );
+
     const recreate = (
       src: ReturnType<BoardService["rowsOfEntry"]>,
       at: { day: number; period: number },
@@ -349,6 +466,13 @@ export class BoardService {
         }),
       ),
     ]).catch(rethrowUniqueAs409);
+    if (ticket.admittedBy.length > 0) {
+      const card = await this.describeCard(sourceRows);
+      await ticket.record(
+        `moved ${card.label} to ${this.cellName(to.day, to.period)}, displacing ${displaced.length} card(s)`,
+        { teachers: card.teachers, displaced: displaced.length },
+      );
+    }
     await this.finish(configId);
     return { ok: true, roomId: verdict.roomAtTarget, displaced: displaced.length };
   }
@@ -369,6 +493,9 @@ export class BoardService {
     }
     this.assertFresh(rowsA, expectA, "source");
     this.assertFresh(rowsB, expectB, "target");
+    // §29.8 — two cards change places, so both must be open. No special case
+    // for a swap: it is the predicate applied twice.
+    const ticket = await this.scoped(configId, [rowsA, rowsB], "these lessons");
     const keyA = entryKeyOf({ classSectionId: a.classSectionId, mergedGroupId: rowsA[0].mergedGroupId, dayOfWeek: a.day, periodNumber: a.period });
     const keyB = entryKeyOf({ classSectionId: b.classSectionId, mergedGroupId: rowsB[0].mergedGroupId, dayOfWeek: b.day, periodNumber: b.period });
     const verdict = engine.checkSwap(keyA, keyB);
@@ -405,6 +532,13 @@ export class BoardService {
       this.prisma.timetableSlot.createMany({ data: recreate(rowsA, { ...b }, verdict.roomA) }),
       this.prisma.timetableSlot.createMany({ data: recreate(rowsB, { ...a }, verdict.roomB) }),
     ]).catch(rethrowUniqueAs409);
+    if (ticket.admittedBy.length > 0) {
+      const [cardA, cardB] = await Promise.all([this.describeCard(rowsA), this.describeCard(rowsB)]);
+      await ticket.record(
+        `swapped ${cardA.label} (${this.cellName(a.day, a.period)}) with ${cardB.label} (${this.cellName(b.day, b.period)})`,
+        { teachers: [...new Set([...cardA.teachers, ...cardB.teachers])] },
+      );
+    }
     await this.finish(configId);
     return { ok: true };
   }
@@ -414,7 +548,21 @@ export class BoardService {
     configId: number,
     body: { classSectionId: number; subjectId: number; teacherId: number; day: number; period: number },
   ) {
-    await this.editable(configId);
+    /*
+      §29.8 — the one write with no existing row to describe, so the touched row
+      is the one about to exist.
+
+      No `editable` precondition here, unlike every other method on this class:
+      both owners arrive in the request, so the real guard can run first and the
+      cheap one would only be the same question asked twice. Both owners are named in the request, which is
+      why placing is scopeable at all: a write that could not say whose lesson it
+      was creating would belong in the `whole` classification.
+    */
+    const ticket = await this.freeze.assertTouched(
+      configId,
+      [{ classSectionIds: [body.classSectionId], teacherIds: [body.teacherId] }],
+      "this lesson",
+    );
     const { engine } = await this.engineFor(configId);
     const verdict = engine.checkPlace(
       {
@@ -454,6 +602,15 @@ export class BoardService {
         },
       })
       .catch(rethrowUniqueAs409);
+    if (ticket.admittedBy.length > 0) {
+      const card = await this.describeCard([
+        { classSectionId: body.classSectionId, subjectId: body.subjectId, teacherId: body.teacherId },
+      ]);
+      await ticket.record(
+        `placed ${card.label} at ${this.cellName(body.day, body.period)}`,
+        { teachers: card.teachers },
+      );
+    }
     await this.finish(configId);
     return { ok: true, roomId: verdict.roomId };
   }
@@ -467,6 +624,7 @@ export class BoardService {
       throw new ConflictException("Stale board: that card no longer exists — refresh and retry");
     }
     this.assertFresh(target, expect, "removed");
+    const ticket = await this.scoped(configId, [target], "this lesson");
     if (target.some((r) => r.isLocked)) {
       throw new BadRequestException("This card is locked — unpin it first");
     }
@@ -483,7 +641,14 @@ export class BoardService {
         "An elective block can't be removed here — move it instead, or edit it on the Electives screen",
       );
     }
+    const card = ticket.admittedBy.length > 0 ? await this.describeCard(target) : null;
     await this.prisma.timetableSlot.deleteMany({ where: { id: { in: target.map((r) => r.id) } } });
+    if (card) {
+      await ticket.record(
+        `removed ${card.label} from ${this.cellName(ref.day, ref.period)}`,
+        { teachers: card.teachers },
+      );
+    }
     await this.finish(configId);
     return { ok: true };
   }
@@ -494,6 +659,7 @@ export class BoardService {
     const rows = await this.draftRows(configId);
     const target = this.rowsOfEntry(rows, ref);
     if (target.length === 0) throw new NotFoundException("No card in that cell");
+    const ticket = await this.scoped(configId, [target], "this lesson");
     // §4.9: `lockedSlots` is built filtered to rows carrying a section, a
     // subject and a teacher, so a block's rows never reach the solver as locks
     // — setting the flag here would look like it worked and be ignored by the
@@ -508,6 +674,13 @@ export class BoardService {
       where: { id: { in: target.map((r) => r.id) } },
       data: { isLocked: locked },
     });
+    if (ticket.admittedBy.length > 0) {
+      const card = await this.describeCard(target);
+      await ticket.record(
+        `${locked ? "pinned" : "unpinned"} ${card.label} at ${this.cellName(ref.day, ref.period)}`,
+        { teachers: card.teachers },
+      );
+    }
     await this.finish(configId);
     return { ok: true, locked };
   }

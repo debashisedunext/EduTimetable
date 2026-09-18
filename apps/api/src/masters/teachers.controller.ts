@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, 
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { InUseService } from "../freeze/in-use.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { InstructionService } from "./instruction.service";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
@@ -30,6 +31,7 @@ const initialsField = (v: unknown): string | null => {
 export class TeachersController {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly inUse: InUseService,
     private readonly readiness: ReadinessService,
     private readonly instructions: InstructionService,
   ) {}
@@ -246,9 +248,22 @@ export class TeachersController {
     return { ok: true, count: rows.length };
   }
 
+  /**
+   * §29.8b — a teacher in a live week cannot be deleted.
+   *
+   * Not an authority question, so no unlock opens it: deleting removes them
+   * from every class at once, which is the opposite of a scoped change. Move
+   * their lessons first (§29.3) and the same delete succeeds with no grant.
+   */
   @Delete(":id")
   async remove(@Req() req: AuthedRequest, @Param("id") id: string) {
-    await uniq(() => this.prisma.teacher.delete({ where: { id: toInt(id, "id") } }), "Teacher");
+    const teacherId = toInt(id, "id");
+    const teacher = await this.prisma.teacher.findFirst({
+      where: { id: teacherId },
+      select: { name: true },
+    });
+    if (teacher) await this.inUse.assertNotInUse(teacher.name, { teacherId });
+    await uniq(() => this.prisma.teacher.delete({ where: { id: teacherId } }), "Teacher");
     await this.readiness.invalidate(req.user.schoolId);
     return { ok: true };
   }
