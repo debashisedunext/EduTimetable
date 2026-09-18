@@ -26,6 +26,7 @@ import { ExtraClasses } from "./pages/ExtraClasses";
 import { Staffing } from "./pages/Staffing";
 import { Reports } from "./pages/Reports";
 import { Wall } from "./pages/Wall";
+import { TeacherRequirement } from "./pages/TeacherRequirement";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
@@ -203,6 +204,8 @@ export default function App() {
           <Route path="/staffing" element={<Staffing />} />
           <Route path="/reports" element={<Reports me={me} />} />
           <Route path="/wall" element={<Wall />} />
+          {/* §37 — the staffing case, read-only. */}
+          <Route path="/teacher-requirement" element={<TeacherRequirement />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />

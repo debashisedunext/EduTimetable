@@ -19,6 +19,33 @@ import { toInt, type AuthedRequest } from "../masters/crud.util";
 import { StaffingService } from "./staffing.service";
 import { StaffingPlanService, type PlanMode } from "./staffing-plan.service";
 import { StaffingApplyService } from "./staffing-apply.service";
+import { TeacherRequirementService } from "./teacher-requirement.service";
+
+/**
+ * §37 — the teacher requirement, read-only.
+ *
+ * Under `/timetable-configs/:id/` rather than a path of its own, which is not
+ * cosmetic: §17.8's sweep already classifies that prefix's `:id` as a config
+ * and drives it against both schools, so this route is swept the day it exists
+ * rather than needing a decision recorded about it.
+ *
+ * `reports.view`, not `timetable.publish`. This answers nothing about who
+ * teaches what tomorrow; it is a report about the shape of the staff list, and
+ * a principal who may read the teacher-load report may read this.
+ */
+@Controller("timetable-configs/:id/teacher-requirement")
+@RequirePermission(PERMISSIONS.REPORTS_VIEW)
+export class TeacherRequirementController {
+  constructor(private readonly requirement: TeacherRequirementService) {}
+
+  @Get()
+  get(@Param("id") id: string, @Query("targetLoad") targetLoad?: string) {
+    return this.requirement.forConfig(
+      toInt(id, "id"),
+      targetLoad ? Number(targetLoad) : undefined,
+    );
+  }
+}
 
 @Controller("timetable-configs/:id/staffing-changes")
 @RequirePermission(PERMISSIONS.TIMETABLE_PUBLISH)
