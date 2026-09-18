@@ -25,6 +25,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 // The app's own session store — never a hand-written key, or signing in here
 // would write somewhere `getToken()` does not read.
 import { setToken } from "../api";
+import { useIsMobile } from "../mobile";
+import { AuthShowcase } from "./auth-showcase";
 
 /** Same prefix `api.ts` uses — the Vite proxy and the production nginx both map it. */
 const API = "/api";
@@ -48,28 +50,105 @@ export const ACCOUNT_TOKEN_KEY = "edutt.accountToken";
 
 // ───────────────────────────────────────────────────────────── chrome
 
-function PublicShell({ children, wide }: { children: ReactNode; wide?: boolean }) {
+function PublicShell({ children, wide, showcase }: {
+  children: ReactNode;
+  wide?: boolean;
+  /**
+   * §39 — split the page, with the product on the left.
+   *
+   * Only the two front doors pass this (Sign in, Create account). Forgot
+   * password, Verify and Accept invite stay a centred card on purpose: somebody
+   * who arrived there is already mid-task and being sold to is noise.
+   */
+  showcase?: boolean;
+}) {
+  /*
+    §8.8's ONE breakpoint, imported rather than a second number.
+
+    A phone gets no showcase at all — and this is a render decision rather than
+    a CSS one for the reason §8.8 gives for `useIsMobile` existing: hiding the
+    panel with `display: none` would leave the carousel's timer ticking and its
+    six animated SVG artefacts mounted, on the device least able to spare it.
+  */
+  const mobile = useIsMobile();
+  const split = showcase === true && !mobile;
+
+  const bar = (
+    <nav style={{
+      display: "flex", alignItems: "center", gap: 20, padding: "14px 24px",
+      borderBottom: "1px solid var(--line)", background: "var(--paper)", flexWrap: "wrap",
+    }}>
+      <Link to="/" style={{
+        fontFamily: "Fraunces, Georgia, serif", fontWeight: 700, fontSize: 17,
+        color: "var(--brand-deep)", textDecoration: "none", letterSpacing: "-0.01em",
+      }}>
+        Edu<span style={{ color: "var(--brand)" }}>Timetable</span>
+      </Link>
+      <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+        <Link to="/login" className="btn" style={{ textDecoration: "none", padding: "6px 12px", fontSize: 12.5 }}>
+          Sign in
+        </Link>
+        <Link to="/signup" className="btn btn-primary" style={{ textDecoration: "none", padding: "6px 12px", fontSize: 12.5 }}>
+          Create account
+        </Link>
+      </div>
+    </nav>
+  );
+
+  if (split) {
+    return (
+      <div style={{
+        minHeight: "100dvh",
+        display: "grid",
+        /*
+          `minmax(0, …)` on BOTH tracks — §5.7's lesson, and it bites here for
+          the same reason: a grid child's default `min-width: auto` refuses to
+          shrink below its content, so the showcase's 46ch paragraph would push
+          its column past the track and scroll the whole page sideways.
+
+          The form takes a PERCENTAGE with a floor, not a fixed width. A fixed
+          468px meant the showcase swallowed everything past it — 1,530px of it
+          on a 2,000px screen — and a large flat navy area reads as something
+          that failed to load, where the same emptiness in white reads as
+          breathing room. Splitting it closer to even puts the slack on the side
+          that can carry it, and the floor keeps the form usable as the window
+          narrows towards §8.8's breakpoint.
+        */
+        gridTemplateColumns: "minmax(0, 1fr) minmax(400px, 46%)",
+        background: "var(--offwhite)",
+      }}>
+        <AuthShowcase />
+        <div style={{
+          display: "flex", flexDirection: "column", minWidth: 0,
+          borderLeft: "1px solid var(--line)", background: "var(--paper)",
+        }}>
+          {/* The nav keeps its place above the form, not above the whole page:
+              spanning it would put a white band over the showcase's top edge. */}
+          <div style={{ background: "var(--paper)" }}>{bar}</div>
+          {/*
+            `margin: auto` on the child, NOT `align-items: center` on the parent.
+
+            They centre identically until the content is taller than the column —
+            and then `align-items: center` centres the overflow too, putting the
+            top of the card above the scroll origin where it cannot be reached.
+            The dev build hits this immediately: the five demo personas make this
+            column taller than most laptops. An auto margin on a flex item
+            centres the same way and collapses to zero when there is no room.
+          */}
+          <div style={{
+            flex: 1, display: "flex", justifyContent: "center",
+            padding: "28px 34px", overflowY: "auto",
+          }}>
+            <div style={{ width: "100%", maxWidth: 400, margin: "auto" }}>{children}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: "var(--offwhite)", display: "flex", flexDirection: "column" }}>
-      <nav style={{
-        display: "flex", alignItems: "center", gap: 20, padding: "14px 24px",
-        borderBottom: "1px solid var(--line)", background: "var(--paper)", flexWrap: "wrap",
-      }}>
-        <Link to="/" style={{
-          fontFamily: "Fraunces, Georgia, serif", fontWeight: 700, fontSize: 17,
-          color: "var(--brand-deep)", textDecoration: "none", letterSpacing: "-0.01em",
-        }}>
-          Edu<span style={{ color: "var(--brand)" }}>Timetable</span>
-        </Link>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-          <Link to="/login" className="btn" style={{ textDecoration: "none", padding: "6px 12px", fontSize: 12.5 }}>
-            Sign in
-          </Link>
-          <Link to="/signup" className="btn btn-primary" style={{ textDecoration: "none", padding: "6px 12px", fontSize: 12.5 }}>
-            Create account
-          </Link>
-        </div>
-      </nav>
+      {bar}
       <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: wide ? 0 : "36px 20px" }}>
         <div style={{ width: "100%", maxWidth: wide ? "none" : 440 }}>{children}</div>
       </div>
@@ -309,7 +388,7 @@ export function SignUp() {
   }
 
   return (
-    <PublicShell>
+    <PublicShell showcase>
       <Card title="Create your account"
         lede="This is you, not your school — you'll add schools in a moment, and you can add more than one.">
         <form onSubmit={submit}>
@@ -368,7 +447,7 @@ export function SignIn() {
   };
 
   return (
-    <PublicShell>
+    <PublicShell showcase>
       <Card title="Sign in" lede="Welcome back.">
         <form onSubmit={submit}>
           <Field label="Email" type="email" value={email} autoComplete="email" required
