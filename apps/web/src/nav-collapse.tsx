@@ -20,20 +20,33 @@
  * `localStorage` in the `useState` initialiser and write it in `toggle`.
  */
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useIsMobile } from "./mobile";
 
 /** Wide enough for a 17px icon with a comfortable target around it. */
 const COLLAPSED_W = "64px";
 
 /** Stamp the root, which is what both the nav and the §24.5d dialog read. */
-function apply(collapsed: boolean): void {
+function apply(collapsed: boolean, mobile: boolean): void {
   const root = document.documentElement;
-  root.classList.toggle("nav-collapsed", collapsed);
-  if (collapsed) root.style.setProperty("--sidebar-w", COLLAPSED_W);
+  root.classList.toggle("nav-collapsed", collapsed && !mobile);
+  /*
+    §8.8 — on a phone the rail is not narrowed, it is not there at all, and the
+    token has to say so.
+
+    It is an INLINE property on `<html>`, so a stylesheet `:root` rule inside a
+    media query cannot reach it — the §24.5d guided-setup dialog insets itself
+    by this token and would keep a 64px strip of dead page down its left edge on
+    every phone. Exactly the failure the note above describes, arriving through
+    a different door.
+  */
+  if (mobile) root.style.setProperty("--sidebar-w", "0px");
+  else if (collapsed) root.style.setProperty("--sidebar-w", COLLAPSED_W);
   else root.style.removeProperty("--sidebar-w");
 }
 
 export function useNavCollapsed(): [boolean, () => void] {
   const [collapsed, setCollapsed] = useState(true);
+  const mobile = useIsMobile();
 
   /*
     `useLayoutEffect`, not `useEffect`, and that is the difference between a
@@ -45,11 +58,11 @@ export function useNavCollapsed(): [boolean, () => void] {
     single page load — the collapsed default made that everybody's first
     impression rather than a rare one. A layout effect runs before the paint.
   */
-  useLayoutEffect(() => { apply(collapsed); }, [collapsed]);
+  useLayoutEffect(() => { apply(collapsed, mobile); }, [collapsed, mobile]);
   // The class outlives this component's mount — the sign-out path replaces the
   // whole page — so clear it on the way out rather than leaving a login screen
   // reserving 64px for a nav that is not there.
-  useEffect(() => () => apply(false), []);
+  useEffect(() => () => apply(false, false), []);
 
   const toggle = useCallback(() => setCollapsed((was) => !was), []);
 

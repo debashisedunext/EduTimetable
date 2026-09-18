@@ -15,6 +15,7 @@ import { useLocation } from "react-router-dom";
 import { COMMON_SUBJECTS, PERMISSIONS } from "@edutimetable/shared";
 import { Markdown } from "../markdown";
 import { useConfigCtx } from "../hooks";
+import { useIsMobile } from "../mobile";
 import { ProposalCard } from "./ProposalCard";
 import { useAiChat } from "./useAiChat";
 
@@ -70,6 +71,7 @@ function Launcher({ open, onToggle, inBar = false }: {
 export function AiDock({ permissions }: { permissions: string[] }) {
   const { current } = useConfigCtx();
   const { pathname } = useLocation();
+  const mobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [picker, setPicker] = useState(false);
@@ -111,7 +113,17 @@ export function AiDock({ permissions }: { permissions: string[] }) {
   useLayoutEffect(() => {
     const el = document.getElementById("ai-launcher-slot");
     setLauncherSlot(el);
-    setPanelTop(el ? Math.round(el.getBoundingClientRect().bottom) + 10 : 74);
+    /*
+      Measured from the whole TOP BAR, not from the slot the button sits in.
+
+      §8.6 put a second row under the launcher, so the slot's own bottom is no
+      longer the bottom of the chrome — anchoring to it drops the panel over
+      the toolbar. `closest` keeps this correct for both arrangements (the bar
+      is one row above 1680px and two below it) without this file knowing which,
+      and falls back to the slot for anything rendered outside the shell.
+    */
+    const bar = el?.closest(".topbar") ?? el;
+    setPanelTop(bar ? Math.round(bar.getBoundingClientRect().bottom) + 10 : 74);
   }, [pathname, open]);
   const { messages, busy, error, ask, reset } = useAiChat(current?.id ?? null);
 
@@ -162,9 +174,18 @@ export function AiDock({ permissions }: { permissions: string[] }) {
           style={{
             // Hangs from the bar the launcher is in, rather than rising from a
             // corner it no longer occupies.
-            position: "fixed", right: 22, top: panelTop, zIndex: 59,
-            width: "min(430px, calc(100vw - 44px))",
-            height: `min(620px, calc(100vh - ${panelTop + 26}px))`,
+            position: "fixed", right: mobile ? 8 : 22, top: panelTop, zIndex: 59,
+            width: mobile ? "calc(100vw - 16px)" : "min(430px, calc(100vw - 44px))",
+            /*
+              §8.8 — `dvh`, and room for the bottom bar.
+
+              `100vh` on a phone is the viewport at its TALLEST — address bar
+              retracted — so the panel's last hundred pixels sit under browser
+              chrome that is on screen most of the time, and under §8.8's
+              bottom navigation as well. `dvh` tracks what is actually visible;
+              the extra 96 is the nav plus its safe-area strip.
+            */
+            height: `min(620px, calc(100dvh - ${panelTop + (mobile ? 96 : 26)}px))`,
             display: "flex", flexDirection: "column",
             background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14,
             boxShadow: "0 16px 48px rgba(11,31,68,0.22)", overflow: "hidden",
