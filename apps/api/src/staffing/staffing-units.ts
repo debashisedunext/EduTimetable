@@ -28,6 +28,7 @@
  * and the plan consumes.
  */
 import type { PrismaClient } from "@prisma/client";
+import { slotsIn, type WeekScope } from "./staffing-week";
 
 export type UnitType = "mapping" | "merged_group" | "elective_option" | "class_teacher";
 
@@ -55,7 +56,7 @@ export interface StaffingUnit {
   classIds: number[];
   periodsPerWeek: number;
   /**
-   * The published cells this unit occupies.
+   * The cells this unit occupies in the week the change acts on (§29.6).
    *
    * Empty is not an error and is worth distinguishing rather than filtering
    * out: a mapping with no published lessons is real (it was added after the
@@ -64,6 +65,14 @@ export interface StaffingUnit {
    * to clash with", not "nothing to move".
    */
   cells: UnitCell[];
+  /**
+   * §29.7 — how many §36 fixed lessons ride on this unit.
+   *
+   * Counted so the preview can say so before anything is applied: a pin names
+   * a teacher, and moving the lesson without it leaves Check 14 blocking the
+   * next generation. Only a plain mapping can carry one.
+   */
+  fixedCount: number;
 }
 
 /**
@@ -77,6 +86,8 @@ export async function unitsFor(
   prisma: PrismaClient,
   configId: number,
   teacherIds: number[],
+  /** §29.6 — published if this timetable has been published, else its draft. */
+  scope: WeekScope,
 ): Promise<StaffingUnit[]> {
   const ids = [...new Set(teacherIds.filter((n) => Number.isInteger(n)))];
   if (ids.length === 0) return [];
@@ -91,15 +102,17 @@ export async function unitsFor(
   const classOf = new Map(sections.map((cs) => [cs.id, cs.classId]));
 
   /*
-    Published rows only.
+    §29.6 — ONE week, and which one is decided by the data.
 
-    A staffing change is about the week that is on the wall — draft rows belong
-    to a working copy nobody is teaching from, and counting them would report a
-    leaver as carrying lessons that do not exist. `status: "published"` is also
-    what makes the counts add up against what a teacher sees in My Timetable.
+    This was `status: "published"` unconditionally, with the reasoning that a
+    draft is "a working copy nobody is teaching from". True of a school that has
+    published; meaningless for one that has not — and that is every school until
+    its first publish. On such a school the units came back with no cells, the
+    apply matched no rows, and a change reported as applied left every visible
+    lesson with the leaver's name on it.
   */
   const slots = await prisma.timetableSlot.findMany({
-    where: { timetableConfigId: configId, status: "published", teacherId: { in: ids } },
+    where: { timetableConfigId: configId, ...slotsIn(scope), teacherId: { in: ids } },
     select: {
       id: true, dayOfWeek: true, periodNumber: true, classSectionId: true, roomId: true,
       subjectId: true, teacherId: true, mergedGroupId: true, electiveOptionId: true,
@@ -114,6 +127,16 @@ export async function unitsFor(
   });
 
   const out: StaffingUnit[] = [];
+
+  // §29.7 — the pins these teachers hold in this timetable, counted per
+  // (subject, section) so a mapping can report its own.
+  const pins = await prisma.timetableFixedLesson.findMany({
+    where: { timetableConfigId: configId, teacherId: { in: ids } },
+    select: { teacherId: true, subjectId: true, classSectionId: true },
+  });
+  const pinsOn = (teacherId: number, subjectId: number, classSectionId: number) =>
+    pins.filter((x) => x.teacherId === teacherId && x.subjectId === subjectId
+      && x.classSectionId === classSectionId).length;
 
   // ---- 1. ordinary mappings ----
   const mappings = await prisma.teacherSubjectClassSection.findMany({
@@ -140,6 +163,7 @@ export async function unitsFor(
           && s.teacherId === m.teacherId && s.subjectId === m.subjectId
           && s.classSectionId === m.classSectionId)
         .map(cellOf),
+      fixedCount: pinsOn(m.teacherId, m.subjectId, m.classSectionId),
     });
   }
 
@@ -167,6 +191,7 @@ export async function unitsFor(
       // §4.10 — one occupancy event however many sections attend, so the cells
       // are deduplicated by day/period rather than counted per member.
       cells: dedupeCells(slots.filter((s) => s.mergedGroupId === g.id).map(cellOf)),
+      fixedCount: 0,
     });
   }
 
@@ -201,6 +226,7 @@ export async function unitsFor(
       classIds: [...new Set(members.map((cs) => classOf.get(cs)).filter((n): n is number => n !== undefined))],
       periodsPerWeek: o.electiveBlock.periodsPerWeek,
       cells: slots.filter((s) => s.electiveOptionId === o.id).map(cellOf),
+      fixedCount: 0,
     });
   }
 
@@ -228,6 +254,7 @@ export async function unitsFor(
       classIds: [cs.classId],
       periodsPerWeek: 0,
       cells: [],
+      fixedCount: 0,
     });
   }
 

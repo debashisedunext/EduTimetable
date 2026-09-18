@@ -16,6 +16,8 @@
  */
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { DraftsService } from "../drafts/drafts.service";
+import { describeScope, weekScopeFor } from "./staffing-week";
 import { unitsFor, type StaffingUnit } from "./staffing-units";
 
 const REASONS = ["resigned", "leave", "joined", "adjustment"] as const;
@@ -31,7 +33,11 @@ export interface ChangeInput {
 
 @Injectable()
 export class StaffingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    /** §29.6 — "which week?" is resolved from the drafts registry, not guessed. */
+    private readonly drafts: DraftsService,
+  ) {}
 
   /**
    * 404 unless this timetable belongs to the caller's school.
@@ -196,10 +202,86 @@ export class StaffingService {
   async get(changeId: number) {
     const change = await this.ownChange(changeId);
     const releasing = change.teachers.filter((t) => t.role === "releasing").map((t) => t.teacherId);
-    const units = await unitsFor(this.prisma, change.timetableConfigId, releasing);
+    /*
+      §29.6 — the week this change acts on, and the screen is told which.
+
+      "0 lessons a week" meant two different things and said neither: a teacher
+      who really carries nothing, and a timetable that has not been published so
+      none of its rows were being looked at. The second is every school before
+      its first publish, and it read as "there is nothing to move" while the
+      grid showed a full week.
+    */
+    const scope = await weekScopeFor(
+      this.prisma as never,
+      change.timetableConfigId,
+      (id) => this.drafts.currentId(id),
+    );
+
+    /*
+      §29.6 — an APPLIED change shows what it recorded, never a fresh look.
+
+      This enumerated live whatever the releasing teachers still hold — which,
+      after the change has been applied, is by definition nothing. So every
+      applied change in the History list read "0 things to reassign · 0 lessons
+      a week · They teach nothing in this timetable", which is not merely
+      unhelpful: it is the opposite of true, printed under a change that had
+      just moved five mappings and a class-teacher role.
+
+      §29.5 already made this call for the revert — *"built from
+      `staffing_change_items`, never by re-planning"* — because the items are
+      the record of what moved and a re-plan is a question about now. The
+      display needs the same answer for the same reason.
+    */
+    if (change.status !== "planning") {
+      const items = await this.prisma.staffingChangeItem.findMany({
+        where: { changeId },
+        orderBy: [{ unitType: "asc" }, { id: "asc" }],
+      });
+      const names = new Map(
+        (await this.prisma.teacher.findMany({
+          where: { id: { in: [...new Set(items.flatMap((i) => [i.fromTeacherId, i.toTeacherId]))].filter((n): n is number => n !== null) } },
+          select: { id: true, name: true },
+        })).map((t) => [t.id, t.name]),
+      );
+      return {
+        ...this.summary({ ...change, _count: { items: items.length } }),
+        frozen: change.config.frozenAt !== null,
+        scope: scope.status,
+        scopeLabel: describeScope(scope),
+        /** What was recorded, not what is true now. The two differ on purpose. */
+        historical: true,
+        units: items.map((i) => ({
+          type: i.unitType,
+          id: i.unitId,
+          label: i.label,
+          teacherId: i.fromTeacherId ?? 0,
+          teacherName: names.get(i.fromTeacherId ?? 0) ?? "—",
+          movedToId: i.toTeacherId,
+          movedToName: i.toTeacherId === null ? null : names.get(i.toTeacherId) ?? "—",
+          subjectId: null,
+          subjectName: null,
+          classSectionIds: [],
+          periodsPerWeek: 0,
+          slotCount: i.slotCount,
+          fixedCount: 0,
+          note: null,
+        })),
+        totals: {
+          units: items.length,
+          lessons: items.reduce((a, i) => a + i.slotCount, 0),
+          classSections: 0,
+          /** A gap that was accepted at apply (§29.4) — recorded, not recomputed. */
+          uncovered: items.filter((i) => i.toTeacherId === null).length,
+        },
+      };
+    }
+
+    const units = await unitsFor(this.prisma as never, change.timetableConfigId, releasing, scope);
     return {
       ...this.summary({ ...change, _count: { items: 0 } }),
       frozen: change.config.frozenAt !== null,
+      scope: scope.status,
+      scopeLabel: describeScope(scope),
       units: units.map((u) => this.unitView(u)),
       totals: this.totals(units),
     };
@@ -357,6 +439,7 @@ export class StaffingService {
       classSectionIds: u.classSectionIds,
       periodsPerWeek: u.periodsPerWeek,
       slotCount: u.cells.length,
+      fixedCount: u.fixedCount,
       /*
         Said out loud, because it is the difference between "nothing to move"
         and "nothing published yet".
@@ -374,6 +457,9 @@ export class StaffingService {
     return {
       units: units.length,
       lessons: units.reduce((n, u) => n + u.cells.length, 0),
+      // §29.7 — said before anything is applied, because a pin left behind is a
+      // blocking Check 14 rather than a cosmetic loose end.
+      fixedLessons: units.reduce((n, u) => n + u.fixedCount, 0),
       classSections: new Set(units.flatMap((u) => u.classSectionIds)).size,
       byType: {
         mapping: units.filter((u) => u.type === "mapping").length,
