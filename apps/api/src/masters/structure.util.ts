@@ -22,6 +22,20 @@ export interface StructureSpec {
    * The solver places only into 1..periodsPerDay, so these are out of its
    * reach by construction — no new rule for it to remember.
    */
+  /**
+   * §28.6 — minutes of changeover between one period and the next.
+   *
+   * A school that wants five minutes for children and teachers to move rooms
+   * writes it here rather than padding every period's duration, which is the
+   * workaround it replaces: a 30-minute lesson taught in a 35-minute slot is a
+   * lie told to the curriculum, to the load arithmetic and to the wall.
+   *
+   * **Not applied where a break already follows.** A break IS the changeover —
+   * adding five minutes in front of a twenty-minute lunch buys nothing and
+   * moves the whole afternoon — and not after the last period either, where
+   * there is nothing to change over to.
+   */
+  periodGapMins?: number;
   extraPeriodsPerDay?: number;
   extraPeriodDurationMins?: number | null;
   /** Minutes between the last regular period and the first extra one. */
@@ -73,6 +87,9 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
   }
   if (spec.periodDurationMins < 20 || spec.periodDurationMins > 120) {
     throw new Error("periodDurationMins must be between 20 and 120");
+  }
+  if (spec.periodGapMins !== undefined && (spec.periodGapMins < 0 || spec.periodGapMins > 30)) {
+    throw new Error("periodGapMins must be between 0 and 30");
   }
   const breaksAfter = new Map<number, BreakSpec>();
   for (const b of spec.breaks) {
@@ -162,6 +179,20 @@ export function buildPeriodRows(spec: StructureSpec): { rows: PeriodRow[]; endTi
     });
     clock += spec.periodDurationMins;
     const brk = breaksAfter.get(p);
+    /*
+      §28.6 — the changeover, and the two places it does NOT go.
+
+      Not before a break, because a break already is one; and not after the
+      last period, where there is nothing to change over to and the only effect
+      would be to tell the school it closes five minutes later than it does.
+
+      It is added to the CLOCK and to no row: nothing occupies it, so no grid
+      has a cell to draw and the solver — which places into period numbers — is
+      untouched. That is the same device §28.3 activities and the §18 window
+      use, and it is why this costs the rest of the system nothing.
+    */
+    const gap = spec.periodGapMins ?? 0;
+    if (gap > 0 && !brk && p < spec.periodsPerDay) clock += gap;
     if (brk) {
       rows.push({
         sortOrder: sortOrder++,
@@ -331,4 +362,86 @@ export function lunchAfterPeriodFromRows(rows: PeriodRow[]): number | null {
   return breaks.reduce((a, b) =>
     Math.abs(b.index - middle) < Math.abs(a.index - middle) ? b : a,
   ).after;
+}
+
+/**
+ * The breaks a stored period grid describes.
+ *
+ * `PUT /:id/structure` rebuilds the rows wholesale from a spec, so anything
+ * that wants to rebuild them for a different shape — §34.5's per-day clock, or
+ * the controller re-saving after an activity changes — has to recover the
+ * breaks that are only recorded in the rows themselves.
+ *
+ * Extracted so there is one definition: the controller had this inline, and a
+ * second copy in `clockForDay` would have been free to disagree about which
+ * rows count as a break and which period each follows.
+ */
+export function breaksFromRows(rows: PeriodRow[]): BreakSpec[] {
+  const out: BreakSpec[] = [];
+  let lastNumbered = 0;
+  for (const p of rows) {
+    if (p.isActivity || p.isExtra) continue;
+    if (p.periodNumber !== null && p.periodNumber > 0) { lastNumbered = p.periodNumber; continue; }
+    if (!p.isBreak) continue;
+    out.push({
+      afterPeriod: lastNumbered,
+      name: p.breakName ?? "Break",
+      durationMins: toMins(p.endTime) - toMins(p.startTime),
+    });
+  }
+  return out;
+}
+
+/**
+ * §34.5 — what the clock says on ONE day.
+ *
+ * The `periods` rows have no day column: they are the shape of a day, written
+ * once per timetable. That was complete while every working day ran the same
+ * shape — and §34 made it possible for one not to, which left every reader of
+ * those times describing Saturday with Monday's clock.
+ *
+ * It is not only a printing problem. §30.7 compares two live timetables by
+ * **wall clock** rather than by period number, precisely because Junior's P3
+ * and Senior's P2 can start at the same minute; it keyed its clock by
+ * `(config, period)`, so on a day with its own shape it was comparing the
+ * wrong minutes and could both miss a real clash and invent one.
+ *
+ * **Built with `buildPeriodRows`, not a second algorithm.** That function is
+ * what `PUT /:id/structure` uses to write the stored rows, so a day with its
+ * own shape gets its times the same way every other day got theirs — which is
+ * the only reason the two can be trusted to agree.
+ *
+ * A day with no shape of its own returns the stored rows untouched, which is
+ * every day of every school that has not said otherwise: same objects, same
+ * times, no arithmetic repeated.
+ */
+export function clockForDay(
+  stored: PeriodRow[],
+  spec: StructureSpec,
+  shape: { periodsPerDay: number; periodDurationMins: number } | undefined,
+): PeriodRow[] {
+  if (!shape) return stored;
+  if (shape.periodsPerDay === spec.periodsPerDay && shape.periodDurationMins === spec.periodDurationMins) {
+    return stored;
+  }
+  try {
+    return buildPeriodRows({
+      ...spec,
+      periodsPerDay: shape.periodsPerDay,
+      periodDurationMins: shape.periodDurationMins,
+      /*
+        A break is kept only while the day still reaches the period it follows.
+        A lunch after period 6 on a four-period Saturday is not a late lunch,
+        it is a break at the end of the day — and `buildPeriodRows` would emit
+        it as one, which is worse than dropping it because it prints a lunch
+        nobody takes.
+      */
+      breaks: (spec.breaks ?? []).filter((b) => b.afterPeriod < shape.periodsPerDay),
+    }).rows;
+  } catch {
+    // A shape the builder refuses (out of its own bounds) falls back to the
+    // stored rows rather than throwing: a wrong clock on one day is a smaller
+    // failure than a report that will not render at all.
+    return stored;
+  }
 }

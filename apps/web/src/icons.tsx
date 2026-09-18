@@ -23,9 +23,10 @@
 /** Every screen in the nav has one, and the name says what the screen IS. */
 export type IconName =
   | "calendar" | "wand" | "book" | "import" | "sync" | "split" | "clock" | "checklist" | "bolt"
-  | "grid" | "board" | "publish" | "swap" | "plus"
+  | "grid" | "master" | "board" | "publish" | "swap" | "handover" | "plus"
+  | "more"
   | "user" | "users"
-  | "chart" | "bell"
+  | "chart" | "bell" | "headcount"
   | "chat" | "sliders"
   | "building" | "shield" | "userPlus"
   | "pulse" | "server";
@@ -46,14 +47,27 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // Manage
   grid: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18M15 3v18" /></>,
   board: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M15 4v16" /></>,
+  // §31 — the vertical tab rail down the left, and a dense grid beside it.
+  master: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 3v18" /><path d="M8 9h13M8 15h13M14 3v18" /><path d="M5.2 7h1.6M5.2 11h1.6M5.2 15h1.6" /></>,
   publish: <><path d="M12 20V5M6 11l6-6 6 6" /><path d="M4 3h16" /></>,
   swap: <><path d="M16 3h5v5" /><path d="M21 3l-7 7" /><path d="M8 21H3v-5" /><path d="M3 21l7-7" /></>,
+  /*
+    §29.2 Staffing Changes — a person, and the work leaving them.
+
+    It shared `swap` with Substitute Center, which is fine while a label sits
+    beside it and is the same button twice the moment §8.6's toolbar drops to
+    icons alone. Two screens one keystroke apart, both about somebody not
+    taking their classes, must not be one glyph.
+  */
+  handover: <><circle cx="8" cy="7.5" r="3.2" /><path d="M2.5 20a5.5 5.5 0 0 1 11 0" /><path d="M15 12.5h6m-2.6-2.6 2.6 2.6-2.6 2.6" /></>,
   plus: <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></>,
   // Mine
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
   users: <><circle cx="9" cy="8" r="3.5" /><path d="M2 21a7 7 0 0 1 14 0" /><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4" /><path d="M18.5 21a7 7 0 0 0-3.2-5.5" /></>,
   // Reference
   chart: <><path d="M5 20v-7M11 20V5M17 20v-4" /><path d="M3 21h18" /></>,
+  /* §37 — people and a shortfall: two figures, and a gap where a third is. */
+  headcount: <><circle cx="7" cy="7.5" r="2.8" /><path d="M2.5 18a4.5 4.5 0 0 1 9 0" /><circle cx="16.5" cy="7.5" r="2.8" /><path d="M12 18a4.5 4.5 0 0 1 9 0" /><path d="M12 4.5v6M9 7.5h6" strokeDasharray="1.6 1.6" /></>,
   bell: <><path d="M18 15V10a6 6 0 1 0-12 0v5l-2 3h16l-2-3z" /><path d="M10 21h4" /></>,
   // Intelligence
   chat: <><path d="M20 5H4v11h5l4 4v-4h7V5z" /><path d="M8 10.5h.01M12 10.5h.01M16 10.5h.01" /></>,
@@ -65,6 +79,9 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // System
   pulse: <><path d="M3 12h4l3 8 4-16 3 8h4" /></>,
   server: <><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></>,
+  // §8.6 — the toolbar's overflow. Filled dots rather than stroked circles: at
+  // 1.7 stroke on a 24 grid a 1.4-radius ring reads as a smudge.
+  more: <><circle cx="5" cy="12" r="1.15" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1.15" fill="currentColor" stroke="none" /></>,
 };
 
 export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {

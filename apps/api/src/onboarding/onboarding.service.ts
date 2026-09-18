@@ -17,15 +17,18 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   CLASS_LADDER,
-  classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
+  classesLeavingWing, classSheets, coverageGaps, curriculumSheets, DEFAULT_WING_SECTIONS, mappingSheets,
   roomSheets, sessionSheets,
   subjectSheets, suggestCurriculum, suggestMappings, suggestRooms, teacherSheets,
-  wingRangeFor, withCurriculumPeriods,
-  type CurriculumCell, type MappingSuggestion, type SubjectAnswer, type SuggestedRoom,
+  wingRangeFor, wingScope, withCurriculumPeriods,
+  type CurriculumCell, type MappingSuggestion, type SchoolShape, type SubjectAnswer, type SuggestedRoom,
   type TeacherAnswer, type WingAnswer, type WizardAnswers,
 } from "@edutimetable/shared";
 import { ImportService } from "../import/import.service";
 import { TermsService } from "../terms/terms.service";
+import { ReadinessService } from "../readiness/readiness.service";
+import { FreezeService } from "../freeze/freeze.service";
+import { SetupProgressService } from "./setup-progress.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { stepFrom } from "./interview.answers";
 
@@ -76,6 +79,16 @@ export interface OnboardingState {
   /** Whether a half-finished guided setup is waiting for them. */
   resumeStep: number | null;
   resumeMode: "wizard" | "ai" | null;
+  /**
+   * §39.1 — the timetables that are genuinely unfinished, newest first.
+   *
+   * The welcome dialog names these instead of quoting `resumeStep`. Empty means
+   * every timetable this school has is complete, which is what makes the dialog
+   * stay shut for a published school — and what `resumeStep` could never say,
+   * because a cursor records where somebody last clicked rather than what is
+   * left to do.
+   */
+  unfinished: Array<{ id: number; name: string; pct: number; nextLabel: string | null }>;
   /** The wings this setup is building — one draft covers all of them. */
   resumeWings: Array<{ name: string; weekReady: boolean }>;
   /** Whether the welcome screen should open on its own right now. */
@@ -90,6 +103,13 @@ export class OnboardingService {
     private readonly prisma: PrismaService,
     private readonly importer: ImportService,
     private readonly terms: TermsService,
+    /** §3.10d — the score is dropped when a wing lets go of a class. */
+    private readonly readiness: ReadinessService,
+    /** §29.8 — refuses the wing being committed, never the whole school. */
+    private readonly freeze: FreezeService,
+    /** §39.1 — what is genuinely unfinished, so the welcome prompt can stop
+     *  reading a cursor. */
+    private readonly progress: SetupProgressService,
   ) {}
 
   /**
@@ -119,6 +139,22 @@ export class OnboardingService {
 
     const isNew = configs === 0;
     const dismissedAt = user?.onboardingDismissedAt ?? null;
+
+    /*
+      §39.1 — what is actually unfinished, asked only when it can matter.
+
+      `SetupProgressService` is seven queries (§24.9) and `stateFor` runs on
+      every page load, so it is asked ONLY when a draft exists — which is the
+      only case where the answer can change anything. A school with no draft
+      takes the three cheap counts it always took, and the §14 budget is
+      untouched.
+    */
+    const unfinished = draft === null
+      ? []
+      : (await this.progress.forSchool(schoolId))
+        .filter((c) => c.pct < 100)
+        .map((c) => ({ id: c.id, name: c.name, pct: c.pct, nextLabel: c.nextLabel }));
+
     return {
       isNew,
       hasConfig: configs > 0,
@@ -150,7 +186,25 @@ export class OnboardingService {
       // `isNew` is FALSE while the setup is still unfinished — and an `isNew &&`
       // would stop offering to resume at exactly the point the person has the
       // most to lose.
-      shouldPrompt: draft !== null || isNew,
+      //
+      // §39.1 — and the draft alone is no longer enough.
+      //
+      // It was `draft !== null || isNew`, which made the existence of a ROW the
+      // trigger. `completed_at` is set in exactly one place — pressing "Finish
+      // setup" on the wizard's last step — and a school that generates and
+      // publishes from the Generate and Publish screens never presses it. So
+      // the draft stayed open for ever and the dialog met a fully published
+      // school at every sign-in with "Pick up where you left off — step 3",
+      // which is where somebody last clicked and not a thing left to do.
+      //
+      // The draft is one row per (school, user) and covers EVERY wing — step 3
+      // names them all — so "this timetable is published" and "this draft is
+      // open" are facts about different objects. A school with Main published
+      // and Junior half-built must still be offered its resume, which is why
+      // this asks the milestones rather than the publication count: `unfinished`
+      // is empty exactly when there is nothing left to carry on with.
+      shouldPrompt: isNew || unfinished.length > 0,
+      unfinished,
     };
   }
 
@@ -197,6 +251,146 @@ export class OnboardingService {
     return { dismissedAt: at.toISOString() };
   }
 
+  /**
+   * §30.9 — which pool each wing is in, read from the school every time.
+   *
+   * `individual` is **not an answer**. It is a fact about the timetable, chosen
+   * on the Timetables screen and changeable afterwards (§30.6a moves a
+   * timetable between pools), so a copy of it stored in somebody's draft is a
+   * copy that can be wrong. Two ways it would be: a draft saved before this
+   * field existed carries none at all — which is every draft in every school
+   * today, and would have left this bug exactly where it was — and a draft
+   * saved before a move carries the old answer.
+   *
+   * So it is stamped on the way out of the database rather than trusted from
+   * the draft. Matched by NAME, which is what `commitWings`, the §16 importer
+   * and the wizard's own tab strip all match wings by; a wing the school has no
+   * config for yet is left alone, because it is about to create a grouped one.
+   */
+  private async stampPools(schoolId: number, answers: Record<string, unknown>) {
+    if (!Array.isArray(answers.wings) || answers.wings.length === 0) return answers;
+    const configs = await this.prisma.timetableConfig.findMany({
+      where: { schoolId },
+      select: { name: true, resourceGroup: { select: { mode: true } } },
+    });
+    const mode = new Map(configs.map((c) => [c.name.trim().toLowerCase(), c.resourceGroup?.mode]));
+    return {
+      ...answers,
+      wings: (answers.wings as Array<Record<string, unknown>>).map((w) => {
+        const found = mode.get(String(w.name ?? "").trim().toLowerCase());
+        if (found === undefined) return w;
+        // Written only when true, so a grouped wing's answers are byte-identical
+        // to what they were — which is what keeps every existing draft unchanged.
+        // The stored value is DROPPED rather than merged: a draft saved while a
+        // timetable was individual must not keep saying so after §30.6a moves it.
+        const rest = { ...w };
+        delete rest.individual;
+        return found === "individual" ? { ...rest, individual: true } : rest;
+      }),
+    };
+  }
+
+  /**
+   * §3.10b — what the school already is, for the Classes step to respect.
+   *
+   * Read fresh on every call rather than stored in the draft, for exactly the
+   * reason `stampPools` is: a copy of a fact about the school, held in
+   * somebody's half-finished setup, is a copy that goes stale. Someone adding
+   * Class 1-D on the Classes master while a draft sits open at step 4 must not
+   * have that draft quietly plan a school without it.
+   *
+   * Scoped to ONE academic year (§3.11). A class has sections in every session
+   * it has ever run, so an unfiltered count would floor next year's timetable
+   * at the widest the school has ever been.
+   *
+   * Keyed by NAME on both axes — the wing's and the class's — because that is
+   * what the wizard's answers hold and what the §16 importer matches on. An id
+   * would be a second vocabulary for the same join.
+   */
+  async schoolShape(schoolId: number, yearName?: string): Promise<SchoolShape> {
+    const year = yearName
+      ? await this.prisma.academicYear.findFirst({ where: { schoolId, name: yearName } })
+      : await this.prisma.academicYear.findFirst({ where: { schoolId, isActive: true } });
+    if (!year) return { floors: {}, existing: {} };
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { schoolId, academicYearId: year.id },
+      select: {
+        resourceGroupId: true,
+        class: { select: { name: true } },
+        section: { select: { name: true } },
+        timetableConfig: { select: { name: true } },
+      },
+    });
+
+    /*
+      The floor is the widest any ONE pool runs, never the total.
+
+      Summing across pools would floor an individual timetable at the main
+      school's four *plus* its own two — six sections of Class 1 that nobody
+      has ever taught. The question being answered is "how many sections does
+      this school run for Class 1?", and the answer is four whether one
+      timetable teaches them or three do.
+    */
+    // Nested rather than a joined string key: "Class 1" contains a space and
+    // any separator picked here is one a school is free to type into a name.
+    const perPool = new Map<string, Map<number, number>>();
+    const existing: Record<string, Record<string, string[]>> = {};
+    for (const cs of sections) {
+      const className = cs.class.name;
+      const pool = cs.resourceGroupId ?? 0;
+      const counts = perPool.get(className) ?? new Map<number, number>();
+      counts.set(pool, (counts.get(pool) ?? 0) + 1);
+      perPool.set(className, counts);
+
+      // A section not yet attached to a timetable belongs to no wing's list —
+      // it is real, and it still counts towards the floor above, but there is
+      // no wing on screen it could be drawn under.
+      const wing = cs.timetableConfig?.name;
+      if (!wing) continue;
+      (existing[wing] ??= {})[className] ??= [];
+      existing[wing][className].push(cs.section.name);
+    }
+
+    const floors: Record<string, number> = {};
+    for (const [className, counts] of perPool) floors[className] = Math.max(...counts.values());
+    for (const classes of Object.values(existing)) {
+      for (const letters of Object.values(classes)) letters.sort();
+    }
+    return { floors, existing };
+  }
+
+  /**
+   * §3.10b — how many sections a wing with no classes yet should open on.
+   *
+   * `DEFAULT_WING_SECTIONS` is 2, and it was the answer in **two** places that
+   * both feed the Classes step: `answersFromSchool` rebuilding a wing that has
+   * no classes, and `recordWing` entering a brand-new timetable. The right
+   * default for a school that has told us nothing; the wrong one for a school
+   * already running four, where pressing Next made the guess true.
+   *
+   * The commonest, not the widest: one number has to stand for a whole wing,
+   * and a class that runs more keeps its own count — `planClasses` floors each
+   * class individually, so being modest here costs nothing and being greedy
+   * would silently widen every class in the wing.
+   *
+   * One method because there are two doors, and the two used to disagree in
+   * the way that is hardest to see: `recordWing` asked the school, found 4,
+   * and then never used it, because `answersFromSchool` had already listed the
+   * new config as a wing with 2 and the "already there" guard skipped the
+   * write. A default with two authors has one that wins silently.
+   */
+  private async defaultSections(schoolId: number, yearName?: string): Promise<number> {
+    const { floors } = await this.schoolShape(schoolId, yearName);
+    const counts = Object.values(floors ?? {});
+    if (counts.length === 0) return DEFAULT_WING_SECTIONS;
+    // Counted first, then sorted. Sorting in place while the comparator filters
+    // the same array reads from one that is being reordered underneath it.
+    const seen = new Map<number, number>();
+    for (const n of counts) seen.set(n, (seen.get(n) ?? 0) + 1);
+    return [...seen.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  }
+
   /** The half-finished setup, or null. */
   async draftFor(schoolId: number, userId: number) {
     const row = await this.prisma.onboardingSession.findFirst({
@@ -207,7 +401,7 @@ export class OnboardingService {
       id: row.id,
       mode: row.mode,
       currentStep: migrateStep(row.currentStep, row.answers),
-      answers: (row.answers as Record<string, unknown>) ?? {},
+      answers: await this.stampPools(schoolId, (row.answers as Record<string, unknown>) ?? {}),
       // §24.6 — where this run's conversation begins in the audit log. Part of
       // the draft, because that is what it is a property of.
       chatSince: row.chatSince,
@@ -315,7 +509,24 @@ export class OnboardingService {
       (w) => String(w?.name ?? "").trim().toLowerCase() === cfg.name.trim().toLowerCase(),
     );
     if (!already) {
-      wings.push({ name: cfg.name, ...wingRangeFor(cfg.name), sections: DEFAULT_WING_SECTIONS });
+      /*
+        §3.10b — how many sections, asked of the school rather than guessed.
+
+        `DEFAULT_WING_SECTIONS` is 2, and it was reaching this line unconditionally
+        — so every timetable created through this door opened on "2 sections per
+        class" in a school that runs four, and pressing Next through step 4 made
+        that guess true. It is the right default for a school with no answer yet;
+        it is the wrong one for a school that has already told us.
+
+        The commonest floor, not the maximum: one number has to stand for the
+        whole wing, and a class that differs keeps its own count once the grid
+        applies its own floor per class.
+      */
+      wings.push({
+        name: cfg.name,
+        ...wingRangeFor(cfg.name),
+        sections: await this.defaultSections(schoolId, cfg.academicYear.name),
+      });
     }
 
     const session = base.session as { name?: string } | undefined;
@@ -381,7 +592,14 @@ export class OnboardingService {
    */
   private async answersFromSchool(schoolId: number) {
     const [configs, years, subjects, teachers, school] = await Promise.all([
-      this.prisma.timetableConfig.findMany({ where: { schoolId }, orderBy: { id: "asc" } }),
+      /* §30.9 — the pool's MODE travels with the wing. Without it the wizard
+         cannot tell an individual timetable from a wing of the main school,
+         and reports Class 1 as claimed by two timetables that share nothing. */
+      this.prisma.timetableConfig.findMany({
+        where: { schoolId },
+        include: { resourceGroup: { select: { mode: true } } },
+        orderBy: { id: "asc" },
+      }),
       this.prisma.academicYear.findMany({ where: { schoolId }, orderBy: { id: "desc" } }),
       this.prisma.subject.findMany({
         where: { schoolId },
@@ -448,9 +666,40 @@ export class OnboardingService {
     }
     for (const m of mappings) addSubject(m.teacherId, m.subjectId);
 
+    // Resolved before the loop, not after it: a wing with no classes yet asks
+    // the school what shape it is, and that question is year-scoped (§3.11).
+    const activeYear = years.find((y) => y.isActive) ?? years[0];
+
     const wings: Array<Record<string, unknown>> = [];
     const weeks: Record<string, unknown> = {};
     const skippedWings: string[] = [];
+
+    /**
+     * §32 — which subjects each timetable RUNS, read back from the database.
+     *
+     * This was missing, and the effect was a screen that told a school
+     * something untrue about itself. `subjectsByWing` absent means "not
+     * stated", which the Subjects step reads as *every subject ticked*
+     * (invariant 7) — so a school that had narrowed Main to three subjects,
+     * come back later and found the draft rebuilt from its own data, was shown
+     * all thirty-nine ticked again. Unticking two from there would then store a
+     * set computed from a starting point that was never true.
+     *
+     * Read for every wing that has narrowed, and only those: a config with no
+     * `timetable_subjects` rows has not narrowed, and writing an explicit list
+     * for it here would turn "not stated" into "exactly these", which is the
+     * one distinction §32's table exists to keep.
+     */
+    const narrowed = await this.prisma.timetableSubject.findMany({
+      where: { schoolId },
+      select: { timetableConfigId: true, subject: { select: { name: true } } },
+    });
+    const subjectsByWing: Record<string, string[]> = {};
+    for (const row of narrowed) {
+      const cfg = configs.find((c) => c.id === row.timetableConfigId);
+      if (!cfg) continue;
+      (subjectsByWing[cfg.name] ??= []).push(row.subject.name);
+    }
 
     for (const cfg of configs) {
       const mine = sections.filter((cs) => cs.timetableConfigId === cfg.id);
@@ -476,17 +725,49 @@ export class OnboardingService {
        * adjusts it. Nothing is created until Next, and step 4 shows exactly
        * what would be.
        */
-      const perClass = names.map((n) => mine.filter((cs) => cs.class.name === n).length);
+      const countOf = new Map(names.map((n) => [n, mine.filter((cs) => cs.class.name === n).length]));
+      const perClass = [...countOf.values()];
       const blank = wingRangeFor(cfg.name);
+      /*
+        §3.10b — a wing with no classes YET opens on the school's own shape.
+
+        `DEFAULT_WING_SECTIONS` here was the real source of the hardcoded 2 that
+        reached the Classes step: a timetable created a moment ago has no
+        class-sections, so `perClass` is empty and every brand-new wing — the
+        §3.10a "New Timetable" door included — was described as running two
+        sections in a school running four.
+      */
+      const commonest = perClass.length === 0
+        ? await this.defaultSections(schoolId, activeYear?.name)
+        : [...perClass.reduce((m, n) => m.set(n, (m.get(n) ?? 0) + 1), new Map<number, number>()).entries()]
+            .sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+      /*
+        §3.10b — a class that differs from the wing's usual count keeps its own.
+
+        One number has to stand for the wing, so the commonest wins — but a
+        school running four sections up to Class 8 and two above it was being
+        described by that one number alone, and the grid then drew twelve
+        classes at four. Nothing was created wrongly (the §16 importer skips by
+        natural key and never deletes), which is exactly why it went unnoticed:
+        the screen was simply wrong about the school it was describing.
+      */
+      const overrides: Record<string, { sections: number }> = {};
+      for (const [name, n] of countOf) if (n !== commonest) overrides[name] = { sections: n };
       wings.push({
         name: cfg.name,
         fromIndex: names.length > 0 ? Math.min(...indices) : blank.fromIndex,
         toIndex: names.length > 0 ? Math.max(...indices) : blank.toIndex,
-        // The commonest, since one number has to stand for the wing; a class
-        // that differs keeps its own count, because step 4 writes nothing over
-        // sections that already exist.
-        sections: perClass.sort((a, b) => perClass.filter((v) => v === b).length - perClass.filter((v) => v === a).length)[0]
-          ?? DEFAULT_WING_SECTIONS,
+        sections: commonest,
+        ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+        /*
+          §30.9 — which pool this wing competes in.
+
+          Written only when it is TRUE, so a school with no individual
+          timetables stores exactly the answers it stored before, and a draft
+          that predates this field reads as grouped — which is what every wing
+          was.
+        */
+        ...(cfg.resourceGroup?.mode === "individual" ? { individual: true } : {}),
       });
 
       const periods = await this.prisma.period.findMany({
@@ -511,7 +792,7 @@ export class OnboardingService {
       }
     }
 
-    const year = years.find((y) => y.isActive) ?? years[0];
+    const year = activeYear;
 
     /**
      * §27.12 — the rooms, the curriculum and the mappings this school already
@@ -591,6 +872,10 @@ export class OnboardingService {
         : {}),
       ...(wings.length > 0 ? { wings } : {}),
       ...(Object.keys(weeks).length > 0 ? { weeks } : {}),
+      /* §32 — absent unless a wing has actually narrowed, because absent means
+         "not stated" and writing a list for an unnarrowed timetable would turn
+         that into "exactly these". */
+      ...(Object.keys(subjectsByWing).length > 0 ? { subjectsByWing } : {}),
       ...(rooms.length > 0 ? { rooms } : {}),
       ...(curriculum.length > 0 ? { curriculum } : {}),
       ...(mappingAnswers.length > 0 ? { mappings: mappingAnswers } : {}),
@@ -600,6 +885,25 @@ export class OnboardingService {
             subjects: subjects.map((s) => ({
               name: s.name, code: s.code ?? "", isLab: s.isLab,
               requiresDoublePeriod: s.requiresDoublePeriod,
+              /*
+                §16.2 — the placement settings, READ BACK rather than left out.
+
+                §26.2's classifier fills a blank from the subject's NAME, and
+                `subjectSheets` applies it at commit — so a field missing here
+                is not "unchanged", it is "whatever `defaultsFor` thinks". Now
+                that the committer updates an existing subject, leaving these
+                out would mean a school that set Physical Education to "any
+                time" on the Subjects master had it silently pushed back to
+                "after lunch" by pressing Next in the guided setup.
+
+                The same rule §27.16 states three lines down, for the same
+                reason: what the school has said is read back, never re-derived.
+              */
+              taughtInOwnRoom: s.taughtInOwnRoom,
+              category: s.category,
+              priority: s.priority,
+              lunchRule: s.lunchRule,
+              gapAfterLunch: s.gapAfterLunch,
               // §27.16. Empty stays empty — "not stated", which is what lets
               // the §27.15 ladder go on proposing for a subject nobody narrowed.
               classes: s.classes.map((c) => c.class.name),
@@ -761,7 +1065,11 @@ export class OnboardingService {
    * failure mode a second copy of this switch would eventually produce.
    */
   private async sheetsFor(schoolId: number, step: number, answers: WizardAnswers & Record<string, any>) {
-    const issues: Array<{ message: string; fix: string }> = [];
+    /* §30.11 — `scope` names the §30 pool an issue belongs to, so a commit can
+       refuse one pool without refusing another. Optional here: only step 4's
+       come from `planClasses` and carry one; the rest are about the school as a
+       whole and belong to every pool, which is what absent means. */
+    const issues: Array<{ message: string; fix: string; scope?: string }> = [];
     const year = answers.session?.name ?? "";
     const subjects: SubjectAnswer[] = answers.subjects ?? [];
     const teachers: TeacherAnswer[] = answers.teachers ?? [];
@@ -771,7 +1079,17 @@ export class OnboardingService {
       case 2:
         return { sheets: answers.session?.name ? sessionSheets(answers.session) : [], issues };
       case 4: {
-        const built = classSheets(answers);
+        /*
+          §3.10b — the plan is floored by what the school already is.
+
+          Read here rather than taken from the request: the shape is a fact
+          about the database, and a client that sent its own would be deciding
+          how few sections it may create (§21's rule — a preview is not the
+          list of writes). `preview` and `commit` share this builder, so the
+          dry run cannot describe a smaller school than the write produces.
+        */
+        const shape = await this.schoolShape(schoolId, year || undefined);
+        const built = classSheets(answers, shape);
         return { sheets: built.sheets, issues: built.issues };
       }
       case 6:
@@ -878,21 +1196,218 @@ export class OnboardingService {
     return out;
   }
 
-  async commit(schoolId: number, userId: number, step: number) {
+  /**
+   * §30.9 — the wings this request is setting up, and no others.
+   *
+   * The draft holds every wing the school has, because losing the others on a
+   * save would be a far worse bug. But a commit is about one §30 resource pool:
+   * the wizard narrows to one, and the server has to narrow the same way or it
+   * validates and creates rows for pools nobody is looking at.
+   *
+   * That was not theoretical. `commit(4)` runs `planClasses` over the wings it
+   * is given and throws on the first issue — so a school setting up an
+   * individual timetable was refused with "Class 1 is in both Main Timetable
+   * 2026-27 and New", a real conflict between two GROUPED wings that has
+   * nothing to do with the timetable being set up and cannot be fixed from the
+   * screen showing the message.
+   *
+   * An unknown scope is refused rather than ignored. Falling back to every wing
+   * would put the bug back silently, which is the one outcome worse than an
+   * error naming what happened.
+   */
+  /** The wings an `answers` object actually carries — after `narrowToScope`,
+   *  the ones this request is building. */
+  private wingsIn(answers: Record<string, any>): WingAnswer[] {
+    return Array.isArray(answers.wings) ? answers.wings : [];
+  }
+
+  private narrowToScope<T extends Record<string, any>>(answers: T, scope?: string): T {
+    if (!scope) return answers;
+    const all: WingAnswer[] = Array.isArray(answers.wings) ? answers.wings : [];
+    if (all.length === 0) return answers;
+    const mine = all.filter((w) => wingScope(w) === scope);
+    if (mine.length === 0) {
+      throw new BadRequestException(
+        "That timetable is not part of this setup any more — reopen the guided setup and pick one.",
+      );
+    }
+    return { ...answers, wings: mine };
+  }
+
+  /**
+   * §29.8 — the guided setup refuses a locked timetable, and only that one.
+   *
+   * §29.1 guarded this bluntly: `assertNoneFrozen` refused the commit while
+   * **any** wing in the school was frozen, on the grounds that a workbook
+   * resolves names to rows deep inside one transaction and cannot say up front
+   * which timetables it will touch.
+   *
+   * That was tolerable while freezing was a deliberate press that few schools
+   * made. §29.8's auto-lock makes it the normal state, and the blunt version
+   * then blocks the guided setup for **every school that has published
+   * anything** — including a school with Main published and Junior still being
+   * built, which is the case the wizard exists for. Reported exactly that way:
+   * *"the freezing will happen only for that particular timetable which is
+   * being published; this rule is not applicable to other timetables."*
+   *
+   * The narrow version is available here and was not available to the importer,
+   * which is the whole difference: `answers.wings` NAMES the timetables this
+   * commit is building (§3.10a — a wing IS a `timetable_config`, created by
+   * name on step 3), and §30.13 hands each step exactly one. So the wings are
+   * resolved to configs and only those are asked about.
+   *
+   * Narrowed by SESSION as well as by name. `timetable_config` is unique on
+   * `(school, name, year)`, so a school that cloned "Main Wing" into next
+   * session has two rows with that name — and last year's locked timetable must
+   * not refuse this year's planning, which is the same reasoning
+   * `assertClasses` already uses for the curriculum.
+   *
+   * Still `assertConfigs` rather than a grant-aware check: a bulk commit cannot
+   * say which rows it touches, so no entity unlock opens it. Narrowing WHICH
+   * timetable is refused is a different question from letting a grant through.
+   */
+  private async assertWingsUnlocked(
+    schoolId: number,
+    answers: WizardAnswers & Record<string, any>,
+  ): Promise<void> {
+    const names = this.wingsIn(answers)
+      .map((w) => (w?.name ?? "").trim())
+      .filter((n) => n.length > 0);
+    if (names.length === 0) {
+      /*
+        No wings named — step 1 or 2, before any timetable exists. There is no
+        config to be locked, so there is nothing to refuse. Deliberately NOT
+        falling back to the blunt check: that would put the old behaviour back
+        for exactly the steps that cannot touch a published week.
+      */
+      return;
+    }
+
+    const yearName = (answers as { session?: { name?: string } })?.session?.name;
+    const year = yearName
+      ? await this.prisma.academicYear.findFirst({ where: { schoolId, name: yearName } })
+      : await this.prisma.academicYear.findFirst({ where: { schoolId, isActive: true } });
+
+    const configs = await this.prisma.timetableConfig.findMany({
+      where: {
+        schoolId,
+        name: { in: names },
+        ...(year ? { academicYearId: year.id } : {}),
+      },
+      select: { id: true },
+    });
+    // Empty is the normal case on a first run: the wings are about to be
+    // created and nothing can be locked yet. `assertConfigs([])` is a no-op
+    // rather than "all", which is the behaviour this relies on.
+    await this.freeze.assertConfigs(
+      configs.map((c) => c.id),
+      "this timetable",
+    );
+  }
+
+  async commit(schoolId: number, userId: number, step: number, scope?: string) {
     const draft = await this.draftFor(schoolId, userId);
     if (!draft) throw new BadRequestException("There is nothing saved to commit.");
-    const answers = draft.answers as WizardAnswers & Record<string, any>;
+    const answers = this.narrowToScope(
+      draft.answers as WizardAnswers & Record<string, any>,
+      scope,
+    );
 
-    const { sheets, issues } = await this.sheetsFor(schoolId, step, answers);
-    // A class claimed by two wings is a decision, not something to merge:
-    // `classes.name` is unique per school, so both cannot exist.
-    const blocking = step === 4 ? issues : [];
-    if (blocking.length > 0) {
-      throw new BadRequestException(`${blocking[0].message} ${blocking[0].fix}`);
+    /*
+      §29.8 — refuse the LOCKED wing, never the whole school.
+
+      Steps 1–3 are exempt, and not as a convenience: the school, the session
+      and the wings themselves cannot change what a published week teaches.
+      Step 3 is the one worth checking rather than assuming — `commitWings`
+      **skips an existing wing by name** and only creates the missing ones, so
+      a school with Main locked adding Junior writes nothing to Main. Guarding
+      it would refuse precisely the case this narrowing exists to allow.
+    */
+    if (step >= 4) await this.assertWingsUnlocked(schoolId, answers);
+
+    const built = await this.sheetsFor(schoolId, step, answers);
+    const issues = built.issues;
+    let sheets = built.sheets;
+    /*
+      §30.11 — a pool is refused on its OWN merits, and the others are BUILT.
+
+      A class claimed by two wings is a decision rather than something to merge
+      (`classes.name` is unique per school, so both cannot exist), and step 4
+      still refuses it. What changed is the blast radius: this threw on the
+      first issue from ANY pool, so two wings of the main school overlapping
+      stopped an individual timetable — which shares nothing with them, and
+      cannot be fixed from the screen showing the message — from being created
+      at all.
+
+      Narrowing the request would have hidden that rather than fixed it: a
+      caller who forgot to say which pool it was building would be blocked
+      again, and independence that depends on the request being phrased right is
+      not independence. So the refusal is computed from the DATA: the pools with
+      issues are dropped, everything else is built, and the refusals come back
+      in the response for the caller to show against the pool they belong to.
+
+      A throw is kept for the case where nothing survives, because then nothing
+      happened and silence would read as success.
+    */
+    if (step === 4 && issues.length > 0) {
+      const bad = new Set(issues.map((i) => i.scope).filter((x): x is string => !!x));
+      const healthy = this.wingsIn(answers).filter((w) => !bad.has(wingScope(w)));
+      if (healthy.length === 0) {
+        throw new BadRequestException(`${issues[0].message} ${issues[0].fix}`);
+      }
+      const rebuilt = await this.sheetsFor(schoolId, step, { ...answers, wings: healthy });
+      // The refusals are kept, not replaced: `rebuilt` has none by
+      // construction, and dropping them would build the healthy pools while
+      // reporting nothing wrong with the others.
+      sheets = rebuilt.sheets;
     }
-    if (sheets.length === 0) throw new BadRequestException("There is nothing to create yet.");
+    if (sheets.length === 0) {
+      /*
+        §32 — the subject SELECTION is not master data, and must not be gated
+        behind the importer having something to create.
+
+        "This week does not run Chemistry" is a property of the week; it is
+        written by `applySubjectSelection`, not by a sheet. But that call sat
+        below this throw, so a step-6 commit carrying only a changed selection
+        — no new subjects, nothing for the importer — was refused with "there
+        is nothing to create yet" and the narrowing was silently lost. The
+        person had just unticked two subjects and pressed Next.
+
+        Returned rather than thrown, and truthfully: nothing was created, and
+        something was changed.
+      */
+      if (step === 6 && answers.subjectsByWing) {
+        await this.applySubjectSelection(schoolId, answers);
+        return {
+          ok: true as const,
+          created: {},
+          message: "Which subjects this timetable teaches was updated.",
+          issues,
+        };
+      }
+      throw new BadRequestException("There is nothing to create yet.");
+    }
 
     const result = await this.importer.commitSheets(schoolId, sheets);
+    /*
+      §3.10d — a wing that has stopped teaching a class lets go of its sections.
+
+      The range said what this timetable covers, and until now narrowing it did
+      nothing at all: the §16 importer only creates, so the rows stayed attached
+      and the commit answered "everything here already exists". §3.10c stopped
+      that being silent; this is the other half — the narrowing actually takes
+      effect.
+
+      DETACHED, never deleted. `class_sections.timetable_config_id` already
+      means "which timetable teaches this cohort", and NULL already means "not
+      attached yet" (invariant 11). So the children, their class, their sections
+      and their curriculum all stay exactly where they are; one column says this
+      week no longer covers them, and widening the range again re-attaches them
+      through the very sheet that was just told to skip them. Deleting a cohort
+      is the Classes master's job, where the count of what is about to go is
+      shown first (§27.11).
+    */
+    const detached = step === 4 ? await this.detachLeavingClasses(schoolId, answers) : undefined;
     // §19: a lab with no subjects listed is GENERAL and serves everything, so
     // creating "Science Lab" without mapping Science to it produces a second
     // general-purpose room the solver will put Hindi in. The Rooms sheet has no
@@ -902,8 +1417,186 @@ export class OnboardingService {
     // the school calendar is not master data. Matched by name so pressing Next
     // twice re-dates the same terms rather than replacing them.
     if (step === 2) await this.applyTerms(schoolId, answers);
+    // §32 — which subjects each timetable in scope teaches. Not a sheet, for
+    // the same reason the terms are not: §16 is master data, and "this week
+    // does not run Chemistry" is a property of the week.
+    if (step === 6) await this.applySubjectSelection(schoolId, answers);
     this.logger.log(`Onboarding step ${step} committed for school ${schoolId}: ${JSON.stringify(result.created)}`);
-    return { ...result, issues };
+    return { ...result, issues, ...(detached ? { detached } : {}) };
+  }
+
+  /**
+   * §3.10d — let go of the class-sections a wing no longer covers.
+   *
+   * ## What it does, and the three things it refuses to do
+   *
+   * **It detaches, it does not delete.** `timetable_config_id` goes to NULL,
+   * which invariant 11 already defines as "belongs to no timetable yet". The
+   * class, its sections, its curriculum, its mappings and its children are
+   * untouched, and widening the range re-attaches them through §16.1's own
+   * repair path. That is what makes this safe enough to happen on a Next press
+   * rather than behind a typed confirmation.
+   *
+   * **It will not touch a frozen timetable** (§29.1). A published week that
+   * quietly stopped covering four classes is the failure §29.1 exists to
+   * prevent, and the guard belongs here rather than in the screen because a
+   * second door — the §24.6 interview, a future API client — would not know to
+   * ask.
+   *
+   * **It will not detach a section with PUBLISHED lessons.** Those rows are on
+   * a wall somewhere and in somebody's `substitution_log`; taking their class
+   * out of the timetable would leave lessons belonging to a cohort the
+   * timetable does not teach. Refused by NAME, and the way out is §3.14's
+   * withdrawal, which is a decision somebody makes on purpose.
+   *
+   * Draft lessons for a detached section ARE removed, in the same transaction.
+   * They are regenerated wholesale by the next Generate, and a draft card for a
+   * class this timetable no longer runs is not a lesson — it is a row the Board
+   * would draw against a section its own list no longer contains.
+   */
+  private async detachLeavingClasses(
+    schoolId: number,
+    answers: WizardAnswers & Record<string, any>,
+  ): Promise<{ sections: string[]; refused: string[] } | undefined> {
+    const year = String(answers.session?.name ?? "");
+    const shape = await this.schoolShape(schoolId, year || undefined);
+    const leaving = classesLeavingWing(answers, shape);
+    if (leaving.length === 0) return undefined;
+
+    const sections: string[] = [];
+    const refused: string[] = [];
+
+    for (const { wing, className } of leaving) {
+      const config = await this.prisma.timetableConfig.findFirst({
+        where: { name: wing }, select: { id: true, frozenAt: true, name: true },
+      });
+      if (!config) continue;
+      /*
+        Named rather than thrown. One frozen wing must not stop the others
+        letting go — §30.11's rule that a refusal is reported against the thing
+        it belongs to, not turned into a blanket failure.
+      */
+      if (config.frozenAt) {
+        refused.push(`${className} — ${config.name} is frozen`);
+        continue;
+      }
+
+      const rows = await this.prisma.classSection.findMany({
+        where: { schoolId, timetableConfigId: config.id, class: { name: className } },
+        select: { id: true, section: { select: { name: true } } },
+      });
+      if (rows.length === 0) continue;
+
+      const ids = rows.map((r) => r.id);
+      const published = await this.prisma.timetableSlot.count({
+        where: { timetableConfigId: config.id, status: "published", classSectionId: { in: ids } },
+      });
+      if (published > 0) {
+        refused.push(`${className} — ${published} published lesson(s) in ${config.name}`);
+        continue;
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        // Draft rows only: the published count above is already zero here, and
+        // `deleteMany` with the status spelled out says so at the call site.
+        await tx.timetableSlot.deleteMany({
+          where: { timetableConfigId: config.id, status: "draft", classSectionId: { in: ids } },
+        });
+        await tx.classSection.updateMany({
+          where: { id: { in: ids } }, data: { timetableConfigId: null },
+        });
+      });
+      sections.push(...rows.map((r) => `${className}-${r.section.name}`));
+      this.logger.warn(
+        `Onboarding: ${rows.length} section(s) of ${className} detached from ${config.name} (school ${schoolId})`,
+      );
+    }
+
+    if (sections.length === 0 && refused.length === 0) return undefined;
+    await this.readiness.invalidate(schoolId);
+    return { sections, refused };
+  }
+
+  /**
+   * §32 — record which subjects each wing in scope teaches.
+   *
+   * Keyed by wing NAME, like everything else in this flow: the draft names
+   * wings, the §16 importer matches wings by name, and a subject the admin has
+   * just typed has no id yet. Resolved to ids here, where both sides exist.
+   *
+   * ## "Everything ticked" stores NOTHING, on purpose
+   *
+   * Empty means "not stated", which behaves as *all* (invariant 7) — so a
+   * timetable that teaches every subject is describable two ways, and the two
+   * are indistinguishable today. They differ tomorrow: a subject added later
+   * through the Subjects master, an Excel upload or the §13.5 assistant belongs
+   * to a timetable that stated nothing, and belongs to no timetable that listed
+   * every subject it had at the time. Storing the absence is therefore the same
+   * answer with the better future, and the table ends up recording *narrowing*
+   * rather than restating the subject list once per timetable.
+   *
+   * The consequence worth knowing: once a timetable HAS narrowed, a subject
+   * added by another door is not in it until somebody ticks it here. That is
+   * the honest behaviour — the school said "these subjects" — but it is why
+   * this step lists every subject the school has rather than only the draft's.
+   *
+   * Silent for a wing the draft says nothing about: a draft written before this
+   * feature, or a school that never opened the step, must not have its existing
+   * selection deleted by pressing Next.
+   */
+  private async applySubjectSelection(schoolId: number, answers: WizardAnswers & Record<string, any>) {
+    const byWing = answers.subjectsByWing;
+    if (!byWing || typeof byWing !== "object") return;
+
+    const known = await this.prisma.subject.findMany({
+      where: { schoolId }, select: { id: true, name: true },
+    });
+    const idByName = new Map(known.map((s) => [s.name.trim().toLowerCase(), s.id]));
+
+    /*
+     * §32 — which wings to write, and why there is a fallback.
+     *
+     * The draft's own wing list when it has one, because that is what
+     * `narrowToScope` filters and it is how `?scope=` narrows a commit to one
+     * §30 pool. But it silently wrote NOTHING when the draft named no wings —
+     * and `subjectsByWing` is keyed by wing name, so that draft was a complete
+     * instruction being thrown away for want of a list it did not need.
+     *
+     * A key that names a real `timetable_config` is unambiguous; falling back
+     * to the keys is not a guess. It only ever runs when there is no wing list
+     * to narrow, so no scoped commit can widen through it.
+     */
+    const named = this.wingsIn(answers);
+    const targets = named.length > 0
+      ? named.map((w) => w.name)
+      : Object.keys(byWing as Record<string, unknown>);
+
+    for (const wingName of targets) {
+      const wanted = (byWing as Record<string, unknown>)[wingName];
+      if (!Array.isArray(wanted)) continue;
+
+      const config = await this.prisma.timetableConfig.findFirst({
+        where: { name: wingName }, select: { id: true },
+      });
+      // A wing that is not a timetable yet — step 5 has not run. Nothing to
+      // attach the selection to, and it is written again on the next Next.
+      if (!config) continue;
+
+      const ids = [...new Set(
+        wanted.map((n) => idByName.get(String(n).trim().toLowerCase())).filter((x): x is number => !!x),
+      )];
+      // Every subject the school has = no narrowing = store nothing, per above.
+      const narrows = ids.length > 0 && ids.length < known.length;
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.timetableSubject.deleteMany({ where: { timetableConfigId: config.id } });
+        if (narrows) {
+          await tx.timetableSubject.createMany({
+            data: ids.map((subjectId) => ({ timetableConfigId: config.id, subjectId, schoolId })),
+          });
+        }
+      });
+    }
   }
 
   /**
@@ -984,10 +1677,15 @@ export class OnboardingService {
    * anybody presses anything — and, on a resumed draft, is what tells them
    * their classes are already there rather than silently creating none.
    */
-  async preview(schoolId: number, userId: number, step: number) {
+  async preview(schoolId: number, userId: number, step: number, scope?: string) {
     const draft = await this.draftFor(schoolId, userId);
     if (!draft) return { ok: true, totals: { read: 0, create: 0, skip: 0, errors: 0 }, issues: [] };
-    const answers = draft.answers as WizardAnswers & Record<string, any>;
+    // §30.9 — a preview that showed other pools' rows would be a preview of a
+    // commit that is not about to happen.
+    const answers = this.narrowToScope(
+      draft.answers as WizardAnswers & Record<string, any>,
+      scope,
+    );
     const built = await this.sheetsFor(schoolId, step, answers);
     if (built.sheets.length === 0) {
       return { ok: built.issues.length === 0, totals: { read: 0, create: 0, skip: 0, errors: 0 }, issues: built.issues };

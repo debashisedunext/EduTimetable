@@ -18,6 +18,7 @@ import { Roles } from "./pages/Roles";
 import { Users } from "./pages/Users";
 import { Generate } from "./pages/Generate";
 import { Matrix } from "./pages/Matrix";
+import { MasterGrid } from "./pages/MasterGrid";
 import { Board } from "./pages/Board";
 import { Publish } from "./pages/Publish";
 import { Substitutes } from "./pages/Substitutes";
@@ -25,6 +26,7 @@ import { ExtraClasses } from "./pages/ExtraClasses";
 import { Staffing } from "./pages/Staffing";
 import { Reports } from "./pages/Reports";
 import { Wall } from "./pages/Wall";
+import { TeacherRequirement } from "./pages/TeacherRequirement";
 import { Notifications } from "./pages/Notifications";
 import { MyClasses, MyTimetable } from "./pages/MyViews";
 import { AskAi } from "./pages/AskAi";
@@ -187,6 +189,14 @@ export default function App() {
           <Route path="/readiness" element={<Readiness />} />
           <Route path="/generate" element={<Generate />} />
           <Route path="/matrix" element={<Matrix />} />
+          {/* §31 — the same week as the Matrix, at grid density and pivoted
+              five ways. Not a replacement: see the note at the top of the file. */}
+          <Route path="/master-grid" element={
+            <MasterGrid
+              canEdit={me.permissions.includes(PERMISSIONS.TIMETABLE_EDIT)}
+              canManage={me.permissions.includes(PERMISSIONS.MASTERS_MANAGE)}
+            />
+          } />
           <Route path="/board" element={<Board />} />
           <Route path="/publish" element={<Publish />} />
           <Route path="/substitutes" element={<Substitutes />} />
@@ -194,6 +204,8 @@ export default function App() {
           <Route path="/staffing" element={<Staffing />} />
           <Route path="/reports" element={<Reports me={me} />} />
           <Route path="/wall" element={<Wall />} />
+          {/* §37 — the staffing case, read-only. */}
+          <Route path="/teacher-requirement" element={<TeacherRequirement />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/my-timetable" element={<MyTimetable />} />
           <Route path="/my-classes" element={<MyClasses />} />

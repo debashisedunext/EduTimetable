@@ -9,11 +9,12 @@
  * dialog is only ever the second step.
  */
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../../api";
 import { asMessage } from "../../components";
 import {
   CLASS_LADDER, computeLoads, defaultsFor, subjectAppliesTo, subjectStartsAt, subjectSuitsClass,
-  type LoadRemedy, type MappingSuggestion, type SubjectAnswer, type Swatch,
+  type CurriculumCell, type LoadRemedy, type MappingSuggestion, type SubjectAnswer, type Swatch,
   type TeacherAnswer, type TeacherLoad,
 } from "@edutimetable/shared";
 
@@ -41,7 +42,13 @@ export interface AllocModel {
   initialsOf: Map<string, string>;
   /** Minutes in one period, for this wing (§28). */
   minutes: number;
-  cells: Array<{ className: string; subjectName: string; periodsPerWeek: number; maxPerDay: number }>;
+  /**
+   * The curriculum cells, as `CurriculumCell` rather than a structural copy of
+   * four of its fields. The copy silently stopped matching when §31.10 added
+   * the block columns — a shape written out twice is a shape that drifts, and
+   * this one drifted the first time the original grew.
+   */
+  cells: CurriculumCell[];
   mappings: MappingSuggestion[];
   classTeachers: Array<{ classSection: string; employeeCode: string }>;
   rooms: string[];
@@ -495,6 +502,377 @@ export interface CellSave {
   classTeacher?: string;
   /** §28 — the wing's period length, if it was changed here. */
   minutes?: number;
+  /**
+   * §31.10 — how this subject is blocked for this class.
+   *
+   * A CLASS fact like the periods beside it (`class_subjects` is keyed by
+   * class), so it applies to every section — which is why the dialog says so
+   * next to the control rather than leaving it to be discovered.
+   */
+  block?: { size: number; perWeek: number | null; mayCrossBreak: boolean };
+}
+
+/**
+ * §31.15 — the selected cell's fields, in the toolbar rather than over the grid.
+ *
+ * ## Why this replaced the dialog on click
+ *
+ * A dialog is right for a decision you make once and confirm. This grid is not
+ * that: somebody works across a row — Maths 6, English 6, Science 5 — and a
+ * popup that opens, takes a value and closes costs two clicks and a re-read of
+ * where they were for every cell. Worse, it covers the neighbours, which is the
+ * same argument §31.6 made for the strip being a strip and not a popover.
+ *
+ * So clicking a cell now SELECTS it, the number is typed straight into the
+ * grid, and everything the popup held appears here — in the bar the Filter
+ * already lives in, above a grid that stays entirely visible.
+ *
+ * ## Applied immediately, deliberately
+ *
+ * There is no Save in this bar. The dialog had one because it batched several
+ * fields behind a confirmation; a toolbar that asked you to confirm each field
+ * would be a dialog wearing a different shape. Every edit lands in the draft as
+ * it is made — exactly as typing a digit into a cell already did — and the
+ * Master Grid's own Save is what writes it to the school.
+ *
+ * The refusals are the dialog's, unchanged and computed the same way: a class
+ * over its week and a teacher over their cap are both refused with the reason,
+ * through the same `computeLoads` the rail uses, so this bar and the chip two
+ * inches above it cannot disagree.
+ */
+export function CellBar({
+  m, answers, section, subject, periodsOf, mappingIndexOf, classTeacherOf,
+  onChange, onRemove, onMore, compact = false, block = null, lockedBy = null,
+}: {
+  m: AllocModel;
+  answers: Record<string, any>;
+  section: string;
+  subject: string;
+  periodsOf: (className: string, subject: string) => number;
+  mappingIndexOf: (section: string, subject: string) => number;
+  classTeacherOf: (section: string) => string;
+  /** One field at a time — see "Applied immediately" above. */
+  onChange: (next: CellSave) => void;
+  onRemove: () => void;
+  /** The full dialog: the impact preview and the §4.10 merged-group detail,
+   *  which genuinely do not fit in a bar. */
+  onMore: () => void;
+  compact?: boolean;
+  /**
+   * §31.19 — set when the selected cell is a §4.9 block column.
+   *
+   * The subject, the teacher, the room and the class-teacher role are then not
+   * this bar's to change: a block has three of each at once, and they are set
+   * on Split Electives. The bar disables them and says so rather than offering
+   * controls that would silently write nothing.
+   */
+  block?: { id: number; name: string; periodsPerWeek: number;
+            options: Array<{ subject: string; teacher: string; room: string }> } | null;
+  /**
+   * §31.19 — set when the selected cell is an ordinary subject that a block
+   * already teaches to this class. It HAS a teacher and a room; they just
+   * belong to the block's option rather than to a curriculum row here.
+   */
+  lockedBy?: string | null;
+}) {
+  const className = section.replace(/-[^-]+$/, "");
+  const idx = mappingIndexOf(section, subject);
+  const existing = idx >= 0 ? m.mappings[idx] : null;
+  const merged = !!existing?.merged && existing.classSections.length > 1;
+  const periods = periodsOf(className, subject);
+  const code = existing?.employeeCode ?? "";
+  const room = existing?.room ?? "";
+  const isCT = !!existing && classTeacherOf(section) === existing.employeeCode;
+  const cell = m.cells.find((c) => c.className === className && c.subjectName === subject);
+  const blockSize = cell?.consecutiveBlockSize ?? 1;
+  const swatch = m.swatches[subject];
+  const [refusal, setRefusal] = useState<string | null>(null);
+  /* Cleared when the selection moves: a refusal is about the edit that was
+     attempted, and carrying it to the next cell reads as that cell refusing. */
+  useEffect(() => setRefusal(null), [section, subject]);
+
+  /**
+   * §31.19 — whether this bar may write anything but the number.
+   *
+   * ONE flag, read by every control below, rather than each of them repeating
+   * the two conditions: a control that forgot one would be an enabled select
+   * writing a mapping for a subject the block already teaches, which is the
+   * state this whole change exists to stop.
+   */
+  const owned = block !== null || lockedBy !== null;
+  const ownedBy = block ? block.name : lockedBy;
+  const ownedWhy = block
+    ? `${block.name} runs ${block.options.length} lessons at once — their subjects, teachers and rooms are set on Split Electives.`
+    : `${subject} is taught inside ${lockedBy}. Its teacher and room belong to that block's option.`;
+
+  /** The same eligibility rule the dialog applies, for the same reasons. */
+  const eligible = m.staff.filter((t) =>
+    t.subjects.includes(subject) && !t.guest
+    && (t.classes.length === 0 || t.classes.includes(className)));
+  const offered = eligible.length === 0
+    ? m.staff
+    : [...eligible, ...m.staff.filter((t) => t.code === code && !eligible.some((e) => e.code === t.code))];
+
+  /** What a proposed teacher would be carrying — the rail's own arithmetic. */
+  const loadWith = (nextCode: string, nextPeriods: number) => {
+    const next: MappingSuggestion[] = idx >= 0
+      ? (nextCode
+        ? m.mappings.map((x, i) => (i === idx ? { ...x, employeeCode: nextCode } : x))
+        : m.mappings.filter((_, i) => i !== idx))
+      : (nextCode
+        ? [...m.mappings, { employeeCode: nextCode, subjectName: subject, classSections: [section], periodsPerWeek: nextPeriods }]
+        : m.mappings);
+    const cells = m.cells
+      .filter((c) => !(c.className === className && c.subjectName === subject))
+      .concat(nextPeriods > 0
+        ? [{ className, subjectName: subject, periodsPerWeek: nextPeriods, maxPerDay: Math.max(1, Math.ceil(nextPeriods / m.days)) }]
+        : []);
+    const after = computeLoads({
+      wings: m.wings as never, curriculum: cells, mappings: next,
+      teachers: (answers.teachers ?? []) as TeacherAnswer[], subjects: m.subjects,
+      daysByWing: m.daysByWing,
+    });
+    return { mappings: next, byCode: new Map(after.map((t) => [t.employeeCode, t])) };
+  };
+
+  const setTeacher = (nextCode: string) => {
+    const preview = loadWith(nextCode, periods);
+    const now = nextCode ? preview.byCode.get(nextCode) : undefined;
+    if (now && now.used > now.cap) {
+      setRefusal(`${now.name} would be on ${now.used} against a limit of ${now.cap}.`);
+      return;
+    }
+    setRefusal(null);
+    onChange({ className, mappings: preview.mappings });
+    // A class teacher has to be somebody: clearing the teacher clears the role
+    // rather than leaving it pointing at an employee code no longer in the cell.
+    if (isCT && !nextCode) onChange({ className, classTeacher: "" });
+  };
+
+  const setRoom = (next: string) => {
+    if (idx < 0) return;
+    onChange({
+      className,
+      mappings: m.mappings.map((x, i) => (i === idx ? { ...x, room: next || undefined } : x)),
+    });
+  };
+
+  const label: React.CSSProperties = {
+    font: "800 8.5px/1 Inter, sans-serif", letterSpacing: "0.06em",
+    textTransform: "uppercase", color: "var(--ink-faint)", marginBottom: 3, display: "block",
+  };
+  const box: React.CSSProperties = {
+    padding: "4px 6px", border: "1px solid var(--line)", borderRadius: 6,
+    fontSize: 12, background: "var(--paper)", color: "var(--ink)",
+  };
+  const field = (name: string, control: React.ReactNode) => (
+    <label style={{ display: "block" }}>
+      <span style={label}>{name}</span>
+      {control}
+    </label>
+  );
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-end", gap: 8, flexWrap: "wrap",
+      padding: "4px 8px", borderRadius: 8,
+      background: "var(--offwhite)", border: "1px solid var(--line)",
+    }}>
+      {/* What is being edited, in the subject's own colour (§10.5) — a bar of
+          controls with no subject on it is a bar you have to look away from
+          the grid to make sense of. */}
+      <span style={{
+        font: "800 12px/1.5 Inter, sans-serif", padding: "3px 8px", borderRadius: 6,
+        whiteSpace: "nowrap", alignSelf: "center",
+        background: swatch?.bg ?? "var(--steel-pale)", color: swatch?.fg ?? "var(--brand)",
+      }}>
+        {section} · {subject}
+      </span>
+      {/*
+        §31.19 — why the controls to the right are grey.
+
+        Said here, once, beside the thing it is about. A row of disabled selects
+        with no explanation is a bar that reads as broken, and the reader's next
+        move is to try each one.
+      */}
+      {owned && (
+        <span style={{
+          font: "600 11px/1.4 Inter", padding: "3px 8px", borderRadius: 6, alignSelf: "center",
+          background: "var(--steel-pale)", color: "var(--brand-dark)", whiteSpace: "nowrap",
+        }} title={ownedWhy}>
+          🔒 {block ? "elective block" : `in ${ownedBy}`}
+        </span>
+      )}
+
+      {/*
+        §31.16 — the periods are NOT here.
+
+        They are typed into the cell, which is a real field now. A second box
+        holding the same number is a second answer to "where do I change this?",
+        and the one further from the grid always wins the argument by being
+        easier to see — which is how the cell came to look read-only in the
+        first place. What is left in this bar is exactly what the cell cannot
+        show: the teacher, the room, the block and the class-teacher role.
+
+        The count is still stated, because the refusals below quote it and a
+        reason that names a number nothing on the bar shows is a reason nobody
+        can check.
+      */}
+      <span style={{ fontSize: 11.5, color: "var(--ink-soft)", alignSelf: "center", whiteSpace: "nowrap" }}
+        title={`A CLASS fact — ${className} has ${m.classes.find((c) => c.className === className)?.sections.length ?? 1} section(s) and they all get this`}>
+        <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>
+          {block ? block.periodsPerWeek : periods}
+        </strong>
+        {(block ? block.periodsPerWeek : periods) === 1 ? " period" : " periods"} a week
+        <span style={{ color: "var(--ink-faint)" }}>
+          {/* §31.19 — the one thing a block cell CAN change, so the bar says
+              where: this is the number the grid exists to make add up, and
+              sending somebody to another screen for it is what made them type
+              it into the French column instead. */}
+          {block ? " · type in the cell — it updates Split Electives" : " · type in the cell"}
+        </span>
+      </span>
+
+      {field("Teacher", (
+        <select value={owned ? "" : code} onChange={(e) => setTeacher(e.target.value)}
+          style={{ ...box, maxWidth: compact ? 150 : 200 }}
+          disabled={merged || owned}
+          title={owned ? ownedWhy : merged
+            ? "Taught as one merged group (§4.10) — change it in the full editor, where the other sections are listed"
+            : undefined}>
+          {/* §31.19 — a block has several teachers at once, so the empty
+              option says how many rather than "Nobody yet", which would be
+              false in the most misleading direction. */}
+          <option value="">
+            {block
+              ? `${block.options.length} teacher${block.options.length === 1 ? "" : "s"} — on Split Electives`
+              : lockedBy ? `set in ${lockedBy}` : "Nobody yet"}
+          </option>
+          {/* The load in the option text, exactly as the dialog shows it: the
+              question anybody picking a teacher is actually asking is "have
+              they got room?", and a name alone cannot answer it. */}
+          {offered.map((t) => {
+            const l = m.byCode.get(t.code);
+            return (
+              <option key={t.code} value={t.code}>
+                {t.name} ({m.initialsOf.get(t.code) ?? t.code}) — {l?.used ?? 0}/{l?.cap ?? 0}
+                {t.subjects.includes(subject) ? "" : " \u00b7 not listed for this subject"}
+              </option>
+            );
+          })}
+        </select>
+      ))}
+
+      {field("Room", (
+        <input value={owned ? "" : room} onChange={(e) => setRoom(e.target.value)}
+          disabled={idx < 0 || owned}
+          placeholder={owned ? (block ? `${block.options.length} rooms` : "in the block") : idx < 0 ? "—" : "Home room"}
+          title={owned ? ownedWhy : undefined}
+          style={{ ...box, width: compact ? 84 : 110 }} />
+      ))}
+
+      {field("Together", (
+        <select
+          value={blockSize}
+          onChange={(e) => {
+            const size = Number(e.target.value);
+            onChange({
+              className,
+              block: {
+                size,
+                perWeek: size > 1 ? (cell?.consecutiveBlocksPerWeek ?? null) : null,
+                mayCrossBreak: size > 1 ? Boolean(cell?.blockMayCrossBreak) : false,
+              },
+            });
+          }}
+          style={{ ...box, width: 74 }}
+          /* A block needs a curriculum row to be written onto — `setBlock`
+             returns early without one, so an enabled control here would be a
+             control that silently does nothing. Give the cell periods first. */
+          disabled={periods <= 0 || owned}
+          title={owned ? ownedWhy : periods <= 0
+            ? "Give this subject some periods first — a block is a property of the curriculum row."
+            : "§4.8 — how many periods of this subject run back to back. Placed atomically: all of them, or none."}>
+          <option value={1}>single</option>
+          <option value={2}>double</option>
+          <option value={3}>triple</option>
+        </select>
+      ))}
+
+      {/* Only once there is a block for a break to fall inside. A tick that can
+          never mean anything is a tick people try to work out. */}
+      {blockSize > 1 && (
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, alignSelf: "center", whiteSpace: "nowrap" }}
+          title="Yes — one period may sit before lunch and one after. It is permission, not a requirement.">
+          <input type="checkbox" checked={Boolean(cell?.blockMayCrossBreak)}
+            onChange={(e) => onChange({
+              className,
+              block: { size: blockSize, perWeek: cell?.consecutiveBlocksPerWeek ?? null, mayCrossBreak: e.target.checked },
+            })} />
+          break inside
+        </label>
+      )}
+
+      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, alignSelf: "center", whiteSpace: "nowrap" }}
+        title="Class teacher for this section. A section has one, so ticking here unticks whoever held it.">
+        <input type="checkbox" checked={!owned && isCT} disabled={!code || owned}
+          onChange={(e) => onChange({ className, classTeacher: e.target.checked ? code : "" })} />
+        class tr.
+      </label>
+
+      {/*
+        §31.19 — a block cell's ⋯ goes to the screen that owns it.
+
+        The full editor edits a curriculum row and a mapping, neither of which a
+        block has; opening it here would be a form with nothing behind it.
+      */}
+      {block ? (
+        <Link to="/electives" className="btn"
+          style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center", textDecoration: "none" }}
+          title="Options, teachers, rooms, who attends and when it runs — all on Split Electives">
+          ⋯ Split Electives
+        </Link>
+      ) : (
+        <button className="btn" onClick={onMore} style={{ padding: "4px 8px", fontSize: 11.5, alignSelf: "center" }}
+          title="The full editor — what this change does to every teacher's week, and the sections a merged group covers">
+          ⋯ More
+        </button>
+      )}
+      {/*
+        §31.19 — the fix for a row that clashes with a block.
+
+        Same button, same confirmation (§27.15's `RemoveSubject`), different
+        words: here it is not "this class does not take French" — it does, five
+        periods a week, inside the block — it is "these extra periods are being
+        taught on top of it". Offered rather than applied, because it deletes a
+        row somebody entered and twenty-seven of them are already in the field.
+
+        A block cell gets neither: its members are Split Electives' to change.
+      */}
+      {!block && (periods > 0 || idx >= 0) && (
+        <button className="btn" onClick={onRemove}
+          style={{
+            padding: "4px 8px", fontSize: 11.5, alignSelf: "center",
+            color: "var(--signal)",
+            ...(lockedBy && periods > 0 ? { borderColor: "var(--signal)", fontWeight: 700 } : {}),
+          }}
+          title={lockedBy && periods > 0
+            ? `${subject} is already taught inside ${lockedBy}. These ${periods} periods are on top of it — this deletes them.`
+            : "This class does not take this subject — deletes the curriculum row, not just its periods"}>
+          {lockedBy && periods > 0
+            ? `✕ Clear ${periods} duplicate period${periods === 1 ? "" : "s"}`
+            : "✕ Not taught"}
+        </button>
+      )}
+
+      {refusal && (
+        <span style={{
+          fontSize: 11.5, color: "var(--signal)", alignSelf: "center",
+          maxWidth: 320, lineHeight: 1.3,
+        }}>{refusal}</span>
+      )}
+    </div>
+  );
 }
 
 export function CellDialog({ m, answers, section, subject, onClose, onSave, onRemove,
@@ -523,6 +901,18 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
   const [room, setRoom] = useState(existing?.room ?? "");
   const [isCT, setIsCT] = useState(!!existing && classTeacherOf(section) === existing.employeeCode);
   const [minutes, setMinutes] = useState(m.minutes);
+  /**
+   * §31.10 — consecutive blocks, at last reachable from the screen.
+   *
+   * The columns have existed since §4.8 and the solver has placed blocks
+   * atomically all along; the Excel Curriculum sheet has carried Block Size and
+   * Blocks/Week since the importer shipped. What was missing was any way to say
+   * it here, so a school not using spreadsheets could not.
+   */
+  const cell = m.cells.find((c) => c.className === className && c.subjectName === subject);
+  const [blockSize, setBlockSize] = useState(cell?.consecutiveBlockSize ?? 1);
+  const [blocksPerWeek, setBlocksPerWeek] = useState<number | null>(cell?.consecutiveBlocksPerWeek ?? null);
+  const [crossBreak, setCrossBreak] = useState(Boolean(cell?.blockMayCrossBreak));
   /** §27 — start narrow, widen on request. See the note by the select. */
   const [showAll, setShowAll] = useState(false);
 
@@ -616,6 +1006,13 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
     const currentCT = classTeacherOf(section);
     if (isCT && code) next.classTeacher = code;
     else if (!isCT && currentCT === oldCode && currentCT) next.classTeacher = "";
+    // Only when something about the block actually moved — an unchanged value
+    // written back would churn the draft and mark the step dirty for nothing.
+    if (blockSize !== (cell?.consecutiveBlockSize ?? 1)
+      || blocksPerWeek !== (cell?.consecutiveBlocksPerWeek ?? null)
+      || crossBreak !== Boolean(cell?.blockMayCrossBreak)) {
+      next.block = { size: blockSize, perWeek: blocksPerWeek, mayCrossBreak: crossBreak };
+    }
     onSave(next);
   };
 
@@ -678,6 +1075,97 @@ export function CellDialog({ m, answers, section, subject, onClose, onSave, onRe
             much time a subject gets — and the label says whose setting it is,
             rather than implying the change is local.
           */}
+          {/*
+            §31.10 — consecutive periods, and whether a break may fall inside
+            one.
+
+            Only offered once the class actually has periods: a block is a shape
+            for teaching that exists, and a "2-period block" on a subject nobody
+            is taught is a number with nothing to apply to.
+
+            A CLASS fact, said out loud — `class_subjects` is keyed by class, so
+            this is every section of Pre-Nursery at once, exactly like the
+            periods above it.
+          */}
+          {periods > 0 && (
+            <Field label="Consecutive periods">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <select
+                  value={blockSize}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setBlockSize(n);
+                    // Clearing with the block, so the two companions never
+                    // outlive it — the same rule the API and the importer
+                    // apply on write.
+                    if (n <= 1) { setBlocksPerWeek(null); setCrossBreak(false); }
+                  }}
+                  style={{
+                    width: 150, padding: "7px 9px", border: "1px solid var(--line)", borderRadius: 8,
+                    fontSize: 12.5, background: "var(--paper)", color: "var(--ink)",
+                  }}
+                >
+                  <option value={1}>Single periods</option>
+                  <option value={2}>Double (2 together)</option>
+                  <option value={3}>Triple (3 together)</option>
+                  <option value={4}>Four together</option>
+                </select>
+                {blockSize > 1 && (
+                  <>
+                    <select
+                      value={blocksPerWeek ?? ""}
+                      onChange={(e) => setBlocksPerWeek(e.target.value === "" ? null : Number(e.target.value))}
+                      style={{
+                        width: 150, padding: "7px 9px", border: "1px solid var(--line)", borderRadius: 8,
+                        fontSize: 12.5, background: "var(--paper)", color: "var(--ink)",
+                      }}
+                    >
+                      {/* Blank means "as many as fit", which is what the solver
+                          does with a null — never a hidden default of 1. */}
+                      <option value="">as many as fit</option>
+                      {Array.from({ length: Math.floor(periods / blockSize) }, (_, i) => i + 1).map((n) => (
+                        <option key={n} value={n}>{n} block{n === 1 ? "" : "s"} a week</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                      {(() => {
+                        const blocks = blocksPerWeek ?? Math.floor(periods / blockSize);
+                        const singles = periods - blocks * blockSize;
+                        return `${blocks} × ${blockSize}${singles > 0 ? ` + ${singles} single${singles === 1 ? "" : "s"}` : ""} of ${periods}`;
+                      })()}
+                    </span>
+                  </>
+                )}
+              </div>
+              {blockSize > 1 && (
+                <label style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, marginTop: 9,
+                  fontSize: 12.2, color: "var(--ink-soft)", lineHeight: 1.5, cursor: "pointer",
+                }}>
+                  <input type="checkbox" checked={crossBreak}
+                    onChange={(e) => setCrossBreak(e.target.checked)}
+                    style={{ marginTop: 2 }} />
+                  <span>
+                    <strong style={{ color: "var(--ink)" }}>A break may fall inside the block</strong>
+                    <span style={{ display: "block" }}>
+                      {/* The exact meaning, because "allow" and "require" are
+                          one word apart and only one of them is true: this
+                          WIDENS where the block may go. A block that fits
+                          inside an unbroken run still lands there. */}
+                      {crossBreak
+                        ? "One period either side of lunch or the short bell is allowed — not required, so it will still sit inside an unbroken run when it can."
+                        : "The periods must run without a break between them."}
+                    </span>
+                  </span>
+                </label>
+              )}
+              <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 7, lineHeight: 1.5 }}>
+                Applies to every section of {className} — periods and their shape are a class fact.
+                The solver places a block whole or not at all.
+              </div>
+            </Field>
+          )}
+
           <Field label="Period length">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}
@@ -1281,6 +1769,150 @@ export function RemoveSubject({ configId, className, subjectName, sectionCount, 
             {busy ? "Removing…" : `Remove ${subjectName}`}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * §31.19a — clear every curriculum row a §4.9 block already teaches.
+ *
+ * The per-cell ✕ is right for one; the reference school has twenty-seven across
+ * eight blocks, and a Readiness score that needs twenty-seven confirmations is
+ * a score nobody reaches.
+ *
+ * **It deletes the SERVER rows, not just the draft.** Check 1 counts what is in
+ * the database, so a grid that only tidied its own plan would go on showing 0%
+ * and the person who pressed the button would have no way to tell why. The
+ * draft is cleaned by the caller afterwards, or the §16 importer would write
+ * every row straight back on the next Save.
+ *
+ * Every row is listed with its periods and the block that owns it — §27.11's
+ * rule that a count and its delete are declared together, so the confirmation
+ * cannot under-report what it is about to do. Reuses the same
+ * `/allocation-cell/delete` endpoint the single ✕ uses: one call per pair, not
+ * a new bulk route, because the rule about what a delete does belongs in one
+ * place on the server.
+ */
+export function ClearDuplicates({ rows, configId, onDone, onClose }: {
+  rows: Array<{ className: string; subject: string; periods: number; blockName: string }>;
+  /** Absent until the wing is committed — then there is nothing saved to delete. */
+  configId?: number;
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(0);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const total = rows.reduce((n, r) => n + r.periods, 0);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (configId !== undefined) {
+        /*
+          Sequential, not `Promise.all`. Each delete runs inside its own
+          transaction on the same class rows, and firing twenty-seven at a
+          server that is also recomputing readiness is how a deadlock gets
+          found by a school rather than here.
+        */
+        for (const r of rows) {
+          try {
+            await api(`/timetable-configs/${configId}/allocation-cell/delete`, {
+              method: "POST",
+              body: JSON.stringify({ className: r.className, subjectName: r.subject }),
+            });
+          } catch (e) {
+            /*
+              A 404 here is "that class or subject is not committed in this
+              timetable yet", which is the ordinary case for a row that exists
+              only in the draft — and the draft is cleaned by the caller either
+              way. Aborting the whole run over it would leave the earlier rows
+              deleted and the plan untouched, which is the one outcome worse
+              than doing nothing. Anything else still stops.
+            */
+            if (!/not found|no class/i.test(asMessage(e))) throw e;
+          }
+          setDone((n) => n + 1);
+        }
+      }
+      onDone();
+    } catch (e) {
+      // Named, and the draft is NOT cleaned: some rows are gone and some are
+      // not, so the honest thing is to leave the grid showing what is left and
+      // let the button be pressed again. Every delete is idempotent.
+      setError(asMessage(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Clear duplicate periods"
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 500, background: "rgba(11,31,68,.45)",
+        display: "grid", placeItems: "center", padding: 18,
+      }}>
+      <div style={{
+        background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14,
+        boxShadow: "0 24px 64px rgba(11,31,68,.3)", width: "min(520px,100%)",
+        maxHeight: "88vh", display: "flex", flexDirection: "column",
+      }}>
+        <header style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--line)" }}>
+          <h3 style={{ margin: 0, fontFamily: "Fraunces, Georgia, serif", fontSize: 18 }}>
+            Clear {total} duplicate period{total === 1 ? "" : "s"}?
+          </h3>
+          <p style={{ fontSize: 12.3, color: "var(--ink-soft)", margin: "6px 0 0" }}>
+            Each of these subjects is already taught inside an elective block, so these curriculum
+            rows are the same lessons counted a second time. Deleting them leaves the block —
+            and the children&rsquo;s teaching — exactly as it is.
+          </p>
+        </header>
+
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "10px 18px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.3 }}>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={`${r.className}::${r.subject}`}>
+                  <td style={{ padding: "3px 0", whiteSpace: "nowrap" }}><strong>{r.className}</strong> {r.subject}</td>
+                  <td style={{ padding: "3px 8px", textAlign: "right", fontFamily: "var(--font-mono, monospace)" }}>
+                    {r.periods}
+                  </td>
+                  <td style={{ padding: "3px 0", color: "var(--ink-faint)", fontSize: 11 }}>
+                    in {r.blockName}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <footer style={{
+          borderTop: "1px solid var(--line)", padding: "11px 18px",
+          display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
+        }}>
+          <span style={{ flex: 1, minWidth: 160, fontSize: 11.5 }}>
+            {error
+              ? <span style={{ color: "var(--signal)" }}>{error}</span>
+              : busy
+                ? <span style={{ color: "var(--ink-faint)" }}>{done} of {rows.length} cleared…</span>
+                : <span style={{ color: "var(--ink-faint)" }}>{rows.length} curriculum row(s)</span>}
+          </span>
+          <button className="btn" style={{ fontSize: 12.5, border: "1px solid var(--line)" }}
+            disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" style={{ fontSize: 12.5 }} disabled={busy} onClick={run}>
+            {busy ? "Clearing…" : `Clear ${total} period${total === 1 ? "" : "s"}`}
+          </button>
+        </footer>
       </div>
     </div>
   );

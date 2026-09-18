@@ -1,23 +1,22 @@
+import { Navigate } from "react-router-dom";
+
 /**
- * §8.2/§8.3 — the Allocation grid, as its own page.
+ * §31.13 — `/allocation` now points at where the allocation actually is.
  *
- * The grid is step 9 of the guided setup (§27), and it stays there rather than
- * being ported to a second component. That is deliberate: it works on the guided
- * setup's draft answers and commits through the §16 importer, which is the one
- * path that writes curriculum and mappings. A standalone copy reading and
- * writing those rows directly would be a second writer over the same data — the
- * thing every other part of this codebase goes out of its way not to have.
+ * It used to be `<GuidedSetup startAt={9} />`: the guided setup opened on its
+ * Allocation step. That step is gone — curriculum and mappings are entered on
+ * the Master Grid's **Lesson Grid**, which is the same `StepAllocation`
+ * component embedded there (§31.10) rather than a second editor. So the wizard
+ * runs School → … → Rooms → Settings, and Settings offers the door across.
  *
- * §27.12 is what makes opening it directly sensible: `GET /onboarding/session`
- * falls back to answers rebuilt from the school itself, so a school that
- * finished its setup months ago opens this and sees its own curriculum rather
- * than an empty draft.
+ * Kept as a redirect rather than deleted. `ClassLessons` links here, the nav
+ * entry pointed here for months, and people bookmark screens — a route that
+ * quietly lands somebody where the thing they wanted now lives is worth more
+ * than a 404 that is technically tidier.
+ *
+ * `replace`, so Back goes to wherever they came from rather than bouncing
+ * through this redirect again.
  */
-import { GuidedSetup } from "./GuidedSetup";
-
-/** Step 9 of the guided setup (§28's ten-step scheme) — the Allocation grid. */
-const ALLOCATION_STEP = 9;
-
 export function AllocationEntry() {
-  return <GuidedSetup startAt={ALLOCATION_STEP} />;
+  return <Navigate to="/master-grid?tab=lesson" replace />;
 }

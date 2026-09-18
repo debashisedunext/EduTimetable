@@ -2,6 +2,17 @@ import { PrismaClient } from "@prisma/client";
 import { DEFAULT_ROLES } from "@edutimetable/shared";
 import { TenantContextService } from "../src/tenant/tenant-context.service";
 import { withSchoolScope } from "../src/prisma/school-scope";
+/*
+  From `src/`, not from `prisma/`.
+
+  The seed may reach into `src` (it already does for the tenant context), but
+  nothing in `src` may reach into `prisma/`: doing so pulls that directory into
+  the TypeScript build root, which moves every compiled file down a level —
+  `dist/main.js` becomes `dist/src/main.js` — and the generated control client's
+  relative path stops resolving. The API then dies at boot with
+  MODULE_NOT_FOUND, nowhere near the import that caused it.
+*/
+import { CBSE_BOARD, CBSE_VERSION, cbseCatalogRows } from "../src/masters/cbse-catalog";
 
 const SCHOOL_ID = 1;
 
@@ -72,8 +83,40 @@ async function main() {
   console.log("Seed complete: roles, permissions, ERP role mappings (school 1).");
 }
 
+/**
+ * §35 — the board subject catalogue.
+ *
+ * Written with the **base** client, not the scoped one: `board_subject_catalog`
+ * is the one master with no `school_id` — it is reference data, the same for
+ * every school in the country, and invariant 18 scopes rows a school owns.
+ * Running it through `withSchoolScope` would stamp a column that is not there.
+ *
+ * Outside `runAs` for the same reason: there is no school this belongs to.
+ *
+ * Idempotent by `(board, version, name)`, and rows that have left the
+ * catalogue are removed — so correcting the table is an edit to
+ * `cbse-catalog.ts` followed by a re-seed, which is how "we will update the
+ * master table in future" actually happens.
+ */
+async function seedCatalog() {
+  const rows = cbseCatalogRows();
+  for (const r of rows) {
+    await base.boardSubjectCatalog.upsert({
+      where: { board_version_name: { board: r.board, version: r.version, name: r.name } },
+      create: r,
+      update: r,
+    });
+  }
+  const { count } = await base.boardSubjectCatalog.deleteMany({
+    where: { board: CBSE_BOARD, version: CBSE_VERSION, name: { notIn: rows.map((r) => r.name) } },
+  });
+  console.log(`Seed complete: ${rows.length} ${CBSE_BOARD} ${CBSE_VERSION} catalogue subjects` +
+    (count > 0 ? ` (${count} withdrawn)` : ""));
+}
+
 tenant
   .runAs({ schoolId: SCHOOL_ID, origin: "seed" }, main)
+  .then(seedCatalog)
   .catch((e) => {
     console.error(e);
     process.exit(1);

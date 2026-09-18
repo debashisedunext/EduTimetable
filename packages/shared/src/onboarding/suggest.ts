@@ -12,7 +12,7 @@
  */
 import { LUNCH_LABEL } from "../import/contract";
 import type { RawSheet } from "../import/types";
-import { CLASS_LADDER, planClasses, type WingAnswer } from "./wizard";
+import { CLASS_LADDER, ladderSequence, planClasses, type WingAnswer } from "./wizard";
 
 // ────────────────────────────────────────────────────────────── subjects
 
@@ -46,6 +46,34 @@ export interface SubjectAnswer {
    * the school telling us the answer.
    */
   classes?: string[];
+}
+
+/**
+ * §32 — which subjects a WING teaches, read out of the draft.
+ *
+ * `subjectsByWing` is keyed by wing name and holds subject NAMES, for the same
+ * reason every other cross-reference in this flow does (§27.9): the draft
+ * describes a school that may not exist yet, so there are no ids to key on.
+ *
+ * **Absent means "not stated", which is all of them** (invariant 7) — not
+ * none. Every draft written before this feature has no entry, and every wing
+ * somebody has not opened the step for has none either; reading that as "this
+ * timetable teaches nothing" would empty the Lesson Grid of a school that had
+ * simply never been asked.
+ *
+ * One definition because three places need the same answer and each would get
+ * the absent case wrong differently: the Subjects step's tick boxes, the Lesson
+ * Grid's columns, and the commit that writes `timetable_subjects`.
+ */
+export function subjectsForWing(
+  subjects: SubjectAnswer[],
+  byWing: Record<string, unknown> | undefined | null,
+  wingName: string | null | undefined,
+): SubjectAnswer[] {
+  const stated = wingName ? (byWing ?? {})[wingName] : undefined;
+  if (!Array.isArray(stated)) return subjects;
+  const want = new Set(stated.map((n) => String(n).trim().toLowerCase()));
+  return subjects.filter((s) => want.has(s.name.trim().toLowerCase()));
 }
 
 /**
@@ -290,7 +318,9 @@ const CO_SCHOLASTIC = (priority: number): SubjectDefaults =>
  *    range, so it is offered everywhere, which is the right failure: a missing
  *    proposal is corrected in one click, a wrong one only if somebody notices.
  */
-const AT = (className: string): number => CLASS_LADDER.indexOf(className as never) + 1;
+/** The ladder position, which is what `classes.sequence` holds — one
+ *  definition, in `wizard.ts`, since three writers now depend on it. */
+const AT = ladderSequence;
 /** Class 1 — where formal subject teaching starts, above the pre-primary four. */
 const PRIMARY = AT("Class 1");
 /** Class 5 — the usual entry point for a third language. */
@@ -422,6 +452,20 @@ export interface CurriculumCell {
   subjectName: string;
   periodsPerWeek: number;
   maxPerDay: number;
+  /**
+   * §31.10 — consecutive blocks, carried through the DRAFT at last.
+   *
+   * `class_subjects.consecutive_block_size` and `consecutive_blocks_per_week`
+   * have existed since §4.8, the solver has placed them atomically since, and
+   * the Excel Curriculum sheet has had the columns all along — but this shape
+   * carried four fields, so the guided setup could not represent them and the
+   * cell dialog had nothing to edit. Optional, so a draft written before this
+   * reads back as "no block", which is what it meant.
+   */
+  consecutiveBlockSize?: number;
+  consecutiveBlocksPerWeek?: number | null;
+  /** §31.10 — may the block run through a break? Meaningless without a size. */
+  blockMayCrossBreak?: boolean;
 }
 
 export interface CurriculumPlan {
@@ -497,7 +541,7 @@ export function suggestCurriculum(
         // has declared this subject's classes: it has answered the question the
         // rung was estimating.
         const fits = (s.classes ?? []).length > 0 || subjectSuitsClass(s.name, c.sequence);
-        return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab) };
+        return { subjectName: s.name, weight: fits ? (w ? w[band] : 2) : 0, isLab: Boolean(s.isLab), doubles: Boolean(s.requiresDoublePeriod) };
       })
       .filter((x) => x.weight > 0);
 
@@ -520,7 +564,7 @@ export function suggestCurriculum(
     if (wanted.length === 0) {
       for (const s of offered) {
         const w = WEIGHTS.find((x) => x.match.test(s.name));
-        wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab) });
+        wanted.push({ subjectName: s.name, weight: w ? Math.max(1, w[band]) : 2, isLab: Boolean(s.isLab), doubles: Boolean(s.requiresDoublePeriod) });
       }
     }
 
@@ -603,6 +647,23 @@ export function suggestCurriculum(
         subjectName: s.subjectName,
         periodsPerWeek: s.periods,
         /**
+         * §31.10 — `subjects.requires_double_period`, finally connected.
+         *
+         * That flag has been on the Subjects master, in the Excel importer and
+         * in the AI drafting tool since §4.8, and **the solver never read it**:
+         * ticking "Requires Double Period" on Mathematics did nothing anywhere.
+         * The column that the solver does read is
+         * `class_subjects.consecutive_block_size`, which nothing was setting.
+         *
+         * So the flag SEEDS the curriculum row — §27.15's pattern, where the
+         * ladder shapes a proposal and never becomes a rule. A school can still
+         * set any block size it likes on the cell; this only means a subject
+         * that says it wants doubles arrives proposing one, instead of being
+         * ignored. Only when the week can hold a pair: a 1-period subject with
+         * a 2-period block is arithmetic Check 3 would refuse.
+         */
+        ...(s.doubles && s.periods >= 2 ? { consecutiveBlockSize: 2 } : {}),
+        /**
          * One a day is the friendly default — and it must not be smaller than
          * the week arithmetically requires.
          *
@@ -622,19 +683,91 @@ export function suggestCurriculum(
     totals.push({ className: c.className, total, capacity, over: total > capacity });
   }
 
-  return { cells, totals, dropped };
+  /*
+    §30.12 — deduped here as well as in `curriculumSheets`.
+
+    The sheet builder is what keeps the commit correct; this is what keeps the
+    SCREEN correct. Without it the Master Grid counted every shared class
+    twice — 1,168 allocated periods where the school has far fewer — and the
+    Load column compared a doubled total against one week's capacity.
+
+    `totals` is deduped by class for the same reason: a class taught by two
+    wings is one class with one week.
+  */
+  const byClass = new Map<string, CurriculumPlan["totals"][number]>();
+  for (const t of totals) {
+    const key = t.className.trim().toLowerCase();
+    const seen = byClass.get(key);
+    if (!seen || t.capacity < seen.capacity) byClass.set(key, t);
+  }
+  return { cells: dedupeCurriculumCells(cells), totals: [...byClass.values()], dropped };
 }
 
 /** The proposed curriculum, as an importer sheet. */
+/**
+ * §30.12 — one row per (class, subject), however many wings teach the class.
+ *
+ * `planClasses` returns one entry per **wing** per class, and since §30.9 two
+ * wings in different §30 pools may legitimately both run Class 1. Everything
+ * built by walking that list therefore carried Class 1 twice — and the
+ * curriculum is keyed `(class_id, subject_id, academic_year_id)` (§3.11), so
+ * the second copy is not a second row, it is the same row again.
+ *
+ * The §16 importer refuses a sheet with two rows on one natural key, which is
+ * how this surfaced: pressing Save on the Master Grid reported *"There are
+ * still 322 error(s) — nothing was written"*, every one of them a duplicate.
+ * The refusal was right. Nothing was written, and what would have been written
+ * was ambiguous.
+ *
+ * **The tighter row wins.** CLAUDE.md states the curriculum is deliberately
+ * shared across pools — `class_subjects` has no pool column, so an individual
+ * timetable running Class 5 inherits Class 5's periods-per-week. A shared row
+ * must therefore fit the *narrowest* week that teaches the class; keeping the
+ * larger one would propose a curriculum that cannot fit one of its own wings,
+ * and Readiness would report it against a wing nobody was editing.
+ *
+ * Deliberately NOT a fix in `planClasses`. A class taught by two wings in two
+ * pools is real, and step 4 needs both entries to create both pools' cohort
+ * rows (§30.9). What is not real is two curricula.
+ */
+export function dedupeCurriculumCells(cells: CurriculumCell[]): CurriculumCell[] {
+  const byKey = new Map<string, CurriculumCell>();
+  for (const c of cells) {
+    const key = `${c.className.trim().toLowerCase()}\u0000${c.subjectName.trim().toLowerCase()}`;
+    const seen = byKey.get(key);
+    if (!seen || c.periodsPerWeek < seen.periodsPerWeek) byKey.set(key, c);
+  }
+  return [...byKey.values()];
+}
+
 export function curriculumSheets(plan: CurriculumPlan, academicYear: string): RawSheet[] {
-  if (plan.cells.length === 0) return [];
-  const rows = plan.cells.map((c) => ({
-    "Class Name": c.className,
-    "Academic Year": academicYear,
-    "Subject Name": c.subjectName,
-    "Periods/Week": c.periodsPerWeek,
-    "Max Periods/Day": c.maxPerDay,
-  }));
+  // The LAST gate before the importer, and it has to be here as well as in
+  // `suggestCurriculum`: a school that has edited the grid commits from
+  // `answers.curriculum`, which never passes through the suggestion at all.
+  const cells = dedupeCurriculumCells(plan.cells);
+  if (cells.length === 0) return [];
+  const rows = cells.map((c) => {
+    const size = c.consecutiveBlockSize && c.consecutiveBlockSize > 1 ? c.consecutiveBlockSize : 1;
+    return {
+      "Class Name": c.className,
+      "Academic Year": academicYear,
+      "Subject Name": c.subjectName,
+      "Periods/Week": c.periodsPerWeek,
+      "Max Periods/Day": c.maxPerDay,
+      /*
+        §31.10 — always present, never conditional on this row having a block.
+
+        `headers` below is `Object.keys(rows[0])`, so a key that only some rows
+        carry is a key the sheet loses entirely whenever the first row happens
+        not to have one — and every later row's block would be silently
+        dropped on commit. Three columns of "1", "" and "No" is the cost of not
+        having that bug.
+      */
+      "Block Size": size,
+      "Blocks/Week": size > 1 ? (c.consecutiveBlocksPerWeek ?? "") : "",
+      "Break In Block": size > 1 && c.blockMayCrossBreak ? "Yes" : "No",
+    };
+  });
   return [{
     name: "Curriculum",
     headers: Object.keys(rows[0]),
@@ -993,13 +1126,20 @@ export function suggestMappings(
   // §4.7 first-period rule has a real lesson to attach to.
   const classTeachers: MappingPlan["classTeachers"] = [];
   const taken = new Set<string>();
+  const assigned = new Set<string>();
   for (const c of classes) {
     for (const section of c.sections) {
       const label = `${c.className}-${section}`;
+      // §30.12 — a class taught by two wings appears twice in `classes`, and a
+      // class-section has exactly ONE class teacher: the second visit is the
+      // same row again, not a second one. (24 of the 322 duplicate errors were
+      // this, being 6 shared classes x 4 sections.)
+      if (assigned.has(label)) continue;
       const candidate =
         staff.find((s) => s.sections.includes(label) && !taken.has(s.code)) ??
         staff.find((s) => s.sections.includes(label));
       if (!candidate) continue;
+      assigned.add(label);
       taken.add(candidate.code);
       classTeachers.push({ classSection: label, employeeCode: candidate.code });
     }
@@ -1092,8 +1232,44 @@ export function withCurriculumPeriods(
 
 export function mappingSheets(plan: MappingPlan): RawSheet[] {
   const out: RawSheet[] = [];
-  if (plan.mappings.length > 0) {
-    out.push(sheet("Subject Mapping", plan.mappings.map((m) => ({
+  /*
+    §30.12 — the last gate before the importer, for both sheets.
+
+    Same cause as `curriculumSheets`: a class taught by two wings in two §30
+    pools is visited twice, so every row built from it is emitted twice, and
+    the importer refuses a sheet holding two rows on one natural key. 209 of
+    the 322 errors were mappings and 24 were class teachers.
+
+    It has to be HERE and not only in `suggestMappings`, because a school that
+    has edited the grid commits from `answers.mappings` / `answers.classTeachers`
+    — those never pass through the suggestion.
+
+    **The natural key is the sheet's own, not a guess.** A mapping is keyed
+    `(subject, class-section)` — the teacher is a value, so two rows differing
+    only by teacher are still one row's worth of truth and the first wins. A
+    class teacher is keyed by the class-section alone.
+
+    Known limitation, stated rather than hidden: a class-section LABEL is not
+    unique across §30 pools — "Class 1-A" names one row in the main wing and a
+    different one in an individual timetable — and neither sheet carries a
+    timetable column, so the importer resolves the label to whichever row it
+    finds. Deduplicating by label is therefore right for the sheet as it exists
+    today, and giving the curriculum and its mappings a pool dimension is the
+    separate schema change CLAUDE.md already records as outstanding.
+  */
+  const onceBy = <T>(rows: T[], key: (r: T) => string): T[] => {
+    const seen = new Map<string, T>();
+    for (const r of rows) if (!seen.has(key(r))) seen.set(key(r), r);
+    return [...seen.values()];
+  };
+  const lc = (v: string) => String(v ?? "").trim().toLowerCase();
+
+  const mappings = onceBy(plan.mappings, (m) =>
+    `${lc(m.subjectName)}\u0000${m.classSections.map(lc).sort().join(",")}`);
+  const classTeachers = onceBy(plan.classTeachers, (c) => lc(c.classSection));
+
+  if (mappings.length > 0) {
+    out.push(sheet("Subject Mapping", mappings.map((m) => ({
       "Teacher Employee Code": m.employeeCode,
       Subject: m.subjectName,
       "Class-Sections": m.classSections.join(", "),
@@ -1105,8 +1281,8 @@ export function mappingSheets(plan: MappingPlan): RawSheet[] {
       Merged: m.merged && m.classSections.length > 1 ? "Yes" : "No",
     }))));
   }
-  if (plan.classTeachers.length > 0) {
-    out.push(sheet("Class Teachers", plan.classTeachers.map((c) => ({
+  if (classTeachers.length > 0) {
+    out.push(sheet("Class Teachers", classTeachers.map((c) => ({
       "Class-Section": c.classSection,
       "Teacher Employee Code": c.employeeCode,
     }))));

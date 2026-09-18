@@ -1,0 +1,12 @@
+-- §17.4a — a school's logo can be the image itself, not only a link to one.
+--
+-- `logo_url` was VARCHAR(255), which holds a URL and nothing else. That made
+-- the School Profile's own hint true — "the app does not host uploads" — and
+-- left every school without a public image host unable to set a logo at all.
+--
+-- TEXT lets the column hold a `data:` URI for a logo uploaded and downscaled in
+-- the browser, so no file storage, no image route and no unauthenticated asset
+-- path are introduced. A URL still stores exactly as it did.
+--
+-- Widening only: no data changes, and every existing row is already valid.
+ALTER TABLE `schools` MODIFY COLUMN `logo_url` TEXT NULL;

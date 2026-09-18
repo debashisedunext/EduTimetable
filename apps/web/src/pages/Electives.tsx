@@ -189,6 +189,49 @@ function ElectiveForm({
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /**
+   * §27.13 — the escape hatch for the teacher filter below.
+   *
+   * One toggle for the whole block rather than one per row: the rows are the
+   * same question asked three times, and three links saying "show all 11" is
+   * three controls for one decision.
+   */
+  const [showAllTeachers, setShowAllTeachers] = useState(false);
+
+  /**
+   * §27.13 — who teaches this subject, for one option row.
+   *
+   * The same rule, and the same two traps, as the Allocation dialog's teacher
+   * field: a list of every teacher in the school is a list to find three
+   * language teachers in, and at a real school that is 122 names.
+   *
+   *  - **Never hide the teacher already chosen.** A `<select>` whose `value`
+   *    matches no option renders blank, and saving then writes a different
+   *    teacher than the one on the row — a silent reassignment caused by a
+   *    display filter.
+   *  - **Never show an empty list.** If nobody is recorded as teaching the
+   *    subject the filter has nothing useful to say, so it shows everybody and
+   *    says why, rather than a dropdown holding one dash.
+   *
+   * Reads `subjects`, which the API serves as the UNION of declared (§27.13)
+   * and mapped — the documented reading rule, and what keeps a school with no
+   * declarations yet from losing the list.
+   *
+   * Display only, deliberately. `POST /elective-blocks` checks §18 teaching
+   * scope and does NOT check the subject, exactly as `POST /mappings` does not
+   * — so this narrows the same way every other door in the app narrows, and
+   * refusing here would make electives the one screen that is stricter than
+   * the rule it is showing.
+   */
+  const teachersFor = (o: Option) => {
+    const subjectName = subjects.find((s) => String(s.id) === o.subjectId)?.name ?? null;
+    if (!subjectName || showAllTeachers) return { list: teachers, filtered: false, subjectName };
+    const teach = teachers.filter((t) => (t.subjects ?? []).includes(subjectName));
+    if (teach.length === 0) return { list: teachers, filtered: false, subjectName };
+    const chosen = teachers.find((t) => String(t.id) === o.teacherId);
+    const list = chosen && !teach.some((t) => t.id === chosen.id) ? [...teach, chosen] : teach;
+    return { list, filtered: true, subjectName };
+  };
 
   const wanted = Number(periodsPerWeek) || 0;
   const days = current?.workingDays ?? [1, 2, 3, 4, 5];
@@ -312,15 +355,30 @@ function ElectiveForm({
         different room. Three languages means three rows; five means five.
       </p>
       <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
-        {options.map((o, i) => (
+        {options.map((o, i) => {
+          const who = teachersFor(o);
+          return (
           <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
             <select style={inputStyle} value={o.subjectId} onChange={(e) => setOptions(options.map((x, j) => (j === i ? { ...x, subjectId: e.target.value } : x)))}>
               <option value="">— Subject —</option>
               {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <select style={inputStyle} value={o.teacherId} onChange={(e) => setOptions(options.map((x, j) => (j === i ? { ...x, teacherId: e.target.value } : x)))}>
-              <option value="">— Teacher —</option>
-              {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {/* Says what the list has been narrowed to, in the one place
+                  somebody is looking when they wonder where a name went. */}
+              <option value="">
+                {who.filtered ? `— Teaches ${who.subjectName} —` : "— Teacher —"}
+              </option>
+              {who.list.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {/* Only ever on the row's existing teacher, kept visible by
+                      the rule above — so the reason it is still listed is on
+                      the option itself rather than left to be guessed. */}
+                  {who.filtered && !(t.subjects ?? []).includes(who.subjectName)
+                    ? ` · not listed for ${who.subjectName}` : ""}
+                </option>
+              ))}
             </select>
             <select style={inputStyle} value={o.roomId} onChange={(e) => setOptions(options.map((x, j) => (j === i ? { ...x, roomId: e.target.value } : x)))}>
               <option value="">— Room —</option>
@@ -334,11 +392,37 @@ function ElectiveForm({
               ✕
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
-      <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setOptions([...options, { subjectId: "", teacherId: "", roomId: "" }])}>
-        ＋ Add another option
-      </button>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn" style={{ border: "1px solid var(--line)", fontSize: 12 }} onClick={() => setOptions([...options, { subjectId: "", teacherId: "", roomId: "" }])}>
+          ＋ Add another option
+        </button>
+        {/*
+          §27.13 — the escape hatch, one click away rather than the default.
+
+          The reason the old list showed everybody was sound: a school staffing
+          an elective in a hurry knows something the subject list does not, and
+          §18 teaching scope is checked on save either way. It is offered here
+          instead of being the thing everybody has to scroll past.
+        */}
+        <button
+          onClick={() => setShowAllTeachers(!showAllTeachers)}
+          style={{
+            border: "none", background: "none", cursor: "pointer", padding: 0,
+            font: "500 11.5px/1 Inter", color: "var(--brand)", textDecoration: "underline",
+          }}>
+          {showAllTeachers
+            ? "Only teachers who take the subject"
+            : `Show all ${teachers.length} teachers`}
+        </button>
+        <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>
+          {showAllTeachers
+            ? "Every teacher is offered. Teaching scope is still checked when this is saved."
+            : "Each row offers the teachers recorded as teaching that option's subject."}
+        </span>
+      </div>
 
       <div style={{ marginTop: 22, marginBottom: 6, fontSize: 13, fontWeight: 700 }}>When does it run?</div>
       <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>

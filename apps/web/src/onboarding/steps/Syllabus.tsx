@@ -197,9 +197,19 @@ function Toggle({ on, onChange, title, children }: {
   );
 }
 
-export function StepSettings({ answers, onChange }: {
+export function StepSettings({ answers, onChange, onOpenAllocation }: {
   answers: Record<string, any>;
   onChange: (patch: Record<string, any>) => void;
+  /**
+   * §31.13 — save this draft and open the Master Grid's Lesson Grid.
+   *
+   * The wizard owns it rather than this step holding a `<Link>`, and that is
+   * the whole reason it is a prop: settings typed here are only in the browser
+   * until something persists them, so a bare link would navigate away from
+   * work nobody had saved. It goes through the wizard's own `persist`, exactly
+   * as Next does.
+   */
+  onOpenAllocation?: () => void;
 }) {
   const s: SettingsAnswer = { ...defaultSettings(), ...(answers.settings ?? {}) };
   const set = (patch: Partial<SettingsAnswer>) => onChange({ settings: { ...s, ...patch } });
@@ -260,6 +270,37 @@ export function StepSettings({ answers, onChange }: {
           to generate. A teacher at 80% of their limit is a normally employed teacher.
         </p>
       </div>
+
+      {/*
+        §31.13 — where the Allocation step went.
+
+        Curriculum and mappings are entered on the Master Grid's Lesson Grid
+        now, so this is the hand-over rather than a step. Said here, on the last
+        screen of the setup, because "what do I do next?" is the question
+        somebody has at exactly this point — and because a school that finishes
+        the setup without allocating anything would otherwise meet a Readiness
+        score of nearly nothing with no explanation of why.
+      */}
+      {onOpenAllocation && (
+        <div style={{
+          marginTop: 18, padding: "14px 16px", borderRadius: 10,
+          border: "1px solid var(--steel-light)", background: "var(--steel-pale)",
+          display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+        }}>
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            <div style={{ font: "800 13.5px/1.3 Inter, sans-serif", color: "var(--brand-deep)" }}>
+              Next: how many periods each class gets, and who teaches them
+            </div>
+            <p style={{ fontSize: 11.8, color: "var(--ink-soft)", marginTop: 4, marginBottom: 0 }}>
+              That is the Lesson Grid on the Master Grid — one screen for the whole school, with the
+              rest of the week beside it. Your answers here are saved first.
+            </p>
+          </div>
+          <button className="btn btn-primary" style={{ flex: "0 0 auto" }} onClick={onOpenAllocation}>
+            Go to Master Grid →
+          </button>
+        </div>
+      )}
 
       <Note tone="ok">
         Pressing <strong>Finish</strong> writes these and takes you to the Readiness dashboard, which

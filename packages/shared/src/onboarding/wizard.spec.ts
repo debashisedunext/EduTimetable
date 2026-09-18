@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   CLASS_LADDER,
   CLASS_LADDER_SHORT,
+  GROUPED_SCOPE,
+  ladderSequence,
+  wingScope,
   classSheets,
+  dayEndsAt,
+  mergeShownWings,
   planClasses,
   planSummary,
   sectionLetters,
@@ -26,6 +31,81 @@ const wing = (name: string, fromIndex: number, toIndex: number, sections = 2, ov
 describe("§15.3 the class ladder", () => {
   it("has a short label for every rung — the slider cannot show 'Pre-Nursery'", () => {
     expect(CLASS_LADDER_SHORT).toHaveLength(CLASS_LADDER.length);
+  });
+
+  it("puts every ordinary wing in one pool and each individual one in its own (§30.9)", () => {
+    expect(wingScope({ name: "Primary Wing" })).toBe(GROUPED_SCOPE);
+    expect(wingScope({ name: "Primary Wing", individual: false })).toBe(GROUPED_SCOPE);
+    expect(wingScope({ name: "Senior Wing" })).toBe(wingScope({ name: "Primary Wing" }));
+    // Two individual timetables share nothing — not even with each other.
+    expect(wingScope({ name: "Weekly", individual: true }))
+      .not.toBe(wingScope({ name: "Saturday", individual: true }));
+    expect(wingScope({ name: "Weekly", individual: true })).not.toBe(GROUPED_SCOPE);
+    // The name is the key, so it is compared the way every other name in this
+    // wizard is: trimmed and case-insensitively.
+    expect(wingScope({ name: " weekly ", individual: true }))
+      .toBe(wingScope({ name: "Weekly", individual: true }));
+  });
+
+  it("does NOT report a class claimed by two wings in different pools (§30.9)", () => {
+    // The exact shape that was wrong on screen: a main timetable and an
+    // individual one both running Class 1 to Class 6.
+    const { classes, issues } = planClasses([
+      { name: "Main Timetable 2026-27", fromIndex: 4, toIndex: 9, sections: 4 },
+      { name: "Weekly Timetable", fromIndex: 4, toIndex: 9, sections: 1, individual: true },
+    ]);
+    expect(issues).toEqual([]);
+    // Both wings keep every class — an individual timetable exists precisely so
+    // it can teach Class 1 while the main wings also teach Class 1.
+    const byWing = new Map<string, number>();
+    for (const c of classes) byWing.set(c.wing, (byWing.get(c.wing) ?? 0) + 1);
+    expect(byWing.get("Main Timetable 2026-27")).toBe(6);
+    expect(byWing.get("Weekly Timetable")).toBe(6);
+  });
+
+  it("still reports a class claimed by two wings in the SAME pool", () => {
+    const { issues } = planClasses([
+      { name: "Middle", fromIndex: 4, toIndex: 9, sections: 2 },
+      { name: "Senior", fromIndex: 9, toIndex: 12, sections: 2 },
+    ]);
+    // Class 6 is index 9 in both ranges — one pool, so this is still an error.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("Class 6");
+  });
+
+  it("keeps two individual timetables out of each other's way", () => {
+    const { issues } = planClasses([
+      { name: "Weekly", fromIndex: 4, toIndex: 6, sections: 1, individual: true },
+      { name: "Saturday", fromIndex: 4, toIndex: 6, sections: 1, individual: true },
+    ]);
+    expect(issues).toEqual([]);
+  });
+
+  it("gives every ladder name its 1-based position, and an unknown name 0", () => {
+    expect(ladderSequence("Pre-Nursery")).toBe(1);
+    expect(ladderSequence("LKG")).toBe(3);
+    expect(ladderSequence("Class 1")).toBe(5);
+    expect(ladderSequence("Class 12")).toBe(CLASS_LADDER.length);
+    // Every ladder name round-trips — this is what `classes.sequence` holds.
+    for (const [i, name] of CLASS_LADDER.entries()) {
+      expect(ladderSequence(name), name).toBe(i + 1);
+    }
+    // 0, not "the next number": we know where Class 7 belongs and we do not
+    // know where Playgroup belongs. Guessing is how two vocabularies for one
+    // column started, and how LKG ended up sharing sequence 3 with Class 1.
+    expect(ladderSequence("Playgroup")).toBe(0);
+    expect(ladderSequence("Grade 5R")).toBe(0);
+    // Whitespace is not a different class.
+    expect(ladderSequence("  Class 9  ")).toBe(ladderSequence("Class 9"));
+  });
+
+  it("is what `planClasses` writes, so the two cannot drift", () => {
+    const { classes } = planClasses([
+      { name: "Junior", fromIndex: 0, toIndex: 5, sections: 1 },
+    ]);
+    for (const c of classes) {
+      expect(c.sequence, c.className).toBe(ladderSequence(c.className));
+    }
   });
 
   it("is in school order, which is what makes `sequence` meaningful", () => {
@@ -200,6 +280,158 @@ describe("§15.3 the importer sheets it produces", () => {
   it("produces nothing at all when there is nothing to produce", () => {
     expect(sessionSheets({ name: "", startDate: "", endDate: "" })).toEqual([]);
     expect(classSheets({ wings: [] }).sheets).toEqual([]);
+  });
+});
+
+describe("§33.4 when the day would end", () => {
+  const base = { startTime: "08:00", periodsPerDay: 8, periodDurationMins: 30 };
+
+  it("adds the teaching periods to the start time", () => {
+    expect(dayEndsAt(base)).toBe("12:00");
+  });
+
+  it("adds the breaks", () => {
+    expect(dayEndsAt({ ...base, breaks: [{ durationMins: 20 }, { durationMins: 10 }] })).toBe("12:30");
+  });
+
+  it("adds an activity AFTER the day but not one before it", () => {
+    // §28.4 — a before-first activity makes the day start earlier; it never
+    // pushes period 1 later, so it cannot also push the finish out.
+    const acts = [
+      { durationMins: 15, placement: "before_first" },
+      { durationMins: 10, placement: "after_last" },
+    ];
+    expect(dayEndsAt({ ...base, activities: acts })).toBe("12:10");
+  });
+
+  it("says nothing rather than something confident and wrong", () => {
+    // A half-typed time field is an ordinary state; "ends at 00:40" is worse
+    // than a blank for one keystroke.
+    expect(dayEndsAt({ ...base, startTime: "0" })).toBeNull();
+    expect(dayEndsAt({ ...base, startTime: "" })).toBeNull();
+    expect(dayEndsAt({ ...base, startTime: "25:00" })).toBeNull();
+  });
+
+  it("refuses to wrap past midnight into a plausible-looking morning", () => {
+    expect(dayEndsAt({ startTime: "23:00", periodsPerDay: 8, periodDurationMins: 30 })).toBeNull();
+  });
+
+  it("handles a single-digit hour, which a time input can produce", () => {
+    expect(dayEndsAt({ ...base, startTime: "7:30" })).toBe("11:30");
+  });
+});
+
+describe("§30.13 merging back the wings a step was shown", () => {
+  const A = { name: "Main", fromIndex: 4, toIndex: 9, sections: 2 };
+  const B = { name: "New", fromIndex: 4, toIndex: 9, sections: 2 };
+  const C = { name: "Weekly", fromIndex: 4, toIndex: 6, sections: 1, individual: true };
+  const all = [A, B, C];
+
+  it("KEEPS the wings the step never saw — the bug that would have lost a timetable", () => {
+    // §30.13 hands a step ONE wing. The wizard's own version matched on the §30
+    // pool, so a grouped pool holding Main and New matched both rows, took the
+    // incoming wing for the first and `undefined` for the second — and dropped
+    // New out of the draft. A silent deletion on any save by such a school.
+    const edited = { ...A, sections: 4 };
+    const out = mergeShownWings(all, [A], [edited]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly"]);
+    expect(out[0].sections).toBe(4);
+  });
+
+  it("keeps each wing where it was, so an edit does not reorder the list", () => {
+    const out = mergeShownWings(all, [B], [{ ...B, sections: 5 }]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly"]);
+    expect(out[1].sections).toBe(5);
+  });
+
+  it("survives a RENAME, which is what positional matching is for", () => {
+    // The name is the key everything else in this flow uses, so a step comes
+    // back with a different one — matching by name would append a duplicate.
+    const out = mergeShownWings(all, [C], [{ ...C, name: "Weekly Timetable" }]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly Timetable"]);
+    expect(out).toHaveLength(3);
+  });
+
+  it("removes a wing the step gave back fewer of — step 3's job", () => {
+    const out = mergeShownWings(all, [A, B, C], [A, C]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "Weekly"]);
+  });
+
+  it("appends a wing the step added rather than splicing it into the middle", () => {
+    const D = { name: "Annexe", fromIndex: 4, toIndex: 9, sections: 2 };
+    const out = mergeShownWings(all, [A, B, C], [A, B, C, D]);
+    expect(out.map((w) => w.name)).toEqual(["Main", "New", "Weekly", "Annexe"]);
+  });
+
+  it("changes nothing when the step was shown nothing", () => {
+    expect(mergeShownWings(all, [], [])).toEqual(all);
+  });
+});
+
+describe("§3.10b the school's own record is the floor", () => {
+  const primary = () => [wing("Primary Wing", 4, 6, 2)]; // Class 1 – Class 3, 2 each
+
+  it("raises a class to what the school already runs, and leaves the rest alone", () => {
+    const { classes } = planClasses(primary(), { floors: { "Class 1": 4 } });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toEqual(["A", "B", "C", "D"]);
+    expect(classes.find((c) => c.className === "Class 2")!.sections).toEqual(["A", "B"]);
+  });
+
+  it("never LOWERS a wing that asks for more than the school runs", () => {
+    // The floor is a floor. A new wing opening six sections of Class 1 is
+    // adding to the school, which is the one thing this step is for.
+    const { classes } = planClasses([wing("Primary Wing", 4, 4, 6)], { floors: { "Class 1": 4 } });
+    expect(classes[0].sections).toHaveLength(6);
+  });
+
+  it("floors a class by this pool's OWN rows even when `floors` has not caught up", () => {
+    // A stale or partial shape must never plan a school smaller than the rows
+    // already filed under it.
+    const { classes } = planClasses(primary(), {
+      existing: { "Primary Wing": { "Class 1": ["A", "B", "C"] } },
+    });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toHaveLength(3);
+  });
+
+  it("reports which sections are records and which are a plan", () => {
+    const { classes } = planClasses(primary(), {
+      floors: { "Class 1": 4 },
+      existing: { "Primary Wing": { "Class 1": ["A", "B"] } },
+    });
+    const c1 = classes.find((c) => c.className === "Class 1")!;
+    expect(c1.existing).toEqual(["A", "B"]);
+    expect(c1.sections.slice(c1.existing.length)).toEqual(["C", "D"]);
+  });
+
+  it("matches the wing by name case-insensitively, because a human typed it", () => {
+    const { classes } = planClasses(primary(), {
+      existing: { "primary wing": { "Class 1": ["A", "B", "C"] } },
+    });
+    expect(classes.find((c) => c.className === "Class 1")!.sections).toHaveLength(3);
+  });
+
+  it("refuses to remove a class this wing already teaches, and removes one it does not", () => {
+    const w = wing("Primary Wing", 4, 6, 2);
+    w.overrides = { "Class 1": { removed: true }, "Class 2": { removed: true } };
+    const { classes } = planClasses([w], {
+      existing: { "Primary Wing": { "Class 1": ["A", "B"] } },
+    });
+    expect(classes.map((c) => c.className)).toEqual(["Class 1", "Class 3"]);
+  });
+
+  it("floors the SHEETS too, not only the grid", () => {
+    // The whole point of the rule living in `planClasses`: a floor enforced
+    // only by an <input min> would be a number the commit did not honour.
+    const sections = classSheets(
+      { session: { name: "2026-27", startDate: "", endDate: "" }, wings: primary() },
+      { floors: { "Class 1": 4 } },
+    ).sheets.find((s) => s.name === "Class Sections")!;
+    expect(sections.rows.filter((r) => r.cells["Class Name"] === "Class 1")).toHaveLength(4);
+  });
+
+  it("changes nothing at all when no shape is supplied", () => {
+    const before = planClasses(primary()).classes.map((c) => c.sections.length);
+    expect(before).toEqual([2, 2, 2]);
   });
 });
 

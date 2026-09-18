@@ -38,6 +38,15 @@ export interface CellPlan {
   className: string;
   subjectName: string;
   academicYear: string;
+  /**
+   * §29.8 — the sections of THIS class in THIS timetable.
+   *
+   * Surfaced on the plan rather than re-derived by the caller because the lock
+   * has to be asked about exactly the rows the delete will touch, and `idsFor`
+   * has already worked out which those are. A second derivation at the call
+   * site is §10.6's rule: two chances to disagree about the same set.
+   */
+  sectionIds: number[];
   lines: CellLine[];
   total: number;
   /** Non-null means it is refused, and this is the reason to show. */
@@ -216,18 +225,36 @@ export async function planCellDelete(
     },
   });
 
+  /**
+   * §36 — lessons of this subject pinned to a cell.
+   *
+   * Deleting the curriculum row would leave a hard constraint with nothing
+   * behind it: the pin names a lesson that no longer exists, `variables.ts`
+   * would build no variable for it, and Check 14 would then refuse the whole
+   * school for a row nobody can find. Counted by SECTION, which is what a pin
+   * is keyed by.
+   */
+  const pinned = await tx.timetableFixedLesson.count({
+    where: { timetableConfigId: configId, subjectId: ids.subjectId, classSectionId: { in: ids.sectionIds } },
+  });
+
   return {
     configId,
     className,
     subjectName,
     academicYear: config.academicYear?.name ?? "",
+    sectionIds: ids.sectionIds,
     lines,
     total: lines.reduce((n, l) => n + l.count, 0),
     blocked: published > 0
       ? `The published timetable teaches ${subjectName} to ${className} in ${published} period(s). ` +
         `Removing the subject would leave those lessons on the wall with nothing behind them. ` +
         `Withdraw it on the Publish screen (§3.14), or take those lessons off the board first.`
-      : null,
+      : pinned > 0
+        ? `${pinned} lesson(s) of ${subjectName} are fixed to a day and period for ${className}. ` +
+          `Remove them on the Master Grid's Whole tab first — a fixed lesson has to belong to ` +
+          `a subject the class is still taught.`
+        : null,
     keeps: [
       `${subjectName} itself, and every other class that takes it`,
       ...(electives > 0

@@ -279,6 +279,7 @@ export const SHEETS: SheetDef[] = [
       { header: "Same Period Across Week", key: "samePeriodAcrossWeek", type: "enum", values: YES_NO, width: 22, help: "Must land in the same period every day it occurs", sample: ["No"] },
       { header: "Block Size", key: "consecutiveBlockSize", type: "int", min: 1, max: 4, width: 12, help: "2 = double period. Defaults to 1", sample: [1] },
       { header: "Blocks/Week", key: "consecutiveBlocksPerWeek", type: "int", min: 1, max: 10, width: 13, help: "How many blocks of that size per week", sample: [""] },
+      { header: "Break In Block", key: "blockMayCrossBreak", type: "enum", values: YES_NO, width: 15, help: "May the block run through a break — one period either side of lunch? No = it must be unbroken. Only meaningful with a Block Size above 1", sample: ["No"] },
     ],
   },
   {

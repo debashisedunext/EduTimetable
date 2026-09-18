@@ -197,6 +197,31 @@ export class PublishService {
     if (diff.draftCount === 0) {
       throw new BadRequestException("Nothing to publish — the draft is empty. Generate or build a draft first.");
     }
+    /*
+      §29.8 — publishing IS the lock.
+
+      §29.1 said the opposite in as many words: "a freeze is a decision rather
+      than a side effect of publishing". That is now reversed, deliberately, for
+      the reason §29.1 itself gives — the printed copy in every classroom becomes
+      a second source of truth the moment it is printed, not the moment somebody
+      remembers to press a button. Every school is exposed in the gap between the
+      two, and the gap has no natural end.
+
+      In the SAME transaction as the flip, because a published-but-unlocked
+      window is exactly what this closes; a second write afterwards would leave
+      one that is merely shorter.
+
+      Governed by `schools.lock_on_publish` so a school can keep the old
+      behaviour — but defaulting to on, because nobody should have to discover a
+      setting in order to be protected by it. A republish of an already-locked
+      timetable cannot reach here at all: `assertConfigs` above refuses it.
+    */
+    const school = await this.prisma.school.findFirst({
+      where: { id: this.tenant.requireSchoolId() },
+      select: { lockOnPublish: true },
+    });
+    const lockNow = school?.lockOnPublish !== false;
+
     const [, , pub] = await this.prisma.$transaction([
       this.prisma.timetableSlot.deleteMany({
         // §18 extra classes are held in both statuses so they show whichever
@@ -226,6 +251,14 @@ export class PublishService {
           publishedById: userId,
         },
       }),
+      ...(lockNow
+        ? [
+            this.prisma.timetableConfig.updateMany({
+              where: { id: configId },
+              data: { frozenAt: new Date(), frozenById: userId },
+            }),
+          ]
+        : []),
     ]);
     // §22.4 — the registry follows the rows: this draft IS the school's
     // timetable now, and whichever draft was published before becomes an
@@ -391,9 +424,23 @@ export class PublishService {
    * resurrect work a school had moved on from), and touch §18 extra classes.
    */
   async unpublish(configId: number, userId: number | null) {
-    // Withdrawal is the largest change of all, so a frozen timetable refuses it
-    // too — and says which button comes first.
-    await this.freeze.assertConfigs([configId], "the published timetable");
+    /*
+      Withdrawal is the largest change of all, so a locked timetable refuses it
+      too — and says which button comes first.
+
+      §29.8 makes this its own sentence rather than the generic one, because
+      auto-lock creates a trap the generic wording would walk somebody straight
+      into: publish → locked → withdraw refused → and the obvious next move,
+      unlocking a class or two, does not help. Taking the whole week off the wall
+      is not a change to some classes, so no entity grant reaches it; the only
+      way through is the full unlock, and the message has to say so.
+    */
+    await this.freeze.assertConfigs(
+      [configId],
+      "the published timetable",
+      "Unlock the whole timetable first — withdrawing takes the entire week off the wall, " +
+        "so unlocking individual classes or teachers does not reach it.",
+    );
     const plan = await this.unpublishPlan(configId);
     if (plan.count === 0) {
       throw new BadRequestException(

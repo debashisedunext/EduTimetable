@@ -9,10 +9,13 @@
  * says hold `masters.manage`, and the server enforces that independently: the
  * quick prompts below are a convenience, never the gate.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useLocation } from "react-router-dom";
 import { COMMON_SUBJECTS, PERMISSIONS } from "@edutimetable/shared";
 import { Markdown } from "../markdown";
 import { useConfigCtx } from "../hooks";
+import { useIsMobile } from "../mobile";
 import { ProposalCard } from "./ProposalCard";
 import { useAiChat } from "./useAiChat";
 
@@ -28,13 +31,100 @@ const QUICK = [
   { label: "Change a class teacher", prompt: "I want to change which teacher owns a class-section. Show me who has it now, then ask me who should." },
 ];
 
+/**
+ * The button that opens the assistant, in either of its two homes.
+ *
+ * One component with a placement flag rather than two markups: a launcher that
+ * looked different in the bar from the way it looked floating would be two
+ * things to keep in step, and the one in the fallback is the one nobody sees
+ * until it matters.
+ */
+function Launcher({ open, onToggle, inBar = false }: {
+  open: boolean;
+  onToggle: () => void;
+  inBar?: boolean;
+}) {
+  return (
+    <button
+      aria-label={open ? "Close the assistant" : "Open the assistant"}
+      aria-expanded={open}
+      onClick={onToggle}
+      title="Ask the timetable assistant"
+      style={{
+        border: "none", cursor: "pointer", color: "#fff",
+        background: open ? "var(--brand-deep)" : "var(--brand)",
+        display: "grid", placeItems: "center",
+        ...(inBar
+          ? { width: 34, height: 34, borderRadius: 10, fontSize: 15 }
+          : {
+            position: "fixed", right: 22, bottom: 22, zIndex: 60,
+            width: 52, height: 52, borderRadius: "50%", fontSize: 20,
+            boxShadow: "0 6px 20px rgba(11,31,68,0.28)",
+          }),
+      }}
+    >
+      {open ? "✕" : "✦"}
+    </button>
+  );
+}
+
 export function AiDock({ permissions }: { permissions: string[] }) {
   const { current } = useConfigCtx();
+  const { pathname } = useLocation();
+  const mobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [picker, setPicker] = useState(false);
   const [chosen, setChosen] = useState<string[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
+  /**
+   * §31.14 — the app top bar's slot for this launcher.
+   *
+   * One home, on every page: `Shell`'s `Topbar` renders the slot, so a control
+   * people reach for by memory is in the same place every time. The fallback
+   * below still draws the floating corner button when there is no slot, which
+   * covers anything rendered outside the shell.
+   *
+   * `useLayoutEffect` rather than `useEffect`: a passive effect would show that
+   * fallback for one painted frame before the portal moved it — a button that
+   * jumps out of the corner on every page load.
+   */
+  const [launcherSlot, setLauncherSlot] = useState<HTMLElement | null>(null);
+  /**
+   * Where the panel starts, measured from whatever the launcher ended up in.
+   *
+   * The panel is `position: fixed`, so a constant would be right for exactly
+   * one placement — the docked slot and the floating fallback are two.
+   * Anchored below the slot, it cannot cover the button that opened it, and it
+   * follows a top bar that changes height rather than assuming one that does
+   * not.
+   */
+  const [panelTop, setPanelTop] = useState(74);
+  /*
+    Re-looked-up on every navigation, not once on mount.
+
+    This component lives outside `<Routes>` and stays mounted for the whole
+    session. The slot is in the top bar and therefore always there — but the
+    top bar's HEIGHT is not constant (a dated timetable adds a line under the
+    picker, §30.5), so the measurement has to be retaken where the layout can
+    have changed. It is also what makes the fallback correct for anything
+    rendered outside the shell.
+  */
+  useLayoutEffect(() => {
+    const el = document.getElementById("ai-launcher-slot");
+    setLauncherSlot(el);
+    /*
+      Measured from the whole TOP BAR, not from the slot the button sits in.
+
+      §8.6 put a second row under the launcher, so the slot's own bottom is no
+      longer the bottom of the chrome — anchoring to it drops the panel over
+      the toolbar. `closest` keeps this correct for both arrangements (the bar
+      is one row above 1680px and two below it) without this file knowing which,
+      and falls back to the slot for anything rendered outside the shell.
+    */
+    const bar = el?.closest(".topbar") ?? el;
+    setPanelTop(bar ? Math.round(bar.getBoundingClientRect().bottom) + 10 : 74);
+  }, [pathname, open]);
   const { messages, busy, error, ask, reset } = useAiChat(current?.id ?? null);
 
   const canChat = permissions.includes(PERMISSIONS.AI_CHAT);
@@ -61,28 +151,41 @@ export function AiDock({ permissions }: { permissions: string[] }) {
 
   return (
     <>
-      {/* The launcher. Fixed, above everything, out of the way of content. */}
-      <button
-        aria-label={open ? "Close the assistant" : "Open the assistant"}
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          position: "fixed", right: 22, bottom: 22, zIndex: 60,
-          width: 52, height: 52, borderRadius: "50%", border: "none", cursor: "pointer",
-          background: open ? "var(--brand-deep)" : "var(--brand)", color: "#fff",
-          fontSize: 20, boxShadow: "0 6px 20px rgba(11,31,68,0.28)",
-          display: "grid", placeItems: "center",
-        }}
-      >
-        {open ? "✕" : "✦"}
-      </button>
+      {/*
+        The launcher, in the top bar when there is one to sit in.
+
+        It used to float at the bottom-right of every screen, which is fine
+        until a screen puts something there — on the Master Grid it covered the
+        strip's issue count. A floating button cannot know what it is on top of,
+        so it stops floating.
+
+        The fallback keeps the old corner button for any future shell that has
+        no slot: losing the assistant entirely because a `<span>` was not
+        rendered would be a worse failure than a button in an awkward place.
+      */}
+      {launcherSlot
+        ? createPortal(<Launcher open={open} onToggle={() => setOpen((o) => !o)} inBar />, launcherSlot)
+        : <Launcher open={open} onToggle={() => setOpen((o) => !o)} />}
 
       {open && (
         <div
           role="dialog"
           aria-label="Timetable assistant"
           style={{
-            position: "fixed", right: 22, bottom: 86, zIndex: 59,
-            width: "min(430px, calc(100vw - 44px))", height: "min(620px, calc(100vh - 130px))",
+            // Hangs from the bar the launcher is in, rather than rising from a
+            // corner it no longer occupies.
+            position: "fixed", right: mobile ? 8 : 22, top: panelTop, zIndex: 59,
+            width: mobile ? "calc(100vw - 16px)" : "min(430px, calc(100vw - 44px))",
+            /*
+              §8.8 — `dvh`, and room for the bottom bar.
+
+              `100vh` on a phone is the viewport at its TALLEST — address bar
+              retracted — so the panel's last hundred pixels sit under browser
+              chrome that is on screen most of the time, and under §8.8's
+              bottom navigation as well. `dvh` tracks what is actually visible;
+              the extra 96 is the nav plus its safe-area strip.
+            */
+            height: `min(620px, calc(100dvh - ${panelTop + (mobile ? 96 : 26)}px))`,
             display: "flex", flexDirection: "column",
             background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14,
             boxShadow: "0 16px 48px rgba(11,31,68,0.22)", overflow: "hidden",

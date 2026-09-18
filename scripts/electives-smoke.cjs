@@ -26,6 +26,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { disableAutoLock, disableAutoLockByPrefix } = require("/app/scripts/auto-lock.cjs");
 const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_INTERNAL || "http://localhost:3000";
@@ -536,6 +537,13 @@ async function call(method, path, token, body) {
 
   // ------------------------------------------------------------- 6. REPORT
   console.log("\nThe language teacher's own timetable shows the lesson:");
+  /*
+    §29.8 — publishing LOCKS the timetable, and this suite is about something
+    else. `locks-smoke.cjs` asserts the auto-lock and the grants; taking it out
+    of the way here keeps a §29.8 regression from failing a file that would then
+    point at the wrong feature. See scripts/auto-lock.cjs.
+  */
+  await disableAutoLock(prisma, SCHOOL);
   await call("POST", `/timetable-configs/${config.id}/board/publish`, token);
   const report = await call("GET", `/reports/teacher/${langs[0].teacher.id}`, token);
   const grid = JSON.stringify(report.json ?? {});

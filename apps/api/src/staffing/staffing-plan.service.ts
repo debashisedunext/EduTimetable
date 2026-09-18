@@ -19,6 +19,8 @@ import {
   type RestaffInput, type RestaffPlan, type RestaffUnit,
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
+import { DraftsService } from "../drafts/drafts.service";
+import { slotsIn, weekScopeFor, type WeekScope } from "./staffing-week";
 import { buildFeasibilitySnapshot } from "../solver/input";
 import { unitsFor, type StaffingUnit } from "./staffing-units";
 
@@ -26,7 +28,10 @@ export type PlanMode = "replace" | "redistribute";
 
 @Injectable()
 export class StaffingPlanService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly drafts: DraftsService,
+  ) {}
 
   /**
    * What would happen, without anything happening.
@@ -87,7 +92,17 @@ export class StaffingPlanService {
       }
     }
 
-    const all = await unitsFor(this.prisma, change.timetableConfigId, releasingIds);
+    /*
+      §29.6 — the published week if there is one, otherwise the current draft.
+      Resolved ONCE here and threaded through, so the units, the occupancy and
+      the apply cannot end up looking at different weeks.
+    */
+    const scope = await weekScopeFor(
+      this.prisma as never,
+      change.timetableConfigId,
+      (id) => this.drafts.currentId(id),
+    );
+    const all = await unitsFor(this.prisma as never, change.timetableConfigId, releasingIds, scope);
     const wanted = unitKeys && unitKeys.length > 0 ? new Set(unitKeys) : null;
     const units = wanted ? all.filter((u) => wanted.has(`${u.type}:${u.id}`)) : all;
     if (units.length === 0) {
@@ -107,6 +122,7 @@ export class StaffingPlanService {
         // naming a receiving list is that these are the people whose weeks the
         // school has agreed may move.
         : receiving.map((t) => t.teacherId),
+      scope,
     );
 
     return {
@@ -130,6 +146,8 @@ export class StaffingPlanService {
     configId: number,
     units: StaffingUnit[],
     candidateTeacherIds: number[],
+    /** §29.6 — the same week the units came from, never re-resolved here. */
+    scope: WeekScope,
   ): Promise<RestaffInput> {
     const config = await this.prisma.timetableConfig.findFirst({ where: { id: configId } });
     if (!config) throw new NotFoundException(`Timetable ${configId} not found`);
@@ -151,7 +169,7 @@ export class StaffingPlanService {
     */
     const released = new Set(units.flatMap((u) => u.cells.map((c) => c.slotId)));
     const slots = await this.prisma.timetableSlot.findMany({
-      where: { timetableConfigId: configId, status: "published", teacherId: { not: null } },
+      where: { timetableConfigId: configId, ...slotsIn(scope), teacherId: { not: null } },
       select: { id: true, teacherId: true, dayOfWeek: true, periodNumber: true, classSectionId: true, subjectId: true },
     });
     const kept = slots.filter((s) => !released.has(String(s.id)));

@@ -17,7 +17,12 @@ export function Card({ title, sub, children, actions }: { title?: string; sub?: 
 
 export function DataTable({ headers, rows, empty, onRowClick }: { headers: string[]; rows: ReactNode[][]; empty?: string; onRowClick?: (index: number) => void }) {
   return (
-    <div style={{ overflowX: "auto" }}>
+    /* §8.8 — the class is what lets a phone give this table a floor width.
+       At 400px a six-column table with `width: 100%` and no minimum does not
+       scroll, it SQUASHES: every cell wraps to one word per line and the row
+       becomes eight lines tall. Scrolling sideways is the honest answer, and
+       it needs a minimum to scroll against. */
+    <div className="table-scroll" style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead>
           <tr>

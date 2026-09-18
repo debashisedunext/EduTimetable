@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPeriodRows, daySegmentsFromRows } from "./structure.util";
+import { breaksFromRows, buildPeriodRows, clockForDay, daySegmentsFromRows } from "./structure.util";
 
 describe("buildPeriodRows (§3.10 computed times)", () => {
   it("computes start/end times through breaks and zero period", () => {
@@ -137,5 +137,121 @@ describe("§28 daily activities", () => {
   it("refuses a duration that is not a duration", () => {
     expect(() => day([{ name: "Assembly", placement: "before_first", durationMins: 0 }]))
       .toThrow(/Assembly must be between/);
+  });
+});
+
+describe("§34.5 the clock on a day with its own shape", () => {
+  const spec = {
+    startTime: "08:00",
+    periodsPerDay: 8,
+    periodDurationMins: 40,
+    hasZeroPeriod: false,
+    breaks: [{ afterPeriod: 4, name: "Lunch", durationMins: 30 }],
+  };
+  const stored = buildPeriodRows(spec).rows;
+  const teaching = (rows: ReturnType<typeof buildPeriodRows>["rows"]) =>
+    rows.filter((r) => !r.isBreak && r.periodNumber !== null);
+
+  it("returns the stored rows untouched for a day with no shape", () => {
+    // Every day of every school that has not said otherwise — same objects,
+    // no arithmetic repeated.
+    expect(clockForDay(stored, spec, undefined)).toBe(stored);
+  });
+
+  it("returns them untouched for a shape that matches the week", () => {
+    expect(clockForDay(stored, spec, { periodsPerDay: 8, periodDurationMins: 40 })).toBe(stored);
+  });
+
+  it("gives a short Saturday its OWN times, not Monday's", () => {
+    // The bug this exists for: §30.7 compares two live timetables by wall
+    // clock, so a Saturday described with Monday's minutes can both miss a
+    // real overlap and invent one.
+    const sat = teaching(clockForDay(stored, spec, { periodsPerDay: 4, periodDurationMins: 30 }));
+    expect(sat).toHaveLength(4);
+    expect(sat[0]).toMatchObject({ periodNumber: 1, startTime: "08:00", endTime: "08:30" });
+    expect(sat[1]).toMatchObject({ periodNumber: 2, startTime: "08:30", endTime: "09:00" });
+    // Monday's period 2 is 08:40–09:20 on the same grid.
+    expect(teaching(stored)[1]).toMatchObject({ startTime: "08:40", endTime: "09:20" });
+  });
+
+  it("drops a break the short day never reaches", () => {
+    // A lunch after period 6 on a four-period Saturday is not a late lunch,
+    // it is a break at the end of the day — printing one nobody takes is
+    // worse than printing none.
+    const late = { ...spec, breaks: [{ afterPeriod: 6, name: "Lunch", durationMins: 30 }] };
+    const rows = clockForDay(buildPeriodRows(late).rows, late, { periodsPerDay: 4, periodDurationMins: 30 });
+    expect(rows.some((r) => r.isBreak)).toBe(false);
+    expect(teaching(rows)).toHaveLength(4);
+  });
+
+  it("keeps a break the short day does reach, and shifts what follows", () => {
+    const early = { ...spec, breaks: [{ afterPeriod: 2, name: "Snack", durationMins: 15 }] };
+    const rows = clockForDay(buildPeriodRows(early).rows, early, { periodsPerDay: 4, periodDurationMins: 30 });
+    expect(rows.find((r) => r.isBreak)).toMatchObject({ startTime: "09:00", endTime: "09:15" });
+    expect(teaching(rows)[2]).toMatchObject({ periodNumber: 3, startTime: "09:15" });
+  });
+
+  it("falls back to the stored rows rather than throwing on a shape it cannot build", () => {
+    // A wrong clock on one day is a smaller failure than a report that will
+    // not render at all.
+    expect(clockForDay(stored, spec, { periodsPerDay: 99, periodDurationMins: 40 })).toBe(stored);
+  });
+
+  it("recovers the breaks from stored rows, which is how the rebuild knows them", () => {
+    expect(breaksFromRows(stored)).toEqual([{ afterPeriod: 4, name: "Lunch", durationMins: 30 }]);
+  });
+});
+
+describe("§28.6 changeover gap between periods", () => {
+  const base = {
+    startTime: "08:00", periodsPerDay: 4, periodDurationMins: 30,
+    hasZeroPeriod: false, breaks: [] as Array<{ afterPeriod: number; name: string; durationMins: number }>,
+  };
+
+  it("pushes each period later by the gap — the school's own example", () => {
+    // 1st 08:00–08:30, then five minutes to move rooms, so the 2nd is 08:35.
+    const { rows } = buildPeriodRows({ ...base, periodGapMins: 5 });
+    const teaching = rows.filter((r) => r.periodNumber !== null && !r.isBreak);
+    expect(teaching.map((r) => `${r.startTime}-${r.endTime}`)).toEqual([
+      "08:00-08:30", "08:35-09:05", "09:10-09:40", "09:45-10:15",
+    ]);
+  });
+
+  it("does NOT add one where a break already follows", () => {
+    /*
+      A break is the changeover. Five minutes in front of a twenty-minute lunch
+      buys nothing and moves the whole afternoon.
+    */
+    const { rows } = buildPeriodRows({
+      ...base, periodGapMins: 5,
+      breaks: [{ afterPeriod: 2, name: "Lunch", durationMins: 20 }],
+    });
+    /*
+      P1 08:00-08:30, gap, P2 08:35-09:05 — so lunch starts at 09:05, straight
+      after period 2 ends, with no changeover in front of it. (The first
+      version of this test expected 08:35, having forgotten that period 2 has
+      itself already moved by the earlier gap.)
+    */
+    const lunch = rows.find((r) => r.isBreak);
+    expect(lunch?.startTime).toBe("09:05");
+    expect(lunch?.endTime).toBe("09:25");
+    const third = rows.find((r) => r.periodNumber === 3);
+    expect(third?.startTime).toBe("09:25");     // and no gap after the break either
+  });
+
+  it("does not add one after the LAST period", () => {
+    // Otherwise the school is told it closes five minutes later than it does.
+    const { endTime } = buildPeriodRows({ ...base, periodGapMins: 5 });
+    expect(endTime).toBe("10:15");
+  });
+
+  it("is off by default, so every existing school's clock is unchanged", () => {
+    const { rows, endTime } = buildPeriodRows(base);
+    expect(rows.find((r) => r.periodNumber === 2)?.startTime).toBe("08:30");
+    expect(endTime).toBe("10:00");
+  });
+
+  it("refuses a gap longer than a changeover could be", () => {
+    expect(() => buildPeriodRows({ ...base, periodGapMins: 45 })).toThrow(/between 0 and 30/);
   });
 });

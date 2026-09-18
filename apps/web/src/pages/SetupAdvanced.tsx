@@ -400,13 +400,16 @@ export function StepTeachers({ onNext }: { onNext?: () => void }) {
   const [editing, setEditing] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const blankTeacher = () => ({ name: "", employeeCode: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
+  const blankTeacher = () => ({ name: "", employeeCode: "", initials: "", maxPeriodsPerDay: 6, minPeriodsPerDay: 3, maxPeriodsPerWeek: 30, classTeacherPeriodRule: "none", periodPattern: "every_period", alternateDaySet: [], employmentType: "permanent", classIds: [], subjectIds: [] });
 
   /** returns true when the save landed, so the form can chain add-another/next */
   const save = async (form: any): Promise<boolean> => {
     try {
       const body = {
         name: form.name, employeeCode: form.employeeCode,
+        // §31 — always sent, so clearing the box really clears it rather
+        // than being read as "not mentioned" and leaving the old value.
+        initials: form.initials ?? "",
         maxPeriodsPerDay: Number(form.maxPeriodsPerDay), minPeriodsPerDay: Number(form.minPeriodsPerDay),
         maxPeriodsPerWeek: Number(form.maxPeriodsPerWeek),
         classTeacherPeriodRule: form.classTeacherPeriodRule, periodPattern: form.periodPattern,
@@ -634,6 +637,17 @@ function TeacherForm({ initial, error, onBack, onSaveAnother, onSaveNext }: {
       <div className="form-grid">
         <Field label="Full name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Employee code"><input style={inputStyle} value={form.employeeCode} onChange={(e) => setForm({ ...form, employeeCode: e.target.value })} /></Field>
+        {/* §31 — how this person is named in a 27-pixel cell. Optional: left
+            blank, the Master Grid derives one from the name, and a school that
+            writes "S.-PE" on its own wall chart says so here. */}
+        <Field label="Initials">
+          <input style={inputStyle} maxLength={6} placeholder="derived from the name"
+            value={form.initials ?? ""} onChange={(e) => setForm({ ...form, initials: e.target.value })} />
+          <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 5, lineHeight: 1.5 }}>
+            Shown where there is no room for a name — the Master Grid and the printed wall charts.
+            Leave it blank and one is worked out from the name.
+          </div>
+        </Field>
         <Field label="Max periods / day"><input type="number" style={inputStyle} value={form.maxPeriodsPerDay} onChange={(e) => setForm({ ...form, maxPeriodsPerDay: e.target.value })} /></Field>
         <Field label="Max periods / week"><input type="number" style={inputStyle} value={form.maxPeriodsPerWeek} onChange={(e) => setForm({ ...form, maxPeriodsPerWeek: e.target.value })} /></Field>
         {/* §20: the floor to go with the cap above. */}
@@ -954,7 +968,7 @@ function MappingForm({
           ✓ {note}
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="grid2" style={{ gap: 16 }}>
         <Field label="Teacher">
           <select style={inputStyle} value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })}>
             <option value="">—</option>
@@ -1029,7 +1043,7 @@ function MappingForm({
 
 /** Step 8 — Timetable Configuration (§3.10): grid structure + class scoping. */
 export function StepConfig() {
-  const { current, refetch: refetchConfigs } = useConfigCtx();
+  const { configs, current, refetch: refetchConfigs } = useConfigCtx();
   const { data: sections, refetch: refetchSections } = useApi<any[]>(`/class-sections${current ? `?timetableConfigId=${current.id}` : ""}`);
   const [error, setError] = useState<string | null>(null);
   const [computedEnd, setComputedEnd] = useState<string | null>(current?.endTime ?? null);
@@ -1042,6 +1056,11 @@ export function StepConfig() {
         workingDays: current.workingDays,
         periodsPerDay: current.periodsPerDay,
         periodDurationMins: current.periodDurationMins,
+        // §28.6/§28.7 — the two constraints a school sets here and the solver
+        // reads. Defaulted to what every existing school already has.
+        periodGapMins: current.periodGapMins ?? 0,
+        crossWingTravelMins: current.crossWingTravelMins ?? 0,
+        crossWingRule: current.crossWingRule ?? "prefer",
         loadAlertPct: current.loadAlertPct ?? 75,
         startTime: current.startTime,
         hasZeroPeriod: current.hasZeroPeriod,
@@ -1065,6 +1084,19 @@ export function StepConfig() {
   if (!current) return <Card title="Timetable Configuration"><p className="screen-sub">Create or pick a timetable on the Timetables screen first.</p></Card>;
   if (!form) return null;
 
+  /*
+    §28.7 — how many other timetables share this one's §30 pool.
+
+    The walk between wings only means something when there is another wing to
+    walk to, and a setting nobody can act on teaches people to skim the page.
+    Counted from the pool rather than from "more than one timetable exists": an
+    individual timetable (§30.1) shares no staff with anybody, so its teachers
+    never cross.
+  */
+  const siblingWings = configs.filter(
+    (c) => c.id !== current.id && c.resourceGroupId === current.resourceGroupId,
+  ).length;
+
   const toggleDay = (d: number) => {
     const days = form.workingDays.includes(d) ? form.workingDays.filter((x: number) => x !== d) : [...form.workingDays, d].sort();
     setForm({ ...form, workingDays: days });
@@ -1083,6 +1115,9 @@ export function StepConfig() {
         body: JSON.stringify({
           startTime: form.startTime, periodsPerDay: Number(form.periodsPerDay),
           periodDurationMins: Number(form.periodDurationMins), workingDays: form.workingDays,
+          periodGapMins: Number(form.periodGapMins) || 0,
+          crossWingTravelMins: Number(form.crossWingTravelMins) || 0,
+          crossWingRule: form.crossWingRule,
           hasZeroPeriod: form.hasZeroPeriod, zeroPeriodDurationMins: Number(form.zeroPeriodDurationMins),
           breaks: form.breaks,
           // §18: the extra-class window, appended after the teaching day.
@@ -1114,6 +1149,54 @@ export function StepConfig() {
           <Field label="Periods / day"><input type="number" style={inputStyle} value={form.periodsPerDay} onChange={(e) => setForm({ ...form, periodsPerDay: e.target.value })} /></Field>
           <Field label="Period duration (mins)"><input type="number" style={inputStyle} value={form.periodDurationMins} onChange={(e) => setForm({ ...form, periodDurationMins: e.target.value })} /></Field>
         </div>
+        {/*
+          §28.6 — the changeover, beside the duration it modifies.
+
+          Deliberately its own field rather than padding the period length: a
+          30-minute lesson taught in a 35-minute slot is a lie told to the
+          curriculum, to the load arithmetic and to the wall.
+        */}
+        <Field
+          label="Changeover between periods (mins)"
+          hint="Time to move rooms. Added after each period, EXCEPT where a break already follows and after the last period of the day. 0 turns it off."
+        >
+          <input type="number" min={0} max={30} style={{ ...inputStyle, maxWidth: 140 }}
+            value={form.periodGapMins}
+            onChange={(e) => setForm({ ...form, periodGapMins: e.target.value })} />
+        </Field>
+
+        {/*
+          §28.7 — the walk between wings.
+
+          Shown only when there IS another wing sharing this pool: on a
+          single-timetable school it is a question with no meaning, and a
+          setting nobody can act on is a setting that teaches people to skim
+          the page.
+        */}
+        {siblingWings > 0 && (
+          <Field
+            label="Walk to another wing (mins)"
+            hint={`This timetable shares staff with ${siblingWings} other ${siblingWings === 1 ? "timetable" : "timetables"}. A pair of wings uses the larger of their two figures.`}
+          >
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="number" min={0} max={60} style={{ ...inputStyle, maxWidth: 110 }}
+                value={form.crossWingTravelMins}
+                onChange={(e) => setForm({ ...form, crossWingTravelMins: e.target.value })} />
+              <select style={{ ...inputStyle, maxWidth: 330 }} value={form.crossWingRule}
+                onChange={(e) => setForm({ ...form, crossWingRule: e.target.value })}>
+                <option value="prefer">Avoid back-to-back periods across wings when it can</option>
+                <option value="forbid">Never give a teacher back-to-back periods across wings</option>
+              </select>
+            </div>
+            <p style={{ fontSize: 11.5, color: "var(--ink-faint)", margin: "6px 0 0", lineHeight: 1.5 }}>
+              {form.crossWingRule === "forbid"
+                ? "A hard rule: the solver will leave a lesson unplaced rather than send somebody across the site with no time to get there."
+                : "A preference: the solver steers away from a crossing it cannot make in time, but will still place one rather than leave the lesson unplaced."}
+              {" "}Wings are generated one at a time, so generate the other wing after this one for the pair to agree.
+            </p>
+          </Field>
+        )}
+
         <Field label="Working days">
           <div style={{ display: "flex", gap: 7 }}>
             {[1, 2, 3, 4, 5, 6].map((d) => (

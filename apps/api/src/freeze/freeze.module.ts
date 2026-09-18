@@ -14,10 +14,14 @@
  */
 import { Global, Module } from "@nestjs/common";
 import { FreezeService } from "./freeze.service";
+import { UnlockService } from "./unlock.service";
+import { InUseService } from "./in-use.service";
+import { UnlockController } from "./unlock.controller";
 
 @Global()
 @Module({
-  providers: [FreezeService],
-  exports: [FreezeService],
+  controllers: [UnlockController],
+  providers: [FreezeService, UnlockService, InUseService],
+  exports: [FreezeService, UnlockService, InUseService],
 })
 export class FreezeModule {}

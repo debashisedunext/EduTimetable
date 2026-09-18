@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Edunext">
+  <title>Edunext</title>
+  <!--
+    §17.4a — the default school logo.
+
+    A stand-in for the Edunext mark, drawn rather than embedded: replace this
+    one file with the real artwork (any .svg or .png of the same name) and every
+    place that shows it follows, because `DEFAULT_LOGO` in brand.tsx is the only
+    reference to the path.
+
+    Shaped for a 22px slot: one solid navy silhouette with the page-fan cut out
+    of it, so it still reads at the size the top bar gives it.
+  -->
+  <g fill="#1F3557">
+    <!-- the book / shield body -->
+    <path d="M34 26h44a8 8 0 0 1 8 8v58a8 8 0 0 1-8 8H42a8 8 0 0 1-8-8V26z"/>
+    <!-- the page fan, springing from the spine -->
+    <path d="M36 24 62 4l3 7-24 18z"/>
+    <path d="M42 24 70 6l3 7-25 17z"/>
+    <path d="M48 24 78 9l3 7-27 14z"/>
+  </g>
+  <!-- the negative-space "E", cut out of the body -->
+  <g fill="#FFFFFF">
+    <rect x="46" y="42" width="8" height="46" rx="2"/>
+    <rect x="46" y="42" width="26" height="8" rx="2"/>
+    <rect x="46" y="60" width="20" height="8" rx="2"/>
+    <rect x="46" y="80" width="26" height="8" rx="2"/>
+  </g>
+</svg>

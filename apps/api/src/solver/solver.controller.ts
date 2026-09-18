@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, 
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import type Redis from "ioredis";
-import { DEFAULT_WEIGHTS, PERMISSIONS } from "@edutimetable/shared";
+import { DEFAULT_WEIGHTS, PERMISSIONS, initialsOf } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
 import { REDIS } from "../redis/redis.module";
@@ -215,6 +215,21 @@ export class SolverController {
       sections: sections.map((cs) => ({ id: cs.id, label: `${cs.class.name}-${cs.section.name}` })),
       subjects: Object.fromEntries(subjects.map((s) => [s.id, s.name])),
       teachers: Object.fromEntries(teachers.map((t) => [t.id, t.name])),
+      /**
+       * §31 — the same people, in the width a Master Grid cell actually has.
+       *
+       * A 27-pixel cell holds two or three characters, so the full-name map
+       * above cannot serve it; `teachers.initials` is the school's own answer
+       * and `initialsOf` falls back to deriving one only when they have never
+       * given it. A *second* map rather than a wider `teachers` value because
+       * every existing consumer of this payload indexes it as `id → name`.
+       *
+       * This payload is Redis-cached for an hour, so a school mid-cache will
+       * be served one that predates this field. The client derives from the
+       * name when the map has nothing for an id — the same function, so the
+       * stale answer and the fresh one agree.
+       */
+      teacherInitials: Object.fromEntries(teachers.map((t) => [t.id, initialsOf(t.name, t.initials)])),
       rooms: Object.fromEntries(rooms.map((r) => [r.id, r.name])),
       date,
       /** §4.9 blocks referenced by the tuples below: name + its parallel options. */
@@ -239,6 +254,149 @@ export class SolverController {
             sub !== undefined ? 1 : 0, s.electiveBlockId,
           ];
         }),
+    };
+    await this.redis.set(cacheKey, JSON.stringify(payload), "EX", 3600);
+    return payload;
+  }
+
+  /**
+   * §31 — everything the Master Grid needs that a **placement** does not carry.
+   *
+   * `/slots` above says where the lessons ended up. This says what the school
+   * intended and who the rows are: the curriculum (which is the Lesson grid
+   * tab outright), each class-section's home room and class teacher, and each
+   * teacher's weekly cap and what they carry in the *other* timetables of the
+   * pool.
+   *
+   * ## One endpoint, because the strip must cost nothing to open
+   *
+   * §31.6's strip fills in when a cell is clicked. Clicking has to stay cheap
+   * enough to do idly — that is how a screen like this is actually used — so
+   * fetching four facts per click was never an option, and four endpoints for
+   * one strip would be four round trips on page load instead. One payload,
+   * fetched once beside `/slots`.
+   *
+   * ## Read off the snapshot, never re-derived
+   *
+   * The curriculum, the teacher caps and `crossConfigTeacherLoad` all come from
+   * `buildFeasibilitySnapshot` — the same builder the solver and Readiness use.
+   * The cross-pool figure especially: CLAUDE.md names it "the only
+   * cross-timetable calculation in the codebase" and says never to add a
+   * second, and a strip quoting a different number from the one Check 2
+   * enforces would be worse than a strip that quoted none.
+   *
+   * Deliberately not `/class-subjects`, which serves the same curriculum rows:
+   * that controller is `masters.manage` and this screen is
+   * `timetable.view.all`, so a principal who may look at the whole school's
+   * week would have met a 403 on one tab out of five. Same controller and same
+   * permission as `/slots` means the screen answers to exactly one authority.
+   *
+   * Cached under the config's own slot prefix, so `invalidateTimetable` sweeps
+   * it with everything else and a master-data edit (which sweeps the school)
+   * takes it too. Without the cache every page load would pay for a full
+   * feasibility snapshot.
+   */
+  @Get("context")
+  @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
+  async context(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: {
+        id: true, workingDays: true,
+        periods: { select: { periodNumber: true, isBreak: true, isExtra: true, isActivity: true } },
+      },
+    });
+    // §17.8 — another school's id is a 404, never an empty grid that reads as
+    // "this timetable teaches nothing". Asked explicitly and before anything
+    // else, rather than left to the snapshot builder's own failure.
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const cacheKey = this.keys.slots(configId, "context");
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const [sections, snapshot] = await Promise.all([
+      // Its own query rather than the snapshot's `classSections`, for two
+      // things the snapshot has no reason to carry: school order, and the home
+      // room. `classTeacherId` is in both; the NAME is not.
+      this.prisma.classSection.findMany({
+        where: { timetableConfigId: configId },
+        include: {
+          class: true, section: true,
+          homeRoom: { select: { name: true } },
+          classTeacher: { select: { name: true } },
+        },
+        orderBy: [{ class: { sequence: "asc" } }, { section: { name: "asc" } }],
+      }),
+      this.readiness.buildSnapshot(configId),
+    ]);
+
+    // §3.11 — the snapshot already filters the curriculum to the config's own
+    // year, which is why this does not filter it again. A class that has run
+    // for three sessions would otherwise contribute three curricula to one
+    // grid and the cell would show whichever loaded last.
+    const requirements = snapshot.subjectRequirements;
+    const subjects = [...new Map(requirements.map((r) => [r.subjectId, r.subjectName])).entries()]
+      .map(([sid, name]) => ({ id: sid, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // §18: the extra window is teaching, but it is not what the timetable has
+    // to fill — the same exclusion the Matrix's fill rate makes, so the row
+    // total and the fill percentage are measured against the same week.
+    const teaching = config.periods.filter(
+      (p) => !p.isBreak && !p.isExtra && !p.isActivity && p.periodNumber !== 0 && p.periodNumber !== null,
+    );
+
+    const payload = {
+      /**
+       * `classId` travels with each row because **periods are a class fact**
+       * (§27): `class_subjects` is keyed by class, so 5-A and 5-B are two rows
+       * showing one curriculum. Emitting the cells per class rather than per
+       * section is what says so — a per-section payload would look like two
+       * answers that merely happen to agree.
+       */
+      sections: sections.map((cs) => ({
+        id: cs.id,
+        classId: cs.classId,
+        label: `${cs.class.name}-${cs.section.name}`,
+        // §19 — the room the solver claims for every non-lab lesson, so a
+        // strip that names it explains most of the cells above it at once.
+        homeRoom: cs.homeRoom?.name ?? null,
+        classTeacher: cs.classTeacher?.name ?? null,
+      })),
+      subjects,
+      /** [classId, subjectId, periodsPerWeek] */
+      cells: requirements.map((r) => [r.classId, r.subjectId, r.periodsPerWeek]),
+      /**
+       * This WING's week, and deliberately not `capacityForClass` — which is
+       * year-wide across every pool the class sits in because it guards a
+       * *write* (§30). Here it only labels a row total, and the honest
+       * denominator for "does this class's week fit" is the week this
+       * timetable actually offers.
+       */
+      weekCapacity: teaching.length * (config.workingDays as number[]).length,
+      /**
+       * §28.1 / §29.3 — the cap, and what this person carries in the OTHER
+       * timetables of the pool.
+       *
+       * `elsewhere` is what makes the strip's "22 of 30" honest. A count taken
+       * from the tuples on screen is one wing's, and CLAUDE.md records exactly
+       * what that costs: "a line round one wing reads 67% where the truth is
+       * 87%". So the strip states the wing's number, then names the other
+       * timetables and their periods rather than quietly folding them in —
+       * two limits with two fixes, never a single blended figure.
+       */
+      teachers: Object.fromEntries(
+        snapshot.teachers.map((t) => {
+          const cross = snapshot.crossConfigTeacherLoad[t.id];
+          return [t.id, {
+            cap: t.maxPeriodsPerWeek,
+            elsewhere: cross?.periods ?? 0,
+            elsewhereIn: cross?.otherConfigNames ?? [],
+          }];
+        }),
+      ),
     };
     await this.redis.set(cacheKey, JSON.stringify(payload), "EX", 3600);
     return payload;

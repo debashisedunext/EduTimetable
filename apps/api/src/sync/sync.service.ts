@@ -36,6 +36,7 @@ import {
   type SyncSheetPlan,
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
+import { classSequence } from "../masters/class-sequence";
 import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService } from "../groups/resource-group.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
@@ -494,11 +495,20 @@ export class SyncService {
           },
         });
         return true;
-      case "Classes":
+      case "Classes": {
+        // Never 0 — see `classSequence`. An ERP that does not send an order
+        // used to hand every class the same one, which is not "no order", it
+        // is a tie MySQL resolves differently on different days.
+        const highest = await tx.schoolClass.aggregate({ where: { schoolId }, _max: { sequence: true } });
         await tx.schoolClass.create({
-          data: { schoolId, name: String(row.className), sequence: Number(row.sequence) || 0 },
+          data: {
+            schoolId,
+            name: String(row.className),
+            sequence: classSequence(String(row.className), row.sequence, (highest._max.sequence ?? 0) + 1),
+          },
         });
         return true;
+      }
       case "Class Sections": {
         const cls = await tx.schoolClass.findFirst({ where: { schoolId, name: String(row.className) } });
         const year = await tx.academicYear.findFirst({ where: { schoolId, name: String(row.academicYear) } });

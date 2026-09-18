@@ -45,6 +45,31 @@ export class SchoolController {
       return s.length === 0 ? null : s.slice(0, max);
     };
 
+    /**
+     * §17.4a — the logo, which REFUSES rather than truncating.
+     *
+     * Every other field here is a short human string where `slice` loses a few
+     * characters somebody can see and retype. A logo is now either a URL or a
+     * `data:` URI (the upload path — the browser downscales, so nothing else in
+     * the stack needs to host an image), and half a data URI is not a shorter
+     * logo: it is a broken image stored silently as if it had worked, which is
+     * the failure mode this codebase keeps refusing to ship.
+     *
+     * The cap is TEXT's own 65,535 bytes with room to spare. The browser aims
+     * far below it; this is the backstop for anything that did not.
+     */
+    const logo = (v: unknown) => {
+      const s = String(v ?? "").trim();
+      if (s.length === 0) return null;
+      if (s.length > 60_000) {
+        throw new BadRequestException(
+          "That image is too large to store. Pick a smaller file — a logo only needs to be a " +
+            "couple of hundred pixels across.",
+        );
+      }
+      return s;
+    };
+
     // §15.3 Phase 25.1 — a name the ERP writes is not ours to change.
     //
     // The ERP overwrites it from the token on EVERY login, so accepting an edit
@@ -84,7 +109,7 @@ export class SchoolController {
       data: {
         ...(body.name !== undefined ? { name: str(body.name, 120) ?? "" } : {}),
         ...(body.shortName !== undefined ? { shortName: str(body.shortName, 40) } : {}),
-        ...(body.logoUrl !== undefined ? { logoUrl: str(body.logoUrl, 255) } : {}),
+        ...(body.logoUrl !== undefined ? { logoUrl: logo(body.logoUrl) } : {}),
         ...(body.address !== undefined ? { address: str(body.address, 255) } : {}),
         ...(body.timezone !== undefined ? { timezone: str(body.timezone, 40) ?? "Asia/Kolkata" } : {}),
       },

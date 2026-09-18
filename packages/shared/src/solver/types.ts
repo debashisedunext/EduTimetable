@@ -41,6 +41,31 @@ export interface SolverInput {
     teacherId: number;
     roomId: number | null;
   }>;
+  /**
+   * §36 — lessons the school pinned to a cell BEFORE generation.
+   *
+   * Deliberately not `lockedSlots`, which are a placement in one draft (§22).
+   * These are the timetable's standing intention and survive every
+   * regeneration — and they are honoured by **domain pruning**, not by being
+   * seeded as occupancy: the variable for that occurrence is handed exactly
+   * this cell and the solver still places it, so the room, the occupancy keys
+   * and the §20 shape rules all keep working.
+   *
+   * Matched to a mapping by `(classSectionId, subjectId, teacherId)` — the same
+   * key `lockedSlots` counts by — so a pin always belongs to a lesson that
+   * somebody is actually assigned to teach.
+   *
+   * `roomId` is the §19 ladder's `preferredRoomId` for that one occurrence:
+   * absent, the solver picks as usual; present, it binds and refuses if taken.
+   */
+  fixedLessons?: Array<{
+    classSectionId: number;
+    subjectId: number;
+    teacherId: number;
+    dayOfWeek: number;
+    periodNumber: number;
+    roomId: number | null;
+  }>;
   seed?: number;
 }
 

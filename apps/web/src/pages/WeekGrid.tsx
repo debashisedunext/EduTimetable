@@ -56,6 +56,17 @@ export interface GridPayload {
    *  §30.5 — each carries its own validity window, because two wings on one card
    *  may apply over different dates. */
   wings?: Array<{ id: number; name: string; effectiveFrom?: string | null; effectiveTo?: string | null }>;
+  /**
+   * §34.6 — how far each day reaches, where that is not the whole row axis.
+   *
+   * A school running a short Saturday keeps ONE row axis and hatches the
+   * periods Saturday does not have, rather than splitting the card or growing
+   * a second header. Present only for days that differ, so a uniform week is
+   * exactly what it was.
+   */
+  dayReach?: Record<number, number>;
+  /** That day's own clock, where its period length differs from the axis. */
+  dayClock?: Record<number, Record<number, [string, string]>>;
   grid: Record<string, GridCell>;
   classTeacher?: string | null;
   weeklyLoad?: number;
@@ -134,11 +145,44 @@ export function WeekGrid({ data }: { data: GridPayload }) {
                 )}
               </td>
               {data.workingDays.map((d) => {
+                /*
+                  §34.6 — a period this day does not have.
+
+                  Hatched and unlabelled rather than left blank: "Free" would
+                  say the class is in school with nothing timetabled, which is
+                  a different and wronger statement than "school has finished".
+                  Checked BEFORE the cell lookup, because a stale slot at a
+                  period a day has since lost must not print as a lesson.
+                */
+                const reach = data.dayReach?.[d];
+                if (reach !== undefined && p.periodNumber !== null && p.periodNumber > reach) {
+                  return (
+                    <td key={d} aria-label="not a teaching period on this day" style={{
+                      ...td, textAlign: "center", color: "var(--ink-faint)", fontSize: 10,
+                      background:
+                        "repeating-linear-gradient(135deg, var(--offwhite), var(--offwhite) 6px, var(--line) 6px, var(--line) 7px)",
+                    }} />
+                  );
+                }
+                /*
+                  §34.6 — and where this day's clock differs from the axis, the
+                  cell carries its own time.
+
+                  The row header can only show one clock, and it shows the
+                  week's. Printing a Saturday lesson against Monday's minutes
+                  would be a false statement on the one document a parent
+                  actually reads, so the day that differs says so in the cell.
+                */
+                const own = p.periodNumber !== null ? data.dayClock?.[d]?.[p.periodNumber] : undefined;
+                const ownTime = own && (own[0] !== p.startTime || own[1] !== p.endTime)
+                  ? <div style={{ fontSize: 8.5, color: "var(--ink-faint)", fontFamily: "var(--font-mono)" }}>{own[0]}–{own[1]}</div>
+                  : null;
                 const cell = data.grid[`${d}:${p.key}`];
                 if (!cell) {
                   return (
                     <td key={d} style={{ ...td, background: "var(--offwhite)", color: "var(--ink-faint)", fontStyle: "italic", textAlign: "center" }}>
                       Free
+                      {ownTime}
                     </td>
                   );
                 }
@@ -164,6 +208,7 @@ export function WeekGrid({ data }: { data: GridPayload }) {
                           {o.substituted ? " ↺" : ""}
                         </div>
                       ))}
+                      {ownTime}
                     </td>
                   );
                 }
@@ -198,6 +243,7 @@ export function WeekGrid({ data }: { data: GridPayload }) {
                         {(cell.sections ?? []).slice(0, 3).join(", ")}
                         {(cell.sections?.length ?? 0) > 3 ? ` +${(cell.sections!.length - 3)}` : ""}
                       </div>
+                      {ownTime}
                     </td>
                   );
                 }
@@ -224,6 +270,7 @@ export function WeekGrid({ data }: { data: GridPayload }) {
                       {cell.room ? ` · ${cell.room}` : ""}
                       {cell.duty ? " · covering" : ""}
                     </div>
+                    {ownTime}
                   </td>
                 );
               })}

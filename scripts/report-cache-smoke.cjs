@@ -18,6 +18,7 @@
 const { createRequire } = require("node:module");
 const req = createRequire("/app/apps/api/package.json");
 const { PrismaClient } = req("@prisma/client");
+const { disableAutoLock } = require("/app/scripts/auto-lock.cjs");
 const { groupFor } = require("./resource-groups.cjs");
 
 const API = process.env.API_URL || "http://localhost:3000";
@@ -150,6 +151,13 @@ const sameGrid = (a, b) =>
 
   try {
     const { config, cs, built } = await build(prisma, school.id);
+    /*
+      §29.8 — publishing LOCKS the timetable, and this suite is about cache
+      invalidation. It publishes twice with a board edit in between, so the lock
+      would refuse the middle half; `locks-smoke.cjs` asserts the auto-lock
+      itself. See scripts/auto-lock.cjs.
+    */
+    await disableAutoLock(prisma, school.id);
 
     console.log("\nA first timetable is generated and published:");
     check(await generate(config.id, token), "draft generated");

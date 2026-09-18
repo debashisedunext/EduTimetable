@@ -8,10 +8,12 @@
  * URL does not say where you are, Back does not close it, and a school works
  * inside it for an hour rather than answering a question and dismissing it.
  *
- * So it is routed. `/guided-setup` opens at the saved step; `/allocation` opens
- * the same wizard at step 9, which is what makes that nav entry a screen rather
- * than an announcement. The dialog form is kept for the welcome flow, which
- * genuinely is a hand-over from something else.
+ * So it is routed. `/guided-setup` opens at the saved step. `/allocation` used
+ * to open the same wizard at step 9; since §31.13 there is no Allocation step —
+ * it redirects to the Master Grid's Lesson Grid, which is where curriculum and
+ * mappings are entered now, and the wizard's Settings step offers the same
+ * door. The dialog form is kept for the welcome flow, which genuinely is a
+ * hand-over from something else.
  */
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -23,9 +25,10 @@ export function GuidedSetup({ startAt = null }: { startAt?: number | null }) {
   const nav = useNavigate();
   /*
     `?at=` is how the welcome flow and the §24.6 chat hand-over say WHERE to
-    open, now that opening is navigation rather than local state. A prop wins
-    over it, because `/allocation` is a fixed destination rather than a resumed
-    position.
+    open, now that opening is navigation rather than local state. A prop still
+    wins over it, for a caller with a fixed destination in mind; either way the
+    wizard resolves it through `visibleStep`, so `?at=9` lands on Settings
+    rather than on a step that no longer exists.
   */
   const [params] = useSearchParams();
   const atQ = params.get("at");
@@ -71,7 +74,12 @@ export function GuidedSetup({ startAt = null }: { startAt?: number | null }) {
         to and Back is what a person expects; it also keeps the history honest
         for somebody who arrived here from Readiness or the Board.
       */
-      onClose={(reason) => { if (reason === "saved") nav("/"); else nav(-1); }}
+      onClose={(reason) => {
+        // §31.13 — the Settings step's door to where the allocation lives now.
+        if (reason === "allocation") nav("/master-grid?tab=lesson");
+        else if (reason === "saved") nav("/");
+        else nav(-1);
+      }}
     />
   );
 }

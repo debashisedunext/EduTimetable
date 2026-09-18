@@ -7,6 +7,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { FeasibilitySnapshot, SolverInput } from "@edutimetable/shared";
 import { parsePins } from "@edutimetable/shared";
 import { daySegmentsFromRows, lunchAfterPeriodFromRows } from "../masters/structure.util";
+import { subjectSelectionFor } from "../masters/timetable-subjects.util";
 
 export async function buildFeasibilitySnapshot(
   prisma: PrismaClient,
@@ -25,34 +26,131 @@ export async function buildFeasibilitySnapshot(
   const classIds = [...new Set(classSections.map((c) => c.classId))];
   const sectionIds = classSections.map((c) => c.id);
 
+  /*
+    §32 — which subjects THIS timetable teaches, or null if it has not said.
+
+    Read here, once, because this snapshot is what the solver, the Feasibility
+    Engine, Readiness and the Master Grid's strip all read (CLAUDE.md: "read off
+    `buildFeasibilitySnapshot` so the strip cannot disagree with the solver or
+    Readiness"). Filtering anywhere else would be a second answer to "does this
+    timetable teach Chemistry?", free to disagree with this one.
+  */
+  const subjectSelection = await subjectSelectionFor(prisma, configId);
+
+  /*
+    §33 — how many BASE periods one of each class's lessons occupies.
+
+    A school running Class 1 at 30 minutes and Class 10 at 60, same start and
+    same finish, is ONE grid of eight 30-minute periods on which Class 10's
+    lessons are **double periods**. This map is that multiplier, and applying
+    it here — where the curriculum becomes the solver's requirements — is what
+    makes every downstream consumer agree: the solver places the block
+    atomically, `writer.ts` emits one slot row per period in it, and
+    `uq_teacher_slot` therefore refuses a teacher who is in Class 10's hour and
+    Class 1's second half-hour at once.
+
+    Absent means span 1 (invariant 7), which is every class in every school
+    today.
+  */
+  /*
+    §34 — the weekdays that run a shape of their own (a short Saturday).
+
+    Loaded into the snapshot rather than read at each consumer, because the
+    consumers are the solver's domain construction AND the Feasibility Engine's
+    capacity arithmetic, and those two disagreeing is the shape of a school
+    that passes Readiness and then cannot be generated.
+  */
+  const dayShapeRows = await prisma.timetableDayShape.findMany({
+    where: { timetableConfigId: configId },
+    select: { dayOfWeek: true, periodsPerDay: true, periodDurationMins: true },
+    orderBy: { dayOfWeek: "asc" },
+  });
+
+  const spanRows = await prisma.timetableClassSpan.findMany({
+    where: { timetableConfigId: configId, classId: { in: classIds } },
+    select: { classId: true, span: true },
+  });
+  const spanByClass = new Map(spanRows.map((r) => [r.classId, Math.max(1, r.span)]));
+
   const [classSubjects, mappings, teachers, mergedGroups, electiveBlocks, labRooms, labSubjects, allSubjects] =
     await Promise.all([
       // Phase 19: the curriculum is year-scoped, and this filter is what keeps
       // it so. `variables.ts` keys requirements by `classId:subjectId` in a
       // plain Map — two years' rows reaching the snapshot would collapse to
       // whichever loaded last, silently timetabling the wrong syllabus.
+      /*
+        §32 — and narrowed to the subjects this timetable teaches.
+
+        Applied to the CURRICULUM rather than to the subject list: the
+        curriculum is what states demand, so a subject this timetable does not
+        teach simply has no demand here — the solver never sees it, Check 1
+        never counts its periods, and Readiness never reports it missing. The
+        rows themselves are untouched, because another timetable may teach the
+        same class the same subject and deselecting is not a deletion.
+
+        `undefined` when nothing has been stated, which Prisma drops: that is
+        the "not stated means all" rule (invariant 7) expressed as a query
+        rather than as a branch somebody has to remember.
+      */
       prisma.classSubject.findMany({
-        where: { classId: { in: classIds }, academicYearId: config.academicYearId },
+        where: {
+          classId: { in: classIds },
+          academicYearId: config.academicYearId,
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { subject: true },
       }),
+      /*
+        §32 — the MAPPINGS have to be narrowed too, and this is the half that
+        is easy to miss.
+
+        Filtering the curriculum alone looked complete — `/context` dropped the
+        column, Readiness dropped the demand — and generation went on placing
+        the subject anyway. `solver/variables.ts` builds one variable per
+        MAPPING and takes the period count from `m.periodsPerWeek`; the
+        curriculum row only supplies the block size and the per-day cap. So a
+        mapping is a statement of demand in its own right, and a subject this
+        timetable does not teach must not have one here.
+      */
       prisma.teacherSubjectClassSection.findMany({
-        where: { classSectionId: { in: sectionIds } },
+        where: {
+          classSectionId: { in: sectionIds },
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { teacher: true, subject: true, classSection: { include: { class: true, section: true } } },
       }),
       prisma.teacher.findMany({
         where: { schoolId: config.schoolId, isActive: true },
         include: { unavailability: true, eligibility: true },
       }),
+      // §4.10 — a merged group carries its own `periodsPerWeek` as well, so it
+      // is demand on the same footing as a mapping.
       prisma.mergedTeachingGroup.findMany({
-        where: { members: { some: { classSectionId: { in: sectionIds } } } },
+        where: {
+          members: { some: { classSectionId: { in: sectionIds } } },
+          ...(subjectSelection ? { subjectId: { in: [...subjectSelection] } } : {}),
+        },
         include: { members: true, subject: true },
       }),
       // §4.9 split electives: any block one of this config's sections attends.
+      /*
+        §4.9 — and the OPTIONS inside an elective block.
+
+        Filtered at the option rather than at the block: a language block whose
+        school has taken German out of one wing still runs, with French and
+        Sanskrit. `options: { where }` narrows the include, so a block left
+        with none comes back with an empty `options` array — dropped below,
+        where the block would otherwise be a macro-variable with nothing to
+        place.
+      */
       prisma.electiveBlock.findMany({
         where: { members: { some: { classSectionId: { in: sectionIds } } } },
         include: {
           members: { include: { classSection: { include: { class: true, section: true } } } },
-          options: { include: { subject: true, teacher: true, room: true } },
+          options: {
+            where: subjectSelection ? { subjectId: { in: [...subjectSelection] } } : undefined,
+            include: { subject: true, teacher: true, room: true },
+          },
         },
       }),
       prisma.room.count({ where: { schoolId: config.schoolId, roomType: "lab" } }),
@@ -120,6 +218,24 @@ export async function buildFeasibilitySnapshot(
       }),
     ]);
 
+    /*
+      §36 — the pins, for Check 14.
+
+      Read into the SNAPSHOT as well as into `SolverInput` — the same rows, but
+      the engine and the solver are different readers: the solver prunes the
+      domain, and the engine has to be able to say *before* Generate that the
+      pruning will leave nothing. Queried once here, so a pin the engine passes
+      and the solver refuses is not expressible.
+    */
+    const pinned = await prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        dayOfWeek: true, periodNumber: true,
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
+    });
+
     const ownRoomSubjectIds = allSubjects.filter((s) => s.taughtInOwnRoom).map((s) => s.id);
     const ownRoomsBySubject: Record<number, number[]> = {};
     for (const id of ownRoomSubjectIds) {
@@ -167,6 +283,72 @@ export async function buildFeasibilitySnapshot(
     if (!entry.otherConfigNames.includes(name)) entry.otherConfigNames.push(name);
   }
 
+  /*
+    §28.7 — where these teachers already are, in the other wings of this pool.
+
+    Two queries and both are narrow: the other configs in the same
+    `resource_group_id` (the §30 rule `crossConfigTeacherLoad` above already
+    uses, one level in), and their placed rows for these teachers.
+
+    **Read once, when generation starts.** Wings are generated one at a time, so
+    the wing generated second can honour the first and the first knows nothing
+    of the second. That asymmetry is real and is stated rather than papered
+    over: regenerating the first wing afterwards is what makes the pair
+    consistent, and the Generate screen says so.
+  */
+  /** "HH:MM" → minutes from midnight. A cross-wing clash is a clock question. */
+  const hhmm = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const crossWingBusy: FeasibilitySnapshot["crossWingBusy"] = {};
+  if ((config.crossWingTravelMins ?? 0) > 0 || config.crossWingRule === "forbid") {
+    const siblings = await prisma.timetableConfig.findMany({
+      where: { id: { not: configId }, resourceGroupId: config.resourceGroupId },
+      include: { periods: true },
+    });
+    if (siblings.length > 0) {
+      const busyRows = await prisma.timetableSlot.findMany({
+        where: {
+          timetableConfigId: { in: siblings.map((c) => c.id) },
+          teacherId: { in: teachers.map((t) => t.id) },
+          source: { not: "extra" },
+        },
+        select: { timetableConfigId: true, teacherId: true, dayOfWeek: true, periodNumber: true },
+      });
+      // Each sibling's own clock — §30.7's lesson: their P3 is not our P3.
+      const clocks = new Map(siblings.map((c) => [
+        c.id,
+        new Map(c.periods
+          .filter((p) => p.periodNumber !== null && !p.isBreak && !p.isExtra && !p.isActivity)
+          .map((p) => [p.periodNumber as number, { start: hhmm(p.startTime), end: hhmm(p.endTime) }])),
+      ]));
+      const names = new Map(siblings.map((c) => [c.id, c.name]));
+      const travel = new Map(siblings.map((c) => [c.id, c.crossWingTravelMins ?? 0]));
+      const seen = new Set<string>();
+      for (const r of busyRows) {
+        if (r.teacherId === null) continue;
+        const clock = clocks.get(r.timetableConfigId)?.get(r.periodNumber);
+        if (!clock) continue;
+        /*
+          §4.10 — a merged group places one row per member section, and they are
+          one event. Left as-is the same lesson would be compared several times,
+          which changes no verdict but inflates every list this teacher has.
+        */
+        const key = `${r.teacherId}:${r.timetableConfigId}:${r.dayOfWeek}:${r.periodNumber}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        (crossWingBusy[r.teacherId] ??= []).push({
+          dayOfWeek: r.dayOfWeek,
+          start: clock.start,
+          end: clock.end,
+          configName: names.get(r.timetableConfigId) ?? "another wing",
+          travelMins: travel.get(r.timetableConfigId) ?? 0,
+        });
+      }
+    }
+  }
+
   const label = (cs: (typeof classSections)[number]) => `${cs.class.name}-${cs.section.name}`;
 
   // Built once: both `daySegments` and the lunch boundary read the same rows,
@@ -193,12 +375,31 @@ export async function buildFeasibilitySnapshot(
       name: config.name,
       workingDays: (config.workingDays as number[]) ?? [1, 2, 3, 4, 5],
       periodsPerDay: config.periodsPerDay,
+      // §34 — read through `periodsOn`/`weekPeriods`, never indexed directly.
+      dayShapes: dayShapeRows.map((r) => ({
+        day: r.dayOfWeek,
+        periodsPerDay: r.periodsPerDay,
+        periodDurationMins: r.periodDurationMins,
+      })),
       daySegments: daySegmentsFromRows(periodRows),
       // §26.3 — which break was lunch. Null when the day has no break, which
       // switches the lunch rules off rather than attaching them to a guess.
       lunchAfterPeriod: lunchAfterPeriodFromRows(periodRows),
       // §28.1 — the school's own "getting full" line, for Check 12.
       loadAlertPct: config.loadAlertPct,
+      // §28.7 — this wing's own walk, and how strictly to honour it.
+      crossWingTravelMins: config.crossWingTravelMins ?? 0,
+      crossWingRule: (config.crossWingRule ?? "prefer") as "prefer" | "forbid",
+      /*
+        This wing's clock, teaching periods only. Breaks, §18 extras and §28.3
+        activities carry no period number the solver can reach, so including
+        them would only be rows nothing looks up.
+      */
+      periodClock: Object.fromEntries(
+        config.periods
+          .filter((p) => p.periodNumber !== null && !p.isBreak && !p.isExtra && !p.isActivity)
+          .map((p) => [p.periodNumber as number, { start: hhmm(p.startTime), end: hhmm(p.endTime) }]),
+      ),
     },
     classSections: classSections.map((cs) => ({
       id: cs.id,
@@ -214,8 +415,23 @@ export async function buildFeasibilitySnapshot(
       periodsPerWeek: r.periodsPerWeek,
       maxPeriodsPerDay: r.maxPeriodsPerDay,
       samePeriodAcrossWeek: r.samePeriodAcrossWeek,
-      consecutiveBlockSize: r.consecutiveBlockSize,
+      /*
+        §33 — the class's own lesson length, unless this row asks for more.
+
+        `max`, not "override": a class on 60-minute periods whose Science is a
+        double LAB wants two hours, which is four base periods, and the
+        curriculum row already says 2 in the class's own units. Taking the
+        larger keeps both statements true and keeps span 1 (every school today)
+        reading exactly as it does now.
+
+        Deliberately not multiplied. A curriculum row's block size is already
+        in BASE periods — it is what `writer.ts` counts — so multiplying here
+        would turn a school's existing double period into a quadruple the first
+        time anybody set a class span.
+      */
+      consecutiveBlockSize: Math.max(r.consecutiveBlockSize, spanByClass.get(r.classId) ?? 1),
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+      blockMayCrossBreak: r.blockMayCrossBreak,
     })),
     teachers: teachers.map((t) => ({
       id: t.id,
@@ -253,7 +469,11 @@ export async function buildFeasibilitySnapshot(
       periodsPerWeek: g.periodsPerWeek,
       memberClassSectionIds: g.members.map((m) => m.classSectionId),
     })),
-    electiveBlocks: electiveBlocks.map((b) => ({
+    // §32 — a block whose every option belongs to a subject this timetable
+    // does not teach is not a block any more. Dropped rather than emitted
+    // empty: the solver would otherwise hold a macro-variable it can never
+    // satisfy, and Readiness would report a block that cannot be filled.
+    electiveBlocks: electiveBlocks.filter((b) => b.options.length > 0).map((b) => ({
       id: b.id,
       name: b.name,
       periodsPerWeek: b.periodsPerWeek,
@@ -277,6 +497,7 @@ export async function buildFeasibilitySnapshot(
       })),
     })),
     crossConfigTeacherLoad,
+    crossWingBusy,
     labRoomCount: labRooms,
     labSubjectIds: labSubjects.map((s) => s.id),
     subjectPlacement: Object.fromEntries(allSubjects.map((s) => [s.id, {
@@ -299,6 +520,8 @@ export async function buildFeasibilitySnapshot(
     // cells from `SolverInput`. Same rows, read once here.
     classSectionTimeOff: sectionOff.map((r) => ({ id: r.classSectionId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
     subjectTimeOff: subjectOff.map((r) => ({ id: r.subjectId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
+    // §36 — what Check 14 reads. Empty for every school that has pinned nothing.
+    fixedLessons: pinned,
     roomTimeOff: roomOff.map((r) => ({ id: r.roomId, dayOfWeek: r.dayOfWeek, periodNumber: r.periodNumber })),
     labRoomsBySubject,
     // §19.1 — whether, and where. See the note by their construction above.
@@ -329,7 +552,7 @@ export async function buildSolverInput(
 ): Promise<SolverInput> {
   const snapshot = await buildFeasibilitySnapshot(prisma, configId);
   const sectionIds = snapshot.classSections.map((c) => c.id);
-  const [unavail, labRooms, mappingsWithRooms, groups, locked] = await Promise.all([
+  const [unavail, labRooms, mappingsWithRooms, groups, locked, fixed] = await Promise.all([
     prisma.teacherUnavailability.findMany({
       where: { teacher: { isActive: true } },
     }),
@@ -352,6 +575,15 @@ export async function buildSolverInput(
         isLocked: true,
         ...(draftId !== undefined && draftId !== null ? { draftId } : {}),
       },
+    }),
+    // §36 — no draft filter, deliberately: see the note where they are mapped.
+    prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        dayOfWeek: true, periodNumber: true, roomId: true,
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
     }),
   ]);
   return {
@@ -377,6 +609,21 @@ export async function buildSolverInput(
       mappingsWithRooms.map((m) => [m.id, m.preferredRoomId as number]),
     ),
     mergedGroupRooms: Object.fromEntries(groups.map((g) => [g.id, g.roomId])),
+    /*
+      §36 — the lessons this timetable has pinned to a cell.
+
+      By CONFIG, not by draft: unlike `lockedSlots` above, a fixed lesson is the
+      school's standing intention and has to be honoured whichever draft is
+      being generated. That difference is the whole reason it is its own table.
+    */
+    fixedLessons: fixed.map((f) => ({
+      classSectionId: f.classSectionId,
+      subjectId: f.subjectId,
+      teacherId: f.teacherId,
+      dayOfWeek: f.dayOfWeek,
+      periodNumber: f.periodNumber,
+      roomId: f.roomId,
+    })),
     lockedSlots: locked
       // A locked cell is something a person pinned in a section's grid, so it
       // always has a section. An elective *option* row has none (§4.9) — it is

@@ -6,6 +6,7 @@ import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService } from "../groups/resource-group.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertCanOwnClass } from "./teacher-scope.util";
+import { classSequence } from "./class-sequence";
 import { FreezeService } from "../freeze/freeze.service";
 
 @Controller("classes")
@@ -29,13 +30,25 @@ export class ClassesController {
   @Post()
   async create(@Req() req: AuthedRequest, @Body() body: any) {
     requireFields(body, ["name"]);
+    // Where an off-ladder name would go: after everything this school already
+    // has. Read before the create, since the create is what changes it.
+    const highest = await this.prisma.schoolClass.aggregate({
+      where: { schoolId: req.user.schoolId },
+      _max: { sequence: true },
+    });
     const created = await uniq(
       () =>
         this.prisma.schoolClass.create({
           data: {
             schoolId: req.user.schoolId,
             name: String(body.name),
-            sequence: body.sequence != null ? toInt(body.sequence, "sequence") : 0,
+            // Never 0 — see `classSequence`. A class with no sequence used to
+            // sort ABOVE the whole school, tied with every other one.
+            sequence: classSequence(
+              body.name,
+              body.sequence != null ? toInt(body.sequence, "sequence") : null,
+              (highest._max.sequence ?? 0) + 1,
+            ),
           },
         }),
       `Class '${body.name}'`,
@@ -265,9 +278,21 @@ export class ClassSectionsController {
   /** §8.1b — Class Teacher Assignment: the pointer that activates a teacher's P1 rule. */
   @Put(":id/class-teacher")
   async assignClassTeacher(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
-    // §29.1 — a class teacher is one of the four things that carry "who
-    // teaches", and `always_first_period` makes it a placement rule too.
-    await this.freeze.assertSections([toInt(id, "id")], "a class teacher");
+    /*
+      §29.1 — a class teacher is one of the four things that carry "who
+      teaches", and `always_first_period` makes it a placement rule too.
+
+      §29.8 — the CURRENT holder is the other clause, so re-staffing a class
+      teacher works under that person's grant without unlocking the class. Read
+      as it stands, never the incoming teacher.
+    */
+    const holder = await this.prisma.classSection.findFirst({
+      where: { id: toInt(id, "id") },
+      select: { classTeacherId: true },
+    });
+    const ticket = await this.freeze.assertSections([toInt(id, "id")], "a class teacher", {
+      teacherIds: holder?.classTeacherId != null ? [holder.classTeacherId] : [],
+    });
     const teacherId = body.teacherId === null ? null : toInt(body.teacherId, "teacherId");
     if (teacherId !== null) {
       const teacher = await this.prisma.teacher.findFirst({
@@ -284,6 +309,11 @@ export class ClassSectionsController {
           data: { classTeacherId: teacherId },
         }),
       "Class-section",
+    );
+    await ticket.record(
+      teacherId === null
+        ? `cleared the class teacher of class-section #${toInt(id, "id")}`
+        : `class teacher of class-section #${toInt(id, "id")} set to teacher #${teacherId}`,
     );
     await this.readiness.invalidate(req.user.schoolId);
     return updated;

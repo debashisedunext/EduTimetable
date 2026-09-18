@@ -12,13 +12,14 @@
  * returns counts about their own school and nothing else.
  */
 import {
-  BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Req,
+  BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, Query, Req,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { type AuthedRequest } from "../masters/crud.util";
 import { OnboardingService } from "./onboarding.service";
+import { SetupProgressService } from "./setup-progress.service";
 import { InterviewService } from "./interview.service";
 import { FreezeService } from "../freeze/freeze.service";
 
@@ -26,6 +27,7 @@ import { FreezeService } from "../freeze/freeze.service";
 export class OnboardingController {
   constructor(
     private readonly onboarding: OnboardingService,
+    private readonly progress: SetupProgressService,
     private readonly interviewer: InterviewService,
     private readonly freeze: FreezeService,
   ) {}
@@ -34,6 +36,21 @@ export class OnboardingController {
   @Get("me/onboarding")
   state(@Req() req: AuthedRequest) {
     return this.onboarding.stateFor(req.user.schoolId, req.user.sub);
+  }
+
+  /**
+   * §24.9 — how far each TIMETABLE is, from the database.
+   *
+   * Its own endpoint rather than a field on `GET /timetable-configs`, which
+   * feeds `ConfigContext` on every screen in the app and wants none of this.
+   *
+   * `view.all` to match that list: somebody who may see the timetables may see
+   * how finished they are, and a Teacher gets neither.
+   */
+  @Get("onboarding/progress")
+  @RequirePermission(PERMISSIONS.TIMETABLE_VIEW_ALL)
+  setupProgress(@Req() req: AuthedRequest) {
+    return this.progress.forSchool(req.user.schoolId);
   }
 
   /** "I'll do this later" — remembered per user, not per school. */
@@ -98,23 +115,55 @@ export class OnboardingController {
     return this.onboarding.recordWing(req.user.schoolId, req.user.sub, configId);
   }
 
+  /**
+   * §3.10b — what the school already is, for the Classes step to draw against.
+   *
+   * A GET because it is a question. Same permission as the rest of the guided
+   * setup: this is the shape of the masters it is about to add to, not a new
+   * kind of read.
+   */
+  @Get("onboarding/classes-shape")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  classesShape(@Req() req: AuthedRequest, @Query("year") year?: string) {
+    return this.onboarding.schoolShape(req.user.schoolId, year || undefined);
+  }
+
   /** What committing this step would create — same pipeline, dry. */
   @Get("onboarding/preview/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
-  preview(@Req() req: AuthedRequest, @Param("step") step: string) {
-    return this.onboarding.preview(req.user.schoolId, req.user.sub, Number(step));
+  preview(
+    @Req() req: AuthedRequest,
+    @Param("step") step: string,
+    /** §30.9 — the pool being set up; see `narrowToScope`. */
+    @Query("scope") scope?: string,
+  ) {
+    return this.onboarding.preview(req.user.schoolId, req.user.sub, Number(step), scope);
   }
 
   /** Commit this step's answers, through the §16 importer and nothing else. */
   @Post("onboarding/commit/:step")
   @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
-  async commit(@Req() req: AuthedRequest, @Param("step") step: string) {
-    // §29.1 — the guided setup commits through the §16 importer, so it is the
-    // same blunt check for the same reason: a step's answers become rows by
-    // name, not by timetable id. Saving answers and previewing are untouched —
-    // nothing is written until Next.
-    await this.freeze.assertNoneFrozen("master data");
-    return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step));
+  async commit(
+    @Req() req: AuthedRequest,
+    @Param("step") step: string,
+    /** §30.9 — which §30 resource pool the wizard is setting up. */
+    @Query("scope") scope?: string,
+  ) {
+    /*
+      §29.8 — the lock check moved INTO the service, and narrowed.
+
+      It was `assertNoneFrozen("master data")` here: refuse while ANY wing in
+      the school is locked, because a step's answers become rows by name rather
+      than by timetable id. Auto-lock made that the normal state, so a school
+      with Main published could no longer run the wizard for Junior — which is
+      the case the wizard exists for.
+
+      The service has what the controller does not: `answers.wings` names the
+      timetables this commit is building, so `assertWingsUnlocked` refuses
+      exactly those. Saving answers and previewing are untouched — nothing is
+      written until Next.
+    */
+    return this.onboarding.commit(req.user.schoolId, req.user.sub, Number(step), scope);
   }
 
   /** Step 11: write the settings and mark the guided setup done. */

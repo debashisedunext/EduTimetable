@@ -79,12 +79,38 @@ interface Plan {
   };
 }
 
+/** §29.7 — the writes an apply actually made, counted as they ran. */
+interface Changed {
+  where: string;
+  lessons: number;
+  mappings: number;
+  mergedGroups: number;
+  electiveOptions: number;
+  classTeacher: number;
+  fixedLessons: number;
+}
+
 interface ChangeDetail extends ChangeRow {
   frozen: boolean;
+  /**
+   * §29.6 — which week this change acts on, and the sentence that says so.
+   *
+   * A staffing change moves the published timetable when there is one and the
+   * current draft when there is not. Before this the screen never said which,
+   * and on an unpublished school it silently looked at a week with no rows in
+   * it — reporting "nothing to move" over a full grid.
+   */
+  scope?: "published" | "draft";
+  scopeLabel?: string;
+  /** True once applied: these are the rows that WERE moved, not a fresh look. */
+  historical?: boolean;
   units: Unit[];
   totals: {
     units: number; lessons: number; classSections: number;
-    byType: Record<Unit["type"], number>;
+    /** §29.7 — §36 pins riding on these units; a pin left behind BLOCKS Generate. */
+    fixedLessons?: number;
+    byType?: Record<Unit["type"], number>;
+    uncovered?: number;
   };
 }
 
@@ -226,7 +252,7 @@ function NewChange({ configId, teachers, onCreated, onError }: {
         </Field>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 14 }}>
+      <div className="grid2" style={{ gap: 16, marginTop: 14 }}>
         <div>
           <div style={LABEL}>Releasing — their classes come free</div>
           <div style={PICKER}>
@@ -329,14 +355,37 @@ function ChangeCard({ row, open, onToggle, onChanged, onError }: {
           {detail && (
             <>
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, fontSize: 12.5 }}>
-                <Stat n={detail.totals.units} label="things to reassign" />
+                <Stat n={detail.totals.units} label={detail.historical ? "things moved" : "things to reassign"} />
                 <Stat n={detail.totals.lessons} label="lessons a week" />
-                <Stat n={detail.totals.classSections} label="class-sections affected" />
+                {!detail.historical && <Stat n={detail.totals.classSections} label="class-sections affected" />}
+                {/* Only when there are any: a zero here is noise beside numbers
+                    that matter, and §36 pins are rare. */}
+                {!detail.historical && (detail.totals.fixedLessons ?? 0) > 0 && (
+                  <Stat n={detail.totals.fixedLessons as number} label="fixed lessons that move too" />
+                )}
               </div>
+
+              {/*
+                §29.6 — which week, said out loud.
+
+                It is the answer to "why does the grid still show the old name?"
+                and to "why does this say nothing to move?", and both questions
+                were unanswerable from this screen.
+              */}
+              {detail.scopeLabel && (
+                <p style={{
+                  fontSize: 11.5, color: detail.scope === "draft" ? "var(--amber)" : "var(--ink-faint)",
+                  margin: "0 0 10px",
+                }}>
+                  {detail.historical ? "Moved in " : "Acts on "}{detail.scopeLabel}.
+                </p>
+              )}
 
               {detail.units.length === 0 ? (
                 <p style={{ fontSize: 12.5, color: "var(--ink-faint)", margin: 0 }}>
-                  They teach nothing in this timetable — there is nothing to move.
+                  {detail.historical
+                    ? "Nothing was recorded against this change."
+                    : "They teach nothing in this timetable — there is nothing to move."}
                 </p>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -481,10 +530,20 @@ function PlanPanel({ changeId, receiving, units, onError, onApplied }: {
   const [tickedFor, setTickedFor] = useState<string | null>(null);
   if (acceptGaps && tickedFor !== url) { setAcceptGaps(false); setTickedFor(null); }
 
+  /*
+    §29.7 — what the application actually did, kept and shown.
+
+    "Applied" on its own left somebody to go and look at four screens to find
+    out whether anything had happened, which is exactly the report that prompted
+    this. Every number below is counted from the writes that ran, so a summary
+    can never claim more than was written.
+  */
+  const [didWhat, setDidWhat] = useState<Changed | null>(null);
+
   const applyIt = async () => {
     setBusy(true);
     try {
-      await api(`/staffing-changes/${changeId}/apply`, {
+      const r = await api<{ changed?: Changed }>(`/staffing-changes/${changeId}/apply`, {
         method: "POST",
         body: JSON.stringify({
           mode,
@@ -494,6 +553,7 @@ function PlanPanel({ changeId, receiving, units, onError, onApplied }: {
         }),
       });
       onError(null);
+      if (r.changed) setDidWhat(r.changed);
       onApplied();
     } catch (e) {
       onError(asMessage(e));
@@ -673,8 +733,64 @@ function PlanPanel({ changeId, receiving, units, onError, onApplied }: {
               No lesson moves period or room — only who teaches it. This can be undone.
             </span>
           </div>
+          {didWhat && <WhatChanged c={didWhat} />}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * §29.7 — everything the application changed, and where.
+ *
+ * Four carriers hold "who teaches" and a fifth pins lessons to cells; a school
+ * that has just pressed Apply has no way to know which of them moved without
+ * opening four screens. So the apply counts its own writes as they run and this
+ * prints them — never predicted from the plan, because a summary computed from
+ * what was *going* to happen is the half-applied change claiming success all
+ * over again.
+ *
+ * A row that changed nothing is not drawn. "0 elective options" on a school
+ * that has no electives is noise, and noise beside real numbers is what stops
+ * people reading them.
+ */
+function WhatChanged({ c }: { c: Changed }) {
+  const rows: Array<[number, string, string]> = [
+    [c.lessons, "lesson", `re-assigned in ${c.where} — same day, same period, same room`],
+    [c.mappings, "subject mapping", "moved, so the next Generate keeps the new teacher"],
+    [c.mergedGroups, "merged teaching group", "moved with all its sections"],
+    [c.electiveOptions, "elective option", "moved inside its block"],
+    [c.classTeacher, "class-teacher role", "handed over"],
+    [c.fixedLessons, "fixed lesson", "re-pointed, so Readiness does not block the next generation"],
+  ];
+  const shown = rows.filter(([n]) => n > 0);
+  return (
+    <div style={{
+      marginTop: 14, borderLeft: "3px solid var(--accent)", background: "var(--accent-bg)",
+      borderRadius: "0 10px 10px 0", padding: "13px 16px",
+    }}>
+      <div style={{ font: "700 12.5px/1.4 Inter", color: "var(--accent)", marginBottom: 8 }}>
+        ✓ Applied — here is everything that changed
+      </div>
+      {shown.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: "var(--ink-soft)", margin: 0 }}>
+          Nothing was written. Nothing matched what the plan expected to find — open a new change and
+          look at what it lists before applying.
+        </p>
+      ) : (
+        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 5 }}>
+          {shown.map(([n, noun, why]) => (
+            <li key={noun} style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>
+              <strong style={{ fontFamily: "var(--font-mono)", color: "var(--ink)" }}>{n}</strong>{" "}
+              <strong style={{ color: "var(--ink)" }}>{noun}{n === 1 ? "" : "s"}</strong> {why}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p style={{ fontSize: 11.5, color: "var(--ink-faint)", margin: "9px 0 0" }}>
+        The Lesson grid, the Master Grid and Readiness all read these rows, so they show the new teacher
+        as soon as they are next loaded.
+      </p>
     </div>
   );
 }

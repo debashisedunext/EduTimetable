@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { SchoolLogo } from "../brand";
 import { asMessage, Card, ErrorNote, Field } from "../components";
 import { useApi } from "../hooks";
 import { inputStyle } from "./Timetables";
@@ -21,6 +22,154 @@ const TIMEZONES = [
   "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Kathmandu", "Asia/Dhaka",
   "Europe/London", "America/New_York", "Australia/Sydney", "UTC",
 ];
+
+/**
+ * §17.4a — the school's logo: what it is, where it comes from, and what happens
+ * without one, all in one control.
+ *
+ * ## Why an upload, when the hint used to say there are none
+ *
+ * It said *"the app does not host uploads"*, which left a school with no public
+ * image host unable to set a logo at all — a URL field is only an entry point
+ * if you already have somewhere to put the file. The browser downscales the
+ * chosen image and stores it as a `data:` URI in the same column, so there is
+ * still **no file storage, no image route and no unauthenticated asset path**;
+ * `logo_url` went from VARCHAR(255) to TEXT and nothing else moved.
+ *
+ * ## The downscale is the whole safety argument
+ *
+ * A school picks a 4MB photograph, because that is the file they have. It goes
+ * onto every screen of every session through `/me`, so it is drawn onto a
+ * canvas at `MAX_PX` first and re-encoded. A 160px PNG is tens of kilobytes;
+ * the server refuses anything past 60,000 characters rather than truncating it
+ * into an image that is silently broken.
+ *
+ * ## The preview is the real component
+ *
+ * It renders `SchoolLogo` — the same thing the top bar renders — so "what will
+ * this look like" is answered by showing it rather than by describing it. That
+ * also means the default appears the moment the field is cleared, which is the
+ * question somebody has when they are deciding whether to set one at all.
+ */
+const MAX_PX = 256;
+const MAX_FILE = 8 * 1024 * 1024;
+
+function LogoField({
+  value, onChange, onError,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onError: (m: string | null) => void;
+}) {
+  const file = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  /*
+    Set only by the preview failing to load, and cleared by every path that
+    changes the value — which is all of them, since this component owns the
+    control. It is an event rather than a derived state on purpose: see the
+    note on `SchoolLogo.onBroken`.
+  */
+  const [broken, setBroken] = useState(false);
+  const put = (v: string) => { setBroken(false); onChange(v); };
+  const usingDefault = value.trim().length === 0 || broken;
+
+  const pick = async (f: File) => {
+    onError(null);
+    if (!f.type.startsWith("image/")) {
+      onError(`${f.name} is not an image.`);
+      return;
+    }
+    if (f.size > MAX_FILE) {
+      onError(`${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB. Pick something under 8MB.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      put(await downscale(f));
+    } catch (e) {
+      onError(asMessage(e));
+    } finally {
+      setBusy(false);
+      // Cleared so choosing the SAME file again still fires a change event —
+      // which is what somebody does after cropping it and saving over it.
+      if (file.current) file.current.value = "";
+    }
+  };
+
+  return (
+    <Field
+      label="School logo"
+      hint="Shown at the top left of every screen and on reports. Upload an image or paste a link to one — without either, the default mark is used."
+    >
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <SchoolLogo src={value} size={64} framed onBroken={() => setBroken(true)} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <button type="button" className="btn" disabled={busy} onClick={() => file.current?.click()}>
+              {busy ? "Preparing…" : "Upload an image"}
+            </button>
+            {value.trim() && (
+              <button type="button" className="btn" onClick={() => { put(""); onError(null); }}>
+                Use the default
+              </button>
+            )}
+            <input
+              ref={file}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void pick(f); }}
+            />
+          </div>
+          <input
+            value={value.startsWith("data:") ? "" : value}
+            onChange={(e) => put(e.target.value)}
+            placeholder={value.startsWith("data:") ? "— uploaded image —" : "…or paste https://…/logo.png"}
+            disabled={value.startsWith("data:")}
+            style={{ ...inputStyle, ...(value.startsWith("data:") ? { background: "var(--offwhite)", color: "var(--ink-faint)" } : {}) }}
+          />
+          <div style={{ fontSize: 11, lineHeight: 1.5, marginTop: 5, color: broken ? "var(--signal)" : "var(--ink-faint)" }}>
+            {broken
+              ? "That link could not be loaded from this browser, so the default is being shown instead."
+              : usingDefault
+                ? `No logo set — every screen uses the default mark. Uploads are resized to ${MAX_PX}px before they are stored.`
+                : "This is what the top bar will show."}
+          </div>
+        </div>
+      </div>
+    </Field>
+  );
+}
+
+/**
+ * The chosen file, drawn down to `MAX_PX` and re-encoded.
+ *
+ * PNG, not JPEG: a logo is usually transparent, and JPEG would paint a black
+ * rectangle behind it. The longest edge is what is capped, so the aspect ratio
+ * of a wide wordmark survives — squashing it to a square would be a silent edit
+ * to somebody's brand.
+ */
+async function downscale(f: File): Promise<string> {
+  const url = URL.createObjectURL(f);
+  try {
+    const img = await new Promise<HTMLImageElement>((ok, fail) => {
+      const el = new Image();
+      el.onload = () => ok(el);
+      el.onerror = () => fail(new Error(`${f.name} could not be read as an image.`));
+      el.src = url;
+    });
+    const scale = Math.min(1, MAX_PX / Math.max(img.width, img.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("This browser could not resize the image.");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 /**
  * Screen: School Profile (§17.4).
@@ -106,7 +255,7 @@ export function SchoolProfile({ me }: { me: MeResponse }) {
         title="Identity"
         sub="Where this school's name comes from, and what the ERP will overwrite."
       >
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="grid2" style={{ gap: 12 }}>
           <Field
             label="School code"
             hint="The ERP's stable identifier for this school. It is what an incoming sign-in is matched against, so it is not editable here — changing it would lock this school's users out."
@@ -131,7 +280,7 @@ export function SchoolProfile({ me }: { me: MeResponse }) {
         title="Presentation"
         sub="Local settings. These are only overwritten if your ERP explicitly sends them, so what you set here sticks."
       >
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="grid2" style={{ gap: 12 }}>
           <Field label="Short name" hint="Used where space is tight, e.g. report headers.">
             <input
               value={form.shortName ?? ""}
@@ -151,28 +300,11 @@ export function SchoolProfile({ me }: { me: MeResponse }) {
           </Field>
         </div>
 
-        <Field label="Logo URL" hint="Shown in the sidebar and on reports. Must be a URL this browser can reach — the app does not host uploads.">
-          <input
-            value={form.logoUrl ?? ""}
-            onChange={(e) => set({ logoUrl: e.target.value })}
-            placeholder="https://…/logo.png"
-            style={inputStyle}
-            maxLength={255}
-          />
-        </Field>
-        {form.logoUrl && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: -6, marginBottom: 12 }}>
-            <img
-              src={form.logoUrl}
-              alt=""
-              style={{ width: 34, height: 34, objectFit: "contain", borderRadius: 7, border: "1px solid var(--line)", background: "#fff" }}
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-            />
-            <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>
-              Preview — if nothing appears, the URL is not reachable from this browser.
-            </span>
-          </div>
-        )}
+        <LogoField
+          value={form.logoUrl ?? ""}
+          onChange={(logoUrl) => set({ logoUrl })}
+          onError={setError}
+        />
 
         <Field label="Address">
           <input value={form.address ?? ""} onChange={(e) => set({ address: e.target.value })} style={inputStyle} maxLength={255} />

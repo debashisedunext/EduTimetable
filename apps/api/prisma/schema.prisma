@@ -32,7 +32,9 @@ model School {
   code               String       @unique @db.VarChar(40)
   name               String       @db.VarChar(120)
   shortName          String?      @map("short_name") @db.VarChar(40)
-  logoUrl            String?      @map("logo_url") @db.VarChar(255)
+  /// §17.4a — TEXT, not VarChar(255): holds either a URL or a `data:` URI for
+  /// a logo uploaded through the School Profile and downscaled in the browser.
+  logoUrl            String?      @map("logo_url") @db.Text
   timezone           String       @default("Asia/Kolkata") @db.VarChar(40)
   address            String?      @db.VarChar(255)
   /// The trust this school belongs to, as the ERP reports it. Denormalized
@@ -65,6 +67,13 @@ model School {
   /// the next login. Null means "the ERP has never named this", which is the
   /// only honest test.
   erpNameSyncedAt    DateTime?    @map("erp_name_synced_at")
+  /// §29.8 — does publishing lock the timetable?
+  ///
+  /// True for every school, because nobody should have to discover a setting in
+  /// order to be protected by it. This reverses §29.1's "a freeze is a decision
+  /// rather than a side effect of publishing" — see the migration for why: the
+  /// printed copy becomes a second source of truth the moment it is printed.
+  lockOnPublish      Boolean      @default(true) @map("lock_on_publish")
   isActive           Boolean      @default(true) @map("is_active")
   createdAt          DateTime     @default(now()) @map("created_at")
 
@@ -114,9 +123,16 @@ model School {
   dailyActivities        DailyActivity[]
   teacherSubjects        TeacherSubject[]
   subjectClasses         SubjectClass[]
+  timetableSubjects      TimetableSubject[]
+  timetableClassSpans    TimetableClassSpan[]
+  timetableDayShapes     TimetableDayShape[]
   staffingChanges        StaffingChange[]
   staffingChangeTeachers StaffingChangeTeacher[]
   staffingChangeItems    StaffingChangeItem[]
+  fixedLessons           TimetableFixedLesson[]
+  timetableUnlocks       TimetableUnlock[]
+  timetableUnlockEntities TimetableUnlockEntity[]
+  timetableUnlockEvents  TimetableUnlockEvent[]
 
   @@map("schools")
 }
@@ -347,6 +363,8 @@ model SchoolClass {
   eligibleTeachers TeacherClassEligibility[]
   /// §27.16 — the subjects DECLARED as taught to this class.
   subjectClasses   SubjectClass[]
+  /// §33 — how long one of this class's lessons is, per timetable.
+  periodSpans      TimetableClassSpan[]
 
   @@unique([schoolId, name])
   @@map("classes")
@@ -399,6 +417,10 @@ model ClassSection {
   /// §30 — Class 1-A exists once PER POOL, not once per school-year. That one
   /// column is what lets an individual timetable hold its own Class 1-A with
   /// its own class teacher, home room and Maths teacher.
+  fixedLessons TimetableFixedLesson[]
+  /// §29.8 — the unlock grants that have named this cohort.
+  unlockGrants TimetableUnlockEntity[]
+
   @@unique([classId, sectionId, academicYearId, resourceGroupId], map: "uq_section_in_group")
   @@index([schoolId])
   @@index([resourceGroupId], map: "class_sections_group_idx")
@@ -424,6 +446,7 @@ model Room {
 
   dailyActivities DailyActivity[]
   unavailability  RoomUnavailability[]
+  fixedLessons    TimetableFixedLesson[]
 
   @@unique([schoolId, name])
   @@map("rooms")
@@ -487,6 +510,9 @@ model Subject {
   unavailability  SubjectUnavailability[]
   /// §27.16 — the classes this subject is DECLARED for. Empty = not stated.
   classes         SubjectClass[]
+  /// §32 — the timetables that have DECLARED this subject. Empty = not stated.
+  timetables      TimetableSubject[]
+  fixedLessons    TimetableFixedLesson[]
 
   @@unique([schoolId, name])
   @@map("subjects")
@@ -567,6 +593,9 @@ model Teacher {
   teacherSubjects TeacherSubject[]
   /// §29.2 — the staffing changes this teacher is named in, on either side.
   staffingChanges StaffingChangeTeacher[]
+  fixedLessons    TimetableFixedLesson[]
+  /// §29.8 — the unlock grants that have named this teacher.
+  unlockGrants    TimetableUnlockEntity[]
 
   @@unique([schoolId, employeeCode])
   @@map("teachers")
@@ -585,6 +614,304 @@ model TeacherClassEligibility {
   @@id([teacherId, classId])
   @@index([schoolId])
   @@map("teacher_class_eligibility")
+}
+
+/// §35 — the board's own subject list, as REFERENCE DATA.
+///
+/// "Which subjects does CBSE run, and for which classes" is the same answer for
+/// every school in the country, so it is seeded once per database and read by
+/// all of them. That is what makes it the one master in this schema with **no
+/// `school_id`**: invariant 18 scopes rows a school OWNS, and nobody owns the
+/// CBSE scheme of studies.
+///
+/// Read through `PrismaBaseService` — the sanctioned way out of §17's ambient
+/// scoping, for exactly this kind of genuinely cross-school work. It is
+/// **read-only in the app**: the only writer is the seed, so "one table,
+/// updated centrally" stays true and there is no write path for the scoping
+/// extension to have an opinion about.
+///
+/// `fromSeq`/`toSeq` are inclusive `CLASS_LADDER` positions (`ladderSequence`),
+/// which is the same vocabulary `classes.sequence` uses (§31.12) — so Biology
+/// at 15–16 means Classes 11 and 12 and can mean nothing else. That range is
+/// the whole point of the table: applying it writes `subject_classes` (§27.16),
+/// and §27.16 is what then REFUSES Biology to Class 5 for ever after.
+model BoardSubjectCatalog {
+  id         Int             @id @default(autoincrement())
+  /// "CBSE" today. A column rather than a table name, so a second board is
+  /// rows rather than a migration.
+  board      String          @db.VarChar(20)
+  /// The scheme this row came from, e.g. "2026-27". Shown on screen, so a
+  /// school can see how old the recommendation is.
+  version    String          @db.VarChar(20)
+  name       String          @db.VarChar(60)
+  code       String?         @db.VarChar(10)
+  category   SubjectCategory @default(scholastic)
+  isLab      Boolean         @default(false) @map("is_lab")
+  /// Inclusive CLASS_LADDER positions. 5 = Class 1, 16 = Class 12.
+  fromSeq    Int             @map("from_seq")
+  toSeq      Int             @map("to_seq")
+  /// §35 — a language is OFFERED, never recommended. CBSE lists 45 and a
+  /// school runs two or three; pre-ticking them would create 45 subjects.
+  isLanguage Boolean         @default(false) @map("is_language")
+  /// "Core", "Science Stream", "Languages" — the heading it sits under.
+  groupLabel String          @map("group_label") @db.VarChar(40)
+  sortOrder  Int             @default(0) @map("sort_order")
+
+  @@unique([board, version, name])
+  @@index([board, version])
+  @@map("board_subject_catalog")
+}
+
+/// §34 — a weekday that runs a different shape from the rest of the week.
+///
+/// A short Saturday: six periods of thirty minutes where Monday to Friday run
+/// eight of forty. `periods_per_day`, `period_duration_mins` and `start_time`
+/// all belong to the `timetable_config`, so until now they belonged to every
+/// working day at once and this could not be said at all.
+///
+/// **Safe where §28.5 is not, and for a reason the key already states.**
+/// §28.5 refuses two period lengths inside ONE day, because `uq_teacher_slot`
+/// compares period numbers and two grids make period 3 mean two wall-clock
+/// windows. `day_of_week` is already part of that unique key, so Saturday's
+/// period 3 and Monday's are different cells today — and nobody is in two days
+/// at once. The constraint is within a day; this never crosses one.
+///
+/// `periods_per_day` is a SOLVER fact: it is how many cells exist that day, so
+/// a short Saturday prunes periods 7 and 8 from every domain and must not be
+/// counted as capacity. `period_duration_mins` is not — the solver places into
+/// period numbers — but a school that says "half day" means both, so it lives
+/// here beside it.
+///
+/// **Empty means "the same as every other day"** (invariant 7), which is why
+/// the migration is a bare CREATE TABLE: every day of every school today has
+/// no row and keeps the config's shape.
+model TimetableDayShape {
+  timetableConfigId  Int             @map("timetable_config_id")
+  timetableConfig    TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// ISO day number, 1 = Monday.
+  dayOfWeek          Int             @map("day_of_week") @db.TinyInt
+  periodsPerDay      Int             @map("periods_per_day")
+  periodDurationMins Int             @map("period_duration_mins")
+  schoolId           Int             @map("school_id")
+  school             School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, dayOfWeek])
+  @@index([schoolId])
+  @@map("timetable_day_shapes")
+}
+
+/// §33 — how many BASE periods one of this class's lessons occupies.
+///
+/// A school running Class 1 on 30-minute periods and Class 10 on 60-minute
+/// periods, same start and same finish, is not two clocks: 60 is exactly two
+/// 30s, so there is one grid of eight 30-minute periods and Class 10's lessons
+/// are **double periods** on it. `span` is that multiplier — 1 for Class 1, 2
+/// for Class 10.
+///
+/// **Why this is safe where §28.5 is not.** §28.5 refuses two unaligned period
+/// lengths because `uq_teacher_slot` compares period NUMBERS, so a teacher in
+/// Class 9 P3 and Class 11 P2 overlaps in wall clock and the database cannot
+/// see it. A double period has no such hole: `writer.ts` emits **one slot row
+/// per period in the span**, so an hour holds period 1 *and* period 2 and the
+/// same unique index refuses the collision. It is stricter than the wings
+/// route (§30), where a shared teacher's cross-wing overlap is only a warning.
+///
+/// **A span, not a duration in minutes.** The solver needs a block size in base
+/// periods, and storing minutes would mean re-deriving it everywhere and
+/// refusing whenever the config's own duration changed underneath. Minutes are
+/// what the SCREEN shows — `span × timetable_config.period_duration_mins` — so
+/// changing the base from 30 to 35 moves every class proportionally, which is
+/// what a school means by "make the periods longer".
+///
+/// Keyed by `(timetable_config_id, class_id)` rather than on `classes`: the
+/// base duration belongs to the config (§28), so the same span means different
+/// minutes in different timetables, and §30.9 lets one class sit in two pools.
+///
+/// **Empty means "not stated", never span 0** (invariant 7) — every class in
+/// every school today has no row and therefore span 1, which is what it has
+/// now. That is what makes the migration a bare CREATE TABLE.
+model TimetableClassSpan {
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  classId           Int             @map("class_id")
+  class             SchoolClass     @relation(fields: [classId], references: [id], onDelete: Cascade)
+  /// Base periods per lesson. Always >= 1; 1 is the same as having no row.
+  span              Int             @default(1)
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, classId])
+  @@index([schoolId])
+  @@index([classId])
+  @@map("timetable_class_spans")
+}
+
+/// §32 — which subjects a TIMETABLE teaches, declared per `timetable_config`.
+///
+/// `subjects` is school-wide and stays that way: a subject is entered once and
+/// used for ever (§27.12). What differs between timetables is which of them a
+/// given week actually runs — a Junior wing that does not teach Chemistry, an
+/// individual timetable set up for a handful of languages. Before this, every
+/// timetable saw every subject the school had ever entered.
+///
+/// **Per `timetable_config`, deliberately not per §30 pool.** Two grouped wings
+/// share a pool and are exactly the case that motivates this: Junior and Senior
+/// are one resource group and teach different subjects. A pool-level answer
+/// could not say that.
+///
+/// **Empty means "not stated", never "teaches nothing"** (invariant 7). That is
+/// what makes the migration a bare `CREATE TABLE` with no backfill: every
+/// timetable that exists today has no rows and therefore keeps seeing every
+/// subject, which is what it sees now. It also means the table is only ever
+/// *written* by somebody actively choosing — a school that never opens the
+/// screen is never silently narrowed.
+///
+/// Selection only. The subject's own settings — code, category, priority,
+/// placement, lab, own room, double — are one answer per subject, school-wide,
+/// because they describe the subject rather than the week.
+/// §36 — a lesson pinned to a cell before the timetable is generated.
+///
+/// The school says "Class 1-A does Mathematics with Puja Sri on Monday period
+/// 2", and the solver honours it before building the rest of the week around it.
+///
+/// **Keyed to the timetable, not to a draft.** `timetable_slots.is_locked`
+/// already pins a *placement* and is deliberately not this: a locked slot
+/// belongs to ONE draft (§22), so generating a second draft would ignore every
+/// pin. This is the school's standing intention and survives every regeneration.
+///
+/// **Not a slot either.** Nothing here is written into `timetable_slots`. A
+/// fixed lesson becomes DOMAIN PRUNING (invariant 2) — the variable for that
+/// occurrence is handed exactly this cell and the solver places it, which is
+/// what keeps the room assignment, the occupancy keys and the §20 shape rules
+/// working rather than a row inserted behind the engine's back.
+///
+/// `roomId` NULL is "not stated", never "anywhere": the solver picks by the §19
+/// ladder. Naming one binds, as the variable's `preferredRoomId`.
+model TimetableFixedLesson {
+  id                Int             @id @default(autoincrement())
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  classSectionId    Int             @map("class_section_id")
+  classSection      ClassSection    @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  subjectId         Int             @map("subject_id")
+  subject           Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacherId         Int             @map("teacher_id")
+  teacher           Teacher         @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  /// §19 — absent means "the solver chooses", which is every lesson today.
+  roomId            Int?            @map("room_id")
+  room              Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  dayOfWeek         Int             @map("day_of_week") @db.TinyInt
+  periodNumber      Int             @map("period_number")
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@unique([timetableConfigId, classSectionId, dayOfWeek, periodNumber], map: "uq_fixed_cell")
+  @@index([classSectionId, subjectId], map: "timetable_fixed_lessons_section_subject_idx")
+  @@index([timetableConfigId, teacherId, dayOfWeek, periodNumber], map: "timetable_fixed_lessons_teacher_cell_idx")
+  @@index([schoolId], map: "timetable_fixed_lessons_school_id_idx")
+  @@map("timetable_fixed_lessons")
+}
+
+/// §29.8 — an unlock grant on a locked (published) timetable.
+///
+/// One grant is ONE decision: "open Class 1-A, 1-B and Ajay Verma, because the
+/// Class 1 morning has to be rebuilt before Monday". Six separate unlock rows
+/// would store six copies of that sentence, free to disagree, and leave nothing
+/// to close as a unit.
+///
+/// A grant does not name cells. It names entities, and what it opens is every
+/// lesson those entities appear in — see `TimetableUnlockEntity`.
+model TimetableUnlock {
+  id                Int             @id @default(autoincrement())
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  /// Required, with no default. Six months later this is the only thing that
+  /// answers "why was the settled week opened?", and a blank answers nothing.
+  reason            String          @db.Text
+  /// No foreign key, matching `timetable_config.frozen_by_id` and
+  /// `timetable_publications.published_by_id`: a record of who acted must
+  /// survive that person's account being removed.
+  unlockedById      Int?            @map("unlocked_by_id")
+  unlockedAt        DateTime        @default(now()) @map("unlocked_at")
+  /// NULL is "until somebody closes it". The app offers a few hours by default
+  /// because an unlock left open is not a lock, but that is a default and not a
+  /// rule.
+  expiresAt         DateTime?       @map("expires_at")
+  /// §3.14's rule — kept and marked, never deleted.
+  closedAt          DateTime?       @map("closed_at")
+  closedById        Int?            @map("closed_by_id")
+
+  entities TimetableUnlockEntity[]
+  events   TimetableUnlockEvent[]
+
+  @@index([schoolId, timetableConfigId, closedAt], map: "ix_unlock_live")
+  @@map("timetable_unlocks")
+}
+
+/// §29.8 — one ticked entity inside a grant.
+///
+/// Exactly one of `teacherId` / `classSectionId` is set. Two nullable foreign
+/// keys rather than a polymorphic `entity_id`, for §4.7b's reason: the FK is
+/// what we want here, because an unlock pointing at a deleted teacher is
+/// meaningless rather than historic.
+model TimetableUnlockEntity {
+  id             Int             @id @default(autoincrement())
+  schoolId       Int             @map("school_id")
+  school         School          @relation(fields: [schoolId], references: [id])
+  unlockId       Int             @map("unlock_id")
+  unlock         TimetableUnlock @relation(fields: [unlockId], references: [id], onDelete: Cascade)
+  teacherId      Int?            @map("teacher_id")
+  teacher        Teacher?        @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classSectionId Int?            @map("class_section_id")
+  classSection   ClassSection?   @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  /// One entity may be relocked early without ending the grant.
+  releasedAt     DateTime?       @map("released_at")
+
+  @@unique([unlockId, teacherId], map: "uq_unlock_teacher")
+  @@unique([unlockId, classSectionId], map: "uq_unlock_section")
+  @@map("timetable_unlock_entities")
+}
+
+/// §29.8 — one write the grant admitted.
+///
+/// §29.2's lesson, applied: a change is a record, not a mode. Without this table
+/// an unlock can say what it *permitted* and never what it was *used for*, which
+/// is the only question anybody asks afterwards.
+model TimetableUnlockEvent {
+  id           BigInt          @id @default(autoincrement())
+  schoolId     Int             @map("school_id")
+  school       School          @relation(fields: [schoolId], references: [id])
+  unlockId     Int             @map("unlock_id")
+  unlock       TimetableUnlock @relation(fields: [unlockId], references: [id], onDelete: Cascade)
+  /// The operation, never the URL — a renamed route must not erase history.
+  route        String          @db.VarChar(96)
+  /// Denormalised prose: the rows it describes may be gone when it is read.
+  summary      String          @db.VarChar(255)
+  /// The classes a teacher-scoped change reached into, and the teachers a
+  /// class-scoped one dragged along. A lesson has two owners, so opening one
+  /// necessarily touches the other — this is where that is admitted.
+  alsoAffected Json?           @map("also_affected")
+  actorId      Int?            @map("actor_id")
+  at           DateTime        @default(now())
+
+  @@index([unlockId, at], map: "ix_unlock_event_grant")
+  @@map("timetable_unlock_events")
+}
+
+model TimetableSubject {
+  timetableConfigId Int             @map("timetable_config_id")
+  timetableConfig   TimetableConfig @relation(fields: [timetableConfigId], references: [id], onDelete: Cascade)
+  subjectId         Int             @map("subject_id")
+  subject           Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  schoolId          Int             @map("school_id")
+  school            School          @relation(fields: [schoolId], references: [id])
+
+  @@id([timetableConfigId, subjectId])
+  @@index([schoolId])
+  @@index([subjectId])
+  @@map("timetable_subjects")
 }
 
 /// §27.16 — which classes a subject is taught to, DECLARED rather than guessed.
@@ -698,6 +1025,11 @@ model ClassSubject {
   samePeriodAcrossWeek     Boolean      @default(false) @map("same_period_across_week")
   consecutiveBlockSize     Int          @default(1) @map("consecutive_block_size")
   consecutiveBlocksPerWeek Int?         @map("consecutive_blocks_per_week")
+  /// §31.10 — may a consecutive block run through a break (one period either
+  /// side of lunch, or across the short bell)? FALSE is every school today and
+  /// stays the default. TRUE only ever WIDENS the domain: it permits a
+  /// crossing, it never requires one.
+  blockMayCrossBreak       Boolean      @default(false) @map("block_may_cross_break")
   schoolId                 Int          @map("school_id")
   school                   School       @relation(fields: [schoolId], references: [id])
 
@@ -765,45 +1097,65 @@ model TimetableGroup {
   @@map("timetable_groups")
 }
 
+/// §28.7 — how strictly a teacher's walk between wings is honoured.
+enum CrossWingRule {
+  prefer
+  forbid
+}
+
 model TimetableConfig {
-  id                          Int                   @id @default(autoincrement())
-  schoolId                    Int                   @map("school_id")
-  school                      School                @relation(fields: [schoolId], references: [id])
-  academicYearId              Int                   @map("academic_year_id")
-  academicYear                AcademicYear          @relation(fields: [academicYearId], references: [id])
+  id                          Int                    @id @default(autoincrement())
+  schoolId                    Int                    @map("school_id")
+  school                      School                 @relation(fields: [schoolId], references: [id])
+  academicYearId              Int                    @map("academic_year_id")
+  academicYear                AcademicYear           @relation(fields: [academicYearId], references: [id])
   /// §30 — which pool this timetable competes for resources in.
-  resourceGroupId             Int                   @map("resource_group_id")
-  resourceGroup               TimetableGroup        @relation(fields: [resourceGroupId], references: [id])
+  resourceGroupId             Int                    @map("resource_group_id")
+  resourceGroup               TimetableGroup         @relation(fields: [resourceGroupId], references: [id])
   /// §30.5 — when this timetable applies. NULL at both ends means the whole
   /// session, which is every school before this feature; publishing then refuses
   /// a second live timetable over any class this one teaches.
-  effectiveFrom               DateTime?             @map("effective_from") @db.Date
-  effectiveTo                 DateTime?             @map("effective_to") @db.Date
-  name                        String                @db.VarChar(50)
-  description                 String?               @db.Text
-  workingDays                 Json                  @map("working_days")
-  periodsPerDay               Int                   @default(8) @map("periods_per_day")
-  periodDurationMins          Int                   @default(40) @map("period_duration_mins")
-  hasZeroPeriod               Boolean               @default(false) @map("has_zero_period")
-  zeroPeriodDurationMins      Int?                  @map("zero_period_duration_mins")
-  allowConsecutivePeriods     Boolean               @default(true) @map("allow_consecutive_periods")
-  classTeacherGetsFirstPeriod Boolean               @default(false) @map("class_teacher_gets_first_period")
-  startTime                   String                @default("08:00") @map("start_time") @db.VarChar(5)
-  endTime                     String?               @map("end_time") @db.VarChar(5)
+  effectiveFrom               DateTime?              @map("effective_from") @db.Date
+  effectiveTo                 DateTime?              @map("effective_to") @db.Date
+  name                        String                 @db.VarChar(50)
+  description                 String?                @db.Text
+  workingDays                 Json                   @map("working_days")
+  periodsPerDay               Int                    @default(8) @map("periods_per_day")
+  periodDurationMins          Int                    @default(40) @map("period_duration_mins")
+  /// §28.6 — minutes of changeover between one period and the next. Affects the
+  /// CLOCK only: nothing occupies the gap, so no grid gains a cell and the
+  /// solver, which places into period numbers, is untouched. Not applied where
+  /// a break already follows — a break IS the changeover — nor after the last
+  /// period, where there is nothing to change over to.
+  periodGapMins      Int             @default(0) @map("period_gap_mins") @db.SmallInt
+  /// §28.7 — minutes to reach THIS wing from another in the same §30 pool. A
+  /// pair of wings uses the larger of the two, so one number per wing composes
+  /// without a distance matrix nobody would fill in.
+  crossWingTravelMins Int            @default(0) @map("cross_wing_travel_mins") @db.SmallInt
+  /// §28.7 — what to do about it. `prefer` avoids a back-to-back crossing but
+  /// will still make one rather than leave a lesson unplaced (completeness
+  /// outranks shape, §20); `forbid` makes it a hard rule the solver prunes on.
+  crossWingRule      CrossWingRule   @default(prefer) @map("cross_wing_rule")
+  hasZeroPeriod               Boolean                @default(false) @map("has_zero_period")
+  zeroPeriodDurationMins      Int?                   @map("zero_period_duration_mins")
+  allowConsecutivePeriods     Boolean                @default(true) @map("allow_consecutive_periods")
+  classTeacherGetsFirstPeriod Boolean                @default(false) @map("class_teacher_gets_first_period")
+  startTime                   String                 @default("08:00") @map("start_time") @db.VarChar(5)
+  endTime                     String?                @map("end_time") @db.VarChar(5)
   /// §18: periods appended after the regular day for extra classes. The solver
   /// places only into 1..periodsPerDay, so these are a free space by
   /// construction rather than by a new rule.
-  extraPeriodsPerDay          Int                   @default(0) @map("extra_periods_per_day")
-  extraPeriodDurationMins     Int?                  @map("extra_period_duration_mins")
+  extraPeriodsPerDay          Int                    @default(0) @map("extra_periods_per_day")
+  extraPeriodDurationMins     Int?                   @map("extra_period_duration_mins")
   /// Days that exist only for extra classes, e.g. [6] for Saturday. Kept apart
   /// from `workingDays` precisely so generation cannot reach them.
-  extraDays                   Json?                 @map("extra_days")
+  extraDays                   Json?                  @map("extra_days")
   /// §28.1 — the percentage of a teacher's weekly limit at which the app says
   /// so. A WARNING threshold, never a blocker: a teacher at 80% is a normally
   /// employed teacher, and refusing to generate at a number a school chose for
   /// its own reporting would make most real schools ungenerable.
-  loadAlertPct                Int                   @default(75) @map("load_alert_pct")
-  status                      TimetableConfigStatus @default(draft)
+  loadAlertPct                Int                    @default(75) @map("load_alert_pct")
+  status                      TimetableConfigStatus  @default(draft)
   /// §29.1 — when this timetable was frozen, or NULL if it is not.
   ///
   /// A separate column rather than a `status` value: `status` already means
@@ -813,18 +1165,27 @@ model TimetableConfig {
   /// made. NULL is every timetable that exists today, so nothing changes until
   /// a school presses the button — freezing is a decision, never a side effect
   /// of publishing.
-  frozenAt                    DateTime?             @map("frozen_at")
+  frozenAt                    DateTime?              @map("frozen_at")
   /// Who froze it. No relation, matching `timetable_publications.published_by_id`:
   /// a record of who acted has to survive their account being removed.
-  frozenById                  Int?                  @map("frozen_by_id")
+  frozenById                  Int?                   @map("frozen_by_id")
   /// §29.2 — the staffing changes made against this timetable.
   staffingChanges             StaffingChange[]
+  /// §32 — the subjects this timetable teaches. Empty = not stated = all.
+  subjects                    TimetableSubject[]
+  /// §33 — per-class lesson length, in base periods. Empty = not stated = 1.
+  classSpans                  TimetableClassSpan[]
+  /// §34 — weekdays that run a different shape. Empty = every day the same.
+  dayShapes                   TimetableDayShape[]
   periods                     Period[]
   classSections               ClassSection[]
   extraClasses                ExtraClass[]
   autoFixRuns                 AutoFixRun[]
   drafts                      TimetableDraft[]
   dailyActivities             DailyActivity[]
+  fixedLessons                TimetableFixedLesson[]
+  /// §29.8 — the unlock grants opened against this timetable, live and closed.
+  unlocks                     TimetableUnlock[]
 
   @@unique([schoolId, name, academicYearId])
   @@index([resourceGroupId, effectiveFrom, effectiveTo], map: "tc_window_idx")

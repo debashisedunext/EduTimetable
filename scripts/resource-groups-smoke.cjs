@@ -360,6 +360,7 @@ async function main() {
   });
   void draftRow;
 
+
   const clash = await call("POST", `/timetable-configs/${cfg2.id}/board/publish`, S, {});
   check(clash.status === 400 && /one live timetable at a time/i.test(clash.json?.message ?? ""),
     "publishing a second timetable over the same class is refused",
@@ -491,7 +492,93 @@ async function main() {
   check(!mainPicker.some((r) => r.id === soloPicker[0]?.id),
     "and the main timetable's picker does not offer it — same label, different children's allocation");
 
-  // ─────────────────────────── 8. STAGE 6 — CLASHES BETWEEN LIVE TIMETABLES
+  // ─────────────────────────── 8. STAGE 5 — MOVING BETWEEN POOLS
+  console.log("\nA timetable can change its mind about which pool it is in:");
+
+  // Grouped → individual. Always safe: a brand-new pool has nothing to collide
+  // with, and it LOOSENS — fewer timetables competing for the same cohorts.
+  const outPreview = await call("GET", `/timetable-configs/${cfg2.id}/resource-group/preview?mode=individual`, S);
+  check(outPreview.status === 200 && outPreview.json?.blocked === false,
+    "leaving a shared pool for one of its own is never blocked",
+    `${outPreview.json?.classSections} class-section(s) travel with it`);
+  check(outPreview.json?.to === null,
+    "and the destination does not exist yet — an individual pool is made on apply, not before it is asked for");
+
+  const beforeMove = await prisma.classSection.findMany({
+    where: { timetableConfigId: cfg2.id }, select: { id: true, resourceGroupId: true },
+  });
+  const moved = await call("POST", `/timetable-configs/${cfg2.id}/resource-group`, S, { mode: "individual" });
+  check(moved.status < 300 && moved.json?.movedTo > 0, "the move applies", `pool ${moved.json?.movedTo}`);
+  const afterMove = await prisma.classSection.findMany({
+    where: { timetableConfigId: cfg2.id }, select: { id: true, resourceGroupId: true },
+  });
+  check(afterMove.length === beforeMove.length
+    && afterMove.every((r) => r.resourceGroupId === moved.json.movedTo),
+    "and EVERY cohort row went with it — the two columns hold one fact, so a half-applied move is the drift this file exists to catch",
+    `${afterMove.length} rows now in pool ${moved.json?.movedTo}`);
+  const movedCfg = await prisma.timetableConfig.findUnique({ where: { id: cfg2.id } });
+  check(movedCfg.resourceGroupId === moved.json.movedTo, "including the timetable itself");
+
+  const audit = await prisma.auditLog.findFirst({
+    where: { schoolId, action: "timetable.resource-group.move" }, orderBy: { id: "desc" },
+  });
+  check(!!audit && audit.detail?.configId === cfg2.id,
+    "it is written down — §30 decision 4 allowed this on a frozen timetable, so the deferral has to stay answerable",
+    audit ? `from pool ${audit.detail?.from?.id} to ${audit.detail?.to}` : "no audit row");
+
+  /*
+    Individual → grouped, back into the pool it came from — which no longer
+    holds this timetable's cohort rows, because they left with it. So the
+    collision has to be created, and the scenario is a real one: a timetable is
+    moved out, somebody re-creates those classes in the shared pool, and now it
+    cannot move back without a decision about which row survives.
+  */
+  const cfg2Sections = await prisma.classSection.findMany({
+    where: { timetableConfigId: cfg2.id }, select: { classId: true, sectionId: true },
+  });
+  const squatter = await prisma.classSection.create({
+    data: {
+      schoolId, classId: cfg2Sections[0].classId, sectionId: cfg2Sections[0].sectionId,
+      academicYearId: year.id, resourceGroupId: cfg.resourceGroupId,
+    },
+  });
+  const backPreview = await call("GET",
+    `/timetable-configs/${cfg2.id}/resource-group/preview?mode=grouped&resourceGroupId=${cfg.resourceGroupId}`, S);
+  check(backPreview.json?.blocked === true && backPreview.json?.collisions?.length > 0,
+    "going back into a pool that already holds the same class-section is refused",
+    (backPreview.json?.collisions ?? []).join(", "));
+  check(/already has/.test(backPreview.json?.reason ?? "") && /Class 1-/.test(backPreview.json?.reason ?? ""),
+    "naming the row, not just reporting a conflict",
+    (backPreview.json?.reason ?? "").slice(0, 76));
+
+  const backApply = await call("POST", `/timetable-configs/${cfg2.id}/resource-group`, S, {
+    mode: "grouped", resourceGroupId: cfg.resourceGroupId,
+  });
+  check(backApply.status === 400,
+    "and apply refuses too — the plan is recomputed there, never taken from the request (§21)",
+    `${backApply.status}`);
+  const stillOut = await prisma.timetableConfig.findUnique({ where: { id: cfg2.id } });
+  check(stillOut.resourceGroupId === moved.json.movedTo,
+    "leaving the timetable exactly where it was — no half-applied move");
+
+  /*
+    Remove the squatter and the move becomes legal. Then check the pool left
+    behind is tidied up: an individual pool named after a timetable that is no
+    longer in it can never be made true again.
+  */
+  await prisma.classSection.delete({ where: { id: squatter.id } });
+  const emptiedPool = moved.json.movedTo;
+  const backOk = await call("POST", `/timetable-configs/${cfg2.id}/resource-group`, S, {
+    mode: "grouped", resourceGroupId: cfg.resourceGroupId,
+  });
+  check(backOk.status < 300, "with the collision gone the move succeeds", `${backOk.status}`);
+  check((await prisma.timetableGroup.count({ where: { id: emptiedPool } })) === 0,
+    "and the emptied individual pool is removed — it was named after a timetable that is no longer in it",
+    `pool ${emptiedPool} gone`);
+  check((await prisma.timetableGroup.count({ where: { id: cfg.resourceGroupId } })) === 1,
+    "while the session's shared pool is never removed — it is the session's, not this timetable's");
+
+  // ─────────────────────────── 9. STAGE 6 — CLASHES BETWEEN LIVE TIMETABLES
   //
   // §30.5 made the case that matters impossible: a class cannot be in two live
   // timetables. What is left is two timetables over DIFFERENT classes sharing a
@@ -608,7 +695,7 @@ async function main() {
   await prisma.timetableSlot.deleteMany({ where: { timetableConfigId: { in: [wingA.id, wingB.id] } } });
   await prisma.timetablePublication.deleteMany({ where: { timetableConfigId: { in: [wingA.id, wingB.id] } } });
 
-  // ─────────────────────────── 9. THE DRIFT GUARD
+  // ─────────────────────────── 10. THE DRIFT GUARD
   //
   // The assertion stage 1 exists for. Two columns hold one fact and no database
   // constraint can tie them together, so the only thing standing between them

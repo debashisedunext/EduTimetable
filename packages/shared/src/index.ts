@@ -176,6 +176,7 @@ export { runFeasibility, teacherWeeklyCapacity } from "./feasibility/engine";
 export * from "./solver/types";
 export { solveTimetable } from "./solver/engine";
 export { SolverState } from "./solver/state";
+export * from "./solver/cross-wing";
 export { buildVariables, buildTeacherCtx, segmentOfPeriod } from "./solver/variables";
 export * from "./board/engine";
 export * from "./substitute/engine";
@@ -184,9 +185,15 @@ export * from "./optimize/model";
 export * from "./electives/pins";
 export * from "./import/contract";
 export * from "./terms/terms";
+export * from "./onboarding/week-shape";
 export * from "./onboarding/wizard";
 export * from "./timetable/window";
 export * from "./timetable/clash";
+export * from "./timetable/initials";
+export * from "./timetable/pivot";
+export * from "./timetable/coverage";
+export * from "./timetable/viewport";
+export * from "./timetable/fixed-fill";
 export * from "./onboarding/suggest";
 export * from "./onboarding/load";
 export * from "./ai/data-entry";
@@ -197,6 +204,7 @@ export * from "./sync/contract";
 export * from "./sync/reconcile";
 export * from "./sync/json-map";
 export * from "./restaff/engine";
+export * from "./staffing/requirement";
 
 /** The school a session belongs to (§17, Phase 9.2). */
 export interface SessionSchool {

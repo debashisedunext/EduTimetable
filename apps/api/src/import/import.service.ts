@@ -53,6 +53,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { ResourceGroupService } from "../groups/resource-group.service";
 import { buildFeasibilitySnapshot } from "../solver/input";
+import { classSequence } from "../masters/class-sequence";
 import { annotateWorkbook, buildWorkbook, parseWorkbook } from "./workbook";
 
 export interface DryRunResult {
@@ -288,6 +289,7 @@ export class ImportService {
           subjectName: r.subject.name, periodsPerWeek: r.periodsPerWeek,
           maxPeriodsPerDay: r.maxPeriodsPerDay, samePeriodAcrossWeek: r.samePeriodAcrossWeek,
           consecutiveBlockSize: r.consecutiveBlockSize, consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+          blockMayCrossBreak: r.blockMayCrossBreak,
         })),
         "Class Teachers": sections
           .filter((cs) => cs.classTeacher)
@@ -578,8 +580,18 @@ export class ImportService {
         const years = new Map((await tx.academicYear.findMany({ where: { schoolId } })).map((y) => [lc(y.name), y.id]));
 
         // ---- 2. classes ----
+        // The first free number past the ladder, for a class name the ladder
+        // does not know. Counted up as rows are created so two off-ladder
+        // classes in one sheet do not both land on it.
+        let nextOffLadder = (await tx.schoolClass.aggregate({
+          where: { schoolId }, _max: { sequence: true },
+        }))._max.sequence ?? 0;
         for (const r of at("Classes").filter(isNew)) {
-          await tx.schoolClass.create({ data: { schoolId, name: r.data.name, sequence: r.data.sequence ?? 0 } });
+          // Never 0 — see `classSequence`. A blank Sequence column used to put
+          // the row above the whole school rather than at the end of it.
+          const sequence = classSequence(r.data.name, r.data.sequence, nextOffLadder + 1);
+          nextOffLadder = Math.max(nextOffLadder, sequence);
+          await tx.schoolClass.create({ data: { schoolId, name: r.data.name, sequence } });
           bump("classes");
         }
         const classes = new Map((await tx.schoolClass.findMany({ where: { schoolId } })).map((c) => [lc(c.name), c.id]));
@@ -616,6 +628,13 @@ export class ImportService {
         }
 
         // ---- 4. subjects ----
+        // Read BEFORE the creates, so the update loop below can only ever match
+        // a subject that already existed — a row created a moment ago has
+        // nothing to update and its columns were just written in full.
+        const existingSubjects = new Map(
+          (await tx.subject.findMany({ where: { schoolId }, select: { id: true, name: true } }))
+            .map((x: { id: number; name: string }) => [lc(x.name), x.id]),
+        );
         for (const r of at("Subjects").filter(isNew)) {
           // §26.2 — a blank placement column is filled from the subject's NAME
           // by the same classifier the screens use. A school uploading last
@@ -641,6 +660,85 @@ export class ImportService {
           });
           bump("subjects");
         }
+
+        /**
+         * §16.2 — an EXISTING subject's settings are updated, not skipped.
+         *
+         * A school changed Physical Education from "after lunch" to "any time"
+         * on the guided setup's Subjects step, pressed Next, and the master was
+         * untouched: the loop above is `filter(isNew)`, so every column on this
+         * sheet was create-only. The screen said one thing, `subjects` said
+         * another, and the solver — which reads the master — went on confining
+         * PE to one period a day (§26.4).
+         *
+         * This is §16.1's lesson on a different column set. A commit is not
+         * only a create: the guided setup and the Subjects master are two doors
+         * onto one row, and a door that can only ever add is a door that lies
+         * the second time somebody walks through it.
+         *
+         * **Only the fields the sheet actually states.** `validate` leaves a
+         * blank cell `undefined` — it is the committer above that applies
+         * `defaultsFor` — so an absent value is "not decided", never a
+         * decision. Without that, a school re-uploading a workbook exported
+         * before these columns existed would have every placement rule it had
+         * set quietly replaced by the classifier's guess. Same rule as the
+         * `Classes` and `Teaching Scope` columns below, and it exists for the
+         * same reason.
+         *
+         * The NAME is never written: it is the natural key, and a changed key
+         * is a new subject rather than a rename (§13.5's rule).
+         */
+        for (const r of at("Subjects").filter((x) => !isNew(x))) {
+          /*
+            `!= null`, deliberately loose: `validate` gives a blank cell **null**,
+            not `undefined`. Guarding only `undefined` let those nulls through
+            and Prisma refused the write — which the CBSE catalogue smoke caught
+            on its second Create. Worth stating because the strict check would
+            have been the dangerous kind of wrong if the columns had been
+            nullable: every blank cell writing a null is exactly the "re-upload
+            an old workbook and lose your settings" failure this guard exists to
+            prevent, and it would have looked like it was preventing it.
+          */
+          const patch: Record<string, unknown> = {};
+          if (r.data.code != null) patch.code = r.data.code;
+          if (r.data.isLab != null) patch.isLab = r.data.isLab;
+          if (r.data.requiresDoublePeriod != null) patch.requiresDoublePeriod = r.data.requiresDoublePeriod;
+          if (r.data.taughtInOwnRoom != null) patch.taughtInOwnRoom = r.data.taughtInOwnRoom;
+          const category = categoryFromLabel(r.data.category);
+          if (category != null) patch.category = category;
+          if (r.data.priority != null) patch.priority = r.data.priority;
+          const lunchRule = lunchRuleFromLabel(r.data.lunchRule);
+          if (lunchRule != null) patch.lunchRule = lunchRule;
+          if (r.data.gapAfterLunch != null) patch.gapAfterLunch = r.data.gapAfterLunch;
+          if (Object.keys(patch).length === 0) continue;
+
+          const id = existingSubjects.get(lc(r.data.name));
+          if (id === undefined) continue;
+          const before = await tx.subject.findFirst({ where: { id } });
+          /*
+            `updateMany`, not `update`, and not by choice: §17's scope extension
+            adds the ambient `schoolId` to every `where`, and `update` requires
+            a where that Prisma knows is UNIQUE — `{ id, schoolId }` is not a
+            declared unique key, so it throws a validation error rather than
+            scoping the write. The first version of this loop did exactly that
+            and turned a repeat catalogue import into a 500.
+
+            Safe here for the reason CLAUDE.md attaches to the rule: a scoped
+            `updateMany` that matches nothing must never be reported as a
+            successful write — and this one cannot match nothing, because `id`
+            came from a scoped read of this same table a few lines above.
+          */
+          await tx.subject.updateMany({ where: { id }, data: patch });
+          /*
+            Counted only when something actually CHANGED, not on every pass.
+            "12 subjects updated" on a Next that altered nothing is the message
+            §16.1 replaced — a number that reads as work having been done.
+          */
+          if (before && Object.entries(patch).some(([k, v]) => (before as never as Record<string, unknown>)[k] !== v)) {
+            bump("subjectsUpdated");
+          }
+        }
+
         const subjects = new Map((await tx.subject.findMany({ where: { schoolId } })).map((s) => [lc(s.name), s.id]));
 
         // ---- 5. teachers ----
@@ -893,6 +991,10 @@ export class ImportService {
               samePeriodAcrossWeek: r.data.samePeriodAcrossWeek ?? false,
               consecutiveBlockSize: blockSize,
               consecutiveBlocksPerWeek: blockSize > 1 ? (r.data.consecutiveBlocksPerWeek ?? null) : null,
+              // §31.10 — cleared with the block, for the same reason the API
+              // clears it: a row with no block has no answer to give, and a
+              // stale `true` would reappear the day somebody sets a size again.
+              blockMayCrossBreak: blockSize > 1 ? Boolean(r.data.blockMayCrossBreak) : false,
             },
           });
           bump("curriculum");

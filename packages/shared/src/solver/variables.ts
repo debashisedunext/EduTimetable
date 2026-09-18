@@ -6,6 +6,7 @@ import type { SnapshotTeacher } from "../feasibility/types";
 // §4.7b — the one definition of "null period means the whole day". It lives in
 // feasibility/ because the engine needs it too and must not import the solver.
 import { blockedCells } from "../feasibility/time-off";
+import { periodsOn } from "../onboarding/week-shape";
 import type { SolverInput, SolverVariable } from "./types";
 
 export interface TeacherCtx {
@@ -146,6 +147,23 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     lockedCount.set(k, (lockedCount.get(k) ?? 0) + 1);
   }
 
+  /**
+   * §36 — the pins, grouped by the lesson they belong to.
+   *
+   * Keyed exactly as `lockedCount` is, so a pin attaches to the variable for
+   * the lesson somebody is assigned to teach. They do NOT consume occurrences
+   * the way a locked cell does: a locked cell is already placed and needs no
+   * variable, while a pinned one still has to be placed — it simply has one
+   * legal cell instead of forty.
+   */
+  const pinsByLesson = new Map<string, Array<NonNullable<SolverInput["fixedLessons"]>[number]>>();
+  for (const f of input.fixedLessons ?? []) {
+    const k = `${f.classSectionId}:${f.subjectId}:${f.teacherId}`;
+    const list = pinsByLesson.get(k);
+    if (list) list.push(f);
+    else pinsByLesson.set(k, [f]);
+  }
+
   const vars: SolverVariable[] = [];
   let nextId = 1;
 
@@ -170,6 +188,20 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
      * feasibility check has to see it before the search starts.
      */
     subjectIds: number[],
+    /**
+     * §31.10 — may this block run through a break?
+     *
+     * A curriculum row's own answer, and it only ever WIDENS: `false` keeps the
+     * §4.8 rule that a block sits inside one unbroken run, `true` also allows
+     * one period either side of a break. It permits a crossing, it never
+     * requires one, so a block that fits inside a run still lands there —
+     * which is what makes turning it on safe for a school that just wants the
+     * option.
+     *
+     * Domain pruning, not scoring (invariant 2): the solver must never be able
+     * to *consider* a straddling block for a row that forbids it.
+     */
+    mayCrossBreak = false,
   ): Array<{ day: number; period: number }> => {
     const ctxs = teacherIds.map((id) => teacherCtx.get(id)).filter((x): x is TeacherCtx => !!x);
     const placements = subjectIds
@@ -196,8 +228,22 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
     const domain: Array<{ day: number; period: number }> = [];
     for (const day of days) {
       if (ctxs.some((tc) => !tc.allowedDays.has(day))) continue; // alternate_day pruning (§4.7)
-      for (let p = 1; p + span - 1 <= perDay; p++) {
-        if (seg[p] !== seg[p + span - 1]) continue; // block cannot straddle a break (§4.8)
+      /*
+        §34 — how many periods THIS day has.
+
+        A short Saturday has six where the rest of the week has eight, so
+        periods 7 and 8 do not exist on it and must be pruned before search
+        (invariant 2) rather than scored away. The loop was already nested
+        inside the day, so this is the day's own ceiling replacing the week's.
+
+        Identical to `perDay` for every school with no day shapes, which is
+        every school that has not said otherwise.
+      */
+      const dayPeriods = periodsOn(snapshot.config, day);
+      for (let p = 1; p + span - 1 <= dayPeriods; p++) {
+        // §4.8 — a block sits inside one unbroken run, unless §31.10's flag
+        // says this row may cross one. Span 1 never trips it either way.
+        if (!mayCrossBreak && seg[p] !== seg[p + span - 1]) continue;
         if (!lunchOk[p]) continue;
         // always_first_period: such a teacher never takes P1 in any OTHER section
         const p1Blocked = ctxs.some(
@@ -271,10 +317,49 @@ export function buildVariables(input: SolverInput, teacherCtx: Map<number, Teach
       maxPerDay,
     };
     for (let i = 0; i < blocks; i++) {
-      vars.push({ ...common, id: nextId++, span: blockSize, domain: domainFor([m.teacherId], blockSize, common.classSectionIds, [m.subjectId]) });
+      vars.push({
+        ...common,
+        id: nextId++,
+        span: blockSize,
+        domain: domainFor(
+          [m.teacherId], blockSize, common.classSectionIds, [m.subjectId],
+          req?.blockMayCrossBreak ?? false,
+        ),
+      });
     }
+    /*
+      §36 — a pinned occurrence is handed exactly the cell the school named.
+
+      The same four lines §4.9 Phase 15 already uses for a pinned elective
+      block, and for the same reason: placement is DOMAIN PRUNING, never a
+      preference score (invariant 2), so the solver must not be able to
+      *consider* any other cell for this lesson.
+
+      Intersected with `free` rather than replacing it, so a pin into a cell the
+      teacher cannot work, the class is not in school for, or the day does not
+      have leaves an EMPTY domain — the lesson will not place, and Check 14 has
+      already said so by name rather than letting the search discover it.
+
+      Pins apply to the single occurrences only. A row taught as §4.8 double
+      periods has none of them to spare, which is why `assertFixedLessonsValid`
+      refuses a pin on such a row rather than quietly dropping it here.
+    */
+    const pins = pinsByLesson.get(`${m.classSectionId}:${m.subjectId}:${m.teacherId}`) ?? [];
+    const free = domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]);
     for (let i = 0; i < singles; i++) {
-      vars.push({ ...common, id: nextId++, span: 1, domain: domainFor([m.teacherId], 1, common.classSectionIds, [m.subjectId]) });
+      const pin = pins[i];
+      vars.push({
+        ...common,
+        id: nextId++,
+        span: 1,
+        domain: pin
+          ? free.filter((c) => c.day === pin.dayOfWeek && c.period === pin.periodNumber)
+          : free,
+        // §19 — a named room binds for this occurrence alone. `preferredRoomId`
+        // is already the top of the room ladder and already refuses hard when
+        // that room is taken, so a pin needs nothing else to be honoured.
+        ...(pin?.roomId ? { preferredRoomId: pin.roomId } : {}),
+      });
     }
   }
 

@@ -147,7 +147,7 @@ export function CloneTimetable({
     <Card title={`Clone “${config.name}”`} sub={`From ${config.academicYear} into another session. Classes, syllabus, staffing and rooms are copied — the generated timetable is not, so you adjust and press Generate.`}>
       <ErrorNote message={error} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div className="grid2" style={{ gap: 12 }}>
         <Field label="New timetable name">
           <input value={name} onChange={(e) => invalidate(setName)(e.target.value)} style={inputStyle} />
         </Field>

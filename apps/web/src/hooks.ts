@@ -47,6 +47,11 @@ export interface TimetableConfigSummary {
   workingDays: number[];
   periodsPerDay: number;
   periodDurationMins: number;
+  /** §28.6 — changeover minutes between periods; 0 is every school today. */
+  periodGapMins?: number;
+  /** §28.7 — the walk to this wing, and how strictly the solver honours it. */
+  crossWingTravelMins?: number;
+  crossWingRule?: "prefer" | "forbid";
   hasZeroPeriod: boolean;
   zeroPeriodDurationMins: number | null;
   /** §18: periods appended after the school day for extra/guest classes. */

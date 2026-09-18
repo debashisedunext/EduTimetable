@@ -239,6 +239,18 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           (tx, ids) => tx.subjectClass.count({ where: { subjectId: { in: ids } } }),
           async (tx, ids) => { await tx.subjectClass.deleteMany({ where: { subjectId: { in: ids } } }); },
         ),
+        // §32 — which timetables had declared this subject. Named for the same
+        // reason as the two rows above: the FK cascades either way, and a
+        // cascade nobody was shown is what §23's confirmation exists to
+        // prevent. It matters here more than it looks: removing a subject
+        // silently narrows nothing, but it does change what "all of them"
+        // means for every timetable that had listed it.
+        step(
+          "timetables' declared subjects",
+          "deleted",
+          (tx, ids) => tx.timetableSubject.count({ where: { subjectId: { in: ids } } }),
+          async (tx, ids) => { await tx.timetableSubject.deleteMany({ where: { subjectId: { in: ids } } }); },
+        ),
         step(
           "merged teaching groups",
           "deleted",
@@ -350,6 +362,16 @@ function stepsFor(sheet: SyncSheet): CascadeStep[] {
           "deleted",
           (tx, ids) => tx.teacherClassEligibility.count({ where: { classId: { in: ids } } }),
           async (tx, ids) => { await tx.teacherClassEligibility.deleteMany({ where: { classId: { in: ids } } }); },
+        ),
+        // §33 — the per-class lesson length, in every timetable that set one.
+        // Named for the same reason as the row below: the FK cascades either
+        // way, and a cascade nobody was shown is what §23's confirmation
+        // exists to prevent.
+        step(
+          "per-class lesson lengths",
+          "deleted",
+          (tx, ids) => tx.timetableClassSpan.count({ where: { classId: { in: ids } } }),
+          async (tx, ids) => { await tx.timetableClassSpan.deleteMany({ where: { classId: { in: ids } } }); },
         ),
         // §27.16 — the other end of the same table: a class going away takes
         // its name off every subject that named it.

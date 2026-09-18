@@ -7,6 +7,7 @@ import { effectiveMinByTeacher } from "../feasibility/min-day";
 import type { SolverInput, SolverVariable } from "./types";
 import { blockedCells } from "../feasibility/time-off";
 import { buildTeacherCtx, cellKey, type TeacherCtx } from "./variables";
+import { crossWingConflict, describeCrossWing } from "./cross-wing";
 
 export interface PlacedRecord {
   variableId: number;
@@ -214,6 +215,39 @@ export class SolverState {
         if (tHolder !== undefined) {
           if (tHolder > 0) blockers.push(tHolder);
           return { ok: false, roomId: null, reason: "teacher occupied", blockers };
+        }
+      }
+    }
+
+    /*
+      §28.7 — the walk between wings.
+
+      A HARD rule only when the school has said `forbid`; on `prefer` (the
+      default, and every school that has not touched the setting) it is left to
+      the scorer, because completeness outranks shape — §20's rule, and the
+      same reason the §20 minimum is a budget rather than a veto. A school that
+      would rather have a lesson unplaced than a teacher sprinting across the
+      site says so explicitly.
+
+      Checked on the CLOCK, never on period numbers: §30.7 already had to learn
+      that Junior's P3 and Senior's P2 both start at 09:14.
+    */
+    const wing = this.input.snapshot.config;
+    if (wing.crossWingRule === "forbid" && wing.periodClock) {
+      const first = wing.periodClock[period];
+      const last = wing.periodClock[period + v.span - 1];
+      if (first && last) {
+        for (const t of teacherIds) {
+          const v2 = crossWingConflict(
+            this.input.snapshot.crossWingBusy?.[t],
+            day, first.start, last.end, wing.crossWingTravelMins ?? 0,
+          );
+          if (v2) {
+            // No blocker id: the other wing's lesson is not a variable in THIS
+            // search, so there is nothing for conflict-directed backjumping to
+            // jump over — the same reason a §4.7b blocked cell contributes none.
+            return { ok: false, roomId: null, reason: describeCrossWing(v2), blockers };
+          }
         }
       }
     }

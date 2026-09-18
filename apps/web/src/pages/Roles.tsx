@@ -94,7 +94,7 @@ export function Roles() {
         </div>
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+      <div className="grid2" style={{ gap: 18 }}>
         <Card title="ERP Role Mapping" sub="Incoming ERP roles get this timetable role on first SSO login.">
           <DataTable
             headers={["ERP Role", "Timetable Role"]}

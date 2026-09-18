@@ -29,6 +29,7 @@ import {
   type FeasibilityIssue, type Occupancy,
 } from "@edutimetable/shared";
 import { PrismaService } from "../prisma/prisma.service";
+import { breaksFromRows, clockForDay } from "../masters/structure.util";
 
 const DAY = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -147,15 +148,30 @@ export class ValidityService {
     if (mine.size === 0) return;
 
     /*
-      Candidates are every OTHER timetable in the same session with a live
-      publication. Deliberately not narrowed to the same pool: the whole point
-      is that two POOLS can hold the same class, so a pool filter would exclude
-      precisely the case this exists to catch.
+      §30.11 — candidates are every other LIVE timetable **in the same pool**.
+
+      This filter used to be argued against, in this comment, on the grounds
+      that two pools can hold the same class and a pool filter would exclude
+      exactly the case worth catching. That was written before the product
+      decided what an individual timetable IS: a timetable that shares nothing —
+      no class, no room, no teacher's capacity — and is built without reference
+      to any other. A rule that blocks it on account of a timetable it cannot
+      see is that decision not being kept.
+
+      `resourceGroupId` is the whole predicate, and it needs no mode check: an
+      individual pool holds exactly one timetable (`assertAdmits`), so "same
+      pool" is already false for an individual one against anything else. Within
+      a pool the rule is untouched — two wings of the main school still cannot
+      both publish Class 6 over the same dates.
     */
     const live = (await this.liveConfigIds()).filter((id) => id !== configId);
     if (live.length === 0) return;
     const others = await this.prisma.timetableConfig.findMany({
-      where: { id: { in: live }, academicYearId: me.academicYearId },
+      where: {
+        id: { in: live },
+        academicYearId: me.academicYearId,
+        resourceGroupId: me.resourceGroupId,
+      },
       select: { id: true, name: true, effectiveFrom: true, effectiveTo: true },
     });
 
@@ -199,20 +215,36 @@ export class ValidityService {
   async clashesFor(configId: number): Promise<FeasibilityIssue[]> {
     const me = await this.prisma.timetableConfig.findUnique({
       where: { id: configId },
-      select: { id: true, name: true, academicYearId: true, effectiveFrom: true, effectiveTo: true },
+      select: {
+        id: true, name: true, academicYearId: true, resourceGroupId: true,
+        effectiveFrom: true, effectiveTo: true,
+      },
     });
     if (!me) return [];
 
     /*
-      Only against timetables that are LIVE and whose window overlaps mine. A
-      draft cannot collide with anything — nobody is in a room because of it —
-      and two timetables that never run together are not in conflict however
-      much they share.
+      Only against timetables that are LIVE, **in the same pool**, and whose
+      window overlaps mine.
+
+      §30.11 — the pool filter is the one that matters here. This is the check
+      that reports a teacher or a room engaged by two timetables at the same
+      wall-clock time, and an individual timetable does not check occupancy
+      against anything: it is built on its own, with every asset free. Within a
+      pool the warning is unchanged, which is the case it was written for —
+      Primary and Senior, all year, both with Mrs Rao.
+
+      A draft still cannot collide with anything (nobody is in a room because of
+      one), and two timetables that never run together are not in conflict
+      however much they share.
     */
     const live = (await this.liveConfigIds()).filter((id) => id !== configId);
     if (live.length === 0) return [];
     const others = (await this.prisma.timetableConfig.findMany({
-      where: { id: { in: live }, academicYearId: me.academicYearId },
+      where: {
+        id: { in: live },
+        academicYearId: me.academicYearId,
+        resourceGroupId: me.resourceGroupId,
+      },
       select: { id: true, name: true, effectiveFrom: true, effectiveTo: true },
     })).filter((o) => windowsOverlap(
       { from: me.effectiveFrom, to: me.effectiveTo },
@@ -278,13 +310,65 @@ export class ValidityService {
     });
     if (slots.length === 0) return [];
 
-    const periods = await this.prisma.period.findMany({
-      where: { timetableConfigId: { in: configIds }, isBreak: false },
-      select: { timetableConfigId: true, periodNumber: true, startTime: true, endTime: true },
-    });
-    const clock = new Map(
-      periods.map((p) => [`${p.timetableConfigId}:${p.periodNumber}`, p] as const),
-    );
+    /*
+      §34.5 — the clock is keyed by DAY as well as period.
+
+      `periods` has no day column: it is the shape of a day, stored once per
+      timetable. That was complete while every working day ran the same shape,
+      and §34 made it possible for one not to — so a Saturday running four
+      thirty-minute periods was being compared using Monday's forty-minute
+      times. This check exists precisely because period NUMBERS are not
+      comparable across timetables, so a wrong clock here does not degrade it,
+      it inverts it: a real overlap can be missed and an imaginary one
+      reported.
+
+      Built with the same `buildPeriodRows` the stored rows were written by, so
+      a shaped day and an ordinary one cannot disagree about how a clock is
+      derived. A config with no day shapes pays one Map lookup and reuses the
+      stored rows unchanged.
+    */
+    const [periods, shapes, configs] = await Promise.all([
+      this.prisma.period.findMany({
+        where: { timetableConfigId: { in: configIds } },
+        orderBy: { sortOrder: "asc" },
+      }),
+      this.prisma.timetableDayShape.findMany({
+        where: { timetableConfigId: { in: configIds } },
+      }),
+      this.prisma.timetableConfig.findMany({
+        where: { id: { in: configIds } },
+        select: {
+          id: true, startTime: true, periodsPerDay: true, periodDurationMins: true,
+          hasZeroPeriod: true, workingDays: true,
+        },
+      }),
+    ]);
+
+    const clock = new Map<string, { startTime: string; endTime: string }>();
+    for (const cfg of configs) {
+      const stored = periods
+        .filter((p) => p.timetableConfigId === cfg.id)
+        .map((p) => ({
+          sortOrder: p.sortOrder, periodNumber: p.periodNumber,
+          startTime: p.startTime, endTime: p.endTime,
+          isBreak: p.isBreak, isExtra: p.isExtra, isActivity: p.isActivity,
+          activityId: p.activityId, breakName: p.breakName,
+        }));
+      const spec = {
+        startTime: cfg.startTime,
+        periodsPerDay: cfg.periodsPerDay,
+        periodDurationMins: cfg.periodDurationMins,
+        hasZeroPeriod: cfg.hasZeroPeriod,
+        breaks: breaksFromRows(stored),
+      };
+      for (const day of ((cfg.workingDays as number[]) ?? [])) {
+        const shape = shapes.find((r) => r.timetableConfigId === cfg.id && r.dayOfWeek === day);
+        for (const r of clockForDay(stored, spec, shape)) {
+          if (r.isBreak || r.periodNumber === null) continue;
+          clock.set(`${cfg.id}:${day}:${r.periodNumber}`, { startTime: r.startTime, endTime: r.endTime });
+        }
+      }
+    }
 
     const teacherIds = [...new Set(slots.map((s) => s.teacherId).filter((x): x is number => x !== null))];
     const roomIds = [...new Set(slots.map((s) => s.roomId).filter((x): x is number => x !== null))];
@@ -298,7 +382,7 @@ export class ValidityService {
     const out: Occupancy[] = [];
     const seen = new Set<string>();
     for (const s of slots) {
-      const p = clock.get(`${s.timetableConfigId}:${s.periodNumber}`);
+      const p = clock.get(`${s.timetableConfigId}:${s.dayOfWeek}:${s.periodNumber}`);
       if (!p) continue;
       const startMin = minutesOf(p.startTime);
       const endMin = minutesOf(p.endTime);

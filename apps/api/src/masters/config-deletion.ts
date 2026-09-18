@@ -103,6 +103,33 @@ export const DELETION_STEPS: Step[] = [
     (tx, id) => tx.period.count({ where: { timetableConfigId: id } }),
     async (tx, id) => { await tx.period.deleteMany({ where: { timetableConfigId: id } }); },
   ),
+  // §32 — which subjects this timetable declared. Counted rather than left to
+  // the FK cascade, for this file's stated reason: every step declares its
+  // count and its delete in one object so the confirmation cannot under-report
+  // the write.
+  // §34 — the weekdays given a shape of their own. Counted rather than left to
+  // the FK, for this file's stated reason.
+  step(
+    "weekday shapes (§34)",
+    "deleted",
+    (tx, id) => tx.timetableDayShape.count({ where: { timetableConfigId: id } }),
+    async (tx, id) => { await tx.timetableDayShape.deleteMany({ where: { timetableConfigId: id } }); },
+  ),
+  // §33 — the per-class lesson lengths this timetable set. Counted rather than
+  // left to the FK, for this file's stated reason: every step declares its
+  // count and its delete in one object so the confirmation cannot under-report.
+  step(
+    "per-class lesson lengths (§33)",
+    "deleted",
+    (tx, id) => tx.timetableClassSpan.count({ where: { timetableConfigId: id } }),
+    async (tx, id) => { await tx.timetableClassSpan.deleteMany({ where: { timetableConfigId: id } }); },
+  ),
+  step(
+    "declared subjects (§32)",
+    "deleted",
+    (tx, id) => tx.timetableSubject.count({ where: { timetableConfigId: id } }),
+    async (tx, id) => { await tx.timetableSubject.deleteMany({ where: { timetableConfigId: id } }); },
+  ),
   step(
     "auto-resolve history (§21)",
     "deleted",

@@ -2,15 +2,16 @@ import { BadRequestException, Body, Controller, Delete, Get, Logger, NotFoundExc
 import { PERMISSIONS } from "@edutimetable/shared";
 import { RequirePermission } from "../auth/decorators";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertFixedLessonsValid, type FixedLessonInput } from "./fixed-lessons";
 import { ReadinessService } from "../readiness/readiness.service";
-import { ResourceGroupService } from "../groups/resource-group.service";
+import { ResourceGroupService, type MoveTarget } from "../groups/resource-group.service";
 import { ValidityService, type Window } from "../validity/validity.service";
 import { CacheKeysService } from "../redis/cache-keys.service";
 import { CloneService } from "./clone.service";
 import { planDeletion, runDeletion } from "./config-deletion";
 import { planReset, runReset } from "./allocation-reset";
 import { planCellDelete, runCellDelete } from "./allocation-cell";
-import { buildPeriodRows } from "./structure.util";
+import { breaksFromRows, buildPeriodRows } from "./structure.util";
 import { requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { FreezeService } from "../freeze/freeze.service";
 
@@ -33,6 +34,24 @@ function readWindow(body: any): Window {
     return d;
   };
   return { from: one(body.effectiveFrom, "effectiveFrom"), to: one(body.effectiveTo, "effectiveTo") };
+}
+
+
+/**
+ * §30 — the destination off a request, in one place so the GET and the POST
+ * cannot read it differently.
+ *
+ * Anything that is not the word "individual" is grouped, which is the safe
+ * reading: a typo lands a timetable in the session's shared pool, where it
+ * would have been anyway, rather than silently minting a pool of one.
+ */
+function readTarget(mode: unknown, groupId: unknown): MoveTarget {
+  if (mode === "individual") return { mode: "individual" };
+  const id = groupId === undefined || groupId === null || groupId === "" ? undefined : Number(groupId);
+  if (id !== undefined && (!Number.isInteger(id) || id <= 0)) {
+    throw new BadRequestException("resourceGroupId must be a timetable group id");
+  }
+  return { mode: "grouped", resourceGroupId: id };
 }
 
 @Controller("timetable-configs")
@@ -97,6 +116,11 @@ export class TimetableConfigsController {
       workingDays: c.workingDays,
       periodsPerDay: c.periodsPerDay,
       periodDurationMins: c.periodDurationMins,
+      // §28.6/§28.7 — carried with the config so the Settings screen and the
+      // solver read one answer rather than each asking its own endpoint.
+      periodGapMins: c.periodGapMins,
+      crossWingTravelMins: c.crossWingTravelMins,
+      crossWingRule: c.crossWingRule,
       hasZeroPeriod: c.hasZeroPeriod,
       zeroPeriodDurationMins: c.zeroPeriodDurationMins,
       // §28.1 — served with the config so the Allocation rail and Readiness
@@ -257,6 +281,10 @@ export class TimetableConfigsController {
         startTime: String(body.startTime),
         periodsPerDay: toInt(body.periodsPerDay, "periodsPerDay"),
         periodDurationMins: toInt(body.periodDurationMins, "periodDurationMins"),
+        // §28.6 — the changeover between periods. The clock is rebuilt around
+        // it here, which is the whole of the feature: nothing else in the
+        // system has to know it exists.
+        periodGapMins: body.periodGapMins != null ? toInt(body.periodGapMins, "periodGapMins") : 0,
         hasZeroPeriod: Boolean(body.hasZeroPeriod),
         zeroPeriodDurationMins:
           body.zeroPeriodDurationMins != null ? toInt(body.zeroPeriodDurationMins, "zeroPeriodDurationMins") : null,
@@ -294,6 +322,21 @@ export class TimetableConfigsController {
           workingDays: body.workingDays,
           periodsPerDay: toInt(body.periodsPerDay, "periodsPerDay"),
           periodDurationMins: toInt(body.periodDurationMins, "periodDurationMins"),
+          periodGapMins: body.periodGapMins != null ? toInt(body.periodGapMins, "periodGapMins") : 0,
+          /*
+            §28.7 — the walk between wings.
+
+            Absent leaves the stored value alone rather than resetting it: this
+            endpoint rebuilds the whole period grid and is called by the guided
+            setup's week step, which knows nothing about wing travel. A blanket
+            `?? 0` would clear the setting every time somebody changed a break.
+          */
+          ...(body.crossWingTravelMins != null
+            ? { crossWingTravelMins: toInt(body.crossWingTravelMins, "crossWingTravelMins") }
+            : {}),
+          ...(body.crossWingRule === "prefer" || body.crossWingRule === "forbid"
+            ? { crossWingRule: body.crossWingRule }
+            : {}),
           hasZeroPeriod: Boolean(body.hasZeroPeriod),
           zeroPeriodDurationMins:
             body.zeroPeriodDurationMins != null ? toInt(body.zeroPeriodDurationMins, "zeroPeriodDurationMins") : null,
@@ -401,7 +444,13 @@ export class TimetableConfigsController {
   async cellDelete(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
     const configId = toInt(id, "id");
     await this.ownConfigOr404(configId);
-    await this.freeze.assertConfigs([configId], "what a class is taught");
+    /*
+      §29.8 — scopeable through the CLASS, not the config: taking a subject off
+      a class reaches every section of it (§27 — periods are a class fact), and
+      `assertClasses` resolves exactly that set. Asked below, once the class has
+      been resolved from its name; only the precondition fits here.
+    */
+    await this.freeze.assertUnlockable(configId, "what a class is taught");
     const className = String(body?.className ?? "").trim();
     const subjectName = String(body?.subjectName ?? "").trim();
     if (!className || !subjectName) {
@@ -410,6 +459,15 @@ export class TimetableConfigsController {
     const plan = await planCellDelete(this.prisma, configId, className, subjectName);
     if (!plan) throw new NotFoundException(`No class ${className} or subject ${subjectName} in this timetable`);
     if (plan.blocked) throw new BadRequestException(plan.blocked);
+    /*
+      §29.8 — the sections are resolved now, so the grant can answer precisely.
+
+      The plan's own list, never a second query: it is exactly the set the
+      delete will touch, and every section of it must be open because periods
+      are a class fact (§27) — taking Maths off Class 5 takes it off 5-A, 5-B
+      and 5-C at once.
+    */
+    const ticket = await this.freeze.assertSections(plan.sectionIds, "what a class is taught");
 
     if (plan.total > 0) {
       await this.prisma.$transaction(async (tx: any) => {
@@ -423,6 +481,7 @@ export class TimetableConfigsController {
           plan.lines.filter((l) => l.count > 0).map((l) => `${l.count} ${l.label}`).join(", "),
       );
     }
+    await ticket.record(`${className} no longer takes ${subjectName} (${plan.total} row(s) removed)`);
     return { ok: true, removed: plan.lines.filter((l) => l.count > 0), total: plan.total };
   }
 
@@ -550,6 +609,9 @@ export class TimetableConfigsController {
       startTime: config.startTime,
       periodsPerDay: config.periodsPerDay,
       periodDurationMins: config.periodDurationMins,
+      // §28.6 — read back with the rest of the week, so adding an assembly
+      // cannot silently drop the changeover from every period's clock.
+      periodGapMins: config.periodGapMins,
       hasZeroPeriod: config.hasZeroPeriod,
       zeroPeriodDurationMins: config.zeroPeriodDurationMins,
       breaks: await this.breaksFor(configId),
@@ -580,21 +642,48 @@ export class TimetableConfigsController {
       where: { timetableConfigId: configId },
       orderBy: { sortOrder: "asc" },
     });
-    const out: Array<{ afterPeriod: number; name: string; durationMins: number }> = [];
-    let lastNumbered = 0;
-    for (const p of rows) {
-      if (p.isActivity || p.isExtra) continue;
-      if (p.periodNumber !== null && p.periodNumber > 0) { lastNumbered = p.periodNumber; continue; }
-      if (!p.isBreak) continue;
-      const [sh, sm] = p.startTime.split(":").map(Number);
-      const [eh, em] = p.endTime.split(":").map(Number);
-      out.push({
-        afterPeriod: lastNumbered,
-        name: p.breakName ?? "Break",
-        durationMins: (eh * 60 + em) - (sh * 60 + sm),
-      });
-    }
-    return out;
+    // §34.5 — one definition, in `structure.util`, shared with the per-day
+    // clock. Two copies would be free to disagree about which rows count as a
+    // break and which period each one follows.
+    return breaksFromRows(rows);
+  }
+
+
+  /**
+   * §30 stage 5 — what moving this timetable to another resource pool would do.
+   *
+   * A GET, because it is a question. The same plan is recomputed at apply, so
+   * this can never be the list of writes (§21) — it is what the confirmation
+   * shows, and nothing more.
+   */
+  @Get(":id/resource-group/preview")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async previewMove(
+    @Param("id") id: string,
+    @Query("mode") mode?: string,
+    @Query("resourceGroupId") groupId?: string,
+  ) {
+    return this.groups.planMove(toInt(id, "id"), readTarget(mode, groupId));
+  }
+
+  /**
+   * Move it.
+   *
+   * Deliberately NOT freeze-guarded (§30 decision 4): a pool change alters what
+   * is *validated* and never what is placed — no slot moves — which is the same
+   * argument §4.7 availability is exempt on. It is recorded and Readiness is
+   * dropped immediately, so a blocker it creates shows up now rather than at
+   * the next Generate with nobody remembering what changed.
+   */
+  @Post(":id/resource-group")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async move(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const configId = toInt(id, "id");
+    const done = await this.groups.applyMove(
+      configId, req.user.sub, readTarget(body?.mode, body?.resourceGroupId),
+    );
+    await this.readiness.invalidate(req.user.schoolId);
+    return done;
   }
 
   /**
@@ -793,12 +882,601 @@ export class TimetableConfigsController {
     // a double-click look like a failure.
     if (!config.frozenAt) return { ok: true, frozenAt: null, alreadyThawed: true };
 
-    await this.prisma.timetableConfig.update({
-      where: { id: configId },
-      data: { frozenAt: null, frozenById: null },
+    /*
+      §29.8 — a full unlock CLOSES every live grant.
+
+      Not tidiness. A grant is a statement about a locked timetable; left open
+      across a thaw it says nothing while the timetable is open, and then starts
+      admitting writes again the moment somebody re-locks — silently, without
+      anybody deciding it should. A stale permission that reactivates is the
+      worst shape this feature could take, so the wide unlock supersedes the
+      narrow ones rather than sitting beside them.
+
+      They are closed, not deleted (§3.14's rule): the record of what each one
+      admitted survives.
+    */
+    const closed = await this.prisma.$transaction(async (tx) => {
+      await tx.timetableConfig.update({
+        where: { id: configId },
+        data: { frozenAt: null, frozenById: null },
+      });
+      return (
+        await tx.timetableUnlock.updateMany({
+          where: { timetableConfigId: configId, closedAt: null },
+          data: { closedAt: new Date(), closedById: req.user.sub },
+        })
+      ).count;
     });
-    this.logger.log(`unfroze timetable ${configId} (${config.name})`);
-    return { ok: true, frozenAt: null };
+    await this.freeze.forgetGrant(configId);
+    this.logger.log(
+      `unfroze timetable ${configId} (${config.name})` +
+        (closed > 0 ? `, closing ${closed} live unlock grant(s)` : ""),
+    );
+    return { ok: true, frozenAt: null, grantsClosed: closed };
+  }
+
+  /**
+   * §32 — which subjects this timetable teaches.
+   *
+   * `selected: null` means **not stated**, which behaves as all (invariant 7)
+   * — not the same as `[]`, and the two are returned differently so a client
+   * cannot collapse them. Every subject the school has comes back beside it,
+   * because the question the screen asks is "which of these?" and fetching the
+   * master list separately would let the two lists disagree about what exists.
+   */
+  @Get(":id/subjects")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async subjectsFor(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId }, select: { id: true, schoolId: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty list that reads as
+    // "this timetable teaches nothing".
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const [all, chosen] = await Promise.all([
+      this.prisma.subject.findMany({
+        where: { schoolId: config.schoolId },
+        select: { id: true, name: true, code: true },
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.timetableSubject.findMany({
+        where: { timetableConfigId: configId }, select: { subjectId: true },
+      }),
+    ]);
+    return {
+      subjects: all,
+      selected: chosen.length === 0 ? null : chosen.map((r) => r.subjectId),
+    };
+  }
+
+  /**
+   * Replace the selection.
+   *
+   * **Deliberately not freeze-guarded** (§29.1). Its "not frozen" list already
+   * names subjects, and this writes no slot: a frozen timetable's published
+   * week is untouched by it. What it changes is what the NEXT generation would
+   * produce, which is the same thing editing the curriculum does, and refusing
+   * that would leave a school unable to record a decision it has already taken.
+   *
+   * An empty array is accepted and means "no narrowing" — the same as never
+   * having stated one. See `applySubjectSelection` for why "all of them" is
+   * stored as nothing rather than as a row per subject.
+   */
+  @Put(":id/subjects")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setSubjectsFor(@Param("id") id: string, @Body() body: { subjectIds?: unknown }) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId }, select: { id: true, schoolId: true, name: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const asked = Array.isArray(body?.subjectIds) ? body.subjectIds.map(Number).filter(Number.isFinite) : [];
+    // Ours only. A subject id from another school would otherwise be stored
+    // against our config and read back by the snapshot as a subject we teach.
+    const mine = await this.prisma.subject.findMany({
+      where: { schoolId: config.schoolId, id: { in: asked } }, select: { id: true },
+    });
+    const total = await this.prisma.subject.count({ where: { schoolId: config.schoolId } });
+    const ids = mine.map((s) => s.id);
+    const narrows = ids.length > 0 && ids.length < total;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.timetableSubject.deleteMany({ where: { timetableConfigId: configId } });
+      if (narrows) {
+        await tx.timetableSubject.createMany({
+          data: ids.map((subjectId) => ({ timetableConfigId: configId, subjectId, schoolId: config.schoolId })),
+        });
+      }
+    });
+    // §22 — swept by PREFIX. The snapshot, `/context` and every per-draft copy
+    // are all keyed under this config, and the subject list changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}) now teaches ${narrows ? ids.length : "all"} subjects`);
+    return { ok: true, selected: narrows ? ids : null };
+  }
+
+  /**
+   * §34 — the weekdays that run a shape of their own.
+   *
+   * Returns one row per WORKING day, each carrying the shape it actually has —
+   * its own where it has one, the config's where it does not. The client never
+   * has to know which, and `full` says so explicitly rather than leaving it to
+   * be inferred from two numbers being equal.
+   */
+  @Get(":id/day-shapes")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async dayShapes(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, workingDays: true, periodsPerDay: true, periodDurationMins: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty week.
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const rows = await this.prisma.timetableDayShape.findMany({
+      where: { timetableConfigId: configId },
+    });
+    const own = new Map(rows.map((r) => [r.dayOfWeek, r]));
+    const days = ((config.workingDays as number[]) ?? []).slice().sort((a, b) => a - b);
+
+    return {
+      periodsPerDay: config.periodsPerDay,
+      periodDurationMins: config.periodDurationMins,
+      days: days.map((d) => {
+        const r = own.get(d);
+        return {
+          day: d,
+          periodsPerDay: r?.periodsPerDay ?? config.periodsPerDay,
+          periodDurationMins: r?.periodDurationMins ?? config.periodDurationMins,
+          /** Whether this day runs the same shape as the rest of the week. */
+          full: !r,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Give a weekday its own shape, or put it back on the week's.
+   *
+   * `full: true` **deletes the row** rather than storing the config's numbers:
+   * "the same as every other day" and "not stated" are one answer (invariant
+   * 7), and storing the copy would freeze today's period count into a day that
+   * should follow the week when the week changes.
+   *
+   * Refused for a day the timetable does not work — a shape for a day nobody
+   * teaches is a row the solver would never read and the screen would never
+   * show, and accepting it silently is how a school comes to believe it has
+   * configured a Saturday it does not run.
+   *
+   * Not freeze-guarded, matching §29.1's treatment of things that shape a
+   * future generation rather than the published week: it writes no slot.
+   */
+  @Put(":id/day-shapes")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setDayShape(
+    @Param("id") id: string,
+    @Body() body: { day?: unknown; full?: unknown; periodsPerDay?: unknown; periodDurationMins?: unknown },
+  ) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, name: true, workingDays: true, periodsPerDay: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const day = toInt(body?.day, "day");
+    const working = ((config.workingDays as number[]) ?? []);
+    if (!working.includes(day)) {
+      throw new BadRequestException(
+        `This timetable does not run on day ${day} — add it to the working days first.`,
+      );
+    }
+
+    if (body?.full === true) {
+      await this.prisma.timetableDayShape.deleteMany({ where: { timetableConfigId: configId, dayOfWeek: day } });
+      await this.keys.invalidateTimetable(configId);
+      return { ok: true, day, full: true };
+    }
+
+    const periodsPerDay = toInt(body?.periodsPerDay, "periodsPerDay");
+    const periodDurationMins = toInt(body?.periodDurationMins, "periodDurationMins");
+    /*
+      Bounded to the same range the week's own fields are, and for the same
+      reason: these numbers become the ceiling every curriculum entry is
+      checked against, so a zero or a negative is not a smaller week, it is a
+      week nothing can be placed in.
+    */
+    if (periodsPerDay < 1 || periodsPerDay > 14) {
+      throw new BadRequestException("A day has between 1 and 14 periods.");
+    }
+    if (periodDurationMins < 20 || periodDurationMins > 120) {
+      throw new BadRequestException("A period is between 20 and 120 minutes.");
+    }
+
+    await this.prisma.timetableDayShape.upsert({
+      where: { timetableConfigId_dayOfWeek: { timetableConfigId: configId, dayOfWeek: day } },
+      create: { timetableConfigId: configId, dayOfWeek: day, periodsPerDay, periodDurationMins, schoolId: config.schoolId },
+      update: { periodsPerDay, periodDurationMins },
+    });
+    // §22 — swept by prefix: the snapshot, `/context` and every per-draft copy
+    // are keyed under this config, and the week's shape changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}): day ${day} runs ${periodsPerDay} × ${periodDurationMins} min`);
+    return { ok: true, day, full: false, periodsPerDay, periodDurationMins };
+  }
+
+  /**
+   * §33 — how long one lesson is, per class, in this timetable.
+   *
+   * Returns the classes this timetable actually teaches, each with its span in
+   * base periods and the minutes that comes to. Minutes are **derived** and
+   * never stored: the base duration belongs to the config (§28), so
+   * `span × period_duration_mins` is the only figure that cannot drift from it.
+   *
+   * `allowed` is the set of lesson lengths this timetable can express — every
+   * whole multiple of the base that still fits the day. Sent rather than
+   * computed on the client so the divisibility rule (§33) has one author, and
+   * so the form can offer a list in which no invalid value exists.
+   */
+  /**
+   * §36 — the lessons this timetable has pinned to a cell.
+   *
+   * Served with everything the Whole tab needs to paint them without a second
+   * round trip: the section's label, the subject's name, the teacher's stored
+   * initials (§31's one definition, never re-derived) and the room's name.
+   *
+   * `caps` rides along because the screen has to say "3 of 6 fixed" before
+   * anybody presses Save, and the cap is a CLASS fact (§27) — one number for
+   * every section of the class — which a client counting rows could not know.
+   */
+  @Get(":id/fixed-lessons")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async fixedLessons(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.ownConfigOr404(configId);
+
+    const rows = await this.prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: {
+        id: true, classSectionId: true, subjectId: true, teacherId: true, roomId: true,
+        dayOfWeek: true, periodNumber: true,
+        classSection: { select: { class: { select: { name: true } }, section: { select: { name: true } } } },
+        subject: { select: { name: true } },
+        teacher: { select: { name: true, initials: true } },
+        room: { select: { name: true } },
+      },
+      orderBy: [{ dayOfWeek: "asc" }, { periodNumber: "asc" }],
+    });
+
+    const sections = await this.prisma.classSection.findMany({
+      where: { timetableConfigId: configId },
+      select: { id: true, classId: true },
+    });
+    const caps = await this.prisma.classSubject.findMany({
+      where: {
+        classId: { in: [...new Set(sections.map((s) => s.classId))] },
+        academicYearId: config.academicYearId,
+      },
+      select: { classId: true, subjectId: true, periodsPerWeek: true },
+    });
+
+    /*
+      §36 — what the pickers may OFFER, decided by the server.
+
+      A mapping is what a pin attaches to (`variables.ts` matches on
+      section+subject+teacher), so the list of legal (subject, teacher) pairs
+      for a section IS its mapping list — minus the two things the save
+      refuses anyway: a subject an elective block already owns (§31.19) and a
+      row taught as §4.8 double periods, which has no single occurrence to pin.
+
+      Sent rather than derived on the client for the reason the Electives
+      screen's teacher list is: a picker that can offer something the save
+      refuses is a picker that teaches people to distrust the screen.
+    */
+    const mappings = await this.prisma.teacherSubjectClassSection.findMany({
+      where: { classSectionId: { in: sections.map((s) => s.id) } },
+      select: {
+        classSectionId: true, subjectId: true, teacherId: true,
+        subject: { select: { name: true } },
+        teacher: { select: { name: true, initials: true, isActive: true, employmentType: true } },
+      },
+    });
+    const blockOwned = new Set(
+      (await this.prisma.electiveOption.findMany({
+        where: { electiveBlock: { members: { some: { classSectionId: { in: sections.map((s) => s.id) } } } } },
+        select: { subjectId: true, electiveBlock: { select: { members: { select: { classSectionId: true } } } } },
+      })).flatMap((o) => o.electiveBlock.members.map((m) => `${m.classSectionId}:${o.subjectId}`)),
+    );
+    const classOf = new Map(sections.map((s) => [s.id, s.classId]));
+    const doubled = new Set(
+      (await this.prisma.classSubject.findMany({
+        where: {
+          classId: { in: [...new Set(sections.map((s) => s.classId))] },
+          academicYearId: config.academicYearId,
+          consecutiveBlockSize: { gt: 1 },
+        },
+        select: { classId: true, subjectId: true },
+      })).map((c) => `${c.classId}:${c.subjectId}`),
+    );
+
+    return {
+      options: mappings
+        .filter((m) => m.teacher.isActive && m.teacher.employmentType !== "guest")
+        .filter((m) => !blockOwned.has(`${m.classSectionId}:${m.subjectId}`))
+        .filter((m) => !doubled.has(`${classOf.get(m.classSectionId)}:${m.subjectId}`))
+        .map((m) => ({
+          classSectionId: m.classSectionId,
+          subjectId: m.subjectId,
+          subject: m.subject.name,
+          teacherId: m.teacherId,
+          teacher: m.teacher.name,
+          initials: m.teacher.initials,
+        })),
+      rooms: (await this.prisma.room.findMany({
+        select: { id: true, name: true }, orderBy: { name: "asc" },
+      })).map((r) => ({ id: r.id, name: r.name })),
+      lessons: rows.map((r) => ({
+        id: r.id,
+        classSectionId: r.classSectionId,
+        classSection: `${r.classSection.class.name}-${r.classSection.section.name}`,
+        subjectId: r.subjectId,
+        subject: r.subject.name,
+        teacherId: r.teacherId,
+        teacher: r.teacher.name,
+        initials: r.teacher.initials,
+        roomId: r.roomId,
+        room: r.room?.name ?? null,
+        dayOfWeek: r.dayOfWeek,
+        periodNumber: r.periodNumber,
+      })),
+      /** The curriculum cap, per class and subject — what "3 of 6" counts against. */
+      caps: caps.map((c) => ({
+        classId: c.classId, subjectId: c.subjectId, periodsPerWeek: c.periodsPerWeek,
+      })),
+      sections: sections.map((s) => ({ id: s.id, classId: s.classId })),
+    };
+  }
+
+  /**
+   * §36 — replace the whole set of pins for this timetable.
+   *
+   * **Replace, not upsert**, because that is what a Save button means: the
+   * screen holds the school's whole answer and sends it. Anything else would
+   * need a second way to say "this one is gone", and a grid whose deletions
+   * travel differently from its additions is a grid that loses one of them.
+   *
+   * Validated as ONE set before anything is written (`assertFixedLessonsValid`),
+   * so two pins that are each legal alone and collide with each other are
+   * refused — and refused before the delete, so a rejected save leaves the
+   * school exactly what it had.
+   */
+  @Put(":id/fixed-lessons")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setFixedLessons(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: any) {
+    const configId = toInt(id, "id");
+    await this.ownConfigOr404(configId);
+    // §29.1 — a published week does not quietly acquire new hard constraints.
+    //
+    // §29.8 — scopeable, and the guard runs below once the rows are parsed: a
+    // pin names its class-section and its teacher, so it is exactly the shape
+    // the predicate wants. Only the precondition can be asked this early.
+    await this.freeze.assertUnlockable(configId, "the fixed lessons");
+
+    const rows: FixedLessonInput[] = Array.isArray(body?.lessons)
+      ? body.lessons.map((l: any) => ({
+        classSectionId: toInt(l?.classSectionId, "classSectionId"),
+        subjectId: toInt(l?.subjectId, "subjectId"),
+        teacherId: toInt(l?.teacherId, "teacherId"),
+        roomId: l?.roomId === null || l?.roomId === undefined || l?.roomId === ""
+          ? null
+          : toInt(l.roomId, "roomId"),
+        dayOfWeek: toInt(l?.dayOfWeek, "dayOfWeek"),
+        periodNumber: toInt(l?.periodNumber, "periodNumber"),
+      }))
+      : [];
+
+    await assertFixedLessonsValid(this.prisma as never, configId, rows);
+
+    /*
+      §29.8 — the real guard, now the set is known.
+
+      A Save REPLACES the whole set, so the write reaches every pin the school
+      already has as well as every one it is adding: a grant that admitted only
+      the incoming rows would let an unlocked class's save silently delete a
+      locked class's pins. Both lists go in.
+    */
+    const existing = await this.prisma.timetableFixedLesson.findMany({
+      where: { timetableConfigId: configId },
+      select: { classSectionId: true, teacherId: true },
+    });
+    const ticket = await this.freeze.assertTouched(
+      configId,
+      [
+        ...rows.map((r) => ({ classSectionIds: [r.classSectionId], teacherIds: [r.teacherId] })),
+        ...existing.map((r) => ({ classSectionIds: [r.classSectionId], teacherIds: [r.teacherId] })),
+      ],
+      "the fixed lessons",
+    );
+
+    await this.prisma.$transaction(async (tx: any) => {
+      await tx.timetableFixedLesson.deleteMany({ where: { timetableConfigId: configId } });
+      if (rows.length > 0) {
+        await tx.timetableFixedLesson.createMany({
+          data: rows.map((r) => ({
+            timetableConfigId: configId,
+            classSectionId: r.classSectionId,
+            subjectId: r.subjectId,
+            teacherId: r.teacherId,
+            roomId: r.roomId ?? null,
+            dayOfWeek: r.dayOfWeek,
+            periodNumber: r.periodNumber,
+            schoolId: req.user.schoolId,
+          })),
+        });
+      }
+    });
+
+    /*
+      A pin changes what the solver may do, so it changes what Readiness has to
+      say — Check 14 reads these rows. Swept by prefix (§22) as well, because
+      the Whole tab's own payload is cached per timetable.
+    */
+    await ticket.record(`set ${rows.length} fixed lesson(s), replacing ${existing.length}`);
+    await this.keys.invalidateTimetable(configId);
+    await this.readiness.invalidate(req.user.schoolId);
+    this.logger.warn(`Fixed lessons for timetable ${configId} set to ${rows.length} row(s)`);
+    return { ok: true, count: rows.length };
+  }
+
+  @Get(":id/class-periods")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async classPeriods(@Param("id") id: string) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, periodsPerDay: true, periodDurationMins: true, startTime: true },
+    });
+    // §17.8 — another school's id is a 404, never an empty list that reads as
+    // "this timetable teaches nobody".
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const [sections, spans, periods] = await Promise.all([
+      this.prisma.classSection.findMany({
+        where: { timetableConfigId: configId },
+        select: { classId: true, class: { select: { id: true, name: true, sequence: true } } },
+        orderBy: [{ class: { sequence: "asc" } }],
+      }),
+      this.prisma.timetableClassSpan.findMany({
+        where: { timetableConfigId: configId },
+        select: { classId: true, span: true },
+      }),
+      this.prisma.period.findMany({
+        where: { timetableConfigId: configId },
+        select: { startTime: true, endTime: true, isBreak: true, isExtra: true, isActivity: true },
+        orderBy: { sortOrder: "asc" },
+      }),
+    ]);
+
+    /*
+      When school closes — READ off the period rows rather than computed.
+
+      start + periods × duration + breaks + activities is the arithmetic, and
+      every one of those terms is already a row with a real end time. Adding
+      them up again would be a second answer, free to disagree with the grid
+      the school is looking at — and it would get §28.4 wrong, where an
+      activity before the first period makes the day start EARLIER rather than
+      pushing period 1 later.
+
+      The §18 extra window is excluded: it is teaching, but it is not the
+      school day, and the same exclusion is what the Matrix's fill rate makes.
+    */
+    const day = periods.filter((p) => !p.isExtra);
+    const opensAt = day.length > 0 ? day[0].startTime : config.startTime;
+    const closesAt = day.length > 0 ? day[day.length - 1].endTime : null;
+    const breaks = day.filter((p) => p.isBreak).length;
+    const activities = day.filter((p) => p.isActivity).length;
+    const spanBy = new Map(spans.map((r) => [r.classId, Math.max(1, r.span)]));
+    // One row per CLASS, not per class-section: a lesson's length is a fact
+    // about the class's week (§27's rule that periods are a class fact), and
+    // 5-A and 5-B are one answer shown twice.
+    const classes = [...new Map(sections.map((cs) => [cs.classId, cs.class])).values()];
+
+    return {
+      baseDurationMins: config.periodDurationMins,
+      periodsPerDay: config.periodsPerDay,
+      startTime: config.startTime,
+      /**
+       * §33 — when the day opens and closes, and what is in it besides
+       * lessons. One answer for every class: the grid is shared, which is the
+       * whole point of expressing a longer lesson as a double period rather
+       * than as a second clock.
+       */
+      opensAt,
+      closesAt,
+      breaks,
+      activities,
+      /** Every lesson length this grid can express, longest last. */
+      allowed: Array.from({ length: config.periodsPerDay }, (_, i) => i + 1)
+        .map((span) => ({ span, mins: span * config.periodDurationMins })),
+      classes: classes.map((c) => {
+        const span = spanBy.get(c.id) ?? 1;
+        return {
+          id: c.id,
+          name: c.name,
+          span,
+          durationMins: span * config.periodDurationMins,
+          /** How many lessons of that length the day holds. */
+          lessonsPerDay: Math.floor(config.periodsPerDay / span),
+          /**
+           * The day does not divide evenly by this span — the last lesson
+           * would run past the end of the grid. Reported rather than refused:
+           * it is a real state while somebody is mid-edit, and the screen says
+           * so where the number is.
+           */
+          leftover: config.periodsPerDay % span,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Set one class's lesson length.
+   *
+   * **A span, never minutes.** The solver wants a block size in base periods,
+   * and storing minutes would re-derive it at every call site and go stale the
+   * moment the config's own duration changed. See the model's own note.
+   *
+   * Span 1 deletes the row rather than storing it: "not stated" and "one base
+   * period" are the same answer (invariant 7), and storing the absence keeps
+   * the table a record of what was *changed* — so a school that never touches
+   * this screen has no rows at all.
+   *
+   * Deliberately not freeze-guarded, matching §29.1's treatment of the things
+   * that shape a future generation rather than the published week: it writes no
+   * slot.
+   */
+  @Put(":id/class-periods")
+  @RequirePermission(PERMISSIONS.MASTERS_MANAGE)
+  async setClassPeriod(@Param("id") id: string, @Body() body: { classId?: unknown; span?: unknown }) {
+    const configId = toInt(id, "id");
+    const config = await this.prisma.timetableConfig.findFirst({
+      where: { id: configId },
+      select: { id: true, schoolId: true, name: true, periodsPerDay: true },
+    });
+    if (!config) throw new NotFoundException("Timetable config not found");
+
+    const classId = toInt(body?.classId, "classId");
+    const span = toInt(body?.span, "span");
+    if (span < 1 || span > config.periodsPerDay) {
+      throw new BadRequestException(
+        `A lesson is between 1 and ${config.periodsPerDay} periods long — this timetable's day is ${config.periodsPerDay} periods.`,
+      );
+    }
+    // Ours, and actually taught here. A class id from another school would
+    // otherwise be stored against our config and read back by the snapshot.
+    const taught = await this.prisma.classSection.findFirst({
+      where: { timetableConfigId: configId, classId }, select: { id: true },
+    });
+    if (!taught) throw new NotFoundException(`This timetable does not teach class ${classId}`);
+
+    if (span === 1) {
+      await this.prisma.timetableClassSpan.deleteMany({ where: { timetableConfigId: configId, classId } });
+    } else {
+      await this.prisma.timetableClassSpan.upsert({
+        where: { timetableConfigId_classId: { timetableConfigId: configId, classId } },
+        create: { timetableConfigId: configId, classId, span, schoolId: config.schoolId },
+        update: { span },
+      });
+    }
+    // §22 — swept by prefix: the snapshot, `/context` and every per-draft copy
+    // are keyed under this config, and a lesson's length changes all of them.
+    await this.keys.invalidateTimetable(configId);
+    this.logger.log(`timetable ${configId} (${config.name}): class ${classId} lessons span ${span} period(s)`);
+    return { ok: true, classId, span };
   }
 
   /** Readiness Dashboard data (§4) — Feasibility Engine over the live DB. */

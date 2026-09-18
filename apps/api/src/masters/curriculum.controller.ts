@@ -5,6 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReadinessService } from "../readiness/readiness.service";
 import { del, requireFields, toInt, uniq, type AuthedRequest } from "./crud.util";
 import { assertWithinWeek, capacityForClass } from "./capacity.util";
+import { assertNotPinned } from "./fixed-lessons";
 import { assertSubjectApplies } from "./subject-scope.util";
 import { FreezeService } from "../freeze/freeze.service";
 
@@ -47,6 +48,7 @@ export class CurriculumController {
       samePeriodAcrossWeek: r.samePeriodAcrossWeek,
       consecutiveBlockSize: r.consecutiveBlockSize,
       consecutiveBlocksPerWeek: r.consecutiveBlocksPerWeek,
+      blockMayCrossBreak: r.blockMayCrossBreak,
     }));
   }
 
@@ -96,6 +98,25 @@ export class CurriculumController {
     await this.freeze.assertClasses([existing.classId], existing.academicYearId, "what a class is taught");
     // `normalize` returns only the five shape fields, so a PUT can never move a
     // row between sessions — that would be a re-key, not an edit.
+    /*
+      §36 — the lesson plan is locked while any of its lessons are pinned.
+
+      A fixed lesson says "Class 1-A does Mathematics on Monday period 2", and
+      it is only meaningful against a curriculum row that still has a period for
+      it to occupy. Cutting the row from six to four with six pins standing
+      would leave two hard constraints the solver cannot honour and Readiness
+      would then refuse the whole school.
+
+      Refused rather than reconciled, which is the school's own decision: the
+      contradiction becomes unreachable instead of being reported after the
+      fact. Asked by CLASS, because `periods_per_week` is one number for the
+      whole class (§27) — so a pin in 1-A locks Class 1's Mathematics for 1-B
+      and 1-C too. That is the same number, not a quirk.
+    */
+    await assertNotPinned(
+      this.prisma as never, existing.classId, existing.subjectId, existing.academicYearId,
+      "how many periods it gets",
+    );
     const data = this.normalize({ ...existing, ...body });
     assertWithinWeek(
       data.periodsPerWeek,
@@ -114,6 +135,11 @@ export class CurriculumController {
     const existing = await this.prisma.classSubject.findUnique({ where: { id: toInt(id, "id") } });
     if (existing) {
       await this.freeze.assertClasses([existing.classId], existing.academicYearId, "what a class is taught");
+      // §36 — and deleting the row outright is the same contradiction, larger.
+      await assertNotPinned(
+        this.prisma as never, existing.classId, existing.subjectId, existing.academicYearId,
+        "this subject",
+      );
     }
     await del(
       () => this.prisma.classSubject.delete({ where: { id: toInt(id, "id") } }),
@@ -144,6 +170,14 @@ export class CurriculumController {
       samePeriodAcrossWeek: Boolean(body.samePeriodAcrossWeek),
       consecutiveBlockSize: blockSize,
       consecutiveBlocksPerWeek: blockSize > 1 ? blocksPerWeek : null,
+      /*
+        §31.10 — cleared with the block, not kept beside it.
+
+        "May cross a break" is a fact about a block, so a row with no block has
+        no answer to give. Leaving a stale `true` behind would make it reappear
+        the day somebody sets a block size again, without them ever saying so.
+      */
+      blockMayCrossBreak: blockSize > 1 ? Boolean(body.blockMayCrossBreak) : false,
     };
   }
 }

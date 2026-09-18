@@ -2596,3 +2596,234 @@ the floor, so it could have moved). Regression, all unchanged: isolation, freeze
 guided setup, report cache, auto-fix, clone, drafts, electives, year scope, delete, room assignment,
 teacher scope, import, ERP sync, onboarding, AI data-entry, shared **505**, api **216**, lint,
 web build.
+
+## Phase 43 stage 5 — moving a timetable between pools (§30.6a)
+
+**Landed. §30 is now complete — all six stages.**
+
+- `GET …/resource-group/preview` + `POST …/resource-group`. The plan is recomputed at apply, never
+  taken from the request (§21); count and write declared in one object (§3.13).
+- Grouped → individual is always safe (a new pool has nothing to collide with) and *loosens*, so it
+  is stated plainly. Individual → grouped refuses **by name** when the destination already holds the
+  same class-section.
+- One transaction over both pool columns — a half-applied move is exactly the drift `test:groups`
+  guards against.
+- An emptied **individual** pool is deleted, but only when it holds neither a timetable nor an
+  unattached cohort row. A grouped pool is the session's and is never removed.
+- `loadChanges` reports exact before/after weekly totals per affected teacher rather than a
+  predicted score — those are the numbers Check 2 uses, so they are checkable.
+- **Not freeze-guarded** (decision 4), but written to `audit_logs` and Readiness dropped
+  immediately, so the accepted risk stays answerable.
+
+Verified: `pnpm test:groups` — **69 assertions**, thirteen new, including the collision built
+deliberately (a timetable moves out, someone re-creates those classes in the shared pool, and now it
+cannot move back) after my first fixture failed to create one at all. Isolation gate: **210 routes
+classified**, both new routes swept as controlled experiments (`A 201/200 · B 404`). Regression, all
+unchanged: freeze, staffing, grids, guided setup, import, clone, drafts, electives, report cache,
+year scope, delete, room assignment, teacher scope, auto-fix, ERP sync, onboarding, AI data-entry,
+shared 505, api 216, lint, typecheck.
+
+---
+
+# Phase 44 — The Master Grid (§31)
+
+The whole school's week on one screen, pivoted five ways, with no horizontal scroll. Four stages;
+stage 1 is the grid and is useful on its own.
+
+## Phase 44 stage 1 — the grid
+
+**Landed.** Five tabs, read-only, and almost no new server code — which was the point of the plan:
+the payload already carried everything but one field.
+
+Server (both on `SolverController`, same permission as `/slots`, so the screen answers to one
+authority):
+- `teacherInitials` added to `GET /timetable-configs/:id/slots`. A second map rather than a wider
+  `teachers` value, because every existing consumer indexes that one as `id → name`. The payload is
+  Redis-cached for an hour, so a school mid-cache is served one that predates the field — the client
+  falls back to `initialsOf(name)`, the same function, so the stale answer and the fresh one agree.
+- `GET /timetable-configs/:id/lessons` — the Lesson grid's curriculum (renamed `/context` in
+  stage 2, when the strip needed three more facts from it). Deliberately not `/class-subjects`, which is `masters.manage`: a principal would have met a 403 on one tab of five.
+  Cells keyed by **class** (§27), filtered to the config's own year (§3.11), `weekCapacity` from the
+  wing's own week and deliberately not `capacityForClass` (§30 — that one is year-wide because it
+  guards a write).
+- `teachers.initials` on the Teachers master's POST/PUT and in its list payload. It could already be
+  written by the §16 importer and the guided setup but not by the screen, so a school that entered
+  its staff there had no way to say. Blank stores NULL, not `""` — empty means "not stated"
+  (invariant 7), which is permission to derive; a stored "nothing" paints a blank 27px cell that
+  reads as a free period.
+
+Shared (`packages/shared/src/timetable/`):
+- `initials.ts` — one derivation, replacing two that disagreed (`Board.tsx` took three letters,
+  `Substitutes.tsx` two, so the same person was `RKS` on one screen and `RK` on the next).
+- `pivot.ts` — `SLOT` (the tuple layout named once), `PIVOT_FIELD`, `pivotCellKey`, `pivotSlots`,
+  `cellEvents`. Four pivots differ by a single array index; four functions is how three handle §4.9
+  correctly and the fourth does not.
+
+Client: `pages/MasterGrid.tsx`, route `/master-grid`, nav under Manage beside the Matrix.
+
+Three things the reference school settled that a fixture could not:
+- **55 columns, exactly as predicted** — 5 days × 11, ≈27px each.
+- **Every one of the 30 teacher cells holding more than one row is a merged group**, and none is
+  anything else. So `cellEvents` collapsing §4.10 on the teacher pivot is what that tab shows, not
+  an edge case; drawing "4" there would claim four lessons where the school ran one.
+- **386 of the Subjects tab's 548 cells hold more than one lesson, busiest 16.** The count is what
+  that tab mostly draws, which is why naming one arbitrary section's teacher was never an option.
+- 122 teachers × 55 columns = **6,710 cells**, which is stage 4's case, confirmed rather than
+  assumed. Pivoting the whole reference school takes ~2ms, so the cost is rendering, not arithmetic.
+
+Verified: `pnpm test:mastergrid` — **26 assertions** live (initials read not derived, the pivots
+reproducing the database, the §4.10 collapse both ways, `/lessons` keyed by class, §17.8);
+`pivot.spec.ts` **15 unit tests**; isolation gate **211 routes classified**, the new route swept
+with no help (`A 200 · B 404`); shared **520**, lint, typecheck, `vite build`.
+
+## Phase 44 stage 2 — the strip
+
+**Landed.** One fixed row along the bottom of the grid box that explains whatever cell is clicked. It
+is the half that makes 27 pixels survivable — the grid is the map and the strip is the legend.
+
+Server: `GET /timetable-configs/:id/lessons` became `GET /timetable-configs/:id/context` and grew the
+three facts a *placement* does not carry — each class-section's home room and class teacher, and each
+teacher's weekly cap plus what they carry in the pool's other timetables. One payload rather than
+four, because a strip that fetched per click would make clicking expensive and clicking idly is how
+this screen is used.
+
+- The curriculum, the caps and `crossConfigTeacherLoad` are **read off `buildFeasibilitySnapshot`**,
+  the builder the solver and Readiness already use. That is what makes the §3.11 year filter free,
+  and it is why the strip cannot quote a different number from the one Check 2 enforces.
+- Cached under the config's own slot prefix, so `invalidateTimetable` sweeps it and a master-data
+  edit takes it with the school. Without the cache every page load would pay for a full snapshot —
+  asserted in the smoke rather than assumed.
+- **A teacher's load names the other wings, never folds them in.** CLAUDE.md records what a single
+  blended figure costs — "a line round one wing reads 67% where the truth is 87%" — so the strip
+  states the wing's own count against the cap and then names the rest. The fixture puts one teacher
+  in two wings of one pool specifically to test it.
+
+Client:
+- Always rendered at a fixed height. Appearing on the first click would shorten the grid under the
+  pointer at the moment somebody is reading it, and the row they clicked would move.
+- A strip and not a popover: a popover over a 27px cell covers the neighbours you clicked in order to
+  compare (§8.5's argument, again).
+- **Arrow keys move the selection**, skipping break and activity columns, which hold no cell. An
+  empty cell is selectable — a free period is a fact and this is the only place with room to say
+  whose it is. The selection is cleared on a change of tab, status or draft, because the row it
+  named belongs to a different question.
+- Two vocabularies (§31.4). A timetable cell gives cell / class / teacher / curriculum, listing every
+  §4.9 option and every §4.10 member; a cell holding several *events* is listed rather than described
+  as one lesson, which is what the grid's bare count needed somewhere to expand into. A Lesson grid
+  cell has no clock and instead names who **shares** the lesson — the only place on the screen where
+  a block or a merged group is visible — and says "not yet" rather than "no teacher" when nothing is
+  placed.
+- `blockSections` moved to `packages/shared` beside the pivot: deriving a block's attending sections
+  from its member rows is invariant 9 again, and it is pure, so it is unit-tested rather than
+  trusted.
+
+Verified: `pnpm test:mastergrid` — **44 assertions** (18 new: the strip's four facts, the cross-wing
+load naming its timetable, the cache key, and a block's members from the tuples alone);
+`pivot.spec.ts` **18 unit tests**; isolation gate **211 routes classified**, `/context` swept unaided
+(`A 200 · B 404`). Regression: shared **523**, api **216**, grids, groups, freeze, staffing, drafts,
+electives, lint, typecheck, `vite build`.
+
+## Phase 44 stage 3 — placed against required
+
+**Landed.** The Lesson grid's cells are the curriculum; this adds the other half, so a short row says
+`5/6` at the moment somebody is looking at it rather than waiting for Readiness.
+
+`packages/shared/src/timetable/coverage.ts` — one module, read by the Lesson grid cells, the row
+total, the strip's curriculum chips and the Lesson-grid strip, so none of them can disagree about
+whether a row is short.
+
+**Two numbers only when they differ**, and the differing cell drops the subject's colour for signal
+red: §10.5's own rule cuts this way, since "this row is short" outranks "this is Maths" and the
+column header is still carrying the hue.
+
+The module's whole job is being *sure* about a difference — a false one costs the reader's trust in
+the other five hundred cells — so five traps are handled by name:
+
+- **Required is a CLASS fact; placed is a SECTION fact** (§27). Summing 5-A and 5-B against one
+  class's 6 would report every class in the school as massively over-taught.
+- **§18 extras are not the syllabus**, filtered by the same `teachingPeriods` set the fill rate uses.
+- **A §4.10 merged group credits BOTH sections** — the one place in §31 merged rows are deliberately
+  not collapsed. `cellEvents` collapses them because a teacher is in one place; here the question is
+  what each class received.
+- **A §4.9 option row cannot be attributed** (no class-section, invariant 9), so a subject that also
+  runs as an option is marked not-comparable rather than reported as `0/4` while the children sit in
+  it.
+- **"Nothing placed" is not "nothing generated."** An ungenerated section is never compared, or a
+  blank screen screams `0/6` in every cell and teaches the reader to ignore the notation entirely.
+
+A placed lesson with no curriculum row is out of scope — a different question, and Readiness owns it.
+
+Verified: `coverage.spec.ts` **7 unit tests**, one per trap. `pnpm test:mastergrid` — **53
+assertions** (9 new), built as the negative first: a 100%-generated week must produce **zero**
+differences, and only then one lesson is deleted and **exactly one** cell must move to `5/6` with the
+other section of the same class untouched. Plus the ungenerated second wing, which must not report
+its 8 periods of Maths as 8 missing.
+
+Scale check against the reference school (not in the suite — it needs the seeded data): 844
+(section, subject) pairs, 8 sections matching exactly, 8 correctly skipped, and **zero over-placed**
+— the shape a merged-group or elective mis-count would take. Its 444 under-placed pairs are that
+school's own curriculum exceeding its week (Class 1 is owed 67 periods in a 40-period week), which is
+the feature working.
+
+Regression: shared **530**, api **216**, isolation **211 routes**, grids, groups, freeze, drafts,
+electives, guided setup, lint, typecheck, `vite build`.
+
+## Phase 44 stage 4 — windowing the grid body
+
+**Landed.** 122 teachers x 56 columns is 6,832 `<td>`s; the Matrix gets away with ~2,750 and this
+does not.
+
+`packages/shared/src/timetable/viewport.ts` — `rowWindow` and `scrollTopFor`, pure, thirteen tests
+including a sweep over the whole scroll range asserting that everything visible was drawn.
+
+**Two spacer rows, deliberately not `react-window`.** CLAUDE.md names it as the sanctioned answer and
+for a generic grid it is; this grid's correctness is table machinery — the percentage `<colgroup>`
+that makes "no horizontal scroll" a layout property, two sticky `colSpan` header rows, a sticky first
+column — and `react-window` renders positioned divs. Adopting it means rebuilding all three to gain a
+library that cannot render a `<tr>`.
+
+**The row height is measured, never assumed** — §10.6's rule, since the spacers must reserve exactly
+what the undrawn rows would have occupied or the scrollbar lies. Three traps, each costing a frame or
+the whole saving, and each a lesson already in this repo:
+
+- **`useLayoutEffect`, not `useEffect`** for measuring the pane (§8.1d). A passive effect runs after
+  paint, so the first frame is computed for a viewport of zero: seven rows, then thirty-six.
+- **A seeded fallback height**, so the *first* paint is already windowed. Starting unmeasured draws
+  all 6,832 cells once and then shrinks — the exact frame this stage removes. The measurement always
+  wins.
+- **Measure once per layout, not once per scroll.** The ref sits on whichever row is drawn first, and
+  that row changes as the window slides, so React reattaches it every scroll frame; an unguarded
+  `offsetHeight` there forces a synchronous layout on each one. An epoch counter bumped only by the
+  resize observer fixes it.
+
+**Arrow keys move through the row list, which the DOM may not hold.** `scrollTopFor` brings the row
+into view — to the *bottom* when arrowing downwards, because jumping it to the top moves everything
+the reader was comparing it with — and returns null when it is already visible, since assigning
+`scrollTop` on every keystroke fights a scroll in flight.
+
+### Measured
+
+| | cells | tree build + serialise |
+|---|---|---|
+| before | 6,832 | median 50.8 ms · p95 102.3 ms |
+| after (700px pane) | 2,016 | median 10.5 ms · p95 13.8 ms |
+
+**4.8x less work**; 70% fewer cells at a typical pane height (75% at 560px, 52% at 1200px — the
+saving narrows as the pane grows, which is correct).
+
+**The honest limit:** that is `renderToString` in Node over the same cell shape, so it measures
+building and serialising the element tree, not browser layout and paint. §14's "render-to-usable ≤
+600ms" is a paint budget and there is no headless browser in this stack, so it remains **unverified**
+for this screen. What is verified is that the work which changed got 4.8x smaller and the node count
+— which layout and paint scale with — fell by 70%.
+
+Regression: shared **543**, api **216**, isolation **211 routes**, mastergrid, grids, groups, freeze,
+staffing, drafts, lint, typecheck, `vite build`.
+
+## Phase 44 — complete
+
+All four stages landed. The screen stays read-only by design (§31.5); the two things that would most
+naturally come next — editing, and several wings at once — are refused there with reasons.
+
+Outstanding debt this did NOT clear: the Allocation Matrix and the Draft Board are still unwindowed,
+and `viewport.ts` is now sitting there for whoever wants to.

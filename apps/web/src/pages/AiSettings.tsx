@@ -151,7 +151,7 @@ export function AiSettings() {
       <div className="ai-settings-grid">
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <Card title="Provider & model" sub="The key is encrypted with AES-256-GCM and is write-only — it is never sent back to this screen.">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div className="grid2" style={{ gap: 12, marginBottom: 12 }}>
               <div className="field">
                 <label>Provider</label>
                 <select style={inputStyle} value={s.provider} onChange={(e) => save({ provider: e.target.value }, "Provider updated")}>

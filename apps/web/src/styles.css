@@ -175,12 +175,140 @@ button { font-family: inherit; cursor: pointer; }
 /* A viewport-tall column: topbar, then a content box that scrolls. Fixing the
    height here is what gives `.pane-page` something definite to fill (§8.4). */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }
+/* §8.6 / §17.4a — three slots: the school's mark, the toolbar, and the context
+   that says whose school and which timetable.
+
+   A GRID with named areas rather than flex with `order`, because the two
+   arrangements are genuinely different shapes: stacked, brand and context share
+   the top row and the toolbar spans the full width beneath; on a wide screen
+   all three sit on one line. Areas place them either way from ONE DOM order —
+   brand, nav, context — which is also the right reading order for both. */
 .topbar {
-  display: flex; align-items: center; justify-content: space-between; padding: 16px 28px;
+  display: grid; align-items: stretch;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "brand ctx" "nav nav";
   background: var(--paper); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
 }
-.topbar-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; }
-.topbar-eyebrow { font-size: 11px; color: var(--steel); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 2px; }
+.topbar-brand { grid-area: brand; display: flex; align-items: center; gap: 9px; padding: 7px 10px 7px 18px; }
+.topbar-brand-name {
+  font-family: var(--font-display); font-size: 14.5px; font-weight: 600; color: var(--brand-deep);
+  letter-spacing: -0.01em; white-space: nowrap;
+}
+.topbar-ctx {
+  grid-area: ctx; display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+  padding: 7px 20px;
+}
+/* The hairline goes on the toolbar, which spans the whole width — two borders
+   on two boxes of independently-computed height is two chances to disagree. */
+.topbar-nav { grid-area: nav; border-top: 1px solid var(--line); }
+
+/* At this width the two rows fit on one, and the bar then costs 22px LESS than
+   the title block it replaced rather than 22px more. The toolbar's own order
+   and membership are untouched by this — only where the other two slots sit
+   (see the note on `Toolbar`: the twelve never move). */
+@media (min-width: 1680px) {
+  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "brand nav ctx"; }
+  .topbar-brand { border-right: 1px solid var(--line); padding-right: 14px; }
+  .topbar-ctx { padding: 0 18px 0 12px; }
+  .topbar-nav { border-top: none; }
+}
+@media (max-width: 640px) { .topbar-brand-name { display: none; } }
+
+.topbar-nav { display: flex; align-items: stretch; padding: 0 10px; }
+/* The buttons scroll when they must; More is outside the scroller, because an
+   `overflow` ancestor clips an absolutely-positioned panel (ui/anchored.tsx),
+   and because the way out of a bar too narrow must not scroll off it. */
+.tb-scroll {
+  display: flex; align-items: stretch; flex: 1; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.tb-scroll::-webkit-scrollbar { display: none; }
+.tb-group { display: flex; align-items: stretch; }
+.tb-end { flex: 1; }
+.tb-pipe { width: 1px; background: var(--line); margin: 12px 8px; flex: none; align-self: stretch; }
+
+.tb {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  min-width: 64px; padding: 7px 9px 8px; margin: 5px 1px; border-radius: 9px;
+  color: var(--ink-soft); text-decoration: none; background: none; border: 0;
+  position: relative; transition: background .12s, color .12s;
+}
+.tb:hover { background: var(--offwhite); color: var(--brand-deep); }
+.tb.active, .tb.open { background: var(--steel-pale); color: var(--brand-dark); }
+.tb-label { font-size: 10.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.tb.active .tb-label { font-weight: 800; }
+/* Meets the content below, because the bar sits directly on it.
+   `-5px` is the button's own bottom margin and not a pixel more: `overflow-x`
+   forces `overflow-y` to match, so one pixel further down is clipped by
+   `.tb-scroll` AND makes the row vertically scrollable. */
+.tb.active::after {
+  content: ""; position: absolute; left: 10px; right: 10px; bottom: -5px;
+  height: 2.5px; border-radius: 2px 2px 0 0; background: var(--brand);
+}
+/* Where you are, when where you are is behind More. */
+.tb-flag { position: absolute; top: 4px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
+
+/* §8.7 — the screen's own actions, at the right of the toolbar row.
+   `:empty` is load-bearing: the slot is always rendered so the portal has a
+   target, and a screen with no actions must not pay for a divider and 18px of
+   padding around nothing. */
+.tb-actions { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 14px; flex: none; }
+.tb-actions:empty { display: none; }
+.tb-actions::before {
+  content: ""; width: 1px; align-self: stretch; margin: 12px 14px 12px 0; background: var(--line);
+}
+.tb-actions .btn { padding: 6px 11px; font-size: 12.5px; white-space: nowrap; }
+
+/* §8.7 — a timetable card that uses the page's width.
+   Below 1500px this is exactly the layout it always had: identity on the left,
+   actions on the right, setup across the bottom. Above it the setup moves into
+   a column of its own, so the space a 1,900px screen offers goes to the most
+   informative thing on the card rather than to a gap between a name and five
+   buttons. */
+.tt-card {
+  display: grid; gap: 14px 20px; align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "main actions" "setup setup";
+}
+.tt-card > .tt-main { grid-area: main; min-width: 0; }
+.tt-card > .tt-actions { grid-area: actions; }
+.tt-card > .tt-setup { grid-area: setup; min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+@media (min-width: 1500px) {
+  .tt-card {
+    grid-template-columns: minmax(240px, 0.85fr) minmax(380px, 1.5fr) auto;
+    grid-template-areas: "main setup actions";
+  }
+  /* A rule across the card is a divider between two stacked blocks; beside one
+     it would be a line above a column for no reason. */
+  .tt-card > .tt-setup { border-top: none; padding-top: 0; }
+}
+
+.tb-more { position: relative; display: flex; align-items: stretch; }
+.tb-panel {
+  position: absolute; top: calc(100% - 2px); right: 0; z-index: 20; width: 600px; max-width: 86vw;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(11, 31, 68, .18); padding: 13px 15px 15px;
+}
+.tb-panel-label {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin-bottom: 6px;
+}
+.tb-panel-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px;
+  font-size: 12px; font-weight: 600; color: var(--ink); text-decoration: none; line-height: 1.3;
+}
+.tb-panel-item svg { color: var(--steel); }
+.tb-panel-item:hover { background: var(--offwhite); color: var(--brand-dark); }
+.tb-panel-item.active { background: var(--steel-pale); color: var(--brand-dark); }
+.tb-panel-item.active svg { color: var(--brand); }
+
+/* Narrow: the labels go, the buttons stay exactly where they were. */
+@media (max-width: 1100px) {
+  .tb { min-width: 40px; padding: 8px; }
+  .tb-label { display: none; }
+  .tb-panel { width: 420px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* §8.4 — the page's own margin, kept small on purpose.
    It was 26/28/60, and the 60px of bottom padding was pure dead space: no
    screen ends at the fold, so it bought nothing and cost four rows of a grid.
@@ -223,10 +351,12 @@ button { font-family: inherit; cursor: pointer; }
 
 /* §8.3 — the same wizard as an ordinary page.
    No border, shadow or radius: those say "this is a panel floating above the
-   page", and it no longer is. It still fills the height it is given, because
-   step 9's grid pins its own header and footer and scrolls between them — take
-   the fixed height away and the page grows a second scrollbar under the first,
-   and the row somebody is pointing at moves as they reach it. */
+   page", and it no longer is. It still fills the height it is given: the tall
+   steps pin their own header and footer and scroll between them, and taking
+   the fixed height away grows a second scrollbar under the first, so the row
+   somebody is pointing at moves as they reach it. (§31.13 moved the last such
+   step — Allocation — to the Master Grid; the rule stays because the shape it
+   protects belongs to any grid step, not to that one.) */
 .pane-page {
   display: flex; flex-direction: column;
   /* The room there IS, not the viewport minus a number somebody measured once:
@@ -393,6 +523,48 @@ button { font-family: inherit; cursor: pointer; }
 .board-toast.err { background: #fdf0ef; border: 1px solid var(--signal); color: var(--signal); }
 .board-toast.ok { background: #eefaf2; border: 1px solid #34a06a; color: #1d6b45; }
 @keyframes toastin { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* §31.11 — the Draft Board inside the Master Grid.
+
+   Height is the scarce dimension there and width is not, so the cells lose
+   vertical padding and keep their width. The numbers are chosen against a real
+   week: every wing in the reference school runs 8 teaching periods and 2
+   breaks, so the pane holds 8 rows at 42px, two breaks at 17px, a day header,
+   and ten 6px gaps — about 450px, against the ~600px a 1080-tall screen leaves
+   after the topbar, this screen's toolbar and the 86px strip. A longer week
+   scrolls the pane rather than the page, as every other tab does.
+
+   Scoped to a class rather than made the default: `/board` is a page of its
+   own with a whole screen to spend, and a card that has room for a subject,
+   a teacher and a room is easier to read than one that does not. */
+.board-compact .dnd-cell { min-height: 42px; border-radius: 7px; padding: 2px; }
+.board-compact .dnd-break { min-height: 17px; font-size: 8.5px; border-radius: 6px; }
+.board-compact .dnd-card { font-size: 10px; padding: 3px 5px; border-radius: 6px; line-height: 1.2; }
+.board-compact .dnd-card .s { font-size: 8.5px; }
+/* The tray is a column beside the grid, so its cards stack rather than wrap. */
+.board-compact .tray { flex-wrap: nowrap; flex-direction: column; gap: 5px; padding: 7px; }
+
+/* §31.15 — one row of the Allocation grid's hamburger menu.
+
+   A button rather than a link: every one of them acts on this page, and none
+   of them navigates. Left-aligned with a hover fill, which is what makes a
+   column of them read as a menu rather than as four buttons that happen to be
+   stacked. */
+.menu-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; border: none; border-radius: 7px;
+  background: none; color: var(--ink); cursor: pointer;
+  font: 600 12.5px/1.3 Inter, sans-serif; white-space: nowrap;
+}
+.menu-item:hover { background: var(--offwhite); }
+.menu-item[aria-pressed="true"] { color: var(--brand); }
+/* Safari still draws its own marker unless the pseudo-element is removed too. */
+details > summary::-webkit-details-marker { display: none; }
+
+/* §31.6 — the cell the strip is explaining. An outline rather than a border,
+   so selecting does not move the neighbours you are comparing it with, and
+   `outline-offset` pulls it inside so the cell beside it cannot clip it. */
+.dnd-cell.picked { outline: 2px solid var(--brand-deep, #0B1F44); outline-offset: -2px; }
 
 /* ---- mockup form patterns (Setup Wizard §8.1a) ---- */
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; color: var(--steel); }
@@ -692,4 +864,337 @@ button { font-family: inherit; cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) {
   .praise { animation: none; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   §31.10 — the Allocation grid's two moving signals.
+
+   Both are CSS rather than inline style for the same reason: `@keyframes`
+   cannot be expressed in a React style object, and an animation driven from JS
+   would run a re-render per frame on a 64 × 20 grid.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/*
+   A cell nobody teaches: marching ants.
+
+   Four gradients rather than a `border: dashed`, because a border's dashes
+   cannot move. Each gradient draws one edge, `background-size` gives it its
+   thickness, and shifting `background-position` by exactly one dash period
+   (12px) makes the loop seamless — top and bottom travel one way, the sides the
+   other, so the ants go round rather than all sliding left.
+
+   The cell keeps its own `background-color`; only `background-image` is claimed
+   here. Anything applying this class must therefore set `backgroundColor`
+   rather than the `background` shorthand, which would reset these.
+*/
+@keyframes alloc-ants {
+  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
+}
+.alloc-unstaffed {
+  background-image:
+    repeating-linear-gradient(90deg, var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  var(--signal) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  var(--signal) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: alloc-ants 900ms linear infinite;
+}
+
+/*
+   A teacher past their weekly limit: a glow that breathes.
+
+   `box-shadow` rather than `outline` or a border, so the pulse costs no layout
+   — the chips sit in a horizontal scroller and a growing border would shove its
+   neighbours every 1.6 seconds.
+*/
+@keyframes alloc-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 0%, transparent); }
+}
+.alloc-over {
+  animation: alloc-glow 1600ms ease-out infinite;
+}
+
+/*
+   Both are attention signals, and attention signals are exactly what a person
+   who has asked for less motion is asking not to have. The cell keeps a static
+   dashed edge so it still reads as unallocated, and the chip keeps its red
+   border, which it had anyway.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .alloc-unstaffed { animation: none; }
+  .alloc-over { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 35%, transparent); }
+}
+
+/*
+   §31.10 — the strip's issue count, asking to be clicked.
+
+   The count was the one figure in the tail with somewhere to go and no sign
+   that it did: four numbers in a row, one of them a button. The ring makes the
+   difference visible without a fifth colour or an icon, and it is on the
+   BUTTON rather than the number so the whole target reads as one thing.
+
+   Only when something blocks generation. A screen that pulses at a school with
+   nothing wrong is a screen whose pulses stop meaning anything.
+*/
+@keyframes strip-alert {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signal) 42%, transparent); }
+  55%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--signal) 0%, transparent); }
+}
+.strip-alert {
+  border-radius: 9px;
+  animation: strip-alert 1900ms ease-out infinite;
+}
+.strip-alert:hover { background: var(--signal-bg) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .strip-alert {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 32%, transparent);
+  }
+}
+
+
+/* ==========================================================================
+   §8.8 — the phone.
+
+   ONE breakpoint, 820px, and `mobile.ts` says the same number. A second copy
+   that disagreed would produce the worst state available: the rail hidden here
+   and the bottom bar not rendered there, or both at once. Anything adding a
+   mobile rule uses this query.
+
+   Everything below is either (a) giving back width the desktop chrome spends,
+   (b) collapsing a two-column layout that cannot be two columns at 400px, or
+   (c) one of the handful of phone-specific things a desktop browser never
+   shows you. Nothing here changes a single pixel above 820px.
+   ========================================================================== */
+@media (max-width: 820px) {
+  /* ---- the frame ------------------------------------------------------- */
+  /* `100dvh`, not `100vh`. On a phone `vh` is the tallest the viewport ever
+     gets — the address bar OUT — so a 100vh column puts its last 80 pixels,
+     which here is the whole bottom nav, underneath browser chrome that is on
+     screen most of the time. */
+  .main { height: 100dvh; }
+  /* Room for the bottom bar plus the home-indicator strip on a modern phone.
+     `env()` resolves to 0 where there is none, so this is exact rather than a
+     guessed margin that is wrong on both kinds of device. */
+  .content { padding: 10px 10px calc(78px + env(safe-area-inset-bottom)); }
+  .full-bleed { padding: 0 0 calc(64px + env(safe-area-inset-bottom)); }
+
+  /* ---- the top bar ----------------------------------------------------- */
+  /* One row: who and where on the left, the controls on the right. The §8.6
+     toolbar is not rendered at all here (the bottom bar is the navigation), so
+     there is no second row for the grid to place. */
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "brand ctx"; }
+  .topbar-brand { padding: 6px 4px 6px 12px; gap: 8px; min-width: 0; }
+  .topbar-ctx { padding: 6px 10px; gap: 8px; }
+  /* The school and timetable pickers are not hidden here — they are rendered
+     into the menu sheet instead (`MobilePickers`), because a dropdown whose
+     value is a long name cannot share 400px with a bell, the assistant and a
+     hamburger. Hiding them with CSS would have left two live `<select>`s in
+     the tab order that nobody can see. */
+  /* The hamburger. Three bars drawn rather than a glyph, so it inherits the
+     ink colour and is exactly as crisp as the rest of the bar at any density —
+     the same argument §8.1d makes for the nav's inline SVGs over emoji. */
+  .topbar-burger {
+    display: grid; align-content: center; gap: 4px; position: relative;
+    width: 40px; height: 40px; padding: 0 9px; border: none; background: none;
+    border-radius: 9px; flex: none;
+  }
+  .topbar-burger span { height: 2px; border-radius: 2px; background: var(--brand-deep); }
+  .topbar-burger[aria-expanded="true"] { background: var(--steel-pale); }
+  .topbar-burger[aria-expanded="true"] span { background: var(--brand); }
+  /* Where you are, when where you are is not one of the five below. */
+  .topbar-burger em {
+    position: absolute; top: 6px; right: 5px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--brand);
+  }
+
+  /* ---- reading and tapping -------------------------------------------- */
+  /* 16px on every field, and this is not a preference. Safari on iOS zooms the
+     whole page when a focused input is smaller than 16px, and it does not zoom
+     back out — so a 13px input turns one tap into a pinch-and-scroll to find
+     the rest of the form. */
+  input, select, textarea, .field input, .field select { font-size: 16px; }
+  /* 44px is the smallest target that is reliably hittable with a thumb. */
+  .btn { padding: 11px 15px; min-height: 44px; }
+  .actions { justify-content: flex-start; gap: 7px; }
+  .actions .btn { flex: 1 1 auto; justify-content: center; }
+  .card { padding: 14px; border-radius: 11px; }
+  .screen-sub { font-size: 12.5px; margin-bottom: 12px; }
+
+  /* ---- two columns that cannot be two columns -------------------------- */
+  .form-grid, .grid2, .ai-layout, .ai-settings-grid, .master-split { grid-template-columns: 1fr; }
+  .sub-row { grid-template-columns: 1fr; gap: 9px; padding: 12px 13px; }
+  .tt-card { grid-template-columns: 1fr; grid-template-areas: "main" "setup" "actions"; }
+  .kv { flex-direction: column; gap: 2px; }
+  .kv b { min-width: 0; }
+  .toggle-row { gap: 12px; }
+  .key-row { flex-direction: column; }
+  .day-picker { flex-wrap: wrap; }
+  .wizard-foot { gap: 10px; }
+  .absence-banner { flex-wrap: wrap; padding: 13px 14px; }
+  .absence-banner .btn { margin-left: 0; width: 100%; }
+  .login-card { width: 100%; max-width: 100%; padding: 22px; border-radius: 0; }
+  .login-wrap { place-items: stretch; }
+
+  /* ---- anything wide scrolls in its own box, never the page ------------ */
+  /* A grid of 55 period columns will not fit a phone and should not pretend
+     to: it scrolls sideways inside `.content`, which already owns both axes
+     (§8.4), so the top bar and the bottom nav stay put while the grid moves.
+     That is how a timetable is read on paper too.
+
+     Deliberately NOT `overflow-x: hidden` here, which was the first version of
+     this rule: it stops the page scrolling sideways by CLIPPING, so the far
+     end of a wide grid becomes unreachable rather than reachable-by-swiping.
+     Hiding a horizontal scrollbar is not the same as not needing one. */
+  .master-scroll, .pane-page { max-width: 100%; }
+  .table-scroll table { min-width: 560px; }
+
+  /* §8.8 — the guided setup's footer is one row on a phone.
+     The global 44px target above would make four buttons 60px wider than the
+     screen, so this row gets tighter horizontal padding and keeps the height
+     that makes them hittable. `min-width: 0` lets a label ellipsis rather than
+     force the row wider than the dialog. */
+  .wizard-actions .btn { padding: 11px 10px; font-size: 12.5px; min-width: 0; }
+  .wizard-actions .btn-primary { padding: 11px 16px; }
+
+  /* ---- chat ------------------------------------------------------------ */
+  .chat-card { height: calc(100dvh - 210px); min-height: 0; }
+  .msg { max-width: 92%; }
+  .chat-body { padding: 14px 12px; }
+  .chat-input-row, .suggest-row { padding-left: 12px; padding-right: 12px; }
+
+  /* ---- the guided setup ------------------------------------------------ */
+  /* It was a dialog inset from a rail that is no longer there, floating on a
+     dimmed page there is no room to show. The inset goes to the OVERLAY: the
+     dialog is a flex child, not a positioned box, so `inset` on it does
+     nothing — a rule that would have looked correct and changed no pixel. */
+  .pane-overlay { padding: 0; }
+  .pane-dialog { border-radius: 0; border: none; }
+
+  /* ======================================================================
+     The bottom bar, and the sheet behind Menu.
+     ====================================================================== */
+  .mnav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    background: var(--paper); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+    /* Above the content and the sticky top bar (5); below the sheet (80) and
+       the §24.5d pane overlay (200), which is meant to cover the navigation
+       rather than sit under it. */
+  }
+  .mnav-item {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    padding: 7px 2px 8px; min-height: 56px; border: none; background: none;
+    color: var(--ink-faint); text-decoration: none; position: relative;
+  }
+  .mnav-item span { font-size: 10px; font-weight: 600; line-height: 1; }
+  .mnav-item.active { color: var(--brand); }
+  /* A bar, not a fill: the active item is identified by the same 2.5px rule the
+     toolbar uses, drawn at the TOP edge because that is the side the content
+     is on. */
+  .mnav-item.active::after {
+    content: ""; position: absolute; top: 0; left: 18%; right: 18%;
+    height: 2.5px; border-radius: 0 0 2px 2px; background: var(--brand);
+  }
+  .mnav-flag {
+    position: absolute; top: 9px; right: calc(50% - 17px);
+    width: 6px; height: 6px; border-radius: 50%; background: var(--brand);
+  }
+
+  .msheet {
+    position: fixed; inset: 0; z-index: 80; background: var(--paper);
+    display: flex; flex-direction: column;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .msheet-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 14px 12px; border-bottom: 1px solid var(--line); flex: none;
+  }
+  .msheet-who { font-size: 15px; font-weight: 700; color: var(--brand-deep); }
+  .msheet-role { font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; }
+  .msheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 24px; }
+  .msheet-pickers {
+    display: grid; gap: 12px; padding: 4px 8px 14px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .msheet-picker { display: grid; gap: 5px; }
+  .msheet-picker-label {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  /* `SchoolPicker` right-aligns itself for the desktop bar, where it sits at
+     the end of a row. In a full-width sheet that reads as a stray indent. */
+  .msheet-picker > div { align-items: stretch !important; width: 100%; }
+  .msheet-picker button, .msheet-picker select { width: 100%; font-size: 15px; }
+  .msheet-picker > div > span:first-child { display: none; }
+
+  .msheet-group {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 14px 8px 5px;
+  }
+  .msheet-item {
+    display: flex; align-items: center; gap: 12px; padding: 12px 10px; border-radius: 9px;
+    font-size: 14px; font-weight: 600; color: var(--ink); text-decoration: none; min-height: 46px;
+  }
+  .msheet-item svg { color: var(--steel); flex: none; }
+  .msheet-item.active { background: var(--steel-pale); color: var(--brand-dark); }
+  .msheet-item.active svg { color: var(--brand); }
+  .msheet-out {
+    display: block; width: 100%; margin-top: 22px; padding: 13px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--paper);
+    font-size: 13.5px; font-weight: 600; color: var(--signal);
+  }
+}
+
+/* A phone in landscape is short, not wide: the bottom bar plus a top bar plus
+   a chat window measured against `100dvh` leaves almost nothing between them. */
+@media (max-width: 820px) and (max-height: 520px) {
+  .chat-card { height: calc(100dvh - 150px); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   §39 — the sign-in showcase.
+
+   Keyframes only. Everything else about that panel is inline in
+   `pages/auth-showcase.tsx`, which is where its colours are decided; these are
+   here because `@keyframes` cannot be expressed as an inline style.
+
+   Every one of them is applied ONLY when the component has decided motion is
+   wanted (`prefers-reduced-motion` is read in the component, because the same
+   answer also has to stop the auto-advance timer, which CSS cannot reach). The
+   media query below is the belt to that braces: if a rule is ever applied
+   without the check, the machine's own preference still wins.
+   ───────────────────────────────────────────────────────────────────────── */
+@keyframes sc-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes sc-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+/* A card landing in its cell — down and settling, not fading in. */
+@keyframes sc-drop {
+  from { opacity: 0; transform: translateY(-7px) scaleY(.7); }
+  to   { opacity: 1; transform: none; }
+}
+/* The Readiness dial filling. `to: 0` is a full circle, so the ring closes. */
+@keyframes sc-dial {
+  to { stroke-dashoffset: 0; }
+}
+
+/* Scoped to the panel rather than a blanket `* { animation: none }`: the app's
+   own transitions elsewhere are short and purposeful, and switching every one
+   of them off is a bigger decision than this feature should be making. */
+@media (prefers-reduced-motion: reduce) {
+  .sc-panel,
+  .sc-panel * {
+    animation: none !important;
+    transition: none !important;
+  }
 }

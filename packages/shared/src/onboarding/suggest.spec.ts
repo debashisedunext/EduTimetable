@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assignInitials,
   curriculumSheets,
+  dedupeCurriculumCells,
   defaultsFor,
   NEUTRAL_SUBJECT,
   mappingSheets,
@@ -409,6 +410,80 @@ describe("§15.3 the curriculum suggester", () => {
   it("respects the importer's 1-20 bound on periods/week", () => {
     const plan = suggestCurriculum([wing("W", 4, 4)], [{ name: "Mathematics" }], { W: 60 });
     for (const c of plan.cells) expect(c.periodsPerWeek).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("§30.12 a class taught by two pools is still ONE curriculum", () => {
+  /*
+    Since §30.9, two wings in different §30 resource pools may both run Class 1
+    — an individual timetable teaching the same grade as the main school. That
+    is real, and step 4 needs both entries to create both pools' cohort rows.
+
+    What is not real is two curricula. `class_subjects` is keyed
+    `(class, subject, year)` with no pool column, so the second visit is the
+    same row again — and the §16 importer refuses a sheet holding two rows on
+    one natural key. On a real school that was 322 errors and "nothing was
+    written" on every Save.
+  */
+  const shared = (): WingAnswer[] => [
+    wing("Main", 4, 9, 4),             // Class 1 – Class 6
+    { ...wing("Weekly", 4, 6, 2), individual: true }, // Class 1 – Class 3, own pool
+  ];
+  const caps = { Main: 40, Weekly: 30 };
+
+  it("emits one curriculum row per class and subject, not one per wing", () => {
+    const plan = suggestCurriculum(shared(), SUBJECTS, caps);
+    const keys = plan.cells.map((c) => `${c.className}|${c.subjectName}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("keeps the TIGHTER week's row, because the curriculum is shared", () => {
+    // The row has to fit the narrowest wing that teaches the class — keeping
+    // the larger one proposes a curriculum that cannot fit one of its own
+    // wings, and Readiness reports it against a wing nobody was editing.
+    const wide = { className: "Class 1", subjectName: "Maths", periodsPerWeek: 8, maxPerDay: 2 };
+    const tight = { className: "Class 1", subjectName: "Maths", periodsPerWeek: 5, maxPerDay: 1 };
+    expect(dedupeCurriculumCells([wide, tight])[0].periodsPerWeek).toBe(5);
+    expect(dedupeCurriculumCells([tight, wide])[0].periodsPerWeek).toBe(5);
+  });
+
+  it("still reports a class only once in the totals", () => {
+    const plan = suggestCurriculum(shared(), SUBJECTS, caps);
+    const names = plan.totals.map((t) => t.className);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("deduplicates in the SHEET too, because an edited grid skips the suggester", () => {
+    // `answers.curriculum` is committed verbatim when somebody has edited the
+    // grid, so the sheet builder is the only gate that always runs.
+    const dup = { className: "Class 1", subjectName: "Maths", periodsPerWeek: 5, maxPerDay: 1 };
+    const sheet = curriculumSheets(
+      { cells: [dup, { ...dup }], totals: [], dropped: [] }, "2026-27",
+    )[0];
+    expect(sheet.rows).toHaveLength(1);
+  });
+
+  it("emits one mapping per subject and class-section, and one class teacher per section", () => {
+    const dup = (classSection: string) => ({ classSection, employeeCode: "T-001" });
+    const m = (subjectName: string, cs: string) =>
+      ({ employeeCode: "T-001", subjectName, classSections: [cs], periodsPerWeek: 5 });
+    const sheets = mappingSheets({
+      mappings: [m("Maths", "Class 1-A"), m("Maths", "Class 1-A"), m("Maths", "Class 1-B")],
+      classTeachers: [dup("Class 1-A"), dup("Class 1-A")],
+      uncovered: [], load: [],
+    });
+    expect(sheets.find((x) => x.name === "Subject Mapping")!.rows).toHaveLength(2);
+    expect(sheets.find((x) => x.name === "Class Teachers")!.rows).toHaveLength(1);
+  });
+
+  it("does NOT collapse the two wings in planClasses — both pools still get cohorts", () => {
+    // The fix belongs to the curriculum, not to the class plan: step 4 must
+    // still create Class 1 in both pools (§30.9).
+    const plan = suggestCurriculum(shared(), SUBJECTS, caps);
+    expect(plan.cells.some((c) => c.className === "Class 1")).toBe(true);
+    // …and the wings themselves are untouched, which `wizard.spec.ts` asserts
+    // directly; here it is enough that deduplication did not empty the plan.
+    expect(plan.cells.length).toBeGreaterThan(0);
   });
 });
 

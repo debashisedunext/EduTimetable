@@ -36,6 +36,26 @@ export type IssueCode =
   | "LAB_SUBJECT_UNSERVED"
   | "LAB_SUBJECT_OVERFLOW"
   | "HOME_ROOM_SHARED"
+  /**
+   * §36 — Check 14: a lesson the school pinned by hand that cannot be honoured.
+   *
+   * Every one of these is a HARD constraint written by a person, so they block
+   * rather than warn: Readiness refuses the generation instead of letting it
+   * run and report what it could not place. Each names the pin precisely enough
+   * to find and remove on the Master Grid's Whole tab.
+   */
+  | "FIXED_LESSON_ORPHANED"
+  | "FIXED_LESSON_NO_CELL"
+  | "FIXED_LESSON_OVER_CURRICULUM"
+  | "FIXED_LESSON_TEACHER_CLASH"
+  | "FIXED_LESSON_TEACHER_AWAY"
+  | "FIXED_LESSON_OVER_DAY_CAP"
+  /**
+   * §26.4 — Check 10b: a confined subject's cells hold fewer lessons than its
+   * teachers have to give. The cells a rule leaves are not supply until
+   * somebody can stand in them.
+   */
+  | "PLACEMENT_TEACHER_CAPACITY"
   /** §26.3 — a lunch-side rule confines more periods than that side holds. */
   | "LUNCH_SIDE_CAPACITY"
   | "HOME_ROOM_UNSET"
@@ -178,6 +198,21 @@ export interface FeasibilityResult {
     teachers: number;
     totalRequiredSlots: number;
     totalAvailableSlots: number;
+    /**
+     * §38 — what each class-section is owed, from Check 1's own arithmetic.
+     *
+     * Surfaced rather than recomputed. "How many periods does 5-A need?" has
+     * exactly one right answer and Check 1 already works it out — curriculum
+     * rows for the class (§27: periods are a class fact) plus the §4.9 blocks
+     * that section attends, against a week reduced by §4.7b class time off.
+     * A summary screen deriving its own would be a second opinion free to
+     * disagree with the Readiness figure printed beside it, which is the fault
+     * `weekPeriods`, `initialsOf` and `coverage.ts` each exist to prevent.
+     *
+     * `available` is per section and already net of time off, so a school that
+     * blocks Friday afternoon for 5-A sees 5-A's own smaller week here.
+     */
+    sections: Array<{ id: number; label: string; required: number; available: number }>;
   };
 }
 
@@ -190,6 +225,15 @@ export interface SnapshotConfig {
   workingDays: number[];
   /** teaching periods per day (breaks & zero period excluded) */
   periodsPerDay: number;
+  /**
+   * §34 — weekdays that run a different shape (a short Saturday).
+   *
+   * Absent or empty means every working day has `periodsPerDay`, which is every
+   * school that has not said otherwise. Read through `periodsOn` / `weekPeriods`
+   * in `packages/shared`, never by indexing this directly: "periods a week"
+   * stopped being a product the moment one day could differ.
+   */
+  dayShapes?: Array<{ day: number; periodsPerDay: number; periodDurationMins: number }>;
   /**
    * lengths of contiguous teaching-period runs between breaks, e.g. a day of
    * P1-P3, break, P4-P7 → [3,4]. Empty means layout not yet built.
@@ -215,6 +259,48 @@ export interface SnapshotConfig {
    * reporting would make most real schools ungenerable.
    */
   loadAlertPct: number;
+  /**
+   * §28.7 — how long it takes to reach THIS wing from another in the same §30
+   * pool, and how strictly to honour it.
+   *
+   * A pair of wings uses the LARGER of their two numbers, so one figure per
+   * wing composes without a distance matrix nobody would fill in.
+   */
+  crossWingTravelMins?: number;
+  crossWingRule?: "prefer" | "forbid";
+  /**
+   * §28.7 — when each teaching period of this timetable starts and ends, in
+   * minutes from midnight.
+   *
+   * Needed because a cross-wing clash is a WALL-CLOCK question, never a period
+   * number one: §30.7 already had to learn that Junior's P3 and Senior's P2
+   * both start at 09:14, so comparing period numbers across wings is wrong in
+   * both directions — it misses real overlaps and invents false ones.
+   *
+   * Absent for a timetable whose week has not been built yet, which switches
+   * the rule off rather than guessing a clock.
+   */
+  periodClock?: Record<number, { start: number; end: number }>;
+}
+
+/**
+ * §28.7 — one lesson a teacher already has in ANOTHER wing of the same pool.
+ *
+ * Read from the other timetables' placed rows, with their own clocks, because
+ * that is the only way "is this teacher already across the site at 09:10?" can
+ * be answered: `uq_teacher_slot` is keyed by `timetable_config_id`, so the
+ * database has no cross-timetable occupancy constraint at all (§30.11) and
+ * nothing else in the system would notice.
+ */
+export interface CrossWingLesson {
+  dayOfWeek: number;
+  /** Minutes from midnight, on that wing's own clock. */
+  start: number;
+  end: number;
+  /** Named so a refusal can say which wing, rather than "another one". */
+  configName: string;
+  /** That wing's own travel minutes; the pair uses the larger of the two. */
+  travelMins: number;
 }
 
 export interface SnapshotClassSection {
@@ -254,6 +340,15 @@ export interface SnapshotSubjectRequirement {
   samePeriodAcrossWeek: boolean;
   consecutiveBlockSize: number;
   consecutiveBlocksPerWeek: number | null;
+  /**
+   * §31.10 — may a consecutive block run through a break?
+   *
+   * `false` is every school before this existed, and only ever means what it
+   * has always meant: the block must sit inside one unbroken run of periods.
+   * `true` WIDENS the domain — it permits a crossing rather than requiring one,
+   * so a block that fits inside a run still lands there.
+   */
+  blockMayCrossBreak: boolean;
 }
 
 export interface SnapshotTeacher {
@@ -362,6 +457,19 @@ export interface FeasibilitySnapshot {
   electiveBlocks: SnapshotElectiveBlock[];
   /** teacher load carried in OTHER timetable configs (§3.10 cross-wing rule) */
   crossConfigTeacherLoad: Record<number, { periods: number; otherConfigNames: string[] }>;
+  /**
+   * §28.7 — where each teacher already is, in the OTHER wings of this pool.
+   *
+   * Empty for a school with one timetable, which is most of them, so the rule
+   * costs nothing until two wings share staff.
+   *
+   * **Read once, at the moment generation starts.** Wings are generated one at
+   * a time, so the wing generated second can honour the first and the first
+   * knows nothing of the second — an asymmetry that is real and stated rather
+   * than hidden: regenerating the first wing afterwards is what makes the pair
+   * consistent, and the school is told so.
+   */
+  crossWingBusy?: Record<number, CrossWingLesson[]>;
   labRoomCount: number;
   labSubjectIds: number[];
   /** §26 — placement rules per subject id. A subject missing from here has none. */
@@ -386,6 +494,25 @@ export interface FeasibilitySnapshot {
    * the solver needs the cells themselves and gets them from `SolverInput`.
    */
   classSectionTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
+  /**
+   * §36 — the lessons this timetable has pinned to a cell.
+   *
+   * Optional: absent is every school that has never pinned one, and Check 14
+   * is then silent for all of them.
+   *
+   * The engine sees them so that Phase A can refuse BEFORE Generate — a hard
+   * constraint the school wrote by hand is still a hard constraint, and the
+   * whole architecture rests on proving a solution can exist rather than
+   * discovering it cannot. `variables.ts` enforces them; this check is what
+   * makes the enforcement answerable.
+   */
+  fixedLessons?: Array<{
+    classSectionId: number;
+    subjectId: number;
+    teacherId: number;
+    dayOfWeek: number;
+    periodNumber: number;
+  }>;
   /** §4.7b — the same, per subject: the cells it may not be taught in. */
   subjectTimeOff?: Array<{ id: number; dayOfWeek: number; periodNumber: number | null }>;
   /** §4.7b — the same, per room: the cells it cannot be used in. */
